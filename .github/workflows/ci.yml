@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  local:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install just
+        run: sudo apt-get update && sudo apt-get install -y just
+      - name: Fast
+        run: just fast
+      - name: Check
+        run: just check
+      - name: Score
+        run: just score
+      - name: Security
+        run: just security

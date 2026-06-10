@@ -1,0 +1,55 @@
+name: local-ci-parity
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-ci-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JERYU_CI_JOBS: "40"
+  CARGO_BUILD_JOBS: "40"
+  JERYU_JANKURAI_STRICT_TAG: "0"
+  JANKURAI_REPO: "https://github.com/neverhuman/jankurai.git"
+  JANKURAI_TAG: "v1.6.10-deadlang-precision"
+  JANKURAI_REV: "68bd6114373cf407a930011b76669af306cb0cb1"
+
+jobs:
+  jankurai-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout without marketplace actions
+        run: |
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git fetch --no-tags --depth 64 origin "$GITHUB_REF"
+          git checkout --detach FETCH_HEAD
+          git fetch --no-tags --depth 64 origin refs/heads/main:refs/remotes/origin/main
+      - name: Toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Ensure pinned jankurai on PATH
+        run: bash ops/ci/ensure-jankurai.sh
+      - name: Install open security tools
+        run: bash ops/ci/security-tools.sh
+      - name: Jankurai security and audit lane
+        run: |
+          jankurai security run . --script ./ops/ci/security.sh --strict --out target/jankurai/security/evidence.json --profile ci
+          jankurai . --json .jankurai/repo-score.json --md .jankurai/repo-score.md --fail-under "${JERYU_JANKURAI_FAIL_UNDER:-85}"
+      - name: Upload Jankurai audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: jankurai-audit-evidence
+          path: |
+            .jankurai/repo-score.json
+            .jankurai/repo-score.md
+            target/jankurai/security/evidence.json
+            target/jankurai/security/sbom/**
+          if-no-files-found: error

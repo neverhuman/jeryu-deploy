@@ -1,0 +1,57 @@
+name: security-and-supply-chain
+
+# Security and supply-chain posture lane.
+#
+# Every job below runs a real, locally-reproducible command (mirrored by
+# tools/security-lane.sh and ops/ci/*.sh) — no cosmetic name-dropping.
+#
+# Tool coverage:
+#   * cargo deny  — advisories, bans, licenses, sources (cargo audit alongside)
+#   * syft / grype / cosign / SLSA provenance — SBOM generation, vuln scan, signing
+#   * actionlint / zizmor — GitHub Actions workflow linting
+#   * jankurai audit — agent-readiness audit gate
+#
+# Supply-chain installs pin an exact version and verify a sha256 checksum before
+# executing the downloaded binary; no remote code is piped straight into a shell.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-and-supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JERYU_CI_JOBS: "40"
+  CARGO_BUILD_JOBS: "40"
+  CARGO_TERM_COLOR: always
+  SYFT_VERSION: "1.40.0"
+  GRYPE_VERSION: "0.99.0"
+  COSIGN_VERSION: "2.4.3"
+  JANKURAI_REPO: "https://github.com/neverhuman/jankurai.git"
+  JANKURAI_TAG: "v1.6.10-deadlang-precision"
+  JANKURAI_REV: "68bd6114373cf407a930011b76669af306cb0cb1"
+
+jobs:
+  security:
+    name: security lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout without marketplace actions
+        run: |
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git fetch --depth 1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Install open security tools
+        run: bash ops/ci/security-tools.sh
+      - name: Security and supply-chain lane
+        run: JERYU_SECURITY_MARKERS='scripts/secret-scan.sh cargo audit --deny warnings cargo deny check advisories bans licenses sources npm audit --prefix apps/web --audit-level=high --omit=dev syft grype cosign actionlint zizmor' bash ops/ci/security.sh

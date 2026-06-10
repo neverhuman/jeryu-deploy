@@ -1,0 +1,112 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/jeryu-api",
+  "crates/jeryu-cli",
+]
+exclude = [
+  "fixtures/rust-small",
+]
+
+[workspace.package]
+version = "4.0.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/neverhuman/jeryu"
+authors = ["Jeryu"]
+rust-version = "1.95"
+
+[workspace.dependencies]
+anyhow = "1"
+blake3 = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+hmac = "0.12"
+parking_lot = "0.12"
+proptest = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+vt100 = "0.16"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "allow"
+
+[workspace.lints.clippy]
+pedantic = { level = "allow", priority = -1 }
+
+# Local split development patches. Release builds consume the pinned Git tags above.
+[patch."https://github.com/neverhuman/jeryu-cache.git"]
+jeryu-cache = { path = "../jeryu-cache/crates/jeryu-cache" }
+jeryu-cache-adversary = { path = "../jeryu-cache/crates/jeryu-cache-adversary" }
+jeryu-cache-cli = { path = "../jeryu-cache/crates/jeryu-cache-cli" }
+jeryu-cache-core = { path = "../jeryu-cache/crates/jeryu-cache-core" }
+jeryu-cache-service = { path = "../jeryu-cache/crates/jeryu-cache-service" }
+
+[patch."https://github.com/neverhuman/jeryu-ci-runner.git"]
+jeryu-agent-auth = { path = "../jeryu-ci-runner/crates/jeryu-agent-auth" }
+jeryu-agent-stream = { path = "../jeryu-ci-runner/crates/jeryu-agent-stream" }
+jeryu-agentbridge = { path = "../jeryu-ci-runner/crates/jeryu-agentbridge" }
+jeryu-artifact-metadata = { path = "../jeryu-ci-runner/crates/jeryu-artifact-metadata" }
+jeryu-cache-policy = { path = "../jeryu-ci-runner/crates/jeryu-cache-policy" }
+jeryu-ci-bin = { path = "../jeryu-ci-runner/bins/jeryu-ci-bin" }
+jeryu-ci-compiler = { path = "../jeryu-ci-runner/crates/jeryu-ci-compiler" }
+jeryu-ci-governor = { path = "../jeryu-ci-runner/crates/jeryu-ci-governor" }
+jeryu-ci-ir = { path = "../jeryu-ci-runner/crates/jeryu-ci-ir" }
+jeryu-ci-scheduler = { path = "../jeryu-ci-runner/crates/jeryu-ci-scheduler" }
+jeryu-egress = { path = "../jeryu-ci-runner/crates/jeryu-egress" }
+jeryu-phase7-cli = { path = "../jeryu-ci-runner/crates/jeryu-phase7-cli" }
+jeryu-runner-core = { path = "../jeryu-ci-runner/crates/jeryu-runner-core" }
+jeryu-runner-microvm = { path = "../jeryu-ci-runner/crates/jeryu-runner-microvm" }
+jeryu-runner-native = { path = "../jeryu-ci-runner/crates/jeryu-runner-native" }
+jeryu-runner-oci = { path = "../jeryu-ci-runner/crates/jeryu-runner-oci" }
+jeryu-runner-protocol = { path = "../jeryu-ci-runner/crates/jeryu-runner-protocol" }
+jeryu-runner-registry = { path = "../jeryu-ci-runner/crates/jeryu-runner-registry" }
+jeryu-runnerd = { path = "../jeryu-ci-runner/crates/jeryu-runnerd" }
+jeryu-sandbox-linux = { path = "../jeryu-ci-runner/crates/jeryu-sandbox-linux" }
+
+[patch."https://github.com/neverhuman/jeryu-core.git"]
+jeryu-bugtracker = { path = "../jeryu-core/crates/jeryu-bugtracker" }
+jeryu-core = { path = "../jeryu-core/crates/jeryu-core" }
+jeryu-domain = { path = "../jeryu-core/crates/domain" }
+jeryu-enterprise = { path = "../jeryu-core/crates/jeryu-enterprise" }
+jeryu-gitd = { path = "../jeryu-core/crates/jeryu-gitd" }
+jeryu-mirror = { path = "../jeryu-core/crates/jeryu-mirror" }
+jeryu-mirror-cli = { path = "../jeryu-core/crates/jeryu-mirror-cli" }
+jeryu-proof = { path = "../jeryu-core/crates/jeryu-proof" }
+jeryu-readmodel = { path = "../jeryu-core/crates/jeryu-readmodel" }
+jeryu-tui = { path = "../jeryu-core/crates/jeryu-tui" }
+
+[patch."https://github.com/neverhuman/jeryu-intelligence.git"]
+jeryu-autonomy = { path = "../jeryu-intelligence/crates/jeryu-autonomy" }
+jeryu-codegraph = { path = "../jeryu-intelligence/crates/jeryu-codegraph" }
+jeryu-mcp = { path = "../jeryu-intelligence/crates/jeryu-mcp" }
+jeryu-review = { path = "../jeryu-intelligence/crates/jeryu-review" }
+jeryu-rustjet = { path = "../jeryu-intelligence/crates/jeryu-rustjet" }
+jeryu-rustjet-cli = { path = "../jeryu-intelligence/crates/jeryu-rustjet-cli" }
+
+[patch."https://github.com/neverhuman/jeryu-release-ops.git"]
+jeryu-bench = { path = "../jeryu-release-ops/crates/jeryu-bench" }
+jeryu-compliance-export = { path = "../jeryu-release-ops/crates/jeryu-compliance-export" }
+jeryu-evidence = { path = "../jeryu-release-ops/crates/jeryu-evidence" }
+jeryu-git-guard = { path = "../jeryu-release-ops/crates/jeryu-git-guard" }
+jeryu-kernel = { path = "../jeryu-release-ops/crates/jeryu-kernel" }
+jeryu-lifecycle = { path = "../jeryu-release-ops/crates/jeryu-lifecycle" }
+jeryu-mapcheck = { path = "../jeryu-release-ops/crates/jeryu-mapcheck" }
+jeryu-obs = { path = "../jeryu-release-ops/crates/jeryu-obs" }
+jeryu-ops = { path = "../jeryu-release-ops/crates/jeryu-ops" }
+jeryu-phase11-audit = { path = "../jeryu-release-ops/crates/jeryu-phase11-audit" }
+jeryu-phase11-bin = { path = "../jeryu-release-ops/bins/jeryu-phase11-bin" }
+jeryu-phase11-core = { path = "../jeryu-release-ops/crates/jeryu-phase11-core" }
+jeryu-replay-verifier = { path = "../jeryu-release-ops/crates/jeryu-replay-verifier" }
+jeryu-repogate = { path = "../jeryu-release-ops/crates/jeryu-repogate" }
+jeryu-signing = { path = "../jeryu-release-ops/crates/jeryu-signing" }
+jeryu-signrail = { path = "../jeryu-release-ops/crates/jeryu-signrail" }
+jeryu-tenant = { path = "../jeryu-release-ops/crates/jeryu-tenant" }
+jeryu-wsversion = { path = "../jeryu-release-ops/crates/jeryu-wsversion" }

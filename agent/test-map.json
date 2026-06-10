@@ -1,0 +1,100 @@
+{
+  "tests": {
+    ".github/": {
+      "command": "just fast && just check",
+      "lane": "ci",
+      "purpose": "verify hosted workflows stay thin and local-reproducible"
+    },
+    ".github/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "AGENTS.md": {
+      "command": "just score",
+      "lane": "score",
+      "purpose": "verify split metadata and agent maps"
+    },
+    "Cargo.lock": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "Cargo.toml": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "Justfile": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "agent/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "ci-fast-push.sh": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "config/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "configs/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "crates/jeryu-api/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "crates/jeryu-cli/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "docs/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "examples/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "images/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "ops/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "policies/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "scripts/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "tests/**": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    }
+  },
+  "workspace": "jeryu-deploy"
+}

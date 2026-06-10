@@ -1,0 +1,79 @@
+name: proof-evidence
+
+# Jankurai tool-adoption CI lane: runs the local evidence lane and uploads the
+# catalog artifact paths. The exact catalog command strings also live in
+# ops/ci/proof-evidence.sh so thin workflow parity and adoption evidence agree.
+#
+# The job is THIN: the real command sequence lives in ops/ci/proof-evidence.sh
+# so CI and local runs share a single source of truth (local/CI parity).
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proof-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JERYU_JANKURAI_BASE_REF: "origin/main"
+  JERYU_JANKURAI_STRICT_TAG: "0"
+  JANKURAI_REPO: "https://github.com/neverhuman/jankurai.git"
+  JANKURAI_TAG: "v1.6.10-deadlang-precision"
+  JANKURAI_REV: "68bd6114373cf407a930011b76669af306cb0cb1"
+
+jobs:
+  tool-adoption-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout without marketplace actions
+        run: |
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git fetch --no-tags --depth 64 origin "$GITHUB_REF"
+          git checkout --detach FETCH_HEAD
+          git fetch --no-tags --depth 64 origin refs/heads/main:refs/remotes/origin/main
+
+      - name: Toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+
+      - name: Ensure pinned jankurai on PATH
+        run: bash ops/ci/ensure-jankurai.sh
+
+      - name: Tool-adoption evidence lane (local/CI parity)
+        run: bash ops/ci/proof-evidence.sh
+
+      # Upload every wired tool's artifact_paths. `if: always()` so evidence is
+      # captured even when the ratchet score gate fails.
+      - name: Upload tool-adoption evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: jankurai-tool-adoption-evidence
+          path: |
+            .jankurai/repo-score.json
+            .jankurai/repo-score.md
+            target/jankurai/repo-score.json
+            target/jankurai/repo-score.md
+            target/jankurai/repair-queue.jsonl
+            target/jankurai/security/evidence.json
+            target/jankurai/proofbind/surface-witness.json
+            target/jankurai/proofbind/obligations.json
+            target/jankurai/proofmark/proofmark-receipt.json
+            target/jankurai/proofmark/proof-receipt.json
+            target/jankurai/copy-code.json
+            target/jankurai/copy-code.md
+            target/jankurai/language-bad-behavior.log
+            target/jankurai/rust/witness-graph.json
+            target/jankurai/ux-qa.json
+            target/jankurai/migration-report.json
+            target/jankurai/vibe-coverage.json
+            target/jankurai/vibe-coverage.md
+            target/jankurai/coverage/coverage-audit.json
+            target/jankurai/coverage/coverage-audit.md
+          if-no-files-found: error

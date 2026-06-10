@@ -1,0 +1,29 @@
+{
+  "owners": {
+    ".github/": "ops",
+    ".github/**": "jeryu-deploy",
+    "AGENTS.md": "split",
+    "Cargo.lock": "jeryu-deploy",
+    "Cargo.toml": "jeryu-deploy",
+    "Justfile": "jeryu-deploy",
+    "README.md": "docs",
+    "agent/": "agent",
+    "agent/**": "jeryu-deploy",
+    "ci-fast-push.sh": "jeryu-deploy",
+    "config/**": "jeryu-deploy",
+    "configs/**": "jeryu-deploy",
+    "crates/jeryu-api/**": "jeryu-deploy",
+    "crates/jeryu-cli/**": "jeryu-deploy",
+    "docs/": "docs",
+    "docs/**": "jeryu-deploy",
+    "examples/**": "jeryu-deploy",
+    "images/**": "jeryu-deploy",
+    "ops/": "ops",
+    "ops/**": "jeryu-deploy",
+    "policies/**": "jeryu-deploy",
+    "scripts/": "ops",
+    "scripts/**": "jeryu-deploy",
+    "tests/**": "jeryu-deploy"
+  },
+  "workspace": "jeryu-deploy"
+}
