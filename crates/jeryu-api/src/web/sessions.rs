@@ -764,8 +764,9 @@ fn resolve_session_backend(
 /// so we copy the auth files into `{workspace}/.agent-home/{config_dir}/{file}`.
 ///
 /// This is best-effort: a missing host file is silently skipped, a copy failure
-/// is logged but never blocks the session. The files are copied (not bind-mounted)
-/// so the container cannot modify the host's tokens.
+/// is logged but never blocks the session. Files are copied fresh (not
+/// bind-mounted) on every session start so credentials are always up-to-date
+/// but the container cannot modify the host's tokens.
 fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
     /// One auth file mapping: host relative path (under `$HOME`) → container
     /// relative path (under `{workspace}/.agent-home`).
@@ -907,7 +908,6 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
             agent_id: &str,
             label: &str,
         ) {
-            use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::create_dir_all(dst);
             let entries = match std::fs::read_dir(src) {
                 Ok(e) => e,
@@ -985,6 +985,43 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
         }
     }
 
+    // ── Strip host-only MCP servers from seeded Codex config ───────────
+    // MCP servers like jnoccio-router bind to the host's loopback and are
+    // unreachable from inside the sandbox. Leaving them causes a noisy
+    // "MCP startup incomplete" warning on every session start.
+    if agent_id == "codex" || !matches!(agent_id, "claude" | "agy") {
+        let codex_cfg = agent_home.join(".codex/config.toml");
+        if codex_cfg.is_file() {
+            let _ = std::fs::set_permissions(&codex_cfg, std::fs::Permissions::from_mode(0o600));
+            if let Ok(raw) = std::fs::read_to_string(&codex_cfg) {
+                // Drop all [mcp_servers.*] sections (and their sub-tables).
+                let mut cleaned = String::new();
+                let mut skip = false;
+                for line in raw.lines() {
+                    if line.starts_with("[mcp_servers") {
+                        skip = true;
+                        continue;
+                    }
+                    // A new top-level section ends the skip.
+                    if skip && line.starts_with('[') && !line.starts_with("[mcp_servers") {
+                        skip = false;
+                    }
+                    if !skip {
+                        cleaned.push_str(line);
+                        cleaned.push('\n');
+                    }
+                }
+                let _ = std::fs::write(&codex_cfg, &cleaned);
+                let _ =
+                    std::fs::set_permissions(&codex_cfg, std::fs::Permissions::from_mode(0o400));
+                eprintln!(
+                    "seed_agent_auth[{}]: stripped [mcp_servers.*] from config.toml",
+                    agent_id
+                );
+            }
+        }
+    }
+
     // ── Auto-trust the workspace so codex/claude never prompts ──────────
     // Codex: append a [projects."/workspace"] trust entry to the seeded config.toml.
     // Claude: seed a settings.json that auto-accepts /workspace.
@@ -1019,6 +1056,44 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
                 "seed_agent_auth[{}]: created minimal config.toml with /workspace trust",
                 agent_id
             );
+        }
+    }
+
+    // ── Claude: skip first-run onboarding (theme picker) ────────────────
+    // Claude Code checks `hasCompletedOnboarding` in `~/.claude/.claude.json`.
+    // Without this flag, every new session shows the theme selector prompt.
+    // Seed a minimal state file so Claude launches straight to the REPL.
+    if agent_id == "claude" || !matches!(agent_id, "codex" | "agy") {
+        let claude_state = agent_home.join(".claude/.claude.json");
+        if !claude_state.is_file() {
+            let _ = std::fs::create_dir_all(agent_home.join(".claude"));
+            let state_json = serde_json::json!({
+                "hasCompletedOnboarding": true,
+                "numStartups": 1,
+                "autoUpdates": false,
+                "theme": "dark",
+                "lastOnboardingVersion": "2.1.170",
+                "hasSeenAutoDefaultNudge": true,
+                "hasSeenAutoDefaultNotice": true,
+            });
+            match std::fs::write(&claude_state, state_json.to_string()) {
+                Ok(_) => {
+                    let _ = std::fs::set_permissions(
+                        &claude_state,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                    eprintln!(
+                        "seed_agent_auth[{}]: wrote .claude.json with hasCompletedOnboarding",
+                        agent_id
+                    );
+                }
+                Err(err) => {
+                    eprintln!(
+                        "seed_agent_auth[{}]: failed to write .claude.json: {}",
+                        agent_id, err
+                    );
+                }
+            }
         }
     }
 }
