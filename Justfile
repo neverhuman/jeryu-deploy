@@ -19,3 +19,9 @@ artifact-support:
 
 profile:
   printf '%s\n' "deploy"
+
+# Canonical end-user binary build: stage the SPA from the sibling jeryu-web
+# checkout (or keep the vendored copy), then build the fused `jeryu` binary.
+build-release:
+  ./scripts/stage-web-dist.sh
+  cargo build --release -p jeryu-cli --jobs {{jobs}}

@@ -8,23 +8,23 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-jeryu-bench = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v4.0.0-split.0", package = "jeryu-bench" }
-jeryu-obs = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v4.0.0-split.0", package = "jeryu-obs" }
-jeryu-enterprise = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v4.0.0-split.0", package = "jeryu-enterprise" }
-jeryu-ci-compiler = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v4.0.0-split.0", package = "jeryu-ci-compiler", optional = true }
-jeryu-ci-ir = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v4.0.0-split.0", package = "jeryu-ci-ir", optional = true }
-jeryu-core = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v4.0.0-split.0", package = "jeryu-core" }
-jeryu-codegraph = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v4.0.0-split.0", package = "jeryu-codegraph", optional = true }
-jeryu-agent-stream = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v4.0.0-split.0", package = "jeryu-agent-stream", optional = true }
-jeryu-agentbridge = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v4.0.0-split.0", package = "jeryu-agentbridge", optional = true }
-jeryu-autonomy = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v4.0.0-split.0", package = "jeryu-autonomy", optional = true }
-jeryu-gitd = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v4.0.0-split.0", package = "jeryu-gitd", optional = true }
-jeryu-mcp = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v4.0.0-split.0", package = "jeryu-mcp", optional = true }
-jeryu-readmodel = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v4.0.0-split.0", package = "jeryu-readmodel" }
-jeryu-runner-core = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v4.0.0-split.0", package = "jeryu-runner-core", optional = true }
-jeryu-runner-oci = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v4.0.0-split.0", package = "jeryu-runner-oci", optional = true }
-jeryu-runnerd = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v4.0.0-split.0", package = "jeryu-runnerd", optional = true }
-jeryu-wsversion = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v4.0.0-split.0", package = "jeryu-wsversion", optional = true }
+jeryu-bench = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.0", package = "jeryu-bench" }
+jeryu-obs = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.0", package = "jeryu-obs" }
+jeryu-enterprise = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.0", package = "jeryu-enterprise" }
+jeryu-ci-compiler = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-ci-compiler", optional = true }
+jeryu-ci-ir = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-ci-ir", optional = true }
+jeryu-core = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.0", package = "jeryu-core" }
+jeryu-codegraph = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.0", package = "jeryu-codegraph", optional = true }
+jeryu-agent-stream = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-agent-stream", optional = true }
+jeryu-agentbridge = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-agentbridge", optional = true }
+jeryu-autonomy = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.0", package = "jeryu-autonomy", optional = true }
+jeryu-gitd = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.0", package = "jeryu-gitd", optional = true }
+jeryu-mcp = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.0", package = "jeryu-mcp", optional = true }
+jeryu-readmodel = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.0", package = "jeryu-readmodel" }
+jeryu-runner-core = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-runner-core", optional = true }
+jeryu-runner-oci = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-runner-oci", optional = true }
+jeryu-runnerd = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-runnerd", optional = true }
+jeryu-wsversion = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.0", package = "jeryu-wsversion", optional = true }
 axum = { version = "0.7", features = ["ws"], optional = true }
 clap = { workspace = true }
 futures-util = { version = "0.3", optional = true }

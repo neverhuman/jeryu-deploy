@@ -1034,7 +1034,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jeryu-agent-stream"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-agentbridge"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-ci-scheduler",
  "jeryu-core",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-api"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-autonomy"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1108,22 +1108,22 @@ dependencies = [
 
 [[package]]
 name = "jeryu-bench"
-version = "4.0.0"
+version = "5.0.0"
 
 [[package]]
 name = "jeryu-ci-compiler"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-ci-ir",
 ]
 
 [[package]]
 name = "jeryu-ci-ir"
-version = "4.0.0"
+version = "5.0.0"
 
 [[package]]
 name = "jeryu-ci-scheduler"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-core",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-cli"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-codegraph"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-core"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "chrono",
  "hex",
@@ -1177,11 +1177,11 @@ dependencies = [
 
 [[package]]
 name = "jeryu-enterprise"
-version = "4.0.0"
+version = "5.0.0"
 
 [[package]]
 name = "jeryu-gitd"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-mcp"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1206,18 +1206,18 @@ dependencies = [
 
 [[package]]
 name = "jeryu-obs"
-version = "4.0.0"
+version = "5.0.0"
 
 [[package]]
 name = "jeryu-proof"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-core",
 ]
 
 [[package]]
 name = "jeryu-readmodel"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1227,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-repogate"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1238,18 +1238,18 @@ dependencies = [
 
 [[package]]
 name = "jeryu-runner-core"
-version = "4.0.0"
+version = "5.0.0"
 
 [[package]]
 name = "jeryu-runner-microvm"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-runner-core",
 ]
 
 [[package]]
 name = "jeryu-runner-native"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-runner-core",
  "jeryu-sandbox-linux",
@@ -1257,21 +1257,21 @@ dependencies = [
 
 [[package]]
 name = "jeryu-runner-oci"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-runner-core",
 ]
 
 [[package]]
 name = "jeryu-runner-protocol"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-ci-ir",
 ]
 
 [[package]]
 name = "jeryu-runner-registry"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-runner-protocol",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-runnerd"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-runner-core",
@@ -1295,11 +1295,11 @@ dependencies = [
 
 [[package]]
 name = "jeryu-rustjet"
-version = "4.0.0"
+version = "5.0.0"
 
 [[package]]
 name = "jeryu-sandbox-linux"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "jeryu-runner-core",
  "landlock",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-signing"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "jeryu-wsversion"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3014,128 +3014,128 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
 name = "jeryu-cache"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-cache-adversary"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-cache-cli"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-cache-core"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-cache-service"
-version = "4.0.0"
-
-[[patch.unused]]
-name = "jeryu-agent-auth"
-version = "4.0.0"
-
-[[patch.unused]]
-name = "jeryu-artifact-metadata"
-version = "4.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-policy"
-version = "4.0.0"
-
-[[patch.unused]]
-name = "jeryu-ci-bin"
-version = "4.0.0"
-
-[[patch.unused]]
-name = "jeryu-ci-governor"
-version = "4.0.0"
-
-[[patch.unused]]
-name = "jeryu-egress"
-version = "4.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase7-cli"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-review"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-rustjet-cli"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-bugtracker"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-domain"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-mirror"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-mirror-cli"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-tui"
-version = "4.0.0"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-agent-auth"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-artifact-metadata"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-policy"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-ci-bin"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-ci-governor"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-egress"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase7-cli"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-compliance-export"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-evidence"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-git-guard"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-kernel"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-lifecycle"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-mapcheck"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-ops"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-phase11-audit"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-phase11-bin"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-phase11-core"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-replay-verifier"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-signrail"
-version = "4.0.0"
+version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-tenant"
-version = "4.0.0"
+version = "5.0.0"
