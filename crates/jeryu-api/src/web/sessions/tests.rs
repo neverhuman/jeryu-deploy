@@ -789,6 +789,69 @@ fn resolve_agent_program_maps_ids_command_and_env_override() {
     );
 }
 
+#[test]
+fn seed_agent_auth_copies_claude_state_and_marks_onboarding_complete() {
+    let host = tempfile::tempdir().expect("host auth home");
+    let workspace = tempfile::tempdir().expect("session workspace");
+    std::fs::create_dir_all(host.path().join(".claude")).expect("create claude dir");
+    std::fs::write(
+        host.path().join(".claude/.credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"test-token"}}"#,
+    )
+    .expect("write credentials");
+    std::fs::write(host.path().join(".claude/settings.json"), "{}").expect("write settings");
+    std::fs::write(
+        host.path().join(".claude.json"),
+        r#"{"hasCompletedOnboarding":false,"oauthAccount":{"email":"test@example.com"}}"#,
+    )
+    .expect("write claude state");
+
+    super::seed_agent_auth_from_home(workspace.path(), "claude", host.path());
+
+    let agent_home = workspace.path().join(".agent-home");
+    assert!(
+        agent_home.join(".claude/.credentials.json").is_file(),
+        "Claude credentials must be copied into the agent home"
+    );
+    let state_path = agent_home.join(".claude.json");
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("read seeded claude state"),
+    )
+    .expect("parse seeded claude state");
+    assert_eq!(state["hasCompletedOnboarding"], json!(true));
+    assert_eq!(state["theme"], json!("dark"));
+    assert_eq!(state["oauthAccount"]["email"], json!("test@example.com"));
+    assert!(
+        agent_home.join(".claude/.claude.json").is_file(),
+        "nested Claude state is seeded for older Claude Code builds"
+    );
+}
+
+#[test]
+fn seed_agent_auth_trusts_codex_container_and_native_workspace_paths() {
+    let host = tempfile::tempdir().expect("host auth home");
+    let workspace = tempfile::tempdir().expect("session workspace");
+    std::fs::create_dir_all(host.path().join(".codex")).expect("create codex dir");
+    std::fs::write(host.path().join(".codex/config.toml"), "model = \"test\"\n")
+        .expect("write codex config");
+
+    super::seed_agent_auth_from_home(workspace.path(), "codex", host.path());
+
+    let config = std::fs::read_to_string(workspace.path().join(".agent-home/.codex/config.toml"))
+        .expect("read seeded codex config");
+    assert!(
+        config.contains("[projects.\"/workspace\"]"),
+        "docker-mounted workspace must be trusted: {config}"
+    );
+    assert!(
+        config.contains(&format!(
+            "[projects.\"{}\"]",
+            workspace.path().to_string_lossy()
+        )),
+        "native session workspace must be trusted: {config}"
+    );
+}
+
 /// Write an executable scripted FAKE docker into `dir` that echoes its own argv (so
 /// a test can prove the hardened flags were assembled) and prints a live marker (so
 /// a test can prove the PTY stream is live). It deliberately does NOT `cat` stdin —

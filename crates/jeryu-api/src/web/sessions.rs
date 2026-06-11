@@ -768,6 +768,21 @@ fn resolve_session_backend(
 /// bind-mounted) on every session start so credentials are always up-to-date
 /// but the container cannot modify the host's tokens.
 fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
+    let host_home = std::env::var("JERYU_AUTH_HOME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+        });
+    seed_agent_auth_from_home(workspace, agent_id, &host_home);
+}
+
+fn seed_agent_auth_from_home(
+    workspace: &std::path::Path,
+    agent_id: &str,
+    host_home: &std::path::Path,
+) {
     /// One auth file mapping: host relative path (under `$HOME`) → container
     /// relative path (under `{workspace}/.agent-home`).
     struct AuthFile {
@@ -791,6 +806,10 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
     ];
 
     let claude_files: &[AuthFile] = &[
+        AuthFile {
+            host_rel: ".claude.json",
+            container_rel: ".claude.json",
+        },
         AuthFile {
             host_rel: ".claude/.credentials.json",
             container_rel: ".claude/.credentials.json",
@@ -826,6 +845,10 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
             container_rel: ".codex/config.yaml",
         },
         AuthFile {
+            host_rel: ".claude.json",
+            container_rel: ".claude.json",
+        },
+        AuthFile {
             host_rel: ".claude/.credentials.json",
             container_rel: ".claude/.credentials.json",
         },
@@ -850,12 +873,6 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
         _ => all_files,
     };
 
-    // The host home directory: prefer `JERYU_AUTH_HOME`, then the real `$HOME`.
-    let host_home = std::env::var("JERYU_AUTH_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()));
-    let host_home = std::path::Path::new(&host_home);
     let agent_home = workspace.join(".agent-home");
 
     for file in files {
@@ -877,8 +894,10 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
         }
         match std::fs::copy(&src, &dst) {
             Ok(bytes) => {
-                // Lock down permissions: the container should read but not modify.
-                let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o400));
+                let _ = std::fs::set_permissions(
+                    &dst,
+                    std::fs::Permissions::from_mode(seeded_auth_file_mode(file.container_rel)),
+                );
                 eprintln!(
                     "seed_agent_auth[{}]: seeded {} -> {} ({} bytes)",
                     agent_id,
@@ -1023,77 +1042,169 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
     }
 
     // ── Auto-trust the workspace so codex/claude never prompts ──────────
-    // Codex: append a [projects."/workspace"] trust entry to the seeded config.toml.
-    // Claude: seed a settings.json that auto-accepts /workspace.
+    // Codex sees `/workspace` in docker and the real checkout path in native.
     if agent_id == "codex" || agent_id == "claude" || agent_id == "agy" {
         let codex_cfg = agent_home.join(".codex/config.toml");
+        let trust_paths = codex_trust_paths(workspace);
         if codex_cfg.is_file() {
             // Temporarily make writable (it was locked to 0o400 by the copy loop).
             let _ = std::fs::set_permissions(&codex_cfg, std::fs::Permissions::from_mode(0o600));
-            // Append workspace trust to the copied config.
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&codex_cfg) {
-                let _ = writeln!(
-                    f,
-                    "\n[projects.\"/workspace\"]\ntrust_level = \"trusted\"\n"
+            if append_codex_trust_entries(&codex_cfg, &trust_paths).is_ok() {
+                let _ = std::fs::set_permissions(
+                    &codex_cfg,
+                    std::fs::Permissions::from_mode(seeded_auth_file_mode(".codex/config.toml")),
                 );
-                drop(f);
-                let _ =
-                    std::fs::set_permissions(&codex_cfg, std::fs::Permissions::from_mode(0o400));
                 eprintln!(
-                    "seed_agent_auth[{}]: appended /workspace trust to config.toml",
+                    "seed_agent_auth[{}]: ensured workspace trust in config.toml",
                     agent_id
                 );
             }
         } else {
-            // No host config — create a minimal one with just the workspace trust.
+            // No host config — create a minimal one with just workspace trust.
             let _ = std::fs::create_dir_all(agent_home.join(".codex"));
-            let _ = std::fs::write(
-                &codex_cfg,
-                "[projects.\"/workspace\"]\ntrust_level = \"trusted\"\n",
-            );
+            let _ = write_codex_trust_config(&codex_cfg, &trust_paths);
             eprintln!(
-                "seed_agent_auth[{}]: created minimal config.toml with /workspace trust",
+                "seed_agent_auth[{}]: created minimal config.toml with workspace trust",
                 agent_id
             );
         }
     }
 
     // ── Claude: skip first-run onboarding (theme picker) ────────────────
-    // Claude Code checks `hasCompletedOnboarding` in `~/.claude/.claude.json`.
-    // Without this flag, every new session shows the theme selector prompt.
-    // Seed a minimal state file so Claude launches straight to the REPL.
+    // Claude Code checks `hasCompletedOnboarding` in top-level `~/.claude.json`.
+    // Keep the nested path too for older builds, but the top-level copy is the
+    // important one for auth/session state.
     if agent_id == "claude" || !matches!(agent_id, "codex" | "agy") {
-        let claude_state = agent_home.join(".claude/.claude.json");
-        if !claude_state.is_file() {
-            let _ = std::fs::create_dir_all(agent_home.join(".claude"));
-            let state_json = serde_json::json!({
-                "hasCompletedOnboarding": true,
-                "numStartups": 1,
-                "autoUpdates": false,
-                "theme": "dark",
-                "lastOnboardingVersion": "2.1.170",
-                "hasSeenAutoDefaultNudge": true,
-                "hasSeenAutoDefaultNotice": true,
-            });
-            match std::fs::write(&claude_state, state_json.to_string()) {
-                Ok(_) => {
-                    let _ = std::fs::set_permissions(
-                        &claude_state,
-                        std::fs::Permissions::from_mode(0o600),
-                    );
-                    eprintln!(
-                        "seed_agent_auth[{}]: wrote .claude.json with hasCompletedOnboarding",
-                        agent_id
-                    );
-                }
-                Err(err) => {
-                    eprintln!(
-                        "seed_agent_auth[{}]: failed to write .claude.json: {}",
-                        agent_id, err
-                    );
-                }
-            }
+        ensure_claude_onboarding_state(&agent_home.join(".claude.json"), agent_id);
+        ensure_claude_onboarding_state(&agent_home.join(".claude/.claude.json"), agent_id);
+    }
+}
+
+fn seeded_auth_file_mode(container_rel: &str) -> u32 {
+    match container_rel {
+        ".claude.json" | ".claude/settings.json" => 0o600,
+        _ => 0o400,
+    }
+}
+
+fn codex_trust_paths(workspace: &std::path::Path) -> Vec<String> {
+    let mut paths = vec!["/workspace".to_string()];
+    let native = workspace.to_string_lossy().to_string();
+    if native != "/workspace" {
+        paths.push(native);
+    }
+    paths
+}
+
+fn write_codex_trust_config(path: &std::path::Path, trust_paths: &[String]) -> std::io::Result<()> {
+    let mut text = String::new();
+    for trust_path in trust_paths {
+        text.push_str(&codex_trust_entry(trust_path));
+    }
+    std::fs::write(path, text)?;
+    std::fs::set_permissions(
+        path,
+        std::fs::Permissions::from_mode(seeded_auth_file_mode(".codex/config.toml")),
+    )
+}
+
+fn append_codex_trust_entries(
+    path: &std::path::Path,
+    trust_paths: &[String],
+) -> std::io::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut additions = String::new();
+    for trust_path in trust_paths {
+        let header = codex_trust_header(trust_path);
+        if !existing.contains(&header) {
+            additions.push_str(&codex_trust_entry(trust_path));
+        }
+    }
+    if additions.is_empty() {
+        return Ok(());
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    file.write_all(additions.as_bytes())
+}
+
+fn codex_trust_header(path: &str) -> String {
+    format!("[projects.\"{}\"]", toml_basic_string_fragment(path))
+}
+
+fn codex_trust_entry(path: &str) -> String {
+    format!(
+        "\n{}\ntrust_level = \"trusted\"\n",
+        codex_trust_header(path)
+    )
+}
+
+fn toml_basic_string_fragment(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn ensure_claude_onboarding_state(path: &std::path::Path, agent_id: &str) {
+    if let Some(parent) = path.parent()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        eprintln!(
+            "seed_agent_auth[{}]: failed to create Claude state dir {}: {}",
+            agent_id,
+            parent.display(),
+            err
+        );
+        return;
+    }
+
+    let mut state = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let object = state.as_object_mut().expect("state object");
+    object.insert(
+        "hasCompletedOnboarding".to_string(),
+        serde_json::json!(true),
+    );
+    object
+        .entry("numStartups".to_string())
+        .or_insert_with(|| serde_json::json!(1));
+    object
+        .entry("autoUpdates".to_string())
+        .or_insert_with(|| serde_json::json!(false));
+    object
+        .entry("theme".to_string())
+        .or_insert_with(|| serde_json::json!("dark"));
+    object
+        .entry("lastOnboardingVersion".to_string())
+        .or_insert_with(|| serde_json::json!("2.1.170"));
+    object
+        .entry("hasSeenAutoDefaultNudge".to_string())
+        .or_insert_with(|| serde_json::json!(true));
+    object
+        .entry("hasSeenAutoDefaultNotice".to_string())
+        .or_insert_with(|| serde_json::json!(true));
+
+    match serde_json::to_vec_pretty(&state)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| std::fs::write(path, bytes))
+    {
+        Ok(_) => {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            eprintln!(
+                "seed_agent_auth[{}]: ensured Claude onboarding state at {}",
+                agent_id,
+                path.display()
+            );
+        }
+        Err(err) => {
+            eprintln!(
+                "seed_agent_auth[{}]: failed to write Claude onboarding state {}: {}",
+                agent_id,
+                path.display(),
+                err
+            );
         }
     }
 }
