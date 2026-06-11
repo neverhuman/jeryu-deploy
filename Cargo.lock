@@ -3013,6 +3013,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
+name = "jeryu-review"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-rustjet-cli"
+version = "5.0.0"
+
+[[patch.unused]]
 name = "jeryu-cache"
 version = "5.0.0"
 
@@ -3030,34 +3038,6 @@ version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-cache-service"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-review"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-rustjet-cli"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-bugtracker"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-domain"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-mirror"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-mirror-cli"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-tui"
 version = "5.0.0"
 
 [[patch.unused]]
@@ -3138,4 +3118,24 @@ version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-tenant"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-bugtracker"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-domain"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-mirror"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-mirror-cli"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-tui"
 version = "5.0.0"
