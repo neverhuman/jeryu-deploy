@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use super::WebState;
 use super::surface::serialize_payload;
 use super::workcells_support::{
-    TypedError, default_true, forge_error, lease_to_item, manager, parse_json_body, typed_error,
-    workcell_error, workcell_not_found,
+    TypedError, default_true, forge_error, lease_to_item, manager, normalize_deprecated_host_path,
+    parse_json_body, typed_error, workcell_error, workcell_not_found,
 };
 
 pub(super) use run_agent::run_agent;
@@ -109,7 +109,7 @@ pub(super) async fn claim(State(state): State<Arc<WebState>>, body: Bytes) -> Ax
         Ok(request) => request,
         Err(response) => return *response,
     };
-    let outcome = manager(&state).claim(request);
+    let outcome = manager(&state).claim(normalize_workcell_claim_paths(request));
     match outcome {
         Ok(lease) => Json(lease).into_response(),
         Err(err) => workcell_error(err),
@@ -125,7 +125,7 @@ pub(super) async fn repair_live(State(state): State<Arc<WebState>>, body: Bytes)
         Ok(request) => request,
         Err(response) => return *response,
     };
-    let claim = WorkcellClaimRequest {
+    let claim = normalize_workcell_claim_paths(WorkcellClaimRequest {
         agent_id: request.agent_id,
         workspace_root: request.workspace_root,
         repo_roots: request.repo_roots,
@@ -135,7 +135,7 @@ pub(super) async fn repair_live(State(state): State<Arc<WebState>>, body: Bytes)
         git_status_summary: request.git_status_summary,
         ci_snapshot_age_ms: request.ci_snapshot_age_ms,
         startup: request.startup,
-    };
+    });
     let ci_run_id = match request.ci_run_id {
         Some(ci_run_id) => ci_run_id,
         None => {
@@ -171,6 +171,16 @@ pub(super) async fn repair_live(State(state): State<Arc<WebState>>, body: Bytes)
         Err(err) => return workcell_error(err),
     };
     Json(RepairLiveResponse { held, repairing }).into_response()
+}
+
+fn normalize_workcell_claim_paths(mut request: WorkcellClaimRequest) -> WorkcellClaimRequest {
+    request.workspace_root = normalize_deprecated_host_path(&request.workspace_root);
+    request.repo_roots = request
+        .repo_roots
+        .into_iter()
+        .map(|path| normalize_deprecated_host_path(&path))
+        .collect();
+    request
 }
 
 pub(super) async fn heartbeat(

@@ -42,6 +42,33 @@ fn claim_body(epoch: u64) -> Value {
 }
 
 #[tokio::test]
+async fn claim_rewrites_retired_jekko_repo_root() {
+    let state = Arc::new(WebState::new(ForgeCore::new()));
+    let mut body = claim_body(7);
+    body["workspace_root"] = json!("/home/ubuntu/jekko");
+    body["repo_roots"] = json!(["/home/ubuntu/jekko/jnoccio-fusion"]);
+
+    let claimed = response_json(
+        super::workcells::claim(
+            State(state),
+            axum::body::Bytes::from(serde_json::to_vec(&body).unwrap()),
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(claimed["state"], "claimed");
+    assert_eq!(
+        claimed["workspace_root"],
+        json!("/home/ubuntu/jekko-split/jekko")
+    );
+    assert_eq!(
+        claimed["repo_roots"],
+        json!(["/home/ubuntu/jekko-split/jekko/jnoccio-fusion"])
+    );
+}
+
+#[tokio::test]
 async fn list_is_empty_then_reflects_claim_status_and_heartbeat() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
 

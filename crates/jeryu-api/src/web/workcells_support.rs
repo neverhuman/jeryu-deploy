@@ -10,6 +10,45 @@ use serde_json::json;
 
 use super::WebState;
 
+const RETIRED_JEKKO_ROOT: &str = "/home/ubuntu/jekko";
+const ACTIVE_JEKKO_ROOT: &str = "/home/ubuntu/jekko-split/jekko";
+
+pub(super) fn normalize_deprecated_host_path(path: &std::path::Path) -> std::path::PathBuf {
+    let retired = std::path::Path::new(RETIRED_JEKKO_ROOT);
+    match path.strip_prefix(retired) {
+        Ok(rest) if rest.as_os_str().is_empty() => std::path::PathBuf::from(ACTIVE_JEKKO_ROOT),
+        Ok(rest) => std::path::Path::new(ACTIVE_JEKKO_ROOT).join(rest),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::normalize_deprecated_host_path;
+
+    #[test]
+    fn normalize_deprecated_host_path_moves_retired_jekko_prefix() {
+        assert_eq!(
+            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko")),
+            Path::new("/home/ubuntu/jekko-split/jekko")
+        );
+        assert_eq!(
+            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko/jnoccio-fusion")),
+            Path::new("/home/ubuntu/jekko-split/jekko/jnoccio-fusion")
+        );
+        assert_eq!(
+            normalize_deprecated_host_path(Path::new("/home/ubuntu/.jekko")),
+            Path::new("/home/ubuntu/.jekko")
+        );
+        assert_eq!(
+            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko-split/jekko")),
+            Path::new("/home/ubuntu/jekko-split/jekko")
+        );
+    }
+}
+
 pub(super) struct TypedError<'a> {
     pub status: StatusCode,
     pub code: &'a str,

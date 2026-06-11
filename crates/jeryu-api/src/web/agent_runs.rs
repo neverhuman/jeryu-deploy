@@ -29,7 +29,9 @@ use tokio::sync::broadcast;
 
 use super::WebState;
 use super::surface::serialize_payload;
-use super::workcells_support::{TypedError, forge_error, manager, typed_error};
+use super::workcells_support::{
+    TypedError, forge_error, manager, normalize_deprecated_host_path, typed_error,
+};
 
 const AGENT_RUN_DOCS: &str = "docs/workcell.md#agent-run-control-surface";
 const AGENT_RUN_RERUN: &str = "rerun cargo test -p jeryu-api --features web --jobs 40 agent_runs";
@@ -1207,7 +1209,7 @@ fn select_repo_root(
     requested: Option<&Path>,
 ) -> AgentRunResponseResult<PathBuf> {
     let selected = match requested {
-        Some(path) => path.to_path_buf(),
+        Some(path) => normalize_deprecated_host_path(path),
         None => lease.repo_roots.first().cloned().ok_or_else(|| {
             agent_run_path_denied("the workcell has no claimed repo roots to run inside")
         })?,
@@ -1229,7 +1231,7 @@ fn select_repo_root(
 fn resolve_program(repo_root: &Path, program: &str) -> AgentRunResponseResult<PathBuf> {
     let candidate = PathBuf::from(program);
     let candidate = if candidate.is_absolute() {
-        candidate
+        normalize_deprecated_host_path(&candidate)
     } else {
         repo_root.join(candidate)
     };
