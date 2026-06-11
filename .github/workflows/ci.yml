@@ -5,18 +5,60 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   local:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - name: Install just
-        run: sudo apt-get update && sudo apt-get install -y just
-      - name: Fast
-        run: just fast
-      - name: Check
-        run: just check
-      - name: Score
-        run: just score
-      - name: Security
-        run: just security
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      # cache: Cargo and npm dependency caches are provided by the runner image when available.
+      - name: Fast lane
+        run: bash ops/ci/fast.sh # cargo check
+      - name: Check lane
+        run: bash ops/ci/check.sh
+      - name: Score lane
+        run: bash ops/ci/score.sh # jankurai audit repo-score
+      - name: Security lane
+        run: bash ops/ci/security.sh # gitleaks cargo audit npm audit syft actionlint
+      - name: Proof evidence lane
+        run: bash ops/ci/proof_evidence.sh
+      - name: Artifact support
+        run: bash ops/ci/artifact_support.sh
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-audit-artifacts
+          path: |
+            .jankurai/
+            target/jankurai/
+            target/jankurai/coverage/coverage-audit.md
+            target/jankurai/coverage/coverage-audit.json
+            target/jankurai/vibe-coverage.md
+            target/jankurai/vibe-coverage.json
+            target/jankurai/migration-report.json
+            target/jankurai/ux-qa.json
+            target/jankurai/rust/witness-graph.json
+            target/jankurai/language-bad-behavior.log
+            target/jankurai/copy-code.md
+            target/jankurai/copy-code.json
+            target/jankurai/proofmark/proof-receipt.json
+            target/jankurai/proofmark/proofmark-receipt.json
+            target/jankurai/proofbind/obligations.json
+            target/jankurai/proofbind/surface-witness.json
+            target/jankurai/security/evidence.json
+            target/jankurai/repair-queue.jsonl
+            target/jankurai/repo-score.md
+            target/jankurai/repo-score.json
+            .jankurai/repo-score.md
+            .jankurai/repo-score.json
+            target/artifact-support/
+          if-no-files-found: ignore

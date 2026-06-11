@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source ops/ci/lib.sh
 mkdir -p target/artifact-support
 cat > target/artifact-support/jeryu-deploy.json <<'JSON'
 {"schema_version":"jeryu.split.artifact-support/v1","repo":"jeryu-deploy","status":"bootstrap"}

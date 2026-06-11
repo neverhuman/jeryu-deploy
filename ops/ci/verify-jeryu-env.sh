@@ -16,7 +16,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "${ROOT}"
 
 if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
-  expected="${JERYU_CANONICAL_ROOT:-/home/ubuntu/jeryu}"
+  expected="${JERYU_CANONICAL_ROOT:-/home/ubuntu/jeryu-split/jeryu-deploy}"
   if [ -d "${expected}" ]; then
     actual_real="$(realpath "${ROOT}")"
     expected_real="$(realpath "${expected}")"
@@ -32,9 +32,9 @@ fi
 
 remote="$(git remote get-url origin 2>/dev/null || true)"
 case "${remote}" in
-  ""|git@github.com:neverhuman/jeryu.git|https://github.com/neverhuman/jeryu|https://github.com/neverhuman/jeryu.git)
+  ""|git@github.com:neverhuman/jeryu-deploy.git|https://github.com/neverhuman/jeryu-deploy|https://github.com/neverhuman/jeryu-deploy.git)
     ;;
-  http://127.0.0.1:8787/git/jeryu/jeryu.git|http://localhost:8787/git/jeryu/jeryu.git)
+  http://127.0.0.1:8787/git/jeryu/jeryu-deploy.git|http://localhost:8787/git/jeryu/jeryu-deploy.git)
     ;;
   *)
     echo "noncanonical origin remote: ${remote}" >&2
