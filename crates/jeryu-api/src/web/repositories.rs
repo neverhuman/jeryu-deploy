@@ -652,7 +652,10 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
             .as_ref()
             .map(|score| score.created_at.to_rfc3339()),
         mirror: mirror_status(&checks),
-        clone_http_url: Some(format!("/repos/{}.git", repo.full_name)),
+        // The smart-HTTP transport is mounted at /git/:owner/:repo (web.rs
+        // git routes); /repos/* is the SPA + GitHub-compat surface and 404s
+        // for git clients. Advertise the path git can actually clone.
+        clone_http_url: Some(format!("/git/{}.git", repo.full_name)),
         clone_ssh_url: None,
         available_actions: vec![
             AvailableAction {

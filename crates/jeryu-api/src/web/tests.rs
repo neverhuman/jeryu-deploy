@@ -2073,6 +2073,12 @@ fn repo_list_classifies_jeryu_split_portal_and_members() {
         .expect("portal repo");
     assert_eq!(portal.family.as_deref(), Some("jeryu-split"));
     assert_eq!(portal.repo_role, Some(RepositoryRole::PublicPortal));
+    // The advertised clone URL must match where the smart-HTTP transport is
+    // actually mounted (/git/...), not the SPA surface (/repos/...).
+    assert_eq!(
+        portal.clone_http_url.as_deref(),
+        Some("/git/neverhuman/jeryu.git")
+    );
 
     let core_repo = repos
         .repositories
