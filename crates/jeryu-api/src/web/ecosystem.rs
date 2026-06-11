@@ -179,12 +179,14 @@ fn class_name(name: &str) -> String {
 /// `data_classes_are_the_sorted_input_schema_keys` test below covers the empty
 /// input-schema case and the sorted-key contract.
 fn data_classes(entry: &Value) -> Vec<String> {
-    let mut classes: Vec<String> = entry
+    let mut classes: Vec<String> = match entry
         .get("inputSchema")
         .and_then(|s| s.get("properties"))
         .and_then(Value::as_object)
-        .map(|props| props.keys().cloned().collect())
-        .unwrap_or_default();
+    {
+        Some(props) => props.keys().cloned().collect(),
+        None => Vec::new(),
+    };
     classes.sort();
     classes
 }

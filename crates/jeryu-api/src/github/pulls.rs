@@ -96,7 +96,7 @@ impl GithubRouter {
                         repo,
                         &format!("refs/heads/{}", pr.head.ref_name),
                         &pr.head.sha,
-                        &crate::ci_bridge::default_origin_base_url(),
+                        "",
                     );
                 }
                 json_response(201, &pull_request_json(&pr))
@@ -500,6 +500,22 @@ impl GithubRouter {
             }
         };
 
+        // The ref moved server-side, so run the same post-update bridge that a
+        // receive-pack push would have triggered. This keeps declared internal
+        // main automation (not client pushes) on the protected CAS/update-ref path.
+        crate::ci_bridge::on_push(
+            &self.core,
+            rm,
+            ready.owner,
+            ready.repo,
+            &[crate::ci_bridge::RefUpdate {
+                ref_name: format!("refs/heads/{}", ready.base_ref),
+                old_oid: base_oid,
+                new_oid: outcome.merge_oid.clone(),
+            }],
+            &crate::ci_bridge::default_origin_base_url(),
+        );
+
         // Reconcile the REAL git oid back into the PR record (handler never
         // mutates the model directly).
         match self.core.finalize_merge(
@@ -509,7 +525,13 @@ impl GithubRouter {
             outcome.merge_oid.clone(),
             ready.req.sha.as_deref(),
         ) {
-            Ok(result) => merge_success_response(&result),
+            Ok(result) => {
+                // Merge landed on the real ref: mirror the (possibly
+                // autoversion-advanced) live main tip to GitHub. Advisory by
+                // construction — the merge response is already decided.
+                self.mirror_merged_main(rm, &resolved, &ready, &outcome.merge_oid);
+                merge_success_response(&result)
+            }
             // The ref already moved; we do NOT roll it back. A reconciler can
             // detect the divergence by comparing merge_commit_sha vs the ref.
             Err(ForgeError::BranchProtection(reason)) => json_response(
@@ -518,6 +540,69 @@ impl GithubRouter {
             ),
             Err(err) => error_response(err),
         }
+    }
+
+    /// Push the merged default branch to its configured GitHub mirror and
+    /// record the outcome as the `jeryu/github-mirror` check-run on the merge
+    /// sha. Strictly advisory: every failure path is swallowed after being
+    /// recorded — a GitHub outage must never fail or delay a local merge
+    /// beyond the bounded push timeout.
+    #[cfg(feature = "web")]
+    fn mirror_merged_main(
+        &self,
+        rm: &std::sync::Arc<jeryu_gitd::RepoManager>,
+        resolved: &jeryu_gitd::repo::Repository,
+        ready: &MergeReady<'_>,
+        merge_oid: &str,
+    ) {
+        use crate::github_mirror::MirrorPushOutcome;
+        use jeryu_core::{CheckConclusion, CheckRunOutput, CheckRunStatus, CreateCheckRunRequest};
+
+        let Some(mirror) = self.github_mirror.as_ref() else {
+            return;
+        };
+        // Only pushes of the repo's default branch mirror to GitHub main.
+        let default_branch = match self.core.get_repository(ready.owner, ready.repo) {
+            Ok(repo) => repo.default_branch,
+            Err(_) => return,
+        };
+        if ready.base_ref != default_branch {
+            return;
+        }
+        let outcome = mirror.push_branch(
+            &rm.config().git_bin,
+            &resolved.path,
+            ready.owner,
+            ready.repo,
+        );
+        let (conclusion, summary, tip) = match outcome {
+            // Unconfigured repo: no push attempted, no check-run noise.
+            MirrorPushOutcome::Skipped(_) => return,
+            MirrorPushOutcome::Pushed { tip } => (
+                CheckConclusion::Success,
+                format!("pushed {tip} to GitHub main"),
+                tip,
+            ),
+            MirrorPushOutcome::Failed(detail) => {
+                (CheckConclusion::Failure, detail, merge_oid.to_string())
+            }
+        };
+        let _ = self.core.create_check_run(
+            ready.owner,
+            ready.repo,
+            CreateCheckRunRequest {
+                name: crate::github_mirror::MIRROR_CHECK_NAME.to_string(),
+                head_sha: tip,
+                status: Some(CheckRunStatus::Completed),
+                conclusion: Some(conclusion),
+                details_url: None,
+                output: Some(CheckRunOutput {
+                    title: "merge-to-GitHub mirror".to_string(),
+                    summary,
+                    text: None,
+                }),
+            },
+        );
     }
 
     /// Resolve a PR's head to a real commit oid for merging.

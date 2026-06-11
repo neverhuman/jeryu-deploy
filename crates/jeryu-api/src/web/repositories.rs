@@ -1,15 +1,22 @@
 //! Repository, README, and document routes for the local web surface.
 
-use std::collections::BTreeSet;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::Json;
 use axum::body::Bytes;
+use axum::extract::Query;
 use axum::extract::{Path as AxumPath, State};
 use axum::response::{Html, IntoResponse, Response as AxumResponse};
-use jeryu_core::{CheckConclusion, ForgeError, PullRequestState, Repository};
+use jeryu_core::{
+    CheckConclusion, CheckRun, CheckRunStatus, ForgeError, PullRequest, PullRequestState,
+    RecordJankuraiScoreRequest, Repository,
+};
+use jeryu_gitd::refs::RefService;
 use jeryu_readmodel::contracts::{
-    AvailableAction, BlobEncoding, BlobResponse, EntityHandle, RefKind, RefSelectorItem,
-    RenderedMarkdown, RepositoryFacets, RepositoryId, RepositoryListResponse, RepositorySummary,
+    AvailableAction, BlobEncoding, BlobResponse, EntityHandle, JankuraiScoreListResponse,
+    JankuraiScoreSummary, RefKind, RefSelectorItem, RenderedMarkdown, RepositoryFacets,
+    RepositoryId, RepositoryListResponse, RepositoryMirrorStatus, RepositorySummary,
     RepositoryVisibility, TreeEntry,
 };
 use serde::{Deserialize, Serialize};
@@ -30,10 +37,25 @@ struct ReadmeResponse {
     rendered_markdown: RenderedMarkdown,
 }
 
+/// Query parameters of `GET /api/v1/repos` — the SPA sends all of these
+/// (`apps/web/src/hooks/useRepositories.ts` builds the URL), so every one
+/// must filter server-side; the family drill-down page in particular is
+/// nothing but `?family=`.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct RepoListQuery {
+    pub(super) q: Option<String>,
+    pub(super) host: Option<String>,
+    pub(super) visibility: Option<String>,
+    pub(super) family: Option<String>,
+    pub(super) archived: Option<String>,
+    pub(super) sort: Option<String>,
+}
+
 pub(super) async fn repos(
     State(state): State<std::sync::Arc<WebState>>,
+    Query(query): Query<RepoListQuery>,
 ) -> Json<RepositoryListResponse> {
-    Json(repo_list_response(&state))
+    Json(filtered_repo_list_response(&state, &query))
 }
 
 pub(super) async fn repo_detail(
@@ -58,6 +80,196 @@ pub(super) async fn repo_detail(
             },
         ),
     }
+}
+
+/// PATCH /api/v1/repos/:id — update mutable repository metadata.
+///
+/// Body is a JSON object; only the keys that are PRESENT are applied, so
+/// `{"family": "veox-split"}` sets the family, `{"family": null}` clears it,
+/// and an absent key leaves it untouched. Hand-parsed because serde's
+/// `Option<Option<T>>` cannot distinguish absent from null.
+pub(super) async fn repo_update(
+    State(state): State<std::sync::Arc<WebState>>,
+    AxumPath(id): AxumPath<String>,
+    body: Bytes,
+) -> AxumResponse {
+    let Some(repo) = find_repo(&state, &id) else {
+        return api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found",
+            "repository not found",
+        );
+    };
+    let parsed: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            return repo_update_invalid(&format!("body is not valid JSON: {error}"));
+        }
+    };
+    let Some(fields) = parsed.as_object() else {
+        return repo_update_invalid("body must be a JSON object");
+    };
+    if let Some(unknown) = fields.keys().find(|key| key.as_str() != "family") {
+        return repo_update_invalid(&format!("unknown field: {unknown}"));
+    }
+    let mut updated = repo.clone();
+    if let Some(family_value) = fields.get("family") {
+        let family = match family_value {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(name) => Some(name.clone()),
+            _ => return repo_update_invalid("family must be a string or null"),
+        };
+        updated = match state
+            .github
+            .core()
+            .set_repository_family(&repo.owner, &repo.name, family)
+        {
+            Ok(repo) => repo,
+            Err(ForgeError::Validation(reason)) => {
+                return repo_update_invalid(&reason);
+            }
+            Err(ForgeError::NotFound(_)) => {
+                return api_error(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "not_found",
+                    "repository not found",
+                );
+            }
+            Err(error) => {
+                return api_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage_failed",
+                    &format!("repository update could not be persisted: {error}"),
+                );
+            }
+        };
+    }
+    Json(repo_summary(&state, &updated)).into_response()
+}
+
+fn repo_update_invalid(reason: &str) -> AxumResponse {
+    api_error_with_hint(
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+        "repository update body failed validation",
+        ApiErrorHint {
+            purpose: "update repository metadata",
+            reason: "invalid_input",
+            common_fixes: &[
+                "send a JSON object with a family string field",
+                "send {\"family\": null} to clear the grouping",
+            ],
+            docs_url: "docs/errors.md#invalid-input",
+            repair_hint: &format!("fix the PATCH body and retry ({reason})"),
+        },
+    )
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct ScoreListQuery {
+    pub(super) branch: Option<String>,
+    pub(super) sha: Option<String>,
+}
+
+/// GET /api/v1/repos/:id/jankurai-scores[?branch=&sha=] — ingested audit
+/// outcomes, newest first. The backfill sweep uses `?sha=` as its
+/// idempotency probe.
+pub(super) async fn repo_jankurai_scores_list(
+    State(state): State<std::sync::Arc<WebState>>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<ScoreListQuery>,
+) -> AxumResponse {
+    let Some(repo) = find_repo(&state, &id) else {
+        return api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found",
+            "repository not found",
+        );
+    };
+    let scores = state
+        .github
+        .core()
+        .list_jankurai_scores(
+            &repo.owner,
+            &repo.name,
+            query.branch.as_deref(),
+            query.sha.as_deref(),
+        )
+        .unwrap_or_default();
+    Json(JankuraiScoreListResponse {
+        scores: scores.iter().map(score_summary).collect(),
+    })
+    .into_response()
+}
+
+/// POST /api/v1/repos/:id/jankurai-scores — ingest one audit outcome from a
+/// CI lane or the backfill sweep. Idempotent per (branch, commit_sha).
+pub(super) async fn repo_jankurai_scores_ingest(
+    State(state): State<std::sync::Arc<WebState>>,
+    AxumPath(id): AxumPath<String>,
+    body: Bytes,
+) -> AxumResponse {
+    let Some(repo) = find_repo(&state, &id) else {
+        return api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found",
+            "repository not found",
+        );
+    };
+    let request: RecordJankuraiScoreRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return score_ingest_invalid(&format!("body failed to parse: {error}"));
+        }
+    };
+    match state
+        .github
+        .core()
+        .record_jankurai_score(&repo.owner, &repo.name, request)
+    {
+        Ok(score) => (axum::http::StatusCode::CREATED, Json(score_summary(&score))).into_response(),
+        Err(ForgeError::Validation(reason)) => score_ingest_invalid(&reason),
+        Err(ForgeError::NotFound(_)) => api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found",
+            "repository not found",
+        ),
+        Err(error) => api_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_failed",
+            &format!("score could not be persisted: {error}"),
+        ),
+    }
+}
+
+fn score_summary(score: &jeryu_core::JankuraiScore) -> JankuraiScoreSummary {
+    JankuraiScoreSummary {
+        branch: score.branch.clone(),
+        commit_sha: score.commit_sha.clone(),
+        score: score.score,
+        hard_findings: score.hard_findings,
+        decision: score.decision.clone(),
+        caps_applied: score.caps_applied.clone(),
+        created_at: score.created_at.to_rfc3339(),
+    }
+}
+
+fn score_ingest_invalid(reason: &str) -> AxumResponse {
+    api_error_with_hint(
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+        "jankurai score submission failed validation",
+        ApiErrorHint {
+            purpose: "ingest a jankurai audit score",
+            reason: "invalid_input",
+            common_fixes: &[
+                "send JSON with branch, commit_sha, and decision fields",
+                "score must be 0-100 or null for tool-failed audits",
+            ],
+            docs_url: "docs/errors.md#invalid-input",
+            repair_hint: &format!("fix the POST body and retry ({reason})"),
+        },
+    )
 }
 
 pub(super) async fn repo_refs(
@@ -262,12 +474,90 @@ pub(super) async fn repo_readme_update(
     }
 }
 
+/// Unfiltered listing — test convenience over the filtered handler path.
+#[cfg(test)]
 pub(super) fn repo_list_response(state: &WebState) -> RepositoryListResponse {
-    let repositories = repo_summaries(state);
+    filtered_repo_list_response(state, &RepoListQuery::default())
+}
+
+/// Build the repos listing with the SPA's filters applied server-side.
+///
+/// Facets are computed from the UNFILTERED listing so the filter chips stay
+/// populated while a filter narrows the repositories array. `archived`
+/// matches the SPA contract: absent → active repos only, `1`/`true` → only
+/// archived ones.
+pub(super) fn filtered_repo_list_response(
+    state: &WebState,
+    query: &RepoListQuery,
+) -> RepositoryListResponse {
+    let all = state.github.core().list_repositories(None);
     let mut owners = BTreeSet::new();
-    for repo in &repositories {
-        owners.insert(repo.id.owner.clone());
+    let mut families = BTreeSet::new();
+    for repo in &all {
+        owners.insert(repo.owner.clone());
+        if let Some(family) = effective_family(state, repo) {
+            families.insert(family);
+        }
     }
+
+    let archived_only = matches!(
+        query.archived.as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    );
+    let needle = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .map(str::to_lowercase);
+    // Filter on the core repos BEFORE summarizing: summaries resolve the
+    // default-branch head per repo, so narrowing first keeps a filtered
+    // request from paying for the whole registry.
+    let mut repositories: Vec<RepositorySummary> = all
+        .into_iter()
+        .filter(|repo| repo.archived == archived_only)
+        // Every registry repo lives on the local forge host.
+        .filter(|_| query.host.as_deref().is_none_or(|host| host == "jeryu"))
+        .filter(|repo| {
+            query.visibility.as_deref().is_none_or(|visibility| {
+                let actual = if repo.private { "private" } else { "public" };
+                actual == visibility
+            })
+        })
+        .filter(|repo| {
+            // Match on the same effective family the summaries expose, so the
+            // split-catalog drill-down lists its members even when the DB
+            // family column is unset.
+            query
+                .family
+                .as_deref()
+                .is_none_or(|family| effective_family(state, repo).as_deref() == Some(family))
+        })
+        .filter(|repo| {
+            needle.as_deref().is_none_or(|needle| {
+                repo.name.to_lowercase().contains(needle)
+                    || repo
+                        .description
+                        .as_deref()
+                        .is_some_and(|description| description.to_lowercase().contains(needle))
+            })
+        })
+        .map(|repo| repo_summary(state, &repo))
+        .collect();
+
+    match query.sort.as_deref() {
+        Some("name") => repositories.sort_by(|a, b| a.id.name.cmp(&b.id.name)),
+        Some("open_prs") => {
+            repositories.sort_by_key(|repo| std::cmp::Reverse(repo.open_pull_requests))
+        }
+        Some("failing_checks") => {
+            repositories.sort_by_key(|repo| std::cmp::Reverse(repo.failing_checks));
+        }
+        // Default and "recent_activity": newest first (RFC3339 sorts
+        // lexicographically).
+        _ => repositories.sort_by(|a, b| b.updated_at.cmp(&a.updated_at)),
+    }
+
     RepositoryListResponse {
         generated_at: state.tui.generated_at.to_rfc3339(),
         total: repositories.len() as u64,
@@ -275,7 +565,7 @@ pub(super) fn repo_list_response(state: &WebState) -> RepositoryListResponse {
         facets: RepositoryFacets {
             hosts: vec!["jeryu".to_string()],
             owners: owners.into_iter().collect(),
-            families: Vec::new(),
+            families: families.into_iter().collect(),
             languages: Vec::new(),
         },
     }
@@ -292,17 +582,36 @@ pub(super) fn repo_summaries(state: &WebState) -> Vec<RepositorySummary> {
 }
 
 pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySummary {
+    let split = state.split_catalog.classify(&repo.owner, &repo.name);
     let pulls = state
         .github
         .core()
         .list_pull_requests(&repo.owner, &repo.name, None)
         .unwrap_or_default();
-    let checks = state
+    let checks = match state
         .github
         .core()
         .list_check_runs(&repo.owner, &repo.name, None)
-        .map(|runs| runs.check_runs)
-        .unwrap_or_default();
+    {
+        Ok(runs) => runs.check_runs,
+        Err(_) => Vec::new(),
+    };
+    let latest_score =
+        state
+            .github
+            .core()
+            .latest_jankurai_score(&repo.owner, &repo.name, &repo.default_branch);
+    let current = current_check_runs(state, repo, &pulls, &checks);
+    let failing_checks = current
+        .iter()
+        .filter(|check| {
+            check.conclusion == Some(CheckConclusion::Failure) && check.name != GITHUB_MIRROR_CHECK
+        })
+        .count() as u32;
+    let running_jobs = current
+        .iter()
+        .filter(|check| check.status == CheckRunStatus::InProgress)
+        .count() as u32;
     RepositorySummary {
         id: repo_id(repo),
         entity: EntityHandle {
@@ -316,45 +625,172 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
             RepositoryVisibility::Public
         },
         default_branch: repo.default_branch.clone(),
-        family: None,
+        // Split-catalog classification wins; the persisted (DB) family is the
+        // fallback for repos outside the manifest. Keep in sync with
+        // `effective_family`.
+        family: split
+            .as_ref()
+            .map(|(family, _)| family.clone())
+            .or_else(|| repo.family.clone()),
+        repo_role: split.map(|(_, role)| role),
         topics: Vec::new(),
         language: None,
-        health: if checks
-            .iter()
-            .any(|check| check.conclusion == Some(CheckConclusion::Failure))
-        {
+        health: if failing_checks > 0 {
             "warning".to_string()
         } else {
             "healthy".to_string()
         },
-        open_pull_requests: pulls
-            .iter()
-            .filter(|pr| {
-                !matches!(
-                    pr.state,
-                    PullRequestState::Closed | PullRequestState::Merged
-                )
-            })
-            .count() as u32,
-        failing_checks: checks
-            .iter()
-            .filter(|check| check.conclusion == Some(CheckConclusion::Failure))
-            .count() as u32,
-        running_jobs: checks
-            .iter()
-            .filter(|check| check.status == jeryu_core::CheckRunStatus::InProgress)
-            .count() as u32,
+        open_pull_requests: pulls.iter().filter(|pr| pull_is_open(pr)).count() as u32,
+        failing_checks,
+        running_jobs,
         active_agents: 0,
         blocked_agents: 0,
         updated_at: repo.updated_at.to_rfc3339(),
+        jankurai_score: latest_score.as_ref().and_then(|score| score.score),
+        jankurai_decision: latest_score.as_ref().map(|score| score.decision.clone()),
+        jankurai_scored_at: latest_score
+            .as_ref()
+            .map(|score| score.created_at.to_rfc3339()),
+        mirror: mirror_status(&checks),
         clone_http_url: Some(format!("/repos/{}.git", repo.full_name)),
         clone_ssh_url: None,
-        available_actions: vec![AvailableAction {
-            action_id: "repo.open".to_string(),
-            label: "Open".to_string(),
-            risk: None,
-        }],
+        available_actions: vec![
+            AvailableAction {
+                action_id: "repo.open".to_string(),
+                label: "Open".to_string(),
+                risk: None,
+            },
+            AvailableAction {
+                action_id: "repo.delete_registry".to_string(),
+                label: "Remove from jeryu".to_string(),
+                risk: Some("destructive".to_string()),
+            },
+            AvailableAction {
+                action_id: "repo.delete_storage".to_string(),
+                label: "Delete managed storage".to_string(),
+                risk: Some("destructive".to_string()),
+            },
+        ],
     }
+}
+
+/// Grouping family one repository belongs to: the split-catalog
+/// classification wins, falling back to the persisted repository family when
+/// the catalog has no entry. This is the same precedence `repo_summary` uses
+/// for its `family` field, so the `?family=` filter and the families facet
+/// stay consistent with what the summaries expose.
+fn effective_family(state: &WebState, repo: &Repository) -> Option<String> {
+    state
+        .split_catalog
+        .classify(&repo.owner, &repo.name)
+        .map(|(family, _)| family)
+        .or_else(|| repo.family.clone())
+}
+
+/// Push-mirror bookkeeping check. A mirror hiccup is surfaced through the
+/// dedicated mirror-status field, not as repository ill-health.
+const GITHUB_MIRROR_CHECK: &str = "jeryu/github-mirror";
+
+fn pull_is_open(pr: &PullRequest) -> bool {
+    !matches!(
+        pr.state,
+        PullRequestState::Closed | PullRequestState::Merged
+    )
+}
+
+/// Check runs that describe the repository's CURRENT state: the latest run per
+/// `(head_sha, name)` across the open pull-request heads plus the
+/// default-branch head.
+///
+/// The check-run store is append-only history. Counting it wholesale
+/// resurfaces every legacy failure forever (jeryu/jeryu carried ~2k stale
+/// failures from retired seeding), so health and the list badges must only
+/// see the newest verdict per check name on a sha that is still live.
+fn current_check_runs<'a>(
+    state: &WebState,
+    repo: &Repository,
+    pulls: &[PullRequest],
+    checks: &'a [CheckRun],
+) -> Vec<&'a CheckRun> {
+    let default_head = default_branch_head(state, repo);
+    let mut relevant: BTreeSet<&str> = pulls
+        .iter()
+        .filter(|pr| pull_is_open(pr))
+        .map(|pr| pr.head.sha.as_str())
+        .collect();
+    if let Some(sha) = default_head.as_deref() {
+        relevant.insert(sha);
+    }
+    let mut latest: BTreeMap<(&str, &str), &CheckRun> = BTreeMap::new();
+    for check in checks {
+        if !relevant.contains(check.head_sha.as_str()) {
+            continue;
+        }
+        match latest.entry((check.head_sha.as_str(), check.name.as_str())) {
+            Entry::Vacant(slot) => {
+                slot.insert(check);
+            }
+            Entry::Occupied(mut slot) => {
+                let held = *slot.get();
+                // `>=` so runs with identical timestamps resolve to the
+                // later-listed one — the store appends in creation order.
+                if (check.started_at, check.completed_at) >= (held.started_at, held.completed_at) {
+                    slot.insert(check);
+                }
+            }
+        }
+    }
+    latest.into_values().collect()
+}
+
+/// Offsite mirror posture derived from `jeryu/github-mirror` bookkeeping
+/// runs over the FULL check-run history (not sha-scoped — the newest mirror
+/// attempt is meaningful regardless of which commit it pushed).
+fn mirror_status(checks: &[CheckRun]) -> Option<RepositoryMirrorStatus> {
+    let newer = |a: &CheckRun, b: &CheckRun| {
+        (a.started_at, a.completed_at) >= (b.started_at, b.completed_at)
+    };
+    let mut latest: Option<&CheckRun> = None;
+    let mut latest_success: Option<&CheckRun> = None;
+    for check in checks
+        .iter()
+        .filter(|check| check.name == GITHUB_MIRROR_CHECK)
+    {
+        if latest.is_none_or(|held| newer(check, held)) {
+            latest = Some(check);
+        }
+        if check.conclusion == Some(CheckConclusion::Success)
+            && latest_success.is_none_or(|held| newer(check, held))
+        {
+            latest_success = Some(check);
+        }
+    }
+    let latest = latest?;
+    let run_time = |run: &CheckRun| run.completed_at.unwrap_or(run.started_at).to_rfc3339();
+    Some(RepositoryMirrorStatus {
+        configured: true,
+        last_attempt_at: Some(run_time(latest)),
+        last_attempt_ok: latest.conclusion == Some(CheckConclusion::Success),
+        last_attempt_conclusion: latest.conclusion.as_ref().and_then(|conclusion| {
+            serde_json::to_value(conclusion)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+        }),
+        last_success_at: latest_success.map(run_time),
+    })
+}
+
+/// Resolve the default-branch head commit, tolerating repos with no bare
+/// storage (metadata-only imports) — those simply contribute no sha.
+fn default_branch_head(state: &WebState, repo: &Repository) -> Option<String> {
+    let bare = state
+        .repo_manager
+        .open_parts(&repo.owner, &repo.name)
+        .ok()?;
+    RefService::new((*state.repo_manager).clone())
+        .resolve_commit(&bare, &format!("refs/heads/{}", repo.default_branch))
+        .ok()
+        .flatten()
 }
 
 pub(super) fn repo_id(repo: &Repository) -> RepositoryId {
@@ -376,11 +812,14 @@ pub(super) fn find_repo(state: &WebState, id: &str) -> Option<Repository> {
 }
 
 fn readme_markdown(state: &WebState, repo: &Repository) -> String {
-    state
+    match state
         .github
         .core()
-        .readme_or_default(&repo.owner, &repo.name, default_readme_markdown(repo))
-        .unwrap_or_else(|_| default_readme_markdown(repo))
+        .get_repository_readme(&repo.owner, &repo.name)
+    {
+        Ok(Some(markdown)) => markdown,
+        Ok(None) | Err(_) => String::new(),
+    }
 }
 
 fn readme_response(state: &WebState, repo: &Repository) -> ReadmeResponse {
@@ -397,13 +836,6 @@ fn readme_response_with_markdown(
         rendered_markdown: render_markdown(&markdown),
         markdown,
     }
-}
-
-fn default_readme_markdown(repo: &Repository) -> String {
-    format!(
-        "# {}\n\nRepository metadata is live. Source import has not attached a README yet.\n",
-        repo.full_name
-    )
 }
 
 fn readme_not_found_error() -> AxumResponse {
@@ -424,15 +856,15 @@ fn readme_not_found_error() -> AxumResponse {
     )
 }
 
-struct ApiErrorHint<'a> {
-    purpose: &'a str,
-    reason: &'a str,
-    common_fixes: &'a [&'a str],
-    docs_url: &'a str,
-    repair_hint: &'a str,
+pub(super) struct ApiErrorHint<'a> {
+    pub(super) purpose: &'a str,
+    pub(super) reason: &'a str,
+    pub(super) common_fixes: &'a [&'a str],
+    pub(super) docs_url: &'a str,
+    pub(super) repair_hint: &'a str,
 }
 
-fn api_error_with_hint(
+pub(super) fn api_error_with_hint(
     status: axum::http::StatusCode,
     code: &str,
     message: &str,

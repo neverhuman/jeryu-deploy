@@ -30,11 +30,10 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>) {
                 if let Ok(value) = serde_json::from_str::<Value>(&text) {
                     match value.get("type").and_then(Value::as_str) {
                         Some("ping") => {
-                            let nonce = value
-                                .get("nonce")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
+                            let nonce = match value.get("nonce").and_then(Value::as_str) {
+                                Some(nonce) => nonce.to_string(),
+                                None => String::new(),
+                            };
                             let _ = send_server_message(
                                 &mut socket,
                                 ServerWsMessage::Pong {
@@ -99,32 +98,26 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>) {
 /// Extract subscription scopes from a `hello`/`subscribe` frame. Both carry
 /// `subscriptions: [{ scope, filters }]` per the [`ClientWsMessage`] contract.
 pub(super) fn requested_scopes(value: &Value) -> Vec<String> {
-    value
-        .get("subscriptions")
-        .and_then(Value::as_array)
-        .map(|specs| {
-            specs
-                .iter()
-                .filter_map(|spec| spec.get("scope").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    match value.get("subscriptions").and_then(Value::as_array) {
+        Some(specs) => specs
+            .iter()
+            .filter_map(|spec| spec.get("scope").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 /// Extract the scope list from an `unsubscribe` frame (`scopes: [..]`).
 pub(super) fn unsubscribe_scopes(value: &Value) -> Vec<String> {
-    value
-        .get("scopes")
-        .and_then(Value::as_array)
-        .map(|scopes| {
-            scopes
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    match value.get("scopes").and_then(Value::as_array) {
+        Some(scopes) => scopes
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 /// Push one snapshot [`ServerWsMessage::Event`] frame per subscribed scope, each

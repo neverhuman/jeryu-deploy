@@ -1,7 +1,4 @@
 # Ops Agent Guidance
 
-Owns: local CI scripts, phase gates, security/audit/release lanes, runbooks, dashboards, and operational smoke tests.
-
-Forbidden: do not add hosted-CI-only checks that cannot be run locally; do not mark live runtime gates as passing without executable evidence.
-
-Proof lane: run `bash scripts/ci-phases.sh` for gate changes, `just security` for security-lane changes, and `just audit` for Jankurai/audit-lane changes.
+This directory owns local CI wrappers, release-support scripts, and audit evidence lanes.
+Keep hosted workflows thin: they should delegate to scripts under `ops/ci/` so every gate can be reproduced locally.

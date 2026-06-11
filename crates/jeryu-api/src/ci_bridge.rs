@@ -1,6 +1,6 @@
 //! Push -> CI bridge.
 //!
-//! When a push lands a new commit on a branch, read its GitHub-Actions
+//! When a push lands a new commit on a branch, read its GitHub Actions
 //! workflows from the bare repo, compile them, **execute** each job's steps in
 //! the real sandboxed runner, and record a check-run with the actual result so
 //! the autonomy gate has live CI state for the pushed commit. Execution runs
@@ -14,8 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jeryu_ci_compiler::{CiKind, CompileContext, Compiler};
 use jeryu_core::{CheckConclusion, CheckRunStatus, CreateCheckRunRequest, ForgeCore};
-use jeryu_gitd::RepoManager;
-use jeryu_gitd::refs::GitRef;
+use jeryu_gitd::refs::{GitRef, RefService};
+use jeryu_gitd::repo::Repository;
+use jeryu_gitd::{GitdConfig, RepoId, RepoManager};
 use jeryu_runner_core::JobRequest as CoreJobRequest;
 use jeryu_runner_core::job::{NetworkPolicy, SecretPolicy, TokenPolicy};
 use jeryu_runner_core::receipt::ReceiptStatus;
@@ -39,15 +40,15 @@ pub(crate) fn ref_updates(before: &[GitRef], after: &[GitRef]) -> Vec<RefUpdate>
         .iter()
         .filter(|r| r.name.starts_with("refs/heads/") && r.oid != ZERO_OID)
         .filter_map(|r| {
-            let old_oid = before
+            let previous_oid = before
                 .iter()
                 .find(|b| b.name == r.name)
                 .map(|b| b.oid.clone());
-            match &old_oid {
-                Some(old) if *old == r.oid => None,
+            match &previous_oid {
+                Some(previous) if *previous == r.oid => None,
                 _ => Some(RefUpdate {
                     ref_name: r.name.clone(),
-                    old_oid: old_oid.unwrap_or_else(|| ZERO_OID.to_owned()),
+                    old_oid: previous_oid.unwrap_or_else(|| ZERO_OID.to_owned()),
                     new_oid: r.oid.clone(),
                 }),
             }
@@ -71,7 +72,7 @@ pub(crate) fn on_push(
         return;
     };
     let git_bin = manager.config().git_bin.clone();
-    let origin_url = repo_origin_url(origin_base_url, owner, repo);
+    let origin_url = resolved.path.to_string_lossy().to_string();
     for update in updates {
         maybe_bump_main_version(&git_bin, &resolved.path, owner, repo, update);
         if let Some(branch) = update.ref_name.strip_prefix("refs/heads/") {
@@ -81,7 +82,7 @@ pub(crate) fn on_push(
         // run the evidence-gate judge over the live CI state once they all land.
         let mut ci_checks: Vec<(String, Option<CheckConclusion>)> = Vec::new();
         for (file, content) in read_workflows(&git_bin, &resolved.path, &update.new_oid) {
-            // The forge has no GitHub-Actions runners, so it does not execute these
+            // The forge does not execute GitHub Actions runners, so it does not execute these
             // workflows: they run on the GitHub mirror's real runners, and the forge
             // PR gate is host-ci's comprehensive `jeryu/ci` (ops/ci/pr-ci.sh). Seeding
             // them here only produced all-red check-runs that misrepresent CI. Seed
@@ -181,10 +182,10 @@ fn maybe_bump_main_version(
     {
         return;
     }
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
+    let suffix = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_nanos(),
+        Err(_) => 0,
+    };
     let worktree = std::env::temp_dir().join(format!(
         "jeryu-wsversion-{owner}-{repo}-{}-{suffix}-{}",
         std::process::id(),
@@ -260,11 +261,19 @@ fn maybe_bump_main_version(
         let _ = std::fs::remove_dir_all(&worktree);
         return;
     }
-    let _ = run_git_status(
+    let Some(bump_oid) = run_git_stdout(git_bin, Some(&worktree), &["rev-parse", "HEAD"]) else {
+        let _ = std::fs::remove_dir_all(&worktree);
+        return;
+    };
+    if !run_git_status(
         git_bin,
-        Some(&worktree),
-        &["push", "--quiet", &bare_str, "HEAD:refs/heads/main"],
-    );
+        Some(bare),
+        &["fetch", "--quiet", &worktree_str, "HEAD"],
+    ) {
+        let _ = std::fs::remove_dir_all(&worktree);
+        return;
+    }
+    let _ = advance_main_with_cas(git_bin, bare, owner, repo, &update.new_oid, bump_oid.trim());
     let _ = std::fs::remove_dir_all(&worktree);
 }
 
@@ -286,6 +295,51 @@ fn run_git_status(git_bin: &str, cwd: Option<&Path>, args: &[&str]) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+fn run_git_stdout(git_bin: &str, cwd: Option<&Path>, args: &[&str]) -> Option<String> {
+    let mut command = Command::new(git_bin);
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn advance_main_with_cas(
+    git_bin: &str,
+    bare: &Path,
+    owner: &str,
+    repo: &str,
+    expected_old_oid: &str,
+    new_oid: &str,
+) -> bool {
+    let Ok(id) = RepoId::new(owner, repo) else {
+        return false;
+    };
+    let storage_root = bare
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| bare.parent().unwrap_or(bare));
+    let mut config = GitdConfig::new(storage_root);
+    config.git_bin = git_bin.to_string();
+    let refs = RefService::new(RepoManager::new(config));
+    let repo = Repository {
+        id,
+        path: bare.to_path_buf(),
+    };
+    refs.update_ref(
+        &repo,
+        "system:version-bridge",
+        "refs/heads/main",
+        new_oid,
+        Some(expected_old_oid),
+    )
+    .is_ok()
 }
 
 /// Files changed by `oid` relative to its first parent (root commit → all
@@ -333,7 +387,7 @@ fn run_job(context: &CiJobContext<'_>, job: &jeryu_ci_ir::Job) -> CheckConclusio
         .steps
         .iter()
         .filter_map(|step| step.command.as_deref())
-        .filter(|command| !is_hosted_toolchain_bootstrap(command))
+        .filter(|command| !is_workflow_toolchain_bootstrap(command))
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
@@ -468,10 +522,6 @@ fn run_git(git_bin: &str, args: &[&str]) -> std::io::Result<()> {
     )))
 }
 
-fn repo_origin_url(base_url: &str, owner: &str, repo: &str) -> String {
-    format!("{}/git/{owner}/{repo}.git", base_url.trim_end_matches('/'))
-}
-
 fn workflow_stem(file: &str) -> &str {
     file.trim_end_matches(".yaml").trim_end_matches(".yml")
 }
@@ -487,7 +537,7 @@ fn workflow_runs_for_branch_head(content: &str, ref_name: &str) -> bool {
         || branch_push_trigger_matches(&on_block, branch)
 }
 
-fn is_hosted_toolchain_bootstrap(command: &str) -> bool {
+fn is_workflow_toolchain_bootstrap(command: &str) -> bool {
     let mut saw_rustup = false;
     for line in command.lines() {
         let line = line.trim();
@@ -509,7 +559,7 @@ fn ci_mock_enabled() -> bool {
 /// Pure mock-flag predicate. The forge seeds `.github/workflows` check-runs ONLY
 /// when this is set — the in-process CI-seeding-flow tests opt in via
 /// `JERYU_CI_MOCK`. The production forge leaves it unset and seeds nothing (it has
-/// no GitHub-Actions runners; host-ci's `jeryu/ci` is the gate). Pure so it is
+/// no GitHub Actions runners; host-ci's `jeryu/ci` is the gate). Pure so it is
 /// unit-tested without mutating shared process env.
 fn mock_flag_set(value: Option<&str>) -> bool {
     matches!(value, Some(v) if { let v = v.trim(); !v.is_empty() && v != "0" })

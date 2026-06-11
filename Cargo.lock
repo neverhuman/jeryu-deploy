@@ -1086,6 +1086,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "toml",
  "tower",
  "tower-http",
  "uuid",

@@ -34,10 +34,10 @@ fn assemble_pool_activity(core: &ForgeCore) -> PoolActivity {
     let mut default_pool = PoolRollup::new("default");
 
     for repo in core.list_repositories(None) {
-        let checks = core
-            .list_check_runs(&repo.owner, &repo.name, None)
-            .map(|runs| runs.check_runs)
-            .unwrap_or_default();
+        let checks = match core.list_check_runs(&repo.owner, &repo.name, None) {
+            Ok(runs) => runs.check_runs,
+            Err(_) => Vec::new(),
+        };
 
         let mut queued = 0u32;
         let mut running = 0u32;

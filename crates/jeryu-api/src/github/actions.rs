@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use jeryu_core::{CheckConclusion, CheckRun, CheckRunStatus};
+use jeryu_core::{CheckConclusion, CheckRun, CheckRunStatus, check_conclusion_wire_value};
 use serde_json::{Value, json};
 
 use crate::routes::Response;
@@ -165,7 +165,7 @@ impl GithubRouter {
         }
     }
 
-    /// `POST /repos/{owner}/{repo}/actions/...` — unsupported hosted Actions
+    /// `POST /repos/{owner}/{repo}/actions/...` — unsupported Actions
     /// writes surface a guided local CI/MCP error instead of a silent 404.
     pub(super) fn unsupported_action_write(&self, owner: &str, repo: &str) -> Response {
         actions_write_response(owner, repo)
@@ -298,7 +298,7 @@ fn run_conclusion(conclusion: &CheckConclusion) -> &'static str {
         CheckConclusion::Neutral => "neutral",
         CheckConclusion::Success => "success",
         CheckConclusion::Skipped => "skipped",
-        CheckConclusion::Superseded => "stale",
+        CheckConclusion::Superseded => check_conclusion_wire_value(conclusion),
         CheckConclusion::TimedOut => "timed_out",
     }
 }

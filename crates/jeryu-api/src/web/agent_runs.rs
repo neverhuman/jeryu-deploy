@@ -1085,13 +1085,9 @@ pub(super) fn mcp_export_pr(state: &Arc<WebState>, args: Value) -> Result<Value,
     let run_id = required_run_id(&args)?;
     let request: AgentRunExportPrRequest =
         serde_json::from_value(args).map_err(|err| err.to_string())?;
-    let response = export_workcell_agent_run(
-        state,
-        &run_id,
-        request,
-        &crate::ci_bridge::default_origin_base_url(),
-    )
-    .map_err(|_| "agent_work.export_pr failed; use REST for typed repair details".to_string())?;
+    let response = export_workcell_agent_run(state, &run_id, request, "").map_err(|_| {
+        "agent_work.export_pr failed; use REST for typed repair details".to_string()
+    })?;
     serde_json::to_value(response).map_err(|err| err.to_string())
 }
 
@@ -2046,12 +2042,14 @@ fn export_workcell_agent_run(
 }
 
 pub(super) fn origin_base_url(headers: &HeaderMap) -> String {
-    headers
+    match headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .filter(|host| !host.trim().is_empty())
-        .map(|host| format!("http://{host}"))
-        .unwrap_or_else(crate::ci_bridge::default_origin_base_url)
+    {
+        Some(host) => format!("http://{host}"),
+        None => String::new(),
+    }
 }
 
 fn derive_allowed_prefixes(allowed_paths: &[PathBuf], workspace_root: &Path) -> Vec<String> {

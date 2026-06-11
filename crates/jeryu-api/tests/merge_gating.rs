@@ -763,3 +763,157 @@ fn merge_with_unresolvable_head_returns_4xx_not_500() {
 
     fixture.cleanup();
 }
+
+// ---------------------------------------------------------------------------
+// Merge -> GitHub mirror push (jeryu_api::github_mirror)
+// ---------------------------------------------------------------------------
+
+fn mirror_for(dest: Option<&Path>) -> Arc<jeryu_api::github_mirror::GithubMirror> {
+    use jeryu_api::github_mirror::{GithubMirror, GithubMirrorTarget};
+    let mut targets = std::collections::BTreeMap::new();
+    targets.insert(
+        "acme/demo".to_string(),
+        GithubMirrorTarget {
+            github_slug: "neverhuman/demo".to_string(),
+            branch: "main".to_string(),
+            destination_override: dest.map(|p| p.to_string_lossy().into_owned()),
+        },
+    );
+    Arc::new(GithubMirror::with_targets(targets))
+}
+
+fn approve(router: &GithubRouter, number: u64) {
+    router
+        .core()
+        .create_review(
+            "acme",
+            "demo",
+            number,
+            "bob",
+            CreateReviewRequest {
+                body: None,
+                event: ReviewState::Approved,
+                comments: vec![],
+            },
+        )
+        .expect("approve");
+}
+
+fn mirror_check_runs(router: &GithubRouter, sha: &str) -> Vec<(String, Option<String>)> {
+    router
+        .core()
+        .list_check_runs("acme", "demo", Some(sha))
+        .expect("list check-runs")
+        .check_runs
+        .into_iter()
+        .filter(|run| run.name == jeryu_api::github_mirror::MIRROR_CHECK_NAME)
+        .map(|run| {
+            (
+                run.name,
+                run.conclusion
+                    .map(|c| format!("{c:?}").to_ascii_lowercase()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn merged_pr_pushes_main_to_configured_github_destination() {
+    if !git_available() {
+        return;
+    }
+    let fixture = seed_fixture("jeryu-merge-mirror-pass");
+    let (router, number) = router_with_pr(&fixture);
+
+    // A local bare repo stands in for github.com/neverhuman/demo.
+    let dest = temp_dir("jeryu-merge-mirror-dest").join("demo.git");
+    run_git(
+        dest.parent().unwrap(),
+        &["init", "--bare", dest.to_str().unwrap()],
+        "init dest bare",
+    );
+    let router = router.with_github_mirror(mirror_for(Some(&dest)));
+
+    approve(&router, number);
+    let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(merged.status, 200, "merge: {}", merged.body);
+
+    // The destination's main equals the live local main tip.
+    let out = Command::new("git")
+        .args(["rev-parse", "refs/heads/main"])
+        .current_dir(&dest)
+        .output()
+        .expect("dest rev-parse");
+    assert!(out.status.success(), "destination main missing");
+    let dest_main = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(dest_main, fixture.main_ref(), "GitHub main == local main");
+
+    // Outcome recorded as a successful jeryu/github-mirror check-run on the tip.
+    let runs = mirror_check_runs(&router, &dest_main);
+    assert_eq!(runs.len(), 1, "expected one mirror check-run: {runs:?}");
+    assert_eq!(runs[0].1.as_deref(), Some("success"));
+
+    let _ = std::fs::remove_dir_all(dest.parent().unwrap());
+    fixture.cleanup();
+}
+
+#[test]
+fn merge_succeeds_when_github_push_fails() {
+    if !git_available() {
+        return;
+    }
+    let fixture = seed_fixture("jeryu-merge-mirror-fail");
+    let (router, number) = router_with_pr(&fixture);
+
+    // Destination path does not exist -> the push must fail.
+    let bogus = std::env::temp_dir().join("jeryu-merge-mirror-nonexistent/丢失.git");
+    let router = router.with_github_mirror(mirror_for(Some(&bogus)));
+
+    approve(&router, number);
+    let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(
+        merged.status, 200,
+        "merge must succeed despite push failure: {}",
+        merged.body
+    );
+    assert_eq!(fixture.main_ref(), fixture.head_oid, "local main advanced");
+
+    // Failure recorded, merge unaffected.
+    let runs = mirror_check_runs(&router, &fixture.head_oid);
+    assert_eq!(runs.len(), 1, "expected one mirror check-run: {runs:?}");
+    assert_eq!(runs[0].1.as_deref(), Some("failure"));
+
+    fixture.cleanup();
+}
+
+#[test]
+fn unconfigured_repo_pushes_nothing() {
+    if !git_available() {
+        return;
+    }
+    let fixture = seed_fixture("jeryu-merge-mirror-skip");
+    let (router, number) = router_with_pr(&fixture);
+
+    // Mirror configured for a DIFFERENT repo: acme/demo is not a target.
+    use jeryu_api::github_mirror::{GithubMirror, GithubMirrorTarget};
+    let mut targets = std::collections::BTreeMap::new();
+    targets.insert(
+        "other/repo".to_string(),
+        GithubMirrorTarget {
+            github_slug: "neverhuman/other".to_string(),
+            branch: "main".to_string(),
+            destination_override: None,
+        },
+    );
+    let router = router.with_github_mirror(Arc::new(GithubMirror::with_targets(targets)));
+
+    approve(&router, number);
+    let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(merged.status, 200, "merge: {}", merged.body);
+
+    // No mirror check-run anywhere on the merged tip.
+    let runs = mirror_check_runs(&router, &fixture.head_oid);
+    assert!(runs.is_empty(), "no push, no check-run: {runs:?}");
+
+    fixture.cleanup();
+}

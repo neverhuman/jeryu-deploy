@@ -5,9 +5,11 @@ workers = 40
 source_root = "/home/ubuntu/jeryu"
 source_sha = "cbecf7caa0e932c76a341b2521e66e911233860d"
 split_root = "/home/ubuntu/jeryu-split"
+repo_family = "jeryu-split"
 dependency_tag_suffix = "v4.0.0-split.0"
 
 required_repos = [
+  "jeryu",
   "jeryu-core",
   "jeryu-ci-runner",
   "jeryu-cache",
@@ -34,6 +36,23 @@ shared_source_paths = [
   "docs/**",
   "tips/**",
 ]
+
+[[repo]]
+path = "/home/ubuntu/jeryu-split/jeryu"
+name = "jeryu"
+github_slug = "neverhuman/jeryu"
+jeryu_slug = "jeryu/jeryu"
+profile = "public-portal"
+default_branch = "main"
+rollout_wave = 0
+has_jeryu_std = true
+onboarded = false
+current_tag = "jeryu-v4.0.0-split.0"
+required_check = "jeryu/required"
+note = "Public portal, installer, and split-family clone entrypoint."
+cargo_members = []
+copy_paths = []
+source_paths = []
 
 [[repo]]
 path = "/home/ubuntu/jeryu-split/jeryu-core"

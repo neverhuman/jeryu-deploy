@@ -192,11 +192,12 @@ impl InMemoryClient {
 
     pub(super) fn list_issues_inner(&self, owner: &str, repo: &str) -> ClientResult<Vec<Issue>> {
         let state = lock(&self.state);
-        Ok(state
-            .issues
-            .get(&(owner.to_string(), repo.to_string()))
-            .cloned()
-            .unwrap_or_default())
+        Ok(
+            match state.issues.get(&(owner.to_string(), repo.to_string())) {
+                Some(issues) => issues.clone(),
+                None => Vec::new(),
+            },
+        )
     }
 
     pub(super) fn open_pull_request_inner(
@@ -241,11 +242,12 @@ impl InMemoryClient {
         repo: &str,
     ) -> ClientResult<Vec<PullRequest>> {
         let state = lock(&self.state);
-        Ok(state
-            .pulls
-            .get(&(owner.to_string(), repo.to_string()))
-            .cloned()
-            .unwrap_or_default())
+        Ok(
+            match state.pulls.get(&(owner.to_string(), repo.to_string())) {
+                Some(pulls) => pulls.clone(),
+                None => Vec::new(),
+            },
+        )
     }
 
     pub(super) fn get_pull_request_inner(
@@ -255,11 +257,16 @@ impl InMemoryClient {
         number: u64,
     ) -> ClientResult<PullRequest> {
         let state = lock(&self.state);
-        state
+        match state
             .pulls
             .get(&(owner.to_string(), repo.to_string()))
             .and_then(|b| b.iter().find(|p| p.number == number).cloned())
-            .ok_or_else(|| ClientError::NotFound(format!("pull request {owner}/{repo}#{number}")))
+        {
+            Some(pull_request) => Ok(pull_request),
+            None => Err(ClientError::NotFound(format!(
+                "pull request {owner}/{repo}#{number}"
+            ))),
+        }
     }
 
     pub(super) fn merge_pull_request_inner(
@@ -269,16 +276,18 @@ impl InMemoryClient {
         number: u64,
     ) -> ClientResult<MergeOutcome> {
         let mut state = lock(&self.state);
-        let bucket = state
-            .pulls
-            .get_mut(&(owner.to_string(), repo.to_string()))
-            .ok_or_else(|| ClientError::NotFound(format!("repository {owner}/{repo}")))?;
-        let pr = bucket
-            .iter_mut()
-            .find(|p| p.number == number)
-            .ok_or_else(|| {
-                ClientError::NotFound(format!("pull request {owner}/{repo}#{number}"))
-            })?;
+        let bucket = match state.pulls.get_mut(&(owner.to_string(), repo.to_string())) {
+            Some(bucket) => bucket,
+            None => return Err(ClientError::NotFound(format!("repository {owner}/{repo}"))),
+        };
+        let pr = match bucket.iter_mut().find(|p| p.number == number) {
+            Some(pr) => pr,
+            None => {
+                return Err(ClientError::NotFound(format!(
+                    "pull request {owner}/{repo}#{number}"
+                )));
+            }
+        };
         if pr.state == PullRequestState::Closed {
             return Err(ClientError::Invalid(format!(
                 "pull request #{number} is closed"

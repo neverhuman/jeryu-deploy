@@ -37,8 +37,13 @@ impl jeryu_mcp::ToolBackend for WebMcpBackend {
         if let Some(response) = self.call_live_status_tool(tool, &args)? {
             return Ok(response);
         }
-        if is_codegraph_tool(tool) && args.get("repo").and_then(Value::as_str).is_some() {
-            return self.call_live_codegraph(tool, args);
+        if is_codegraph_tool(tool) {
+            if args.get("repo").and_then(Value::as_str).is_some() {
+                return self.call_live_codegraph(tool, args);
+            }
+            return Ok(jeryu_mcp::ToolResponse::error(format!(
+                "{tool} requires repo"
+            )));
         }
         self.inner.call(tool, args, ctx)
     }
@@ -91,24 +96,27 @@ impl WebMcpBackend {
             }
             "code.symbols.search" => {
                 let graph = live_graph(&self.state)?;
+                let Some(query) = args.get("query").and_then(Value::as_str) else {
+                    return Ok(jeryu_mcp::ToolResponse::error(
+                        "code.symbols.search requires query",
+                    ));
+                };
                 let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
                 Ok(jeryu_mcp::ToolResponse::ok(
                     "code symbols",
                     json!({
                         "repo": repo,
-                        "symbols": graph.search_symbols(
-                            args.get("query").and_then(Value::as_str).unwrap_or_default(),
-                            limit,
-                        ),
+                        "symbols": graph.search_symbols(query, limit),
                     }),
                 ))
             }
             "code.definition" => {
                 let graph = live_graph(&self.state)?;
-                let symbol = args
-                    .get("symbol")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                let Some(symbol) = args.get("symbol").and_then(Value::as_str) else {
+                    return Ok(jeryu_mcp::ToolResponse::error(
+                        "code.definition requires symbol",
+                    ));
+                };
                 Ok(jeryu_mcp::ToolResponse::ok(
                     "code definition",
                     json!({
@@ -134,10 +142,11 @@ impl WebMcpBackend {
             }
             "code.crate.reverse_deps" => {
                 let graph = live_graph(&self.state)?;
-                let crate_name = args
-                    .get("crate_name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                let Some(crate_name) = args.get("crate_name").and_then(Value::as_str) else {
+                    return Ok(jeryu_mcp::ToolResponse::error(
+                        "code.crate.reverse_deps requires crate_name",
+                    ));
+                };
                 Ok(jeryu_mcp::ToolResponse::ok(
                     "crate reverse dependencies",
                     json!({
@@ -149,10 +158,11 @@ impl WebMcpBackend {
             }
             "code.references" => {
                 let graph = live_graph(&self.state)?;
-                let symbol = args
-                    .get("symbol")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                let Some(symbol) = args.get("symbol").and_then(Value::as_str) else {
+                    return Ok(jeryu_mcp::ToolResponse::error(
+                        "code.references requires symbol",
+                    ));
+                };
                 Ok(jeryu_mcp::ToolResponse::ok(
                     "code references",
                     json!({
@@ -332,16 +342,14 @@ fn codegraph_query_from_mcp_args(args: &Value) -> jeryu_codegraph::CodeGraphQuer
 }
 
 fn string_array(value: &Value) -> Vec<String> {
-    value
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    match value.as_array() {
+        Some(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 fn is_codegraph_tool(tool: &str) -> bool {
@@ -714,6 +722,14 @@ pub fn alpha(input: &str) -> Result<String, String> {
             "CodeGraph"
         );
 
+        let missing_query = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/repo" }),
+        );
+        assert!(!missing_query.success, "{missing_query:?}");
+        assert_eq!(missing_query.message, "code.symbols.search requires query");
+
         let definition = call(
             &backend,
             "code.definition",
@@ -758,12 +774,13 @@ pub fn alpha(input: &str) -> Result<String, String> {
         );
         assert!(!query.success);
 
-        let fallback = call(
+        let missing_repo = call(
             &backend,
             "code.definition",
             json!({ "symbol": "CodeGraph" }),
         );
-        assert!(fallback.success, "{fallback:?}");
+        assert!(!missing_repo.success, "{missing_repo:?}");
+        assert_eq!(missing_repo.message, "code.definition requires repo");
 
         let tool_status = call(
             &backend,

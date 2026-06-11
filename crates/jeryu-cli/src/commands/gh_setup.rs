@@ -28,7 +28,7 @@ struct GhSetupReport {
 pub(crate) fn run(json: bool, args: GhSetupArgs, out: &mut dyn Write) -> ClientResult<()> {
     let host_key = host_key(&args.host)?;
     let config = render_hosts_entry(&host_key, &args.token);
-    let path = hosts_path(args.path.as_deref());
+    let path = hosts_path(args.path.as_deref())?;
 
     let written = if args.print {
         false
@@ -98,16 +98,25 @@ fn render_hosts_entry(host_key: &str, token: &str) -> String {
 
 /// The hosts.yml path: an explicit override, else the GitHub CLI default
 /// (`$GH_CONFIG_DIR` or `$XDG_CONFIG_HOME/gh` or `$HOME/.config/gh`).
-fn hosts_path(override_path: Option<&str>) -> PathBuf {
+fn hosts_path(override_path: Option<&str>) -> ClientResult<PathBuf> {
     if let Some(p) = override_path {
-        return PathBuf::from(p);
+        return Ok(PathBuf::from(p));
     }
-    let dir = std::env::var_os("GH_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|x| PathBuf::from(x).join("gh")))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("gh")))
-        .unwrap_or_else(|| PathBuf::from(".config").join("gh"));
-    dir.join("hosts.yml")
+    let dir = match std::env::var_os("GH_CONFIG_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => match std::env::var_os("XDG_CONFIG_HOME") {
+            Some(dir) => PathBuf::from(dir).join("gh"),
+            None => match std::env::var_os("HOME") {
+                Some(home) => PathBuf::from(home).join(".config").join("gh"),
+                None => {
+                    return Err(ClientError::Invalid(
+                        "cannot determine the gh config directory".into(),
+                    ));
+                }
+            },
+        },
+    };
+    Ok(dir.join("hosts.yml"))
 }
 
 fn write_hosts_file(path: &PathBuf, config: &str) -> ClientResult<()> {

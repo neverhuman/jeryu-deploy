@@ -1,4 +1,4 @@
 [[zones]]
-path = ".jankurai/**"
+path = ".jankurai/"
 generator = "just score"
 manual_edits = false

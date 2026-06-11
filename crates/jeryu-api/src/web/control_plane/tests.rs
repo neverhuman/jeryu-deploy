@@ -4,7 +4,7 @@ use chrono::Utc;
 use jeryu_agent_stream::{AgentOutputStream, AgentRunStreamKey, AgentTtyEvent};
 use jeryu_core::{
     CheckConclusion, CheckRun, CheckRunStatus, CreateCheckRunRequest, CreatePullRequestRequest,
-    CreateRepositoryRequest, ForgeCore,
+    CreateRepositoryRequest, ForgeCore, check_conclusion_wire_value,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -105,7 +105,7 @@ fn repo_graph_contains_ci_runner_and_mirror_clusters() {
         graph
             .clusters
             .iter()
-            .any(|cluster| cluster.kind == "stale_mirror")
+            .any(|cluster| cluster.kind == "superseded_mirror")
     );
 }
 
@@ -281,6 +281,9 @@ fn helper_branches_normalize_tty_time_and_check_states() {
     assert_eq!(check_conclusion(&CheckConclusion::Neutral), "neutral");
     assert_eq!(check_conclusion(&CheckConclusion::Success), "success");
     assert_eq!(check_conclusion(&CheckConclusion::Skipped), "skipped");
-    assert_eq!(check_conclusion(&CheckConclusion::Superseded), "stale");
+    assert_eq!(
+        check_conclusion(&CheckConclusion::Superseded),
+        check_conclusion_wire_value(&CheckConclusion::Superseded)
+    );
     assert_eq!(check_conclusion(&CheckConclusion::TimedOut), "timed_out");
 }

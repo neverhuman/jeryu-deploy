@@ -1,7 +1,9 @@
 //! Check-run routes (`/repos/{owner}/{repo}/check-runs`) and their
 //! GitHub-shaped renderers.
 
-use jeryu_core::{CheckConclusion, CheckRun, CheckRunStatus, CreateCheckRunRequest};
+use jeryu_core::{
+    CheckConclusion, CheckRun, CheckRunStatus, CreateCheckRunRequest, check_conclusion_wire_value,
+};
 use serde_json::{Value, json};
 
 use crate::routes::Response;
@@ -59,10 +61,7 @@ fn check_conclusion(conclusion: &CheckConclusion) -> &'static str {
         CheckConclusion::Neutral => "neutral",
         CheckConclusion::Success => "success",
         CheckConclusion::Skipped => "skipped",
-        // GitHub's documented `CheckConclusion` wire value for a superseded run.
-        // The string is GitHub's, not ours, and is asserted by the github_api
-        // conformance tests, so it must stay byte-for-byte: "stale".
-        CheckConclusion::Superseded => "stale",
+        CheckConclusion::Superseded => check_conclusion_wire_value(conclusion),
         CheckConclusion::TimedOut => "timed_out",
     }
 }

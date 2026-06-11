@@ -13,9 +13,15 @@ fn main() -> ExitCode {
         bind,
         spa_dir,
         data_dir,
+        split_manifest,
     } = &cli.command
     {
-        return match serve(*bind, spa_dir.clone(), data_dir.clone()) {
+        return match serve(
+            *bind,
+            spa_dir.clone(),
+            data_dir.clone(),
+            split_manifest.clone(),
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("error: {err}");
@@ -44,6 +50,7 @@ fn serve(
     bind: std::net::SocketAddr,
     spa_dir: PathBuf,
     data_dir: PathBuf,
+    split_manifest: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = expand_tilde(data_dir);
     let git_storage_root = data_dir.join("git");
@@ -55,6 +62,7 @@ fn serve(
         spa_dir,
         data_dir,
         git_storage_root,
+        split_manifest,
     }))
 }
 

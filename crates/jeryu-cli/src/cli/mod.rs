@@ -124,6 +124,10 @@ pub enum Commands {
         /// Durable Jeryu data directory.
         #[arg(long, default_value = "~/.local/share/jeryu")]
         data_dir: PathBuf,
+
+        /// Split-family manifest used to classify portal and member repositories.
+        #[arg(long)]
+        split_manifest: Option<PathBuf>,
     },
 
     /// gh-setup: point the GitHub CLI at a jeryu server base URL.

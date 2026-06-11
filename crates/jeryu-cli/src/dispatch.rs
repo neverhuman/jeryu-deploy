@@ -21,7 +21,13 @@ pub fn dispatch(
 ) -> i32 {
     let owner = cli.owner;
     let json = cli.json;
-    let api_url = cli.api_url.or_else(|| std::env::var("JERYU_API_URL").ok());
+    let api_url = match cli.api_url {
+        Some(api_url) if !api_url.trim().is_empty() => Some(api_url),
+        _ => match std::env::var("JERYU_API_URL") {
+            Ok(api_url) if !api_url.trim().is_empty() => Some(api_url),
+            _ => None,
+        },
+    };
     let result = match cli.command {
         Commands::Forge(cmd) => {
             commands::forge::run(client, api_url.as_deref(), &owner, json, cmd, out)

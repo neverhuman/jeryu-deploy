@@ -24,6 +24,11 @@ use super::super::WebState;
 /// fresh pool warmed to this many cells; a claim reuses one and refills back.
 const WARM_TARGET: usize = 2;
 
+fn session_live_output_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 async fn response_json(response: AxumResponse) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -615,7 +620,7 @@ async fn await_tty(state: &Arc<WebState>, run_id: &str, needle: &str) -> Value {
         if seen || terminal {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     last
 }
@@ -625,6 +630,7 @@ async fn await_tty(state: &Arc<WebState>, run_id: &str, needle: &str) -> Value {
 /// hermetic scripted echo, so the test never depends on the real installed CLI.
 #[tokio::test]
 async fn create_session_spawns_agent_and_streams_its_tty_output() {
+    let _guard = session_live_output_lock().lock().await;
     let storage = tempfile::tempdir().expect("git storage");
     let core = ForgeCore::new();
     seed_repo(&core, storage.path(), "alice", "jeryu");
@@ -661,6 +667,7 @@ async fn create_session_spawns_agent_and_streams_its_tty_output() {
 /// echoes `$PWD` and `$JERYU_BRANCH`; both must reach the tty stream.
 #[tokio::test]
 async fn create_session_agent_runs_in_workspace_with_branch_env() {
+    let _guard = session_live_output_lock().lock().await;
     let storage = tempfile::tempdir().expect("git storage");
     let core = ForgeCore::new();
     seed_repo(&core, storage.path(), "alice", "jeryu");
@@ -818,6 +825,7 @@ fn docker_runtime(fake_docker: &Path) -> super::SessionRuntimeConfig {
 /// (`--read-only`, `--network none`, `-v <ws>:/workspace`).
 #[tokio::test]
 async fn create_session_docker_runtime_streams_live_and_carries_hardened_flags() {
+    let _guard = session_live_output_lock().lock().await;
     let storage = tempfile::tempdir().expect("git storage");
     let core = ForgeCore::new();
     seed_repo(&core, storage.path(), "alice", "jeryu");
@@ -917,6 +925,7 @@ async fn create_session_materializes_real_checkout() {
 /// stream.
 #[tokio::test]
 async fn create_session_native_runtime_uses_native_path() {
+    let _guard = session_live_output_lock().lock().await;
     let storage = tempfile::tempdir().expect("git storage");
     let core = ForgeCore::new();
     seed_repo(&core, storage.path(), "alice", "jeryu");

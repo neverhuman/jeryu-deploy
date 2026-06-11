@@ -54,8 +54,9 @@ Open the release or consolidation PR with `ci-fast-push.sh`. The push path
 records `target/ci-fast/publish.json` with the branch, base, PR URL, PR number,
 and commit that the final receipt must name. Local Jeryu mergeability plus the
 gates above are the release authority; hosted GitHub Actions are mirror evidence
-only. Direct `main` pushes require `--push-main` and are an escape hatch, not
-the release default.
+only. Direct wire pushes to `main` are not a supported release path; Jeryu
+advances `main` only through the gated PR merge path or declared internal
+post-merge automation, using server-side compare-and-swap ref updates.
 
 ## Receipt Contents
 
@@ -93,11 +94,9 @@ Each final release receipt uses schema `jeryu.release-receipt/v2` and records:
 
 Tags are cut only after the receipt names the exact signed source commit, the
 PR-backed publication path, the previous signed rollback artifact, and all gates
-above are green. Publish closeout changes through a PR branch first; direct
-`main` pushes require explicit `--push-main` and `JERYU_RELEASE_DIRECT_MAIN_ESCAPE=1`
-before the final receipt will accept them. Do not tag from an uncommitted
-worktree, an unsigned commit, placeholder rollback evidence, or hosted-only
-state.
+above are green. Publish closeout changes through a PR branch first; do not tag
+from an uncommitted worktree, an unsigned commit, placeholder rollback evidence,
+or hosted-only state.
 
 ## Rollback
 

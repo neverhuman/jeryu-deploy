@@ -30,12 +30,19 @@ impl RepoMaterializer for GitMaterializer {
             ForgeError::Validation(format!("invalid repository id {owner}/{name}: {err}"))
         })?;
         // Idempotent: a bare repository that already exists is success.
-        if self.manager.open(&id).is_ok() {
-            return Ok(());
-        }
-        self.manager.create_bare(&id).map_err(|err| {
-            ForgeError::Storage(format!("create bare repository {owner}/{name}: {err}"))
-        })?;
+        let repo = match self.manager.open(&id) {
+            Ok(repo) => repo,
+            Err(_) => self.manager.create_bare(&id).map_err(|err| {
+                ForgeError::Storage(format!("create bare repository {owner}/{name}: {err}"))
+            })?,
+        };
+        self.manager
+            .install_pre_receive_hook(&repo)
+            .map_err(|err| {
+                ForgeError::Storage(format!(
+                    "install pre-receive hook for {owner}/{name}: {err}"
+                ))
+            })?;
         Ok(())
     }
 }

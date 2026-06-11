@@ -324,10 +324,10 @@ impl Drop for TempCheckout {
 }
 
 fn epoch_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default()
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_nanos(),
+        Err(_) => 0,
+    }
 }
 
 fn codegraph_error(

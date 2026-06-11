@@ -173,9 +173,9 @@ fn build_repo_graph(
         )],
     });
     clusters.push(GraphCluster {
-        id: "cluster:stale-mirror".to_string(),
+        id: "cluster:superseded-mirror".to_string(),
         label: "Mirror evidence".to_string(),
-        kind: "stale_mirror".to_string(),
+        kind: "superseded_mirror".to_string(),
         state: mirror.state.clone(),
         severity: InsightSeverity::Medium,
         node_ids: vec!["mirror:github".to_string()],

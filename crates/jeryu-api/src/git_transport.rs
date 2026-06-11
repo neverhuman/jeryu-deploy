@@ -149,13 +149,14 @@ pub(crate) async fn git_receive_pack(
 }
 
 fn origin_base_url(headers: &HeaderMap) -> String {
-    headers
+    match headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .filter(|host| !host.trim().is_empty())
-        .map(|host| format!("http://{host}"))
-        .or_else(|| std::env::var("JERYU_BASE").ok())
-        .unwrap_or_else(|| "http://127.0.0.1:8787".to_string())
+    {
+        Some(host) => format!("http://{host}"),
+        None => String::new(),
+    }
 }
 
 /// Snapshot a repo's refs. A repo that cannot be resolved or listed yields an

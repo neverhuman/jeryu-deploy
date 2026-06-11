@@ -7,8 +7,9 @@ Before editing, read `README.md`, `agent/owner-map.json`,
 `agent/proof-lanes.toml`, `agent/audit-policy.toml`, and
 `agent/boundaries.toml`.
 
-Keep split `main` clean. Dirty source imports from `/home/ubuntu/jeryu` belong
-on `import/dirty-*` branches or as explicit patches after baseline checks pass.
+Keep split `main` clean. The legacy monorepo (`/home/ubuntu/jeryu`) is
+deprecated and archived as `jeryu/jeryu-monorepo`; this split family is the
+only source of truth. Land changes through PRs with green required checks.
 
 Cross-repo Rust dependencies are pinned Git dependencies using
 `*-v4.0.0-split.0` tags. Only `jeryu-deploy` may use local sibling path patches

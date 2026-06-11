@@ -63,6 +63,8 @@ pub struct GithubRouter {
     core: ForgeCore,
     #[cfg(feature = "web")]
     repo_manager: Option<std::sync::Arc<jeryu_gitd::RepoManager>>,
+    #[cfg(feature = "web")]
+    github_mirror: Option<std::sync::Arc<crate::github_mirror::GithubMirror>>,
 }
 
 impl GithubRouter {
@@ -77,6 +79,8 @@ impl GithubRouter {
             core,
             #[cfg(feature = "web")]
             repo_manager: None,
+            #[cfg(feature = "web")]
+            github_mirror: None,
         }
     }
 
@@ -91,6 +95,22 @@ impl GithubRouter {
         repo_manager: std::sync::Arc<jeryu_gitd::RepoManager>,
     ) -> Self {
         self.repo_manager = Some(repo_manager);
+        self
+    }
+
+    /// Attach the merge-to-GitHub mirror so a PR merged into a configured
+    /// repo's default branch pushes the live main tip to
+    /// `github.com/<github_slug>` (outcome recorded as the
+    /// `jeryu/github-mirror` check-run; never affects the merge response).
+    /// Absent (the default, incl. every test that doesn't opt in) no push is
+    /// ever attempted.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn with_github_mirror(
+        mut self,
+        mirror: std::sync::Arc<crate::github_mirror::GithubMirror>,
+    ) -> Self {
+        self.github_mirror = Some(mirror);
         self
     }
 

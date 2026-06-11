@@ -1,19 +1,44 @@
 {
   "tests": {
-    ".github/": {
-      "command": "just fast && just check",
-      "lane": "ci",
-      "purpose": "verify hosted workflows stay thin and local-reproducible"
+    ".cargo/": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify cargo configuration is parseable and local"
     },
-    ".github/**": {
+    ".config/": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify local tool configuration remains parseable"
+    },
+    ".dockerignore": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify workspace metadata remains parseable"
+    },
+    ".github/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    ".gitignore": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify workspace metadata remains parseable"
+    },
+    ".jankurai/": {
+      "command": "just score",
+      "lane": "score",
+      "purpose": "verify committed audit evidence matches the pinned Jankurai lane"
     },
     "AGENTS.md": {
       "command": "just score",
       "lane": "score",
       "purpose": "verify split metadata and agent maps"
+    },
+    "CHANGELOG.md": {
+      "command": "just score",
+      "lane": "score",
+      "purpose": "verify release notes stay routed through the score lane"
     },
     "Cargo.lock": {
       "command": "just check",
@@ -30,7 +55,22 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "agent/**": {
+    "LICENSE": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify workspace metadata remains parseable"
+    },
+    "README.md": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify root navigation remains current"
+    },
+    "VERSION": {
+      "command": "just score",
+      "lane": "score",
+      "purpose": "verify version source remains aligned with release evidence"
+    },
+    "agent/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
@@ -40,60 +80,100 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "config/**": {
+    "config/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "configs/**": {
+    "configs/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "crates/jeryu-api/**": {
+    "crates/jeryu-api/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "crates/jeryu-cli/**": {
+    "crates/jeryu-cli/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "docs/**": {
+    "deny.toml": {
+      "command": "just security",
+      "lane": "security",
+      "purpose": "verify security policy metadata remains parseable"
+    },
+    "docs/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "examples/**": {
+    "examples/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "images/**": {
+    "images/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "ops/**": {
+    "ops/": {
+      "command": "just fast && just check && just score",
+      "lane": "ci",
+      "purpose": "verify local ops guidance and CI wrappers stay reproducible"
+    },
+    "ops/ci/": {
+      "command": "just fast && just check && just score",
+      "lane": "ci",
+      "purpose": "verify local CI wrappers are reproducible and audit-visible"
+    },
+    "ops/git-hooks/": {
+      "command": "just fast && just check && just score",
+      "lane": "ci",
+      "purpose": "verify pre-push gates delegate to local CI lanes"
+    },
+    "policies/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "policies/**": {
+    "repos.manifest.toml": {
+      "command": "just check && just score",
+      "lane": "check",
+      "purpose": "verify split manifest remains parseable and routed"
+    },
+    "rust-toolchain.toml": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify local Rust toolchain metadata remains pinned"
+    },
+    "scripts/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "scripts/**": {
+    "tests/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "tests/**": {
-      "command": "just check",
+    "agent/tool-adoption.toml": {
+      "command": "just score",
+      "lane": "score",
+      "purpose": "verify Jankurai tool-adoption catalog coverage"
+    },
+    "db/": {
+      "command": "just check && just score",
       "lane": "check",
-      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+      "purpose": "verify documented data boundary policy remains routed"
+    },
+    "jeryu-split.lock.toml": {
+      "command": "just check && just score",
+      "lane": "check",
+      "purpose": "verify split release lock remains routed and auditable"
     }
   },
   "workspace": "jeryu-deploy"

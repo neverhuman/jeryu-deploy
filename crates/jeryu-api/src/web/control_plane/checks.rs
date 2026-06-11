@@ -1,4 +1,4 @@
-use jeryu_core::{CheckConclusion, CheckRun, CheckRunStatus};
+use jeryu_core::{CheckConclusion, CheckRun, CheckRunStatus, check_conclusion_wire_value};
 
 use super::*;
 
@@ -66,7 +66,7 @@ pub(crate) fn check_conclusion(conclusion: &CheckConclusion) -> &'static str {
         CheckConclusion::Neutral => "neutral",
         CheckConclusion::Success => "success",
         CheckConclusion::Skipped => "skipped",
-        CheckConclusion::Superseded => "stale",
+        CheckConclusion::Superseded => check_conclusion_wire_value(conclusion),
         CheckConclusion::TimedOut => "timed_out",
     }
 }

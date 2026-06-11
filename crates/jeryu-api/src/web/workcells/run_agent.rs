@@ -120,11 +120,11 @@ pub(in crate::web) async fn run_agent(
             reason: "request runner_epoch did not match the active workcell epoch",
             common_fixes: &[
                 "reload workcell status and retry with the active runner_epoch",
-                "release the old workcell before starting a new run",
+                "release the prior workcell before starting a new run",
             ],
             docs_url: "docs/testing.md#workcells",
             repair_hint: "rerun cargo test -p jeryu-api --features web --jobs 40 workcell_run_agent",
-            message: "the workcell run request used a stale runner epoch",
+            message: "the workcell run request used a previous runner epoch",
         });
     }
     if !matches!(

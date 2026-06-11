@@ -137,10 +137,10 @@ pub(crate) fn collect_repos(core: &ForgeCore) -> Vec<ControlRepo> {
     core.list_repositories(None)
         .into_iter()
         .map(|repo| {
-            let checks = core
-                .list_check_runs(&repo.owner, &repo.name, None)
-                .map(|list| list.check_runs)
-                .unwrap_or_default();
+            let checks = match core.list_check_runs(&repo.owner, &repo.name, None) {
+                Ok(list) => list.check_runs,
+                Err(_) => Vec::new(),
+            };
             let prs = core
                 .list_pull_requests(&repo.owner, &repo.name, None)
                 .unwrap_or_default();
@@ -202,14 +202,14 @@ pub(crate) fn collect_pull_requests(
 ) -> Vec<ControlPullRequest> {
     let mut out = Vec::new();
     for repo in repos {
-        let checks = core
-            .list_check_runs(&repo.owner, &repo.name, None)
-            .map(|list| list.check_runs)
-            .unwrap_or_default();
-        for pr in core
+        let checks = match core.list_check_runs(&repo.owner, &repo.name, None) {
+            Ok(list) => list.check_runs,
+            Err(_) => Vec::new(),
+        };
+        let pull_requests = core
             .list_pull_requests(&repo.owner, &repo.name, None)
-            .unwrap_or_default()
-        {
+            .unwrap_or_default();
+        for pr in pull_requests {
             let pr_checks: Vec<CheckRun> = checks
                 .iter()
                 .filter(|check| check.head_sha == pr.head.sha)
@@ -253,10 +253,10 @@ pub(crate) fn collect_pull_requests(
 pub(crate) fn collect_check_runs(core: &ForgeCore, repos: &[ControlRepo]) -> Vec<ControlCheckRun> {
     let mut checks = Vec::new();
     for repo in repos {
-        let list = core
-            .list_check_runs(&repo.owner, &repo.name, None)
-            .map(|list| list.check_runs)
-            .unwrap_or_default();
+        let list = match core.list_check_runs(&repo.owner, &repo.name, None) {
+            Ok(list) => list.check_runs,
+            Err(_) => Vec::new(),
+        };
         for check in list {
             let state = check_state(&check);
             checks.push(ControlCheckRun {

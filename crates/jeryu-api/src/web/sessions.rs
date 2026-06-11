@@ -254,7 +254,7 @@ fn create_session(
     let command = agent_program.to_string_lossy().to_string();
 
     let workspace = std::env::temp_dir().join(format!("jeryu-session-{run_id}-{}", now_ms()));
-    let origin_url = repo_origin_url(&origin_base_url(&HeaderMap::new()), &owner, &name);
+    let origin_url = resolved.path.to_string_lossy().to_string();
 
     let job = JobRequest {
         job_id: run_id.clone(),
@@ -864,16 +864,16 @@ fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
             continue;
         }
         let dst = agent_home.join(file.container_rel);
-        if let Some(parent) = dst.parent() {
-            if let Err(err) = std::fs::create_dir_all(parent) {
-                eprintln!(
-                    "seed_agent_auth: failed to create dir {} -> {}: {}",
-                    src.display(),
-                    dst.display(),
-                    err
-                );
-                continue;
-            }
+        if let Some(parent) = dst.parent()
+            && let Err(err) = std::fs::create_dir_all(parent)
+        {
+            eprintln!(
+                "seed_agent_auth: failed to create dir {} -> {}: {}",
+                src.display(),
+                dst.display(),
+                err
+            );
+            continue;
         }
         match std::fs::copy(&src, &dst) {
             Ok(bytes) => {
@@ -1216,11 +1216,6 @@ fn docker_on_path() -> Option<String> {
     }
 }
 
-/// The smart-HTTP clone URL the agent container fetches `main` from.
-fn repo_origin_url(base_url: &str, owner: &str, repo: &str) -> String {
-    format!("{}/git/{owner}/{repo}.git", base_url.trim_end_matches('/'))
-}
-
 /// Files touched between the session base and the captured head, via `git diff`.
 /// Best-effort: a diff failure yields an empty list rather than blocking publish.
 fn changed_files(
@@ -1357,3 +1352,4 @@ fn session_typed_error(
 
 #[cfg(test)]
 mod tests;
+// force recompile 1781080896

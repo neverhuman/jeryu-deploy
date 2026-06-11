@@ -11,3 +11,11 @@ cargo_members = [
   "crates/jeryu-api",
   "crates/jeryu-cli",
 ]
+
+[python]
+allowed_non_product_paths = ["ops/split/"]
+
+[db]
+root_paths = ["db"]
+migration_paths = ["db/migrations"]
+constraint_paths = ["db/constraints"]

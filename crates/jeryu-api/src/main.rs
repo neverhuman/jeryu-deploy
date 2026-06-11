@@ -33,6 +33,8 @@ enum WebCommand {
         spa_dir: PathBuf,
         #[arg(long, default_value = "~/.local/share/jeryu")]
         data_dir: PathBuf,
+        #[arg(long)]
+        split_manifest: Option<PathBuf>,
     },
 }
 
@@ -47,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bind,
                     spa_dir,
                     data_dir,
+                    split_manifest,
                 },
         }) => {
             let data_dir = expand_tilde(data_dir);
@@ -56,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 spa_dir,
                 data_dir,
                 git_storage_root,
+                split_manifest,
             })
             .await
         }

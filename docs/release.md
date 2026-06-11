@@ -39,21 +39,27 @@ The release structure is intentionally artifact-backed:
 - SignRail artifact-support evidence uses the Git commit SHA as its release
   version unless the caller sets `SIGNRAIL_RELEASE_VERSION`.
 
-### Main Push Version Bridge
+### Main Ref Authority And Version Bridge
 
-When local Jeryu receives a non-delete update to `refs/heads/main`, the API
-push bridge runs `jeryu-wsversion` in a temporary clone of the bare repo. It
-decides the bump from the pushed range, applies the root workspace version and
-changelog update, commits `chore(release): vX [skip-version]`, and pushes that
-commit back to local `main`. The `[skip-version]` marker is the recursion guard:
-the generated release commit is evidence for the next release receipt, but it
-does not trigger another version bump.
+Local and external Git clients cannot push directly to `refs/heads/main`.
+They must publish a branch and merge through Jeryu's PR path. After the merge
+passport, CI, head-SHA, and branch-protection checks pass, Jeryu may advance
+`main` server-side through the protected ref service; this is not a receive-pack
+bypass, direct push, or force update.
+
+When an authorized server-side update advances `refs/heads/main`, the API bridge
+runs `jeryu-wsversion` in a temporary clone of the bare repo. It decides the
+bump from the landed range, applies the root workspace version and changelog
+update, and commits `chore(release): vX [skip-version]`. The bridge advances
+local `main` with a compare-and-swap `update-ref` from the exact main SHA that
+triggered the bridge to the generated bump commit. If `main` moved meanwhile,
+the CAS fails and the duplicate bump is discarded.
 
 This bridge does not tag, sign, publish artifacts, or bypass the PR-backed
 release process. It only keeps the workspace version source aligned after local
-`main` advances. Concurrent deliveries may race to write the same bump; the
-first push wins and rejected duplicate pushes leave the single release bump on
-`main`.
+`main` advances. The `[skip-version]` marker is the recursion guard: the
+generated release commit is evidence for the next release receipt, but it does
+not trigger another version bump.
 
 ## Required Gates
 
@@ -69,7 +75,10 @@ first push wins and rejected duplicate pushes leave the single release bump on
 - `cargo test -p jeryu-runnerd workcell --jobs 40` when the workcell control plane, tar safety, or CI repair snapshot helpers change.
 - `cargo test -p jeryu-readmodel -p jeryu-tui --jobs 40` when the workcells,
   agent-runs, codegraph/oracle dashboard, or TUI projection contract changes.
-- `cargo test -p jeryu-readmodel --jobs 40 && cd web && npm run typecheck` when the generated web bootstrap contract changes.
+- `cargo test -p jeryu-readmodel --jobs 40 && cd apps/web && npm run typecheck` when the generated web bootstrap contract changes.
+- `cd apps/web && npm run ux-qa` when the SPA's rendered surface changes; the
+  Playwright HTML report it checks is suppressed by the rtk command wrapper, so
+  produce it with `rtk proxy npx playwright test` first.
 - `cargo test -p jeryu-api --features web --jobs 40` when compatibility routes
   or guided repair bodies change.
 - `cargo test -p jeryu-api --features web --jobs 40 r5_jail_loop` when the

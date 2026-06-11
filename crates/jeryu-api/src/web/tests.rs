@@ -13,10 +13,10 @@ use jeryu_codegraph::{
 };
 use jeryu_core::CheckConclusion;
 use jeryu_core::{
-    CreateCheckRunRequest, CreatePullRequestRequest, CreateRepositoryRequest,
-    SetBranchProtectionRequest,
+    CreateCheckRunRequest, CreatePullRequestRequest, CreateRepositoryRequest, CreateReviewRequest,
+    ReviewState, SetBranchProtectionRequest,
 };
-use jeryu_readmodel::contracts::ServerWsMessage;
+use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage};
 use jeryu_readmodel::{HealthLevel, sample_read_model};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -137,6 +137,20 @@ async fn workcell_repair_flow_holds_exports_and_releases() {
         core,
         storage.path().to_path_buf(),
     ));
+    state
+        .core
+        .create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: "ci/export-fixture".to_string(),
+                head_sha: head_sha.clone(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(CheckConclusion::Success),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .expect("seed exported head check-run");
     let repair_body = serde_json::json!({
         "agent_id": "agent-wrath-17",
         "workspace_root": workspace_root,
@@ -229,14 +243,14 @@ async fn workcell_repair_flow_holds_exports_and_releases() {
         .expect("list check-runs for exported head");
     assert!(
         check_runs.total_count >= 1,
-        "exporting a PR should seed CI check-runs, got {check_runs:?}"
+        "the exported PR head should have CI check-runs, got {check_runs:?}"
     );
     assert!(
         check_runs
             .check_runs
             .iter()
             .any(|run| run.conclusion == Some(CheckConclusion::Success)),
-        "the seeded export CI set should include a green run"
+        "the exported PR head CI set should include a green run"
     );
 
     let release = response_json(
@@ -865,6 +879,14 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
             },
         )
         .unwrap();
+    let storage = tempfile::tempdir().expect("git storage dir");
+    let (base_sha, head_sha) = build_bare_repo_with_main_and_feature(
+        storage.path(),
+        "alice",
+        "jeryu",
+        "src/merge.rs",
+        "pub fn merge_ready() -> bool { true }\n",
+    );
     let pr = core
         .create_pull_request(
             "alice",
@@ -872,10 +894,10 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
             "alice",
             CreatePullRequestRequest {
                 title: "merge-ready".to_string(),
-                head: "merge-ready".to_string(),
+                head: "feature".to_string(),
                 base: "main".to_string(),
-                head_sha: Some("head-merge".to_string()),
-                base_sha: Some("base-ready".to_string()),
+                head_sha: Some(head_sha.clone()),
+                base_sha: Some(base_sha),
                 changed_files: vec!["src/merge.rs".to_string()],
                 ..CreatePullRequestRequest::default()
             },
@@ -886,14 +908,17 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
         "jeryu",
         CreateCheckRunRequest {
             name: "ci/fast".to_string(),
-            head_sha: "head-merge".to_string(),
+            head_sha: head_sha.clone(),
             status: Some(jeryu_core::CheckRunStatus::Completed),
             conclusion: Some(CheckConclusion::Success),
             ..CreateCheckRunRequest::default()
         },
     )
     .unwrap();
-    let state = Arc::new(WebState::new(core));
+    let state = Arc::new(WebState::new_with_git_storage(
+        core,
+        storage.path().to_path_buf(),
+    ));
     let path = || AxumPath((repo.id.to_string(), pr.number));
 
     let approved = response_json(
@@ -902,7 +927,7 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
             path(),
             axum::body::Bytes::from(
                 serde_json::json!({
-                    "expected_head_sha": "head-merge",
+                    "expected_head_sha": head_sha.clone(),
                     "body_markdown": "ship it"
                 })
                 .to_string(),
@@ -923,7 +948,7 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
             path(),
             axum::body::Bytes::from(
                 serde_json::json!({
-                    "expected_head_sha": "head-merge",
+                    "expected_head_sha": head_sha.clone(),
                     "expected_passport_hash": passport_hash,
                     "merge_method": "merge",
                     "commit_title": "Merge ready",
@@ -936,7 +961,102 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
     )
     .await;
     assert_eq!(merged["summary"]["state"], "merged");
-    assert_eq!(merged["merge_passport"]["head_sha"], "head-merge");
+    assert_eq!(merged["merge_passport"]["head_sha"], head_sha);
+}
+
+#[tokio::test]
+async fn web_pull_merge_advances_real_bare_main_ref() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let storage = tempfile::tempdir().expect("git storage dir");
+    let (base_sha, head_sha) = build_bare_repo_with_main_and_feature(
+        storage.path(),
+        "alice",
+        "jeryu",
+        "src/web_merge.rs",
+        "pub fn merged() -> bool { true }\n",
+    );
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "jeryu",
+            "alice",
+            CreatePullRequestRequest {
+                title: "real merge".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(head_sha.clone()),
+                base_sha: Some(base_sha.clone()),
+                changed_files: vec!["src/web_merge.rs".to_string()],
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "ci/fast".to_string(),
+            head_sha: head_sha.clone(),
+            status: Some(jeryu_core::CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::Success),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_review(
+        "alice",
+        "jeryu",
+        pr.number,
+        "bob",
+        CreateReviewRequest {
+            body: None,
+            event: ReviewState::Approved,
+            comments: Vec::new(),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new_with_git_storage(
+        core,
+        storage.path().to_path_buf(),
+    ));
+    let path = || AxumPath((repo.id.to_string(), pr.number));
+    let detail = response_json(super::pulls::detail(State(state.clone()), path()).await).await;
+    assert_eq!(detail["merge_passport"]["status"], "pass");
+    let passport_hash = detail["passport_hash"].as_str().unwrap();
+
+    let response = super::pulls::merge(
+        State(state),
+        path(),
+        axum::body::Bytes::from(
+            serde_json::json!({
+                "expected_head_sha": head_sha.clone(),
+                "expected_passport_hash": passport_hash,
+                "merge_method": "merge"
+            })
+            .to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let merged = response_json(response).await;
+
+    assert_eq!(merged["summary"]["state"], "merged");
+    assert_eq!(
+        bare_ref(storage.path(), "alice", "jeryu", "refs/heads/main"),
+        head_sha,
+        "web merge route must move the real bare main ref"
+    );
 }
 
 #[tokio::test]
@@ -1850,7 +1970,7 @@ async fn workcell_export_slice_denies_out_of_slice_head_and_creates_no_pr() {
 }
 
 #[tokio::test]
-async fn workcell_repair_live_legacy_request_uses_failed_run_as_ci_run() {
+async fn workcell_repair_live_requires_ci_run_id() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
     let repair_body = serde_json::json!({
         "agent_id": "agent-wrath-17",
@@ -1871,23 +1991,21 @@ async fn workcell_repair_live_legacy_request_uses_failed_run_as_ci_run() {
         "failure_log_digest": "sha256:deadbeef"
     });
 
-    let response = response_json(
-        super::workcells::repair_live(
-            State(state),
-            axum::body::Bytes::from(serde_json::to_vec(&repair_body).unwrap()),
-        )
-        .await,
+    let response = super::workcells::repair_live(
+        State(state),
+        axum::body::Bytes::from(serde_json::to_vec(&repair_body).unwrap()),
     )
     .await;
-
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let err = response_json(response).await;
+    assert_eq!(err["code"], "ci_run_id_required");
     assert_eq!(
-        response["held"]["frozen_snapshot"]["ci_run_id"],
-        "legacy-run-17"
+        err["purpose"], "hold a failed workcell and start live repair",
+        "repair requests must carry the CI run they are repairing"
     );
-    assert_eq!(
-        response["held"]["frozen_snapshot"]["failed_run_id"],
-        "legacy-run-17"
-    );
+    for key in ["reason", "common_fixes", "docs_url", "repair_hint"] {
+        assert!(err.get(key).is_some(), "missing repair field: {key}");
+    }
 }
 
 /// An empty server yields an empty pool fabric (Unknown health), and the
@@ -1925,6 +2043,53 @@ fn bootstrap_and_repo_list_reflect_core_repositories() {
     let repos = repo_list_response(&state);
     assert_eq!(repos.total, 1);
     assert_eq!(repos.repositories[0].id.owner, "alice");
+}
+
+#[test]
+fn repo_list_classifies_jeryu_split_portal_and_members() {
+    let core = ForgeCore::new();
+    for (owner, name) in [
+        ("neverhuman", "jeryu"),
+        ("neverhuman", "jeryu-core"),
+        ("alice", "unrelated"),
+    ] {
+        core.create_repository(
+            owner,
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    let state = WebState::new(core);
+    let repos = repo_list_response(&state);
+    let portal = repos
+        .repositories
+        .iter()
+        .find(|repo| repo.id.owner == "neverhuman" && repo.id.name == "jeryu")
+        .expect("portal repo");
+    assert_eq!(portal.family.as_deref(), Some("jeryu-split"));
+    assert_eq!(portal.repo_role, Some(RepositoryRole::PublicPortal));
+
+    let core_repo = repos
+        .repositories
+        .iter()
+        .find(|repo| repo.id.owner == "neverhuman" && repo.id.name == "jeryu-core")
+        .expect("split member repo");
+    assert_eq!(core_repo.family.as_deref(), Some("jeryu-split"));
+    assert_eq!(core_repo.repo_role, Some(RepositoryRole::SplitMember));
+
+    let unrelated = repos
+        .repositories
+        .iter()
+        .find(|repo| repo.id.owner == "alice" && repo.id.name == "unrelated")
+        .expect("unrelated repo");
+    assert_eq!(unrelated.family, None);
+    assert_eq!(unrelated.repo_role, None);
+    assert_eq!(repos.facets.families, vec!["jeryu-split".to_string()]);
 }
 
 #[tokio::test]
@@ -2245,6 +2410,82 @@ fn build_bare_repo_with_diff(
     );
 
     (base_sha, head_sha)
+}
+
+fn build_bare_repo_with_main_and_feature(
+    storage_root: &std::path::Path,
+    owner: &str,
+    repo: &str,
+    feature_path: &str,
+    feature_contents: &str,
+) -> (String, String) {
+    use std::process::Command;
+
+    let bare = storage_root.join(owner).join(format!("{repo}.git"));
+    std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
+    let work = storage_root.join(format!("{owner}-{repo}-merge-work"));
+    std::fs::create_dir_all(&work).expect("create work dir");
+
+    let git = |args: &[&str], cwd: &std::path::Path| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "jeryu-test")
+            .env("GIT_AUTHOR_EMAIL", "jeryu-test@example.com")
+            .env("GIT_COMMITTER_NAME", "jeryu-test")
+            .env("GIT_COMMITTER_EMAIL", "jeryu-test@example.com")
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+
+    git(&["init", "--quiet", "-b", "main"], &work);
+    std::fs::write(work.join("BASE.txt"), "base\n").expect("write base file");
+    git(&["add", "BASE.txt"], &work);
+    git(&["commit", "--quiet", "-m", "base"], &work);
+    let base_sha = git(&["rev-parse", "HEAD"], &work);
+
+    git(&["checkout", "--quiet", "-b", "feature"], &work);
+    let path = work.join(feature_path);
+    std::fs::create_dir_all(path.parent().expect("feature file parent"))
+        .expect("create feature file dir");
+    std::fs::write(&path, feature_contents).expect("write feature file");
+    git(&["add", feature_path], &work);
+    git(&["commit", "--quiet", "-m", "feature"], &work);
+    let head_sha = git(&["rev-parse", "HEAD"], &work);
+    git(
+        &[
+            "clone",
+            "--quiet",
+            "--bare",
+            ".",
+            bare.to_str().expect("bare utf8"),
+        ],
+        &work,
+    );
+    git(&["symbolic-ref", "HEAD", "refs/heads/main"], bare.as_path());
+
+    (base_sha, head_sha)
+}
+
+fn bare_ref(storage_root: &std::path::Path, owner: &str, repo: &str, ref_name: &str) -> String {
+    let bare = storage_root.join(owner).join(format!("{repo}.git"));
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", ref_name])
+        .current_dir(&bare)
+        .output()
+        .unwrap_or_else(|e| panic!("git rev-parse {ref_name} failed to spawn: {e}"));
+    assert!(
+        output.status.success(),
+        "git rev-parse {ref_name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 async fn response_json(response: AxumResponse) -> Value {
@@ -3111,4 +3352,813 @@ fn unsubscribe_frame_extracts_scopes() {
     let frame = json!({ "type": "unsubscribe", "scopes": ["pool.trusted", "system.health"] });
     let dropped = unsubscribe_scopes(&frame);
     assert_eq!(dropped, vec!["pool.trusted", "system.health"]);
+}
+
+/// Health and the failing/running badges must reflect the repository's CURRENT
+/// state — the latest run per check on a live head — not the append-only
+/// check-run history. Legacy failures on stale shas and superseded failures on
+/// a live head are both invisible once a newer green run exists.
+#[test]
+fn repo_health_scopes_check_runs_to_current_heads() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    // Legacy failure on a sha no open PR (or branch head) points at anymore.
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/ci".to_string(),
+            head_sha: "stale-sha".to_string(),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    // Open PR whose head first failed, then passed on a rerun: only the
+    // newest verdict for (head, name) may count.
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some("live-sha".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/ci".to_string(),
+            head_sha: "live-sha".to_string(),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/ci".to_string(),
+            head_sha: "live-sha".to_string(),
+            conclusion: Some(CheckConclusion::Success),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+
+    let state = WebState::new(core);
+    let repos = repo_list_response(&state);
+    let summary = &repos.repositories[0];
+    assert_eq!(
+        summary.failing_checks, 0,
+        "stale + superseded failures must not count"
+    );
+    assert_eq!(summary.health, "healthy");
+    assert_eq!(summary.open_pull_requests, 1);
+}
+
+/// A failure that IS the latest verdict on a live head flips health to
+/// warning, while a failing `jeryu/github-mirror` bookkeeping run never does —
+/// mirror state has its own surface. In-progress runs only count on live heads.
+#[test]
+fn repo_health_counts_live_failures_and_ignores_mirror_checks() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some("live-sha".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    // Latest verdict for jeryu/ci on the live head is a failure.
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/ci".to_string(),
+            head_sha: "live-sha".to_string(),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    // A failed mirror push on the same head is bookkeeping, not ill-health.
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/github-mirror".to_string(),
+            head_sha: "live-sha".to_string(),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    // Running job on the live head counts; on a stale sha it does not.
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/agent-review".to_string(),
+            head_sha: "live-sha".to_string(),
+            status: Some(jeryu_core::CheckRunStatus::InProgress),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/agent-review".to_string(),
+            head_sha: "stale-sha".to_string(),
+            status: Some(jeryu_core::CheckRunStatus::InProgress),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+
+    let state = WebState::new(core);
+    let repos = repo_list_response(&state);
+    let summary = &repos.repositories[0];
+    assert_eq!(
+        summary.failing_checks, 1,
+        "mirror failure excluded, ci failure counted"
+    );
+    assert_eq!(summary.health, "warning");
+    assert_eq!(summary.running_jobs, 1, "stale in-progress run excluded");
+}
+
+/// PATCH /api/v1/repos/:id applies only the keys present in the body:
+/// a string sets the family, an explicit null clears it, junk is rejected,
+/// and the families facet reflects the live values.
+#[tokio::test]
+async fn repo_update_sets_and_clears_family() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: "veox-nht".to_string(),
+                private: true,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let state = Arc::new(WebState::new(core));
+    let id = repo.id.to_string();
+
+    let updated = response_json(
+        repo_update(
+            State(state.clone()),
+            AxumPath(id.clone()),
+            axum::body::Bytes::from_static(br#"{"family": "veox-split"}"#),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(updated["family"], "veox-split");
+    let list = repo_list_response(&state);
+    assert_eq!(list.facets.families, vec!["veox-split".to_string()]);
+
+    let cleared = response_json(
+        repo_update(
+            State(state.clone()),
+            AxumPath("jeryu/veox-nht".to_string()),
+            axum::body::Bytes::from_static(br#"{"family": null}"#),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(cleared["family"], serde_json::Value::Null);
+    assert!(repo_list_response(&state).facets.families.is_empty());
+
+    // Unknown fields, non-string family, and blank family are 422s.
+    for body in [
+        br#"{"name": "nope"}"#.as_slice(),
+        br#"{"family": 7}"#.as_slice(),
+        br#"{"family": "  "}"#.as_slice(),
+    ] {
+        let response = repo_update(
+            State(state.clone()),
+            AxumPath(id.clone()),
+            axum::body::Bytes::copy_from_slice(body),
+        )
+        .await;
+        assert_eq!(
+            response.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    let missing = repo_update(
+        State(state),
+        AxumPath("jeryu/missing".to_string()),
+        axum::body::Bytes::from_static(br#"{"family": "x"}"#),
+    )
+    .await;
+    assert_eq!(
+        missing.into_response().status(),
+        axum::http::StatusCode::NOT_FOUND
+    );
+}
+
+/// DELETE /api/v1/repos/:id — an unknown repository is a structured 404.
+#[tokio::test]
+async fn repo_delete_unknown_repo_is_404() {
+    let state = Arc::new(WebState::new(ForgeCore::new()));
+    let response = repo_admin::repo_delete(
+        State(state),
+        AxumPath("jeryu/missing".to_string()),
+        axum::body::Bytes::from_static(br#"{"confirm_full_name": "jeryu/missing"}"#),
+    )
+    .await;
+    assert_eq!(
+        response.into_response().status(),
+        axum::http::StatusCode::NOT_FOUND
+    );
+}
+
+/// The confirmation must byte-match the repository's full name; anything else
+/// (case drift, malformed body) is a 422 and the repository stays registered.
+#[tokio::test]
+async fn repo_delete_requires_byte_exact_confirmation() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let state = Arc::new(WebState::new(core));
+    for body in [
+        br#"{"confirm_full_name": "alice/Jeryu"}"#.as_slice(),
+        br#"{"confirm_full_name": "alice/*"}"#.as_slice(),
+        br#"{"confirm_full_name": ""}"#.as_slice(),
+        br#"not json"#.as_slice(),
+    ] {
+        let response = repo_admin::repo_delete(
+            State(state.clone()),
+            AxumPath(repo.id.to_string()),
+            axum::body::Bytes::copy_from_slice(body),
+        )
+        .await;
+        assert_eq!(
+            response.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    assert_eq!(repo_list_response(&state).repositories.len(), 1);
+}
+
+/// Happy-path registry deletion: a 200 receipt with per-collection counts and
+/// an audit id, and the repository disappears from the list response. With
+/// `delete_storage` unset nothing on disk is touched.
+#[tokio::test]
+async fn repo_delete_registry_returns_receipt_and_unlists_repo() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    core.create_label(
+        "alice",
+        "jeryu",
+        jeryu_core::CreateLabelRequest {
+            name: "bug".to_string(),
+            color: "ff0000".to_string(),
+            description: None,
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core));
+
+    let response = repo_admin::repo_delete(
+        State(state.clone()),
+        AxumPath(repo.id.to_string()),
+        axum::body::Bytes::from_static(br#"{"confirm_full_name": "alice/jeryu"}"#),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let receipt = response_json(response).await;
+    assert_eq!(receipt["registry_deleted"], true);
+    assert_eq!(receipt["storage_deleted"], false);
+    assert_eq!(receipt["storage_path"], Value::Null);
+    assert_eq!(receipt["repo"]["owner"], "alice");
+    assert_eq!(receipt["repo"]["name"], "jeryu");
+    assert!(
+        !receipt["audit_id"].as_str().unwrap_or_default().is_empty(),
+        "the receipt must carry the audit entry id"
+    );
+    let counts = receipt["deleted_counts"].as_array().expect("counts array");
+    let removed = |collection: &str| {
+        counts
+            .iter()
+            .find(|count| count["collection"] == collection)
+            .map(|count| count["removed"].as_u64().unwrap_or_default())
+            .unwrap_or_else(|| panic!("missing collection {collection}"))
+    };
+    assert_eq!(removed("labels"), 1);
+    assert_eq!(removed("branch_protections"), 1);
+    assert_eq!(removed("counters"), 1);
+    assert_eq!(removed("pulls"), 0);
+
+    assert!(
+        repo_list_response(&state).repositories.is_empty(),
+        "the deleted repository must vanish from the list"
+    );
+}
+
+/// `delete_storage: true` against a real managed bare repository removes the
+/// directory and reports its path in the receipt.
+#[tokio::test]
+async fn repo_delete_storage_removes_managed_bare_dir() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let storage = tempdir().expect("git storage dir");
+    let state = Arc::new(WebState::new_with_git_storage(
+        core,
+        storage.path().to_path_buf(),
+    ));
+    let bare = state
+        .repo_manager
+        .create_bare(&jeryu_gitd::RepoId::new("alice", "jeryu").expect("repo id"))
+        .expect("create bare repo");
+    assert!(bare.path.join("HEAD").is_file());
+
+    let response = repo_admin::repo_delete(
+        State(state.clone()),
+        AxumPath("alice/jeryu".to_string()),
+        axum::body::Bytes::from_static(
+            br#"{"confirm_full_name": "alice/jeryu", "delete_storage": true}"#,
+        ),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let receipt = response_json(response).await;
+    assert_eq!(receipt["registry_deleted"], true);
+    assert_eq!(receipt["storage_deleted"], true);
+    assert!(
+        !receipt["storage_path"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+    assert!(!bare.path.exists(), "the bare dir must be removed");
+    assert!(repo_list_response(&state).repositories.is_empty());
+}
+
+/// A symlinked `name.git` under the storage root is refused with a 422 and
+/// the symlink target stays untouched (registry tier already committed).
+#[cfg(unix)]
+#[tokio::test]
+async fn repo_delete_storage_refuses_symlinked_bare_dir() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let storage = tempdir().expect("git storage dir");
+    let victim_root = tempdir().expect("victim dir");
+    let victim = victim_root.path().join("victim.git");
+    std::fs::create_dir_all(victim.join("objects")).expect("victim objects");
+    std::fs::create_dir_all(victim.join("refs")).expect("victim refs");
+    std::fs::write(victim.join("HEAD"), "ref: refs/heads/main\n").expect("victim HEAD");
+    std::fs::create_dir_all(storage.path().join("alice")).expect("owner dir");
+    std::os::unix::fs::symlink(&victim, storage.path().join("alice").join("jeryu.git"))
+        .expect("symlink bare dir");
+    let state = Arc::new(WebState::new_with_git_storage(
+        core,
+        storage.path().to_path_buf(),
+    ));
+
+    let response = repo_admin::repo_delete(
+        State(state),
+        AxumPath("alice/jeryu".to_string()),
+        axum::body::Bytes::from_static(
+            br#"{"confirm_full_name": "alice/jeryu", "delete_storage": true}"#,
+        ),
+    )
+    .await
+    .into_response();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert!(
+        victim.join("HEAD").is_file(),
+        "the symlink target must be untouched"
+    );
+}
+
+/// Live work blocks deletion: a running repo-scoped agent run yields a 409
+/// and the repository stays registered.
+#[tokio::test]
+async fn repo_delete_conflicts_with_live_agent_run() {
+    let core = ForgeCore::new();
+    // seed_test_run pins its owning repo to "owner/repo".
+    core.create_repository(
+        "owner",
+        CreateRepositoryRequest {
+            name: "repo".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core));
+    state.agent_runs.seed_test_run("run-live-409", 4);
+
+    let response = repo_admin::repo_delete(
+        State(state.clone()),
+        AxumPath("owner/repo".to_string()),
+        axum::body::Bytes::from_static(br#"{"confirm_full_name": "owner/repo"}"#),
+    )
+    .await;
+    assert_eq!(
+        response.into_response().status(),
+        axum::http::StatusCode::CONFLICT
+    );
+    assert_eq!(repo_list_response(&state).repositories.len(), 1);
+}
+
+/// Negative authorization / data-isolation proof for the DELETE surface:
+/// a confirmation naming ANOTHER owner's repository never deletes anything
+/// (the confirm is bound to the addressed resource, so a non-owner name is
+/// refused), and deleting one owner's repository leaves the other owner's
+/// same-named repository and its data fully intact.
+#[tokio::test]
+async fn repo_delete_cannot_cross_owner_boundaries() {
+    let core = ForgeCore::new();
+    let alice = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    // Bob owns a repository with the SAME name: the sharpest isolation probe
+    // for the (owner, name)-keyed state maps.
+    let bob = core
+        .create_repository(
+            "bob",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    core.create_label(
+        "bob",
+        "jeryu",
+        jeryu_core::CreateLabelRequest {
+            name: "keep".to_string(),
+            color: "00ff00".to_string(),
+            description: None,
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core));
+
+    // Non-owner confirmation: addressing bob's repo while confirming alice's
+    // full name (and vice versa) is refused and deletes nothing.
+    for (target, wrong_confirm) in [
+        (
+            bob.id.to_string(),
+            br#"{"confirm_full_name": "alice/jeryu"}"#.as_slice(),
+        ),
+        (
+            alice.id.to_string(),
+            br#"{"confirm_full_name": "bob/jeryu"}"#.as_slice(),
+        ),
+    ] {
+        let response = repo_admin::repo_delete(
+            State(state.clone()),
+            AxumPath(target),
+            axum::body::Bytes::from_static(wrong_confirm),
+        )
+        .await;
+        assert_eq!(
+            response.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "a non-owner confirmation must never authorize a delete"
+        );
+    }
+    assert_eq!(repo_list_response(&state).repositories.len(), 2);
+
+    // Deleting alice's repo must not touch bob's same-named repo or its data.
+    let response = repo_admin::repo_delete(
+        State(state.clone()),
+        AxumPath(alice.id.to_string()),
+        axum::body::Bytes::from_static(br#"{"confirm_full_name": "alice/jeryu"}"#),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let remaining = repo_list_response(&state);
+    assert_eq!(remaining.repositories.len(), 1);
+    assert_eq!(remaining.repositories[0].id.owner, "bob");
+    assert_eq!(remaining.repositories[0].id.name, "jeryu");
+    let bob_labels = state.github.core().list_labels("bob", "jeryu").unwrap();
+    assert_eq!(
+        bob_labels.len(),
+        1,
+        "bob's data must survive alice's delete"
+    );
+    assert_eq!(bob_labels[0].name, "keep");
+}
+
+/// Score ingest → list → repo-summary badge join, plus mirror status derived
+/// from jeryu/github-mirror bookkeeping runs.
+#[tokio::test]
+async fn jankurai_scores_ingest_and_surface_on_the_repo_summary() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: true,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    // Mirror bookkeeping: an old success then a newer failure -> last attempt
+    // failed, last success still reported, repo health untouched.
+    core.create_check_run(
+        "jeryu",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/github-mirror".to_string(),
+            head_sha: "m1".to_string(),
+            conclusion: Some(CheckConclusion::Success),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "jeryu",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/github-mirror".to_string(),
+            head_sha: "m2".to_string(),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core));
+    let id = repo.id.to_string();
+
+    // Ingest: a scored run on main.
+    let created = repo_jankurai_scores_ingest(
+        State(state.clone()),
+        AxumPath(id.clone()),
+        axum::body::Bytes::from_static(
+            br#"{"branch":"main","commit_sha":"abc","score":92,"hard_findings":0,"decision":"scored","caps_applied":[]}"#,
+        ),
+    )
+    .await
+    .into_response();
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+
+    // The backfill probe shape: GET ?sha= returns {"scores": [...]}.
+    let listed = response_json(
+        repo_jankurai_scores_list(
+            State(state.clone()),
+            AxumPath("jeryu/jeryu".to_string()),
+            Query(super::repositories::ScoreListQuery {
+                branch: None,
+                sha: Some("abc".to_string()),
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(listed["scores"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["scores"][0]["score"], 92);
+
+    // Summary join + mirror posture.
+    let repos = repo_list_response(&state);
+    let summary = &repos.repositories[0];
+    assert_eq!(summary.jankurai_score, Some(92));
+    assert_eq!(summary.jankurai_decision.as_deref(), Some("scored"));
+    assert!(summary.jankurai_scored_at.is_some());
+    let mirror = summary.mirror.as_ref().expect("mirror reported");
+    assert!(mirror.configured);
+    assert!(!mirror.last_attempt_ok, "newest mirror run failed");
+    assert_eq!(mirror.last_attempt_conclusion.as_deref(), Some("failure"));
+    assert!(
+        mirror.last_success_at.is_some(),
+        "old success still visible"
+    );
+    assert_eq!(
+        summary.failing_checks, 0,
+        "mirror failures are not repo ill-health"
+    );
+    assert_eq!(summary.health, "healthy");
+
+    // Tool-failed ingest: null score + decision surfaces, badge score stays None.
+    let failed = repo_jankurai_scores_ingest(
+        State(state.clone()),
+        AxumPath(id.clone()),
+        axum::body::Bytes::from_static(
+            br#"{"branch":"main","commit_sha":"zzz","score":null,"decision":"tool-failed","tool_exit":2}"#,
+        ),
+    )
+    .await
+    .into_response();
+    assert_eq!(failed.status(), axum::http::StatusCode::CREATED);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(summary.jankurai_score, None);
+    assert_eq!(summary.jankurai_decision.as_deref(), Some("tool-failed"));
+
+    // Garbage and unknown repos are rejected cleanly.
+    let bad = repo_jankurai_scores_ingest(
+        State(state.clone()),
+        AxumPath(id),
+        axum::body::Bytes::from_static(br#"{"branch":"main"}"#),
+    )
+    .await
+    .into_response();
+    assert_eq!(bad.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    let missing = repo_jankurai_scores_ingest(
+        State(state),
+        AxumPath("jeryu/missing".to_string()),
+        axum::body::Bytes::from_static(
+            br#"{"branch":"main","commit_sha":"a","decision":"scored"}"#,
+        ),
+    )
+    .await
+    .into_response();
+    assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+/// GET /api/v1/repos must apply the SPA's filters SERVER-SIDE — the family
+/// drill-down page is nothing but `?family=`, and it shipped against a
+/// handler that ignored every query parameter (the e2e mock honoured the
+/// filter, masking the gap). This drives the real handler through Query
+/// extraction so a mock can never hide it again.
+#[tokio::test]
+async fn repo_list_filters_apply_server_side() {
+    let core = ForgeCore::new();
+    for (name, family) in [
+        ("jmcp-core", Some("jmcp-split")),
+        ("jmcp-web", Some("jmcp-split")),
+        ("veox-nht", Some("veox-split")),
+        ("openQG", None),
+    ] {
+        core.create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: true,
+                description: Some(format!("{name} repository")),
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+        if let Some(family) = family {
+            core.set_repository_family("jeryu", name, Some(family.to_string()))
+                .unwrap();
+        }
+    }
+    let state = Arc::new(WebState::new(core));
+
+    let family_only = repos(
+        State(state.clone()),
+        Query(super::repositories::RepoListQuery {
+            family: Some("jmcp-split".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .0;
+    let names: Vec<&str> = family_only
+        .repositories
+        .iter()
+        .map(|repo| repo.id.name.as_str())
+        .collect();
+    assert_eq!(
+        family_only.total, 2,
+        "only the family members may be listed"
+    );
+    assert!(names.contains(&"jmcp-core") && names.contains(&"jmcp-web"));
+    // Facets keep the full picture so the filter chips stay populated.
+    assert_eq!(
+        family_only.facets.families,
+        vec!["jmcp-split".to_string(), "veox-split".to_string()]
+    );
+
+    let searched = repos(
+        State(state.clone()),
+        Query(super::repositories::RepoListQuery {
+            q: Some("veox".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .0;
+    assert_eq!(searched.total, 1);
+    assert_eq!(searched.repositories[0].id.name, "veox-nht");
+
+    let sorted = repos(
+        State(state.clone()),
+        Query(super::repositories::RepoListQuery {
+            sort: Some("name".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .0;
+    let sorted_names: Vec<&str> = sorted
+        .repositories
+        .iter()
+        .map(|repo| repo.id.name.as_str())
+        .collect();
+    assert_eq!(
+        sorted_names,
+        vec!["jmcp-core", "jmcp-web", "openQG", "veox-nht"]
+    );
+
+    // Archived repos are excluded by default and exclusive under ?archived=1.
+    let archived = repos(
+        State(state),
+        Query(super::repositories::RepoListQuery {
+            archived: Some("1".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .0;
+    assert_eq!(archived.total, 0, "no archived repos exist in this fixture");
 }

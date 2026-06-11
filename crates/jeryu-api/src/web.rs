@@ -9,6 +9,7 @@ mod markdown;
 mod mcp_backend;
 mod permissions;
 mod pulls;
+mod repo_admin;
 mod repositories;
 mod sessions;
 mod surface;
@@ -31,6 +32,8 @@ use axum::{Json, Router as AxumRouter};
 use jeryu_codegraph::CodeGraphStore;
 use jeryu_core::ForgeCore;
 use jeryu_readmodel::TuiReadModel;
+use jeryu_readmodel::contracts::RepositoryRole;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tower_http::services::{ServeDir, ServeFile};
@@ -42,7 +45,8 @@ use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
 use jeryu_runnerd::{WarmPool, WorkcellManager};
 use repositories::{
-    repo_blob, repo_detail, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree, repos,
+    repo_blob, repo_detail, repo_jankurai_scores_ingest, repo_jankurai_scores_list, repo_raw,
+    repo_readme, repo_readme_update, repo_refs, repo_tree, repo_update, repos,
 };
 use surface::{bootstrap_payload, github_forward, graphql, markdown_render, repo_entry};
 
@@ -64,6 +68,121 @@ pub struct WebServerConfig {
     pub data_dir: PathBuf,
     /// Storage root for bare git repositories served over smart-HTTP.
     pub git_storage_root: PathBuf,
+    /// Optional split-family manifest used to classify portal/member repos.
+    pub split_manifest: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct SplitCatalog {
+    family: String,
+    /// Both the GitHub slug (`neverhuman/jeryu`) and the local forge slug
+    /// (`jeryu/jeryu`): repos are registered locally under the forge owner,
+    /// so matching only the GitHub slug never classifies anything.
+    portal_slugs: BTreeSet<String>,
+    member_slugs: BTreeSet<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SplitManifest {
+    repo_family: Option<String>,
+    repo: Option<Vec<SplitManifestRepo>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SplitManifestRepo {
+    github_slug: Option<String>,
+    jeryu_slug: Option<String>,
+    profile: Option<String>,
+}
+
+impl SplitCatalog {
+    fn load(manifest: Option<&Path>) -> Self {
+        manifest
+            .and_then(Self::from_manifest)
+            .unwrap_or_else(Self::builtin)
+    }
+
+    fn builtin() -> Self {
+        let family = "jeryu-split".to_string();
+        let portal_slugs = ["neverhuman/jeryu", "jeryu/jeryu"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let member_slugs = [
+            "neverhuman/jeryu",
+            "neverhuman/jeryu-core",
+            "neverhuman/jeryu-ci-runner",
+            "neverhuman/jeryu-cache",
+            "neverhuman/jeryu-intelligence",
+            "neverhuman/jeryu-web",
+            "neverhuman/jeryu-release-ops",
+            "neverhuman/jeryu-deploy",
+            "jeryu/jeryu",
+            "jeryu/jeryu-core",
+            "jeryu/jeryu-ci-runner",
+            "jeryu/jeryu-cache",
+            "jeryu/jeryu-intelligence",
+            "jeryu/jeryu-web",
+            "jeryu/jeryu-release-ops",
+            "jeryu/jeryu-deploy",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        Self {
+            family,
+            portal_slugs,
+            member_slugs,
+        }
+    }
+
+    fn from_manifest(path: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let manifest: SplitManifest = toml::from_str(&text).ok()?;
+        let family = manifest
+            .repo_family
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "jeryu-split".to_string());
+        let mut portal_slugs = BTreeSet::new();
+        let mut member_slugs = BTreeSet::new();
+        for repo in manifest.repo.unwrap_or_default() {
+            let slugs: Vec<String> = [repo.github_slug, repo.jeryu_slug]
+                .into_iter()
+                .flatten()
+                .map(|slug| slug.to_ascii_lowercase())
+                .collect();
+            if slugs.is_empty() {
+                continue;
+            }
+            if repo.profile.as_deref() == Some("public-portal") {
+                portal_slugs.extend(slugs.iter().cloned());
+            }
+            member_slugs.extend(slugs);
+        }
+        if portal_slugs.is_empty() {
+            portal_slugs.insert("neverhuman/jeryu".to_string());
+        }
+        Some(Self {
+            family,
+            portal_slugs,
+            member_slugs,
+        })
+    }
+
+    fn classify(&self, owner: &str, name: &str) -> Option<(String, RepositoryRole)> {
+        let slug = format!(
+            "{}/{}",
+            owner.to_ascii_lowercase(),
+            name.to_ascii_lowercase()
+        );
+        if self.portal_slugs.contains(&slug) {
+            Some((self.family.clone(), RepositoryRole::PublicPortal))
+        } else if self.member_slugs.contains(&slug) {
+            Some((self.family.clone(), RepositoryRole::SplitMember))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -96,6 +215,7 @@ pub(crate) struct WebState {
     /// `JERYU_AGENT_RUNTIME` / `JERYU_DOCKER_BIN`; a test injects it directly so it
     /// never mutates process-global env.
     pub(crate) session_runtime: sessions::SessionRuntimeConfig,
+    split_catalog: SplitCatalog,
 }
 
 impl WebState {
@@ -103,20 +223,30 @@ impl WebState {
         core: ForgeCore,
         repo_manager: Arc<RepoManager>,
         spa_dir: PathBuf,
+        data_dir: PathBuf,
+        split_catalog: SplitCatalog,
     ) -> Self {
         // Assemble a LIVE read model from ForgeCore state so the TUI/web panes
         // render real pool activity and system health, not the empty fixture.
         let tui = crate::read_model::assemble_read_model(&core);
         // ForgeCore is Arc-backed, so this handle shares state with `github`.
         let core_handle = core.clone();
-        #[cfg(test)]
-        let codegraph_store = CodeGraphStore::open(std::env::temp_dir().join(format!(
-            "jeryu-web-codegraph-{}.sqlite",
-            jeryu_runner_core::receipt::now_ms()
-        )))
-        .expect("test codegraph store");
-        #[cfg(not(test))]
-        let codegraph_store = CodeGraphStore::open_default().expect("open codegraph store");
+        let codegraph_path = {
+            #[cfg(test)]
+            {
+                // The durable data_dir is only consulted outside tests.
+                let _ = &data_dir;
+                std::env::temp_dir().join(format!(
+                    "jeryu-web-codegraph-{}.sqlite",
+                    jeryu_runner_core::receipt::now_ms()
+                ))
+            }
+            #[cfg(not(test))]
+            {
+                data_dir.join("codegraph.sqlite")
+            }
+        };
+        let codegraph_store = CodeGraphStore::open(codegraph_path).expect("open codegraph store");
         // Pre-warm the agent pool over the real CLI lifecycle. With the OCI gate
         // closed this only records planned cells (no daemon), so construction is
         // infallible in every environment the web edge boots in.
@@ -136,7 +266,17 @@ impl WebState {
             core: core_handle,
             warm_pool,
             session_runtime: sessions::SessionRuntimeConfig::from_env(),
+            split_catalog,
         }
+    }
+
+    /// Attach the merge-to-GitHub mirror (loaded from the split manifest) to
+    /// the embedded GitHub router. Production-only chaining in `serve()`;
+    /// every other constructor leaves the mirror absent, so no test or
+    /// embedded caller ever attempts a network push.
+    fn with_github_mirror(mut self, mirror: Arc<crate::github_mirror::GithubMirror>) -> Self {
+        self.github = self.github.with_github_mirror(mirror);
+        self
     }
 
     /// Test-only constructor with a throwaway git storage root; the in-process
@@ -149,6 +289,8 @@ impl WebState {
                 std::env::temp_dir().join("jeryu-web-test-git"),
             ))),
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist"),
+            std::env::temp_dir(),
+            SplitCatalog::builtin(),
         )
     }
 
@@ -161,6 +303,8 @@ impl WebState {
             core,
             Arc::new(RepoManager::new(GitdConfig::new(storage_root))),
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist"),
+            std::env::temp_dir(),
+            SplitCatalog::builtin(),
         )
     }
 
@@ -287,8 +431,22 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     )));
     let core = ForgeCore::open_sqlite(db_path)?
         .with_repo_materializer(Arc::new(GitMaterializer::new(repo_manager.clone())));
+    let split_catalog = SplitCatalog::load(config.split_manifest.as_deref());
+    // Merge-to-GitHub mirroring: targets come from the same manifest; with no
+    // manifest (or JERYU_GITHUB_PUSH=0) the mirror loads disabled and merges
+    // never attempt a push.
+    let github_mirror = Arc::new(crate::github_mirror::GithubMirror::load(
+        config.split_manifest.as_deref(),
+    ));
     let app = app(
-        WebState::with_repo_manager(core, repo_manager, config.spa_dir.clone()),
+        WebState::with_repo_manager(
+            core,
+            repo_manager,
+            config.spa_dir.clone(),
+            config.data_dir.clone(),
+            split_catalog,
+        )
+        .with_github_mirror(github_mirror),
         &config.spa_dir,
     );
     let listener = TcpListener::bind(config.bind).await?;
@@ -362,7 +520,12 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
             post(workcells::export_pr),
         )
         .route("/api/v1/repos", get(repos))
-        .route("/api/v1/repos/:id", get(repo_detail))
+        .route(
+            "/api/v1/repos/:id",
+            get(repo_detail)
+                .patch(repo_update)
+                .delete(repo_admin::repo_delete),
+        )
         // Repo-scoped agent sessions: launch a hardened session, and the live
         // per-repo agent-runs list the web Active-Agents page consumes.
         .route("/api/v1/repos/:id/sessions", post(sessions::create))
@@ -388,6 +551,10 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
             post(pulls::approve),
         )
         .route("/api/v1/repos/:id/pulls/:number/merge", post(pulls::merge))
+        .route(
+            "/api/v1/repos/:id/jankurai-scores",
+            get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),
+        )
         .route("/api/v1/repos/:id/refs", get(repo_refs))
         .route("/api/v1/repos/:id/tree", get(repo_tree))
         .route("/api/v1/repos/:id/blob", get(repo_blob))

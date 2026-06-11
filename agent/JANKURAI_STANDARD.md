@@ -7,5 +7,5 @@ Required check: `jeryu-deploy/required`
 Required local commands are `just fast`, `just check`, `just score`, and
 `just security`. Release-supporting repos also expose `just artifact-support`.
 
-Bootstrap score files under `.jankurai/` are placeholders until the pinned
-Jankurai lane runs. Do not treat them as green audit evidence.
+Score files under `.jankurai/` are produced by the pinned Jankurai lane.
+Do not hand-edit them.

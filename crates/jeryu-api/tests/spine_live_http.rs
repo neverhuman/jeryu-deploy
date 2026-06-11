@@ -1,9 +1,10 @@
 #![cfg(feature = "web")]
 //! S4 live-HTTP e2e: boot `serve()` on a real loopback socket, create a repo
-//! over HTTP (which materializes a bare repo on disk), then clone, commit, and
-//! push over the mounted smart-HTTP transport and assert the pushed commit
-//! landed in the on-disk bare repo. This exercises create-repo-to-disk (S3) and
-//! the git transport on the unified `jeryu serve` (S4) end to end.
+//! over HTTP (which materializes a bare repo on disk), then clone, commit, push
+//! an allowed branch over smart-HTTP, and prove a direct client push to
+//! `refs/heads/main` is rejected. This exercises create-repo-to-disk (S3), the
+//! git transport, and the main-protection receive policy on unified `jeryu serve`
+//! (S4) end to end.
 
 use std::fs::File;
 use std::io::Write;
@@ -29,6 +30,24 @@ fn run_git(dir: &Path, args: &[&str]) {
         .status()
         .unwrap_or_else(|err| panic!("git {args:?}: {err}"));
     assert!(status.success(), "git {args:?} failed in {}", dir.display());
+}
+
+fn run_git_failure(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|err| panic!("git {args:?}: {err}"));
+    assert!(
+        !output.status.success(),
+        "git {args:?} unexpectedly succeeded in {}",
+        dir.display()
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
 fn write_incompressible_file(path: &Path, len: usize) {
@@ -67,7 +86,7 @@ async fn wait_until_listening(addr: SocketAddr) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn s4_create_repo_to_disk_and_git_push_over_http() {
+async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
     if !git_available() {
         eprintln!("git unavailable; skipping s4 live-HTTP e2e");
         return;
@@ -92,6 +111,7 @@ async fn s4_create_repo_to_disk_and_git_push_over_http() {
         spa_dir,
         data_dir,
         git_storage_root: git_root.clone(),
+        split_manifest: None,
     };
     let server = tokio::spawn(async move { serve(config).await.unwrap() });
     wait_until_listening(addr).await;
@@ -125,14 +145,15 @@ async fn s4_create_repo_to_disk_and_git_push_over_http() {
     let clone_dir = work.join("clone");
     eprintln!("[s4] cloned");
 
-    // 3. Commit and push back over the same transport.
+    // 3. Commit and push back over the same transport to an allowed branch.
     run_git(
         &clone_dir,
         &["config", "user.email", "tester@jeryu.invalid"],
     );
     run_git(&clone_dir, &["config", "user.name", "Tester"]);
     write_incompressible_file(&clone_dir.join("hello.bin"), 3 * 1024 * 1024);
-    // A GitHub-Actions workflow so the push->CI bridge has something to compile.
+    // A GitHub-Actions workflow so the push path still carries realistic repo
+    // contents; the branch itself is not the protected main ref.
     std::fs::create_dir_all(clone_dir.join(".github/workflows")).unwrap();
     std::fs::write(
         clone_dir.join(".github/workflows/ci.yml"),
@@ -143,36 +164,18 @@ async fn s4_create_repo_to_disk_and_git_push_over_http() {
     .unwrap();
     run_git(&clone_dir, &["add", "."]);
     run_git(&clone_dir, &["commit", "-m", "first commit"]);
-    eprintln!("[s4] git push");
+    eprintln!("[s4] git push feature");
     run_git(
         &clone_dir,
         &[
             GIT_HTTP_GUARD,
             &["-c", "pack.compression=0", "-c", "core.compression=0"],
-            &["push", "origin", "HEAD:refs/heads/main"],
+            &["push", "origin", "HEAD:refs/heads/feature"],
         ]
         .concat(),
     );
-    eprintln!("[s4] pushed");
+    eprintln!("[s4] pushed feature");
 
-    // 4. Assert the pushed commit is in the on-disk bare repo.
-    let out = Command::new("git")
-        .args([
-            "--git-dir",
-            bare.to_str().unwrap(),
-            "rev-parse",
-            "refs/heads/main",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "refs/heads/main must exist in the bare repo after push: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    // 5. The push->CI bridge compiled the workflow and registered check-runs for
-    //    the pushed commit (the receive-pack response is held until it finishes).
     let sha = String::from_utf8(
         Command::new("git")
             .args(["-C", clone_dir.to_str().unwrap(), "rev-parse", "HEAD"])
@@ -183,42 +186,54 @@ async fn s4_create_repo_to_disk_and_git_push_over_http() {
     .unwrap()
     .trim()
     .to_string();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let runs = loop {
-        let runs: serde_json::Value = client
-            .get(format!(
-                "http://{addr}/repos/jeryu/demo/commits/{sha}/check-runs"
-            ))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        if runs
-            .get("total_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            >= 1
-        {
-            break runs;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "push->CI bridge should register a check-run before the deadline, got {runs}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    let total = runs
-        .get("total_count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let conclusion = runs["check_runs"][0]["conclusion"].as_str().unwrap_or("");
-    assert_eq!(
-        conclusion, "success",
-        "the bridge executed the workflow job in the sandbox; it should be green: {runs}"
+
+    // 4. Assert the allowed branch landed in the on-disk bare repo.
+    let feature = Command::new("git")
+        .args([
+            "--git-dir",
+            bare.to_str().unwrap(),
+            "rev-parse",
+            "refs/heads/feature",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        feature.status.success(),
+        "refs/heads/feature must exist in the bare repo after push: {}",
+        String::from_utf8_lossy(&feature.stderr)
     );
-    eprintln!("[s4] push->CI executed job in sandbox -> {conclusion} ({total} check-run)");
+    assert_eq!(String::from_utf8_lossy(&feature.stdout).trim(), sha);
+
+    // 5. The same HTTP client cannot advance protected main directly.
+    eprintln!("[s4] git push main should be rejected");
+    let failure = run_git_failure(
+        &clone_dir,
+        &[
+            GIT_HTTP_GUARD,
+            &["-c", "pack.compression=0", "-c", "core.compression=0"],
+            &["push", "origin", "HEAD:refs/heads/main"],
+        ]
+        .concat(),
+    );
+    assert!(
+        failure.contains("direct pushes to refs/heads/main are blocked")
+            || failure.contains("The requested URL returned error: 403"),
+        "main push should be rejected by the protected-ref policy: {failure}"
+    );
+    let main = Command::new("git")
+        .args([
+            "--git-dir",
+            bare.to_str().unwrap(),
+            "rev-parse",
+            "--verify",
+            "refs/heads/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !main.status.success(),
+        "refs/heads/main must not be created by a rejected direct push"
+    );
 
     server.abort();
     let _ = std::fs::remove_dir_all(&base);

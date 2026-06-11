@@ -1,4 +1,4 @@
-//! PR cockpit BFF routes for the SPA's W-FE-11 surface.
+//! Pull request BFF routes for the SPA's W-FE-11 surface.
 //!
 //! These routes translate the local forge's authoritative pull request,
 //! review, and check-run state into the typed web contracts consumed by the
@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response as AxumResponse};
 use jeryu_core::{
     CheckConclusion, CheckRun, CheckRunStatus, CreateReviewRequest, ForgeError,
     MergePullRequestRequest as CoreMergePullRequestRequest, PullRequest, ReviewCommentInput,
-    ReviewState,
+    ReviewState, check_conclusion_wire_value,
 };
 use jeryu_readmodel::contracts::{
     AgentPosture, AvailableAction, CheckPosture, CreateReviewCommentRequest, EntityHandle,
@@ -435,32 +435,37 @@ pub(super) async fn merge(
         sha: Some(request.expected_head_sha),
         merge_method: request.merge_method,
     };
+    let merge_body = match serde_json::to_string(&merge_payload) {
+        Ok(body) => body,
+        Err(error) => {
+            return repair_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "merge_request_serialize_failed",
+                "merge pull request",
+                &format!("could not serialize merge request: {error}"),
+                &["retry the merge after refreshing the PR detail"],
+                PROOF_LANE,
+                Some(json!({ "head_sha": pr.head.sha })),
+            );
+        }
+    };
+    let merged = state.github.put(
+        &format!(
+            "/repos/{}/{}/pulls/{}/merge",
+            repo.owner, repo.name, pr.number
+        ),
+        &merge_body,
+    );
+    if merged.status != 200 {
+        return github_merge_error(merged, &pr);
+    }
     match state
         .github
         .core()
-        .merge_pull_request(&repo.owner, &repo.name, pr.number, merge_payload)
+        .get_pull_request(&repo.owner, &repo.name, pr.number)
     {
-        Ok(_) => match state
-            .github
-            .core()
-            .get_pull_request(&repo.owner, &repo.name, pr.number)
-        {
-            Ok(updated) => Json(detail_for_pr(&state, &updated)).into_response(),
-            Err(error) => core_error(error, "reload pull request after merge"),
-        },
-        Err(ForgeError::BranchProtection(reason)) => repair_error(
-            StatusCode::CONFLICT,
-            "merge_blocked",
-            "merge pull request",
-            &reason,
-            &[
-                "inspect the merge passport blockers before retrying",
-                "rerun required checks and collect approvals for the current head",
-            ],
-            PROOF_LANE,
-            Some(json!({ "head_sha": pr.head.sha })),
-        ),
-        Err(error) => core_error(error, "merge pull request"),
+        Ok(updated) => Json(detail_for_pr(&state, &updated)).into_response(),
+        Err(error) => core_error(error, "reload pull request after merge"),
     }
 }
 
@@ -699,12 +704,14 @@ fn blocker(code: &str, message: &str, details: Option<&str>) -> MergePassportBlo
 }
 
 fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestChecks {
-    let runs = state
+    let runs = match state
         .github
         .core()
         .list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha))
-        .map(|list| list.check_runs)
-        .unwrap_or_default();
+    {
+        Ok(list) => list.check_runs,
+        Err(_) => Vec::new(),
+    };
     let mut passing = 0;
     let mut failing = 0;
     let mut pending = 0;
@@ -774,7 +781,7 @@ fn conclusion(value: &CheckConclusion) -> String {
         CheckConclusion::Neutral => "neutral",
         CheckConclusion::Success => "success",
         CheckConclusion::Skipped => "skipped",
-        CheckConclusion::Superseded => "stale",
+        CheckConclusion::Superseded => check_conclusion_wire_value(&CheckConclusion::Superseded),
         CheckConclusion::TimedOut => "timed_out",
     }
     .to_string()
@@ -809,11 +816,12 @@ fn review_posture(state: &WebState, pr: &PullRequest) -> ReviewPosture {
 fn threads_for_pr(state: &WebState, pr: &PullRequest) -> Vec<ReviewThread> {
     let repo = find_repo(state, &format!("{}/{}", pr.owner, pr.repo))
         .expect("PR owner/repo must resolve to a repository");
-    state
+    let comments = state
         .github
         .core()
         .list_review_comments(&pr.owner, &pr.repo, pr.number)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    comments
         .into_iter()
         .map(|comment| ReviewThread {
             id: comment.id.to_string(),
@@ -953,6 +961,42 @@ fn core_error(error: ForgeError, purpose: &'static str) -> AxumResponse {
     }
 }
 
+fn github_merge_error(response: crate::Response, pr: &PullRequest) -> AxumResponse {
+    let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let repair_status = if status == StatusCode::METHOD_NOT_ALLOWED {
+        StatusCode::CONFLICT
+    } else {
+        status
+    };
+    let message = serde_json::from_str::<Value>(&response.body)
+        .ok()
+        .and_then(|body| {
+            body.get("message")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or(response.body);
+    let code = match status {
+        StatusCode::METHOD_NOT_ALLOWED | StatusCode::CONFLICT => "merge_blocked",
+        StatusCode::UNPROCESSABLE_ENTITY => "merge_unprocessable",
+        StatusCode::NOT_FOUND => "not_found",
+        _ => "merge_failed",
+    };
+    repair_error(
+        repair_status,
+        code,
+        "merge pull request",
+        &message,
+        &[
+            "inspect the merge passport blockers before retrying",
+            "rerun required checks and collect approvals for the current head",
+        ],
+        PROOF_LANE,
+        Some(json!({ "head_sha": pr.head.sha })),
+    )
+}
+
 fn repair_error(
     status: StatusCode,
     code: &'static str,
@@ -965,7 +1009,10 @@ fn repair_error(
     let error = json!({
         "code": code,
         "message": reason,
-        "details": details.clone().unwrap_or_else(|| json!({})),
+        "details": match details {
+            Some(details) => details,
+            None => json!({}),
+        },
         "request_id": format!("pulls-{}", server_time()),
     });
     (

@@ -136,8 +136,25 @@ pub(super) async fn repair_live(State(state): State<Arc<WebState>>, body: Bytes)
         ci_snapshot_age_ms: request.ci_snapshot_age_ms,
         startup: request.startup,
     };
+    let ci_run_id = match request.ci_run_id {
+        Some(ci_run_id) => ci_run_id,
+        None => {
+            return typed_error(TypedError {
+                status: StatusCode::BAD_REQUEST,
+                code: "ci_run_id_required",
+                purpose: "hold a failed workcell and start live repair",
+                reason: "the request did not include the originating CI run id",
+                common_fixes: &[
+                    "include ci_run_id in the repair request",
+                    "reload the failed workcell metadata before retrying",
+                ],
+                docs_url: "docs/testing.md#workcells",
+                repair_hint: "rerun cargo test -p jeryu-api --features web --jobs 40",
+                message: "ci_run_id is required for live repair",
+            });
+        }
+    };
     let failed_run_id = request.failed_run_id;
-    let ci_run_id = request.ci_run_id.unwrap_or_else(|| failed_run_id.clone());
     let mut manager = manager(&state);
     let held = match manager.hold_failed_tree(HoldFailedTreeRequest {
         claim,
@@ -384,12 +401,14 @@ pub(super) async fn export_pr(
 }
 
 fn origin_base_url(headers: &HeaderMap) -> String {
-    headers
+    match headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .filter(|host| !host.trim().is_empty())
-        .map(|host| format!("http://{host}"))
-        .unwrap_or_else(crate::ci_bridge::default_origin_base_url)
+    {
+        Some(host) => format!("http://{host}"),
+        None => String::new(),
+    }
 }
 
 /// Derives the repo-relative export-slice prefixes from a lease's absolute

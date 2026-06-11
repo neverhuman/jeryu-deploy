@@ -76,10 +76,25 @@ fn clone_bare(work: &Path, bare: &Path) {
     git(work, &["clone", "--bare", ".", &bare_str]);
 }
 
-fn ref_update(ref_name: &str, old_oid: &str, new_oid: &str) -> RefUpdate {
+fn install_main_blocking_hook(bare: &Path) {
+    let hook = bare.join("hooks").join("pre-receive");
+    fs::create_dir_all(hook.parent().expect("hook parent")).unwrap();
+    fs::write(
+        &hook,
+        "#!/usr/bin/env bash\nset -euo pipefail\nwhile read -r _old _new ref; do\n  if [[ \"$ref\" == \"refs/heads/main\" ]]; then\n    echo 'direct main push blocked by test hook' >&2\n    exit 1\n  fi\ndone\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+fn ref_update(ref_name: &str, previous_oid: &str, new_oid: &str) -> RefUpdate {
     RefUpdate {
         ref_name: ref_name.to_owned(),
-        old_oid: old_oid.to_owned(),
+        old_oid: previous_oid.to_owned(),
         new_oid: new_oid.to_owned(),
     }
 }
@@ -171,18 +186,18 @@ jobs:
 }
 
 #[test]
-fn hosted_toolchain_bootstrap_step_is_skipped_locally() {
-    assert!(is_hosted_toolchain_bootstrap(
+fn workflow_toolchain_bootstrap_step_is_skipped_locally() {
+    assert!(is_workflow_toolchain_bootstrap(
         "rustup toolchain install 1.95.0 --profile minimal"
     ));
-    assert!(!is_hosted_toolchain_bootstrap(
+    assert!(!is_workflow_toolchain_bootstrap(
         "rustup toolchain install 1.95.0 --profile minimal\ncargo test"
     ));
-    assert!(!is_hosted_toolchain_bootstrap("bash ops/ci/ci-fast.sh"));
+    assert!(!is_workflow_toolchain_bootstrap("bash ops/ci/ci-fast.sh"));
 }
 
 #[test]
-fn ref_updates_track_ref_name_and_old_oid() {
+fn ref_updates_track_ref_name_and_previous_oid() {
     let before = vec![
         GitRef {
             name: "refs/heads/main".to_owned(),
@@ -218,6 +233,7 @@ fn main_push_writes_single_skip_version_bump_commit() {
     let bare = tempfile::tempdir().unwrap();
     let (base, head) = init_version_repo(work.path());
     clone_bare(work.path(), bare.path());
+    install_main_blocking_hook(bare.path());
 
     maybe_bump_main_version(
         "git",
@@ -335,7 +351,7 @@ fn concurrent_main_updates_leave_one_release_commit() {
 
 #[test]
 fn mock_flag_gates_workflow_check_run_seeding() {
-    // The production forge (no JERYU_CI_MOCK) must NOT seed GitHub-Actions check-runs
+    // The production forge (no JERYU_CI_MOCK) must NOT seed GitHub Actions check-runs
     // — it has no Actions runners, so they only produced all-red noise; host-ci's
     // `jeryu/ci` is the real gate. Only the in-process CI-seeding-flow tests opt in.
     // Pure predicate, so this never mutates the shared process env (which would race
