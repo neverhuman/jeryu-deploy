@@ -75,6 +75,11 @@ elif ! git diff --name-only "$web_base" | grep -qE '^(apps/web|ux-qa)/'; then
   echo "[pr-ci] web lane: no apps/web or ux-qa changes, skipping" >&2
 elif ! command -v npm >/dev/null 2>&1; then
   echo "[pr-ci] web lane: npm not found on this runner, SKIP" >&2
+elif [ ! -f "$repo_root/package.json" ]; then
+  # apps/web here is the VENDORED pre-built dist from jeryu-web (no buildable
+  # source, no package.json) — it was built and vitest-tested in jeryu-web's
+  # own required gate before being staged (scripts/stage-web-dist.sh).
+  echo "[pr-ci] web lane: vendored dist only (no package.json), skipping" >&2
 else
   echo "[pr-ci] web lane: build+vitest (apps/web touched)" >&2
   (
