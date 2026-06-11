@@ -37,7 +37,11 @@ cargo clippy --workspace --all-targets --jobs "$JOBS" -- -D warnings
 # (cgroup_create EEXIST / clone EOPNOTSUPP). They run on the dedicated GitHub-mirror
 # runners (full caps). Exclude exactly those here; the other 1600+ tests still run.
 echo "[pr-ci] cargo test (excl. jeryu-sandbox-linux + agentbridge sandbox-runtime tests)" >&2
+# --test-threads honors the governed worker count too: libtest defaults to
+# ncpu, and an oversubscribed host starves the live agent-stream tests'
+# 30s polling deadlines (await_tty) into false failures.
 cargo test --workspace --exclude jeryu-sandbox-linux --jobs "$JOBS" --no-fail-fast -- \
+  --test-threads "$JOBS" \
   --skip same_write_path_succeeds_inside_and_is_blocked_outside \
   --skip unsandboxed_control_can_write_outside_proving_landlock_is_the_blocker \
   --skip budget_kill_is_live_and_truncates \
