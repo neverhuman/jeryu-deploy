@@ -34,7 +34,7 @@ enum WebCommand {
         #[arg(long, default_value = "~/.local/share/jeryu")]
         data_dir: PathBuf,
         #[arg(long)]
-        split_manifest: Option<PathBuf>,
+        split_manifest: Vec<PathBuf>,
     },
 }
 
@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 spa_dir,
                 data_dir,
                 git_storage_root,
-                split_manifest,
+                split_manifests: split_manifest,
             })
             .await
         }

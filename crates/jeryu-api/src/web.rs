@@ -18,7 +18,7 @@ mod workcells;
 mod workcells_support;
 mod ws;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -68,18 +68,22 @@ pub struct WebServerConfig {
     pub data_dir: PathBuf,
     /// Storage root for bare git repositories served over smart-HTTP.
     pub git_storage_root: PathBuf,
-    /// Optional split-family manifest used to classify portal/member repos.
-    pub split_manifest: Option<PathBuf>,
+    /// Optional split-family manifests used to classify portal/member repos.
+    pub split_manifests: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
 struct SplitCatalog {
+    /// Keyed by lowercase slug. Both GitHub slugs (`neverhuman/jeryu`) and
+    /// local forge slugs (`jeryu/jeryu`) are indexed because repos are
+    /// registered locally under the forge owner.
+    entries: BTreeMap<String, SplitCatalogEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct SplitCatalogEntry {
     family: String,
-    /// Both the GitHub slug (`neverhuman/jeryu`) and the local forge slug
-    /// (`jeryu/jeryu`): repos are registered locally under the forge owner,
-    /// so matching only the GitHub slug never classifies anything.
-    portal_slugs: BTreeSet<String>,
-    member_slugs: BTreeSet<String>,
+    role: RepositoryRole,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,20 +100,36 @@ struct SplitManifestRepo {
 }
 
 impl SplitCatalog {
-    fn load(manifest: Option<&Path>) -> Self {
-        manifest
-            .and_then(Self::from_manifest)
-            .unwrap_or_else(Self::builtin)
+    fn load(manifests: &[PathBuf]) -> Self {
+        if manifests.is_empty() {
+            return Self::builtin();
+        }
+        let mut catalog = Self::empty();
+        for manifest in manifests {
+            if let Some(loaded) = Self::from_manifest(manifest) {
+                catalog.entries.extend(loaded.entries);
+            }
+        }
+        if catalog.entries.is_empty() {
+            Self::builtin()
+        } else {
+            catalog
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
     }
 
     fn builtin() -> Self {
         let family = "jeryu-split".to_string();
-        let portal_slugs = ["neverhuman/jeryu", "jeryu/jeryu"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let member_slugs = [
-            "neverhuman/jeryu",
+        let mut catalog = Self::empty();
+        for slug in ["neverhuman/jeryu", "jeryu/jeryu"] {
+            catalog.insert(slug, &family, RepositoryRole::PublicPortal);
+        }
+        for slug in [
             "neverhuman/jeryu-core",
             "neverhuman/jeryu-ci-runner",
             "neverhuman/jeryu-cache",
@@ -117,7 +137,6 @@ impl SplitCatalog {
             "neverhuman/jeryu-web",
             "neverhuman/jeryu-release-ops",
             "neverhuman/jeryu-deploy",
-            "jeryu/jeryu",
             "jeryu/jeryu-core",
             "jeryu/jeryu-ci-runner",
             "jeryu/jeryu-cache",
@@ -125,15 +144,10 @@ impl SplitCatalog {
             "jeryu/jeryu-web",
             "jeryu/jeryu-release-ops",
             "jeryu/jeryu-deploy",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-        Self {
-            family,
-            portal_slugs,
-            member_slugs,
+        ] {
+            catalog.insert(slug, &family, RepositoryRole::SplitMember);
         }
+        catalog
     }
 
     fn from_manifest(path: &Path) -> Option<Self> {
@@ -143,8 +157,7 @@ impl SplitCatalog {
             .repo_family
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "jeryu-split".to_string());
-        let mut portal_slugs = BTreeSet::new();
-        let mut member_slugs = BTreeSet::new();
+        let mut catalog = Self::empty();
         for repo in manifest.repo.unwrap_or_default() {
             let slugs: Vec<String> = [repo.github_slug, repo.jeryu_slug]
                 .into_iter()
@@ -154,19 +167,26 @@ impl SplitCatalog {
             if slugs.is_empty() {
                 continue;
             }
-            if repo.profile.as_deref() == Some("public-portal") {
-                portal_slugs.extend(slugs.iter().cloned());
+            let role = if repo.profile.as_deref() == Some("public-portal") {
+                RepositoryRole::PublicPortal
+            } else {
+                RepositoryRole::SplitMember
+            };
+            for slug in slugs {
+                catalog.insert(&slug, &family, role.clone());
             }
-            member_slugs.extend(slugs);
         }
-        if portal_slugs.is_empty() {
-            portal_slugs.insert("neverhuman/jeryu".to_string());
-        }
-        Some(Self {
-            family,
-            portal_slugs,
-            member_slugs,
-        })
+        Some(catalog)
+    }
+
+    fn insert(&mut self, slug: &str, family: &str, role: RepositoryRole) {
+        self.entries.insert(
+            slug.to_ascii_lowercase(),
+            SplitCatalogEntry {
+                family: family.to_string(),
+                role,
+            },
+        );
     }
 
     fn classify(&self, owner: &str, name: &str) -> Option<(String, RepositoryRole)> {
@@ -175,13 +195,9 @@ impl SplitCatalog {
             owner.to_ascii_lowercase(),
             name.to_ascii_lowercase()
         );
-        if self.portal_slugs.contains(&slug) {
-            Some((self.family.clone(), RepositoryRole::PublicPortal))
-        } else if self.member_slugs.contains(&slug) {
-            Some((self.family.clone(), RepositoryRole::SplitMember))
-        } else {
-            None
-        }
+        self.entries
+            .get(&slug)
+            .map(|entry| (entry.family.clone(), entry.role.clone()))
     }
 }
 
@@ -431,12 +447,12 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     )));
     let core = ForgeCore::open_sqlite(db_path)?
         .with_repo_materializer(Arc::new(GitMaterializer::new(repo_manager.clone())));
-    let split_catalog = SplitCatalog::load(config.split_manifest.as_deref());
+    let split_catalog = SplitCatalog::load(&config.split_manifests);
     // Merge-to-GitHub mirroring: targets come from the same manifest; with no
     // manifest (or JERYU_GITHUB_PUSH=0) the mirror loads disabled and merges
     // never attempt a push.
     let github_mirror = Arc::new(crate::github_mirror::GithubMirror::load(
-        config.split_manifest.as_deref(),
+        &config.split_manifests,
     ));
     let app = app(
         WebState::with_repo_manager(

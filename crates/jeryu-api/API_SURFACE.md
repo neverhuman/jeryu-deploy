@@ -67,8 +67,9 @@ default Rust data directory is `~/.local/share/jeryu`. The server opens
 `forge.sqlite` under that data dir through `ForgeCore::open_sqlite`; it does not
 reuse legacy `~/.jeryu` secrets or config.
 
-Pass `--split-manifest <PATH>` to classify Jeryu split-family repositories from
-an explicit manifest. Without it, the built-in public catalog marks
+Pass `--split-manifest <PATH>` to classify split-family repositories from an
+explicit manifest; repeat the flag to load multiple families. Without it, the
+built-in public catalog marks
 `neverhuman/jeryu` as the public portal and the other `neverhuman/jeryu-*`
 repositories as split members.
 

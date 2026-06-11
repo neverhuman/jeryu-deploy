@@ -126,8 +126,10 @@ pub enum Commands {
         data_dir: PathBuf,
 
         /// Split-family manifest used to classify portal and member repositories.
-        #[arg(long)]
-        split_manifest: Option<PathBuf>,
+        ///
+        /// Repeat this flag to load more than one split family.
+        #[arg(long, value_name = "PATH")]
+        split_manifest: Vec<PathBuf>,
     },
 
     /// gh-setup: point the GitHub CLI at a jeryu server base URL.

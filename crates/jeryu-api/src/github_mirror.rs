@@ -3,7 +3,7 @@
 //! When a PR merges into a repo's default branch on the local forge, the merge
 //! handler pushes the LIVE branch tip straight to the configured GitHub
 //! repository (`github.com/<github_slug>` main). Targets come from the split
-//! manifest: a `[[repo]]` entry participates iff it carries `github_slug`,
+//! manifests: a `[[repo]]` entry participates iff it carries `github_slug`,
 //! `jeryu_slug`, and `mirror_github_main = true`.
 //!
 //! Auth rides the host's proven shim: the destination URL is built as
@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Hard wall-clock bound for one push; a hung network push must never wedge
@@ -68,37 +68,44 @@ struct MirrorManifestRepo {
 }
 
 impl GithubMirror {
-    /// Load targets from the split manifest. Absent/unparsable manifest, or
+    /// Load targets from split manifests. Absent/unparsable manifests, or
     /// `JERYU_GITHUB_PUSH=0`, yields a disabled mirror (every push skips).
-    pub fn load(manifest: Option<&Path>) -> Self {
+    pub fn load(manifests: &[PathBuf]) -> Self {
         if std::env::var("JERYU_GITHUB_PUSH").as_deref() == Ok("0") {
             return Self::default();
         }
-        let Some(path) = manifest else {
+        Self::from_manifests(manifests)
+    }
+
+    fn from_manifests(manifests: &[PathBuf]) -> Self {
+        if manifests.is_empty() {
             return Self::default();
-        };
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return Self::default();
-        };
-        let Ok(parsed) = toml::from_str::<MirrorManifest>(&text) else {
-            return Self::default();
-        };
+        }
         let mut targets = BTreeMap::new();
-        for repo in parsed.repo.unwrap_or_default() {
-            let (Some(github_slug), Some(jeryu_slug)) = (repo.github_slug, repo.jeryu_slug) else {
+        for path in manifests {
+            let Ok(text) = std::fs::read_to_string(path) else {
                 continue;
             };
-            if !repo.mirror_github_main {
+            let Ok(parsed) = toml::from_str::<MirrorManifest>(&text) else {
                 continue;
+            };
+            for repo in parsed.repo.unwrap_or_default() {
+                let (Some(github_slug), Some(jeryu_slug)) = (repo.github_slug, repo.jeryu_slug)
+                else {
+                    continue;
+                };
+                if !repo.mirror_github_main {
+                    continue;
+                }
+                targets.insert(
+                    jeryu_slug.to_ascii_lowercase(),
+                    GithubMirrorTarget {
+                        github_slug,
+                        branch: repo.default_branch.unwrap_or_else(|| "main".to_string()),
+                        destination_override: None,
+                    },
+                );
             }
-            targets.insert(
-                jeryu_slug.to_ascii_lowercase(),
-                GithubMirrorTarget {
-                    github_slug,
-                    branch: repo.default_branch.unwrap_or_else(|| "main".to_string()),
-                    destination_override: None,
-                },
-            );
         }
         Self {
             enabled: !targets.is_empty(),
@@ -273,6 +280,59 @@ mod tests {
         let mirror = GithubMirror::with_targets(targets);
         assert!(mirror.target("Jeryu", "JERYU-CORE").is_some());
         assert!(mirror.target("jeryu", "other").is_none());
+    }
+
+    #[test]
+    fn manifest_targets_aggregate_from_multiple_manifests() {
+        let root = tempfile::tempdir().expect("manifest dir");
+        let jeryu_manifest = root.path().join("jeryu.toml");
+        let jekko_manifest = root.path().join("jekko.toml");
+        std::fs::write(
+            &jeryu_manifest,
+            r#"
+[[repo]]
+github_slug = "neverhuman/jeryu-core"
+jeryu_slug = "jeryu/jeryu-core"
+default_branch = "main"
+mirror_github_main = true
+"#,
+        )
+        .expect("write jeryu manifest");
+        std::fs::write(
+            &jekko_manifest,
+            r#"
+[[repo]]
+github_slug = "neverhuman/jekko-core"
+jeryu_slug = "jeryu/jekko-core"
+default_branch = "main"
+mirror_github_main = true
+
+[[repo]]
+github_slug = "neverhuman/jekko-scratch"
+jeryu_slug = "jeryu/jekko-scratch"
+default_branch = "main"
+mirror_github_main = false
+"#,
+        )
+        .expect("write jekko manifest");
+
+        let mirror = GithubMirror::from_manifests(&[jeryu_manifest, jekko_manifest]);
+        assert_eq!(
+            mirror
+                .target("jeryu", "jeryu-core")
+                .map(|target| target.github_slug.as_str()),
+            Some("neverhuman/jeryu-core")
+        );
+        assert_eq!(
+            mirror
+                .target("jeryu", "jekko-core")
+                .map(|target| target.github_slug.as_str()),
+            Some("neverhuman/jekko-core")
+        );
+        assert!(
+            mirror.target("jeryu", "jekko-scratch").is_none(),
+            "mirror_github_main=false entries are ignored"
+        );
     }
 
     #[test]

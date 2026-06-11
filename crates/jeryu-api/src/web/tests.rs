@@ -19,7 +19,7 @@ use jeryu_core::{
 use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage};
 use jeryu_readmodel::{HealthLevel, sample_read_model};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -2096,6 +2096,161 @@ fn repo_list_classifies_jeryu_split_portal_and_members() {
     assert_eq!(unrelated.family, None);
     assert_eq!(unrelated.repo_role, None);
     assert_eq!(repos.facets.families, vec!["jeryu-split".to_string()]);
+}
+
+#[test]
+fn split_catalog_loads_multiple_manifest_families() {
+    let root = tempdir().expect("split manifests dir");
+    write_file(
+        root.path(),
+        "jeryu.toml",
+        r#"
+repo_family = "jeryu-split"
+
+[[repo]]
+github_slug = "neverhuman/jeryu"
+jeryu_slug = "jeryu/jeryu"
+profile = "public-portal"
+
+[[repo]]
+github_slug = "neverhuman/jeryu-core"
+jeryu_slug = "jeryu/jeryu-core"
+profile = "split-member"
+"#,
+    );
+    write_file(
+        root.path(),
+        "jekko.toml",
+        r#"
+repo_family = "jekko-split"
+
+[[repo]]
+github_slug = "neverhuman/jekko"
+jeryu_slug = "jeryu/jekko"
+profile = "public-portal"
+
+[[repo]]
+github_slug = "neverhuman/jekko-core"
+jeryu_slug = "jeryu/jekko-core"
+profile = "split-member"
+"#,
+    );
+
+    let manifests = vec![
+        root.path().join("jeryu.toml"),
+        root.path().join("jekko.toml"),
+    ];
+    let catalog = SplitCatalog::load(&manifests);
+    assert_eq!(
+        catalog.classify("jeryu", "jeryu"),
+        Some(("jeryu-split".to_string(), RepositoryRole::PublicPortal))
+    );
+    assert_eq!(
+        catalog.classify("jeryu", "jeryu-core"),
+        Some(("jeryu-split".to_string(), RepositoryRole::SplitMember))
+    );
+    assert_eq!(
+        catalog.classify("jeryu", "jekko"),
+        Some(("jekko-split".to_string(), RepositoryRole::PublicPortal))
+    );
+    assert_eq!(
+        catalog.classify("neverhuman", "jekko-core"),
+        Some(("jekko-split".to_string(), RepositoryRole::SplitMember))
+    );
+    assert_eq!(catalog.classify("alice", "unrelated"), None);
+}
+
+#[test]
+fn repo_list_family_filter_uses_multi_manifest_catalog() {
+    let manifest_root = tempdir().expect("split manifests dir");
+    write_file(
+        manifest_root.path(),
+        "jeryu.toml",
+        r#"
+repo_family = "jeryu-split"
+
+[[repo]]
+github_slug = "neverhuman/jeryu"
+jeryu_slug = "jeryu/jeryu"
+profile = "public-portal"
+
+[[repo]]
+github_slug = "neverhuman/jeryu-core"
+jeryu_slug = "jeryu/jeryu-core"
+profile = "split-member"
+"#,
+    );
+    write_file(
+        manifest_root.path(),
+        "jekko.toml",
+        r#"
+repo_family = "jekko-split"
+
+[[repo]]
+github_slug = "neverhuman/jekko"
+jeryu_slug = "jeryu/jekko"
+profile = "public-portal"
+
+[[repo]]
+github_slug = "neverhuman/jekko-core"
+jeryu_slug = "jeryu/jekko-core"
+profile = "split-member"
+"#,
+    );
+
+    let core = ForgeCore::new();
+    for name in ["jeryu", "jeryu-core", "jekko", "jekko-core", "unrelated"] {
+        core.create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: true,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    let manifests = vec![
+        manifest_root.path().join("jeryu.toml"),
+        manifest_root.path().join("jekko.toml"),
+    ];
+    let storage = tempdir().expect("git storage dir");
+    let state = WebState::with_repo_manager(
+        core,
+        Arc::new(RepoManager::new(GitdConfig::new(
+            storage.path().to_path_buf(),
+        ))),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist"),
+        std::env::temp_dir(),
+        SplitCatalog::load(&manifests),
+    );
+
+    let family_only = super::repositories::filtered_repo_list_response(
+        &state,
+        &super::repositories::RepoListQuery {
+            family: Some("jekko-split".to_string()),
+            ..Default::default()
+        },
+    );
+    let mut names: Vec<&str> = family_only
+        .repositories
+        .iter()
+        .map(|repo| repo.id.name.as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(family_only.total, 2);
+    assert_eq!(names, vec!["jekko", "jekko-core"]);
+    assert_eq!(
+        family_only.facets.families,
+        vec!["jekko-split".to_string(), "jeryu-split".to_string()]
+    );
+    let portal = family_only
+        .repositories
+        .iter()
+        .find(|repo| repo.id.name == "jekko")
+        .expect("jekko portal");
+    assert_eq!(portal.repo_role, Some(RepositoryRole::PublicPortal));
 }
 
 #[tokio::test]

@@ -111,7 +111,7 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
         spa_dir,
         data_dir,
         git_storage_root: git_root.clone(),
-        split_manifest: None,
+        split_manifests: Vec::new(),
     };
     let server = tokio::spawn(async move { serve(config).await.unwrap() });
     wait_until_listening(addr).await;

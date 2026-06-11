@@ -50,7 +50,7 @@ fn serve(
     bind: std::net::SocketAddr,
     spa_dir: PathBuf,
     data_dir: PathBuf,
-    split_manifest: Option<PathBuf>,
+    split_manifests: Vec<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = expand_tilde(data_dir);
     let git_storage_root = data_dir.join("git");
@@ -62,7 +62,7 @@ fn serve(
         spa_dir,
         data_dir,
         git_storage_root,
-        split_manifest,
+        split_manifests,
     }))
 }
 
