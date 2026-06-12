@@ -13,7 +13,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jeryu_ci_compiler::{CiKind, CompileContext, Compiler};
-use jeryu_core::{CheckConclusion, CheckRunStatus, CreateCheckRunRequest, ForgeCore};
+use jeryu_core::{
+    CheckConclusion, CheckRunStatus, CreateCheckRunRequest, ForgeCore, RecordJankuraiScoreRequest,
+};
 use jeryu_gitd::refs::{GitRef, RefService};
 use jeryu_gitd::repo::Repository;
 use jeryu_gitd::{GitdConfig, RepoId, RepoManager};
@@ -78,6 +80,11 @@ pub(crate) fn on_push(
         if let Some(branch) = update.ref_name.strip_prefix("refs/heads/") {
             let _ = core.refresh_pull_request_heads_for_ref(owner, repo, branch, &update.new_oid);
         }
+        // THE GUARANTEE: compute and record the authoritative jankurai diff-score
+        // for this head, and publish `jankurai/proof` from it. on_push is the only
+        // funnel every head SHA passes through (push transport, merge, and seeded
+        // PR-head exports all route here), so no head can exist unscored.
+        record_authoritative_jankurai_score(core, &git_bin, &resolved.path, owner, repo, update);
         // Accumulate this head's recorded check-runs so the autonomy bridge can
         // run the evidence-gate judge over the live CI state once they all land.
         let mut ci_checks: Vec<(String, Option<CheckConclusion>)> = Vec::new();
@@ -367,6 +374,241 @@ fn changed_paths(git_bin: &str, bare: &Path, oid: &str) -> Vec<String> {
         .filter(|l| !l.trim().is_empty())
         .map(|l| l.to_string())
         .collect()
+}
+
+/// jeryu-managed fallback audit policy, written into the throwaway worktree when a
+/// pushed head carries none of its own — "forced scoring for unconfigured repos".
+/// Mirrors jeryu-tool/policy/default-audit-policy.toml; the `required_tool_version`
+/// is kept in lockstep with tool-manifest.toml by ops/render-tool-manifest.sh.
+const DEFAULT_AUDIT_POLICY_TOML: &str = r#"schema_version = "1.0.0"
+workspace = "unconfigured"
+minimum_score = 85
+hard_findings_allowed = 0
+required_tool = "jankurai"
+required_tool_version = "1.6.10"
+
+[scan]
+excluded_paths = [".jankurai/", "apps/web/dist/"]
+"#;
+
+/// Resolve the pinned auditor: the explicit `JERYU_JANKURAI_BIN` wins, then the
+/// jeryu-owned global at `~/.jeryu/bin/jankurai`, then a bare PATH lookup.
+fn jankurai_bin() -> String {
+    if let Ok(bin) = std::env::var("JERYU_JANKURAI_BIN")
+        && !bin.trim().is_empty()
+    {
+        return bin;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let candidate = Path::new(&home).join(".jeryu/bin/jankurai");
+        if candidate.is_file() {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
+    "jankurai".to_string()
+}
+
+/// THE GUARANTEE (Layer 2). Compute the authoritative jankurai diff-score for a
+/// pushed head on the HOST — which has the real trunk and the forge DB, neither of
+/// which the `--network none` agent cell can reach — record it (the only writer of
+/// a `JankuraiScore`), and publish the `jankurai/proof` check-run derived from it.
+///
+/// Diff-only against the host-computed merge-base (fast, `changed_fast`). Strict:
+/// the proof passes only when score ≥ floor AND no hard findings AND no NEW caps.
+/// Best-effort throughout — a clone/audit failure records a `tool-failed` score or
+/// is skipped, but never blocks the push (it runs on the receive-pack pool).
+fn record_authoritative_jankurai_score(
+    core: &ForgeCore,
+    git_bin: &str,
+    bare: &Path,
+    owner: &str,
+    repo: &str,
+    update: &RefUpdate,
+) {
+    if update.new_oid == ZERO_OID {
+        return; // ref delete: nothing to score
+    }
+    let Some(branch) = update.ref_name.strip_prefix("refs/heads/") else {
+        return; // only branch heads are scored
+    };
+    // Idempotent per (repo, head sha): a re-push or seed of the same commit keeps
+    // the existing record + check-run (mirrors record_jankurai_score's upsert).
+    if core
+        .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
+        .map(|scores| !scores.is_empty())
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    // Throwaway worktree of the head (same idiom as maybe_bump_main_version); never
+    // touches the live bare.
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let worktree = std::env::temp_dir().join(format!(
+        "jeryu-jankurai-{owner}-{repo}-{}-{suffix}-{}",
+        std::process::id(),
+        update.new_oid
+    ));
+    let _ = std::fs::remove_dir_all(&worktree);
+    let bare_str = bare.to_string_lossy().to_string();
+    let worktree_str = worktree.to_string_lossy().to_string();
+    if !run_git_status(
+        git_bin,
+        None,
+        &[
+            "clone",
+            "--quiet",
+            "--no-hardlinks",
+            &bare_str,
+            &worktree_str,
+        ],
+    ) {
+        return;
+    }
+    if !run_git_status(
+        git_bin,
+        Some(&worktree),
+        &["checkout", "--quiet", "--detach", &update.new_oid],
+    ) {
+        let _ = std::fs::remove_dir_all(&worktree);
+        return;
+    }
+
+    // Merge-base against the REAL trunk (the bare has refs/heads/main; the cell
+    // never could). Keeps the audit diff-only. For a main advance the previous tip
+    // is the base; if main is absent (first branch ever) base resolution yields
+    // None and diff-audit degrades to an empty, trivially-passing score.
+    let base = if branch == "main" && update.old_oid != ZERO_OID {
+        Some(update.old_oid.clone())
+    } else {
+        run_git_stdout(
+            git_bin,
+            Some(bare),
+            &["merge-base", "refs/heads/main", &update.new_oid],
+        )
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    };
+
+    // Forced scoring for unconfigured repos (Part D): if the head carries no policy
+    // of its own, drop the jeryu-managed default into the THROWAWAY worktree (never
+    // tracked, never committed — untracked files do not enter the diff set) so the
+    // repo still gets a real floor and a real verdict.
+    if !worktree.join("agent/audit-policy.toml").exists() {
+        let _ = std::fs::create_dir_all(worktree.join("agent"));
+        let _ = std::fs::write(
+            worktree.join("agent/audit-policy.toml"),
+            DEFAULT_AUDIT_POLICY_TOML,
+        );
+    }
+    let skip_proof = !worktree.join("agent/owner-map.json").exists();
+
+    // Run the pinned auditor. --advisory-only: always write the JSON and exit 0; we
+    // derive the strict verdict from the JSON ourselves.
+    let out_json = worktree.join("target/jankurai/diff/diff-score.json");
+    if let Some(parent) = out_json.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let out_json_str = out_json.to_string_lossy().to_string();
+    let jankurai = jankurai_bin();
+    let mut command = Command::new(&jankurai);
+    command.arg("diff-audit").arg(&worktree_str);
+    if let Some(base) = &base {
+        command.arg("--base-ref").arg(base);
+    }
+    command.arg("--json").arg(&out_json_str).arg("--advisory-only");
+    if skip_proof {
+        command.arg("--skip-proof");
+    }
+    let exit_code = command
+        .status()
+        .ok()
+        .and_then(|status| status.code())
+        .map(i64::from)
+        .unwrap_or(-1);
+
+    let report: Option<serde_json::Value> = std::fs::read(&out_json)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+
+    let report_u64 = |report: &serde_json::Value, key: &str| -> Option<u64> {
+        report.get(key).and_then(serde_json::Value::as_u64)
+    };
+    let decision_u64 = |report: &serde_json::Value, key: &str| -> Option<u64> {
+        report
+            .get("decision")
+            .and_then(|d| d.get(key))
+            .and_then(serde_json::Value::as_u64)
+    };
+
+    let (request, pass) = match &report {
+        Some(report) => {
+            let caps: Vec<String> = report
+                .get("caps_applied")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let score = report_u64(report, "score");
+            let hard = decision_u64(report, "hard_findings");
+            // Strict gate: score ≥ floor AND no hard findings AND no NEW caps.
+            let floor = decision_u64(report, "minimum_score").unwrap_or(85);
+            let pass =
+                score.unwrap_or(0) >= floor && hard.unwrap_or(0) == 0 && caps.is_empty();
+            (
+                RecordJankuraiScoreRequest {
+                    branch: branch.to_string(),
+                    commit_sha: update.new_oid.clone(),
+                    score: score.map(|v| v as u32),
+                    hard_findings: hard.map(|v| v as u32),
+                    decision: "scored".to_string(),
+                    caps_applied: caps,
+                    report: Some(report.clone()),
+                    tool_exit: None,
+                },
+                pass,
+            )
+        }
+        None => (
+            RecordJankuraiScoreRequest {
+                branch: branch.to_string(),
+                commit_sha: update.new_oid.clone(),
+                score: None,
+                hard_findings: None,
+                decision: "tool-failed".to_string(),
+                caps_applied: Vec::new(),
+                report: None,
+                tool_exit: Some(exit_code),
+            },
+            false,
+        ),
+    };
+
+    let _ = core.record_jankurai_score(owner, repo, request);
+    let conclusion = if pass {
+        CheckConclusion::Success
+    } else {
+        CheckConclusion::Failure
+    };
+    let _ = core.create_check_run(
+        owner,
+        repo,
+        CreateCheckRunRequest {
+            name: "jankurai/proof".to_string(),
+            head_sha: update.new_oid.clone(),
+            status: Some(CheckRunStatus::Completed),
+            conclusion: Some(conclusion),
+            ..Default::default()
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&worktree);
 }
 
 /// Execute a compiled job's `run` steps in the sandboxed runner and map the
