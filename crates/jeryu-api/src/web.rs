@@ -14,6 +14,7 @@ mod repositories;
 mod sessions;
 mod surface;
 mod tool_build;
+mod tool_finder;
 mod tool_registry;
 mod workcells;
 mod workcells_support;
@@ -33,10 +34,11 @@ use axum::{Json, Router as AxumRouter};
 use jeryu_codegraph::CodeGraphStore;
 use jeryu_core::ForgeCore;
 use jeryu_readmodel::TuiReadModel;
-use jeryu_readmodel::contracts::RepositoryRole;
+use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage, WebEvent};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc::UnboundedSender;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::GithubRouter;
@@ -208,7 +210,10 @@ impl SplitCatalog {
         let mut catalog = Self::empty();
         for repo in manifest.repo.unwrap_or_default() {
             // Compute role before the slugs move github_slug/jeryu_slug out.
-            let role = role_for(repo_canonical_name(&repo).as_deref(), repo.profile.as_deref());
+            let role = role_for(
+                repo_canonical_name(&repo).as_deref(),
+                repo.profile.as_deref(),
+            );
             let slugs: Vec<String> = [repo.github_slug, repo.jeryu_slug]
                 .into_iter()
                 .flatten()
@@ -281,6 +286,12 @@ pub(crate) struct WebState {
     /// manifest in `serve()`. `None` in tests and when no manifest is wired, in
     /// which case the golden-box endpoint reports an empty registry.
     tool_registry_path: Option<PathBuf>,
+    /// Split manifests handed to `serve()`; the tool-finder system scan
+    /// derives its family-discovery parents from these. Empty in tests.
+    split_manifests: Vec<PathBuf>,
+    /// Single-flight state for the system-wide tool-finder scan, retained
+    /// across scans so the page can paint the last result.
+    pub(crate) tool_finder_scan: tool_finder::ToolFinderScanState,
 }
 
 impl WebState {
@@ -299,11 +310,17 @@ impl WebState {
         let codegraph_path = {
             #[cfg(test)]
             {
-                // The durable data_dir is only consulted outside tests.
+                // The durable data_dir is only consulted outside tests. The
+                // path carries a process-wide counter on top of the timestamp:
+                // parallel tests constructing WebStates in the same millisecond
+                // must NOT share one sqlite file (locked-database flakes).
                 let _ = &data_dir;
+                static TEST_DB_SEQ: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
                 std::env::temp_dir().join(format!(
-                    "jeryu-web-codegraph-{}.sqlite",
-                    jeryu_runner_core::receipt::now_ms()
+                    "jeryu-web-codegraph-{}-{}.sqlite",
+                    jeryu_runner_core::receipt::now_ms(),
+                    TEST_DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 ))
             }
             #[cfg(not(test))]
@@ -333,6 +350,8 @@ impl WebState {
             session_runtime: sessions::SessionRuntimeConfig::from_env(),
             split_catalog,
             tool_registry_path: None,
+            split_manifests: Vec::new(),
+            tool_finder_scan: tool_finder::ToolFinderScanState::default(),
         }
     }
 
@@ -340,6 +359,13 @@ impl WebState {
     /// Production-only chaining in `serve()`; tests leave it unset.
     fn with_tool_registry_path(mut self, path: Option<PathBuf>) -> Self {
         self.tool_registry_path = path;
+        self
+    }
+
+    /// Hand the tool-finder the split manifests so the system scan can derive
+    /// its family-discovery parents. Production-only chaining in `serve()`.
+    fn with_split_manifests(mut self, manifests: Vec<PathBuf>) -> Self {
+        self.split_manifests = manifests;
         self
     }
 
@@ -412,12 +438,11 @@ impl WebState {
 
 /// Live-stream fan-out hub for the WebSocket event spine.
 ///
-/// The tokio `sync` feature is intentionally NOT enabled in this crate, so this
-/// is a deliberately minimal `Arc<Mutex<_>>` registry rather than a
-/// `tokio::sync::broadcast`. It hands out the server-wide monotonic event
-/// sequence and tracks which scopes each live connection is subscribed to, so a
-/// future producer can fan deltas out to exactly the interested connections.
-/// The snapshot-on-subscribe path below works entirely through this hub today.
+/// Hands out the server-wide monotonic event sequence, tracks which scopes
+/// each live connection is subscribed to, and fans producer events out to
+/// exactly the interested connections through their registered outbound
+/// queues ([`WsHub::publish`]). The snapshot-on-subscribe path also rides
+/// this hub.
 #[derive(Clone, Default)]
 struct WsHub {
     inner: Arc<Mutex<WsHubInner>>,
@@ -427,6 +452,8 @@ struct WsHub {
 struct WsHubInner {
     /// Server-wide monotonic event sequence; never reused, never decreases.
     next_seq: u64,
+    /// Dedicated connection-id counter (never reused).
+    next_conn_id: u64,
     /// Live connections, in registration order. Each tracks its own scopes.
     connections: Vec<WsConnection>,
 }
@@ -435,6 +462,8 @@ struct WsHubInner {
 struct WsConnection {
     id: u64,
     scopes: BTreeSet<String>,
+    /// Outbound push lane drained by the connection's socket loop.
+    sender: UnboundedSender<ServerWsMessage>,
 }
 
 impl WsHub {
@@ -454,17 +483,45 @@ impl WsHub {
         self.inner.lock().expect("ws hub mutex poisoned").next_seq
     }
 
-    /// Register a fresh connection and return its hub-unique id.
-    fn register(&self) -> u64 {
+    /// Register a fresh connection (with its outbound queue) and return its
+    /// hub-unique id.
+    fn register(&self, sender: UnboundedSender<ServerWsMessage>) -> u64 {
         let mut inner = self.inner.lock().expect("ws hub mutex poisoned");
-        let id = inner
-            .next_seq
-            .wrapping_add(inner.connections.len() as u64 + 1);
+        inner.next_conn_id = inner.next_conn_id.saturating_add(1);
+        let id = inner.next_conn_id;
         inner.connections.push(WsConnection {
             id,
             scopes: BTreeSet::new(),
+            sender,
         });
         id
+    }
+
+    /// Allocate a sequence, build the event once, and queue an `Event` frame
+    /// to every connection subscribed to `scope`. Connections whose socket
+    /// loop has gone away (receiver dropped) are pruned. Returns how many
+    /// connections the event was queued to. Safe to call from blocking
+    /// threads: `UnboundedSender::send` never blocks.
+    fn publish(&self, scope: &str, make_event: impl FnOnce(u64) -> WebEvent) -> usize {
+        let mut inner = self.inner.lock().expect("ws hub mutex poisoned");
+        inner.next_seq = inner.next_seq.saturating_add(1);
+        let frame = ServerWsMessage::Event {
+            event: make_event(inner.next_seq),
+        };
+        let mut delivered = 0;
+        inner.connections.retain(|conn| {
+            if !conn.scopes.contains(scope) {
+                return true;
+            }
+            match conn.sender.send(frame.clone()) {
+                Ok(()) => {
+                    delivered += 1;
+                    true
+                }
+                Err(_) => false,
+            }
+        });
+        delivered
     }
 
     /// Replace the scope set a connection is subscribed to.
@@ -521,7 +578,8 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
             split_catalog,
         )
         .with_github_mirror(github_mirror)
-        .with_tool_registry_path(tool_registry_path),
+        .with_tool_registry_path(tool_registry_path)
+        .with_split_manifests(config.split_manifests.clone()),
         &config.spa_dir,
     );
     let listener = TcpListener::bind(config.bind).await?;
@@ -651,6 +709,17 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
         .route(
             "/api/v1/codegraph/tool-build/clusters/:id/feedback",
             post(tool_build::feedback),
+        )
+        // System-wide tool-finder: live scan trigger/status, the /tools
+        // pattern-family dashboard, and cluster -> registry proposal.
+        .route(
+            "/api/v1/tool-finder/scan",
+            get(tool_finder::scan_status).post(tool_finder::scan_start),
+        )
+        .route("/api/v1/tool-finder/dashboard", get(tool_finder::dashboard))
+        .route(
+            "/api/v1/tool-finder/propose/:cluster_id",
+            post(tool_finder::propose),
         )
         .route("/api/v1/control-plane/status", get(control_plane::status))
         .route(

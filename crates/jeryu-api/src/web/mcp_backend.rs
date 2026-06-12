@@ -279,6 +279,42 @@ impl WebMcpBackend {
                     }),
                 )
             }
+            "tool_finder.scan" => match super::tool_finder::start_system_scan(&self.state) {
+                Ok(status) => {
+                    jeryu_mcp::ToolResponse::ok("tool-finder system scan started", json!(status))
+                }
+                Err(super::tool_finder::StartScanError::Busy(status)) => {
+                    jeryu_mcp::ToolResponse::ok(
+                        "tool-finder scan already running",
+                        json!({ "already_running": true, "status": *status }),
+                    )
+                }
+                Err(super::tool_finder::StartScanError::NoManifests) => {
+                    jeryu_mcp::ToolResponse::error(
+                        "tool-finder scan unavailable: no split manifests are wired into this server",
+                    )
+                }
+            },
+            "tool_finder.dashboard" => {
+                let limit = args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(200)
+                    .clamp(1, 500) as usize;
+                let include_ignored = args
+                    .get("include_ignored")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                match super::tool_finder::dashboard_payload(&self.state, limit, include_ignored) {
+                    Ok(dashboard) => jeryu_mcp::ToolResponse::ok(
+                        "tool-finder pattern-family dashboard",
+                        json!(dashboard),
+                    ),
+                    Err(error) => jeryu_mcp::ToolResponse::error(format!(
+                        "tool-finder dashboard unavailable: {error}"
+                    )),
+                }
+            }
             "tool_registry.summary" => {
                 let summary =
                     super::tool_registry::build_summary(self.state.tool_registry_path.as_deref());

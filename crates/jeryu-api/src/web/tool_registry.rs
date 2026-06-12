@@ -44,7 +44,9 @@ struct TaskFile {
     status: Option<String>,
 }
 
-pub(super) async fn summary(State(state): State<std::sync::Arc<WebState>>) -> Json<ToolRegistrySummary> {
+pub(super) async fn summary(
+    State(state): State<std::sync::Arc<WebState>>,
+) -> Json<ToolRegistrySummary> {
     Json(build_summary(state.tool_registry_path.as_deref()))
 }
 

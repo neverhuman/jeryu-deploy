@@ -325,7 +325,7 @@ async fn codegraph_query_route_returns_impact_pack() {
     .await;
     let pack = response_json(response).await;
     assert_eq!(pack["schema_version"], "codegraph.query/v1");
-    assert_eq!(pack["provenance"]["storage_schema"], "3");
+    assert_eq!(pack["provenance"]["storage_schema"], "4");
     assert_eq!(pack["definition"]["symbol"], "CodeGraph");
     assert_eq!(
         pack["references"][0]["ref_file"],
@@ -2485,6 +2485,7 @@ async fn browser_repo_routes_serve_the_spa_shell() {
         "/repos/alice/jeryu",
         "/repos/alice/jeryu/pulls/99",
         "/repos/alice/jeryu/settings/merge",
+        "/tools",
     ] {
         let response = app
             .clone()
@@ -3537,7 +3538,8 @@ fn ws_hub_seq_is_monotonic_and_tracks_subscribers() {
     assert!(b > a);
     assert_eq!(hub.current_seq(), b);
 
-    let conn = hub.register();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let conn = hub.register(tx);
     let mut scopes = BTreeSet::new();
     scopes.insert("global.activity".to_string());
     scopes.insert("pool.trusted".to_string());
@@ -3546,6 +3548,60 @@ fn ws_hub_seq_is_monotonic_and_tracks_subscribers() {
     // Unregister must not panic and leaves the hub usable.
     hub.unregister(conn);
     assert!(hub.next_seq() > b);
+}
+
+#[test]
+fn ws_hub_publish_fans_out_to_subscribed_connections_only() {
+    let hub = WsHub::new();
+    let (tx_sub, mut rx_sub) = tokio::sync::mpsc::unbounded_channel();
+    let (tx_other, mut rx_other) = tokio::sync::mpsc::unbounded_channel();
+    let subscribed = hub.register(tx_sub);
+    let other = hub.register(tx_other);
+    let mut scopes = BTreeSet::new();
+    scopes.insert("tool_finder.scan".to_string());
+    hub.set_scopes(subscribed, &scopes);
+    let mut other_scopes = BTreeSet::new();
+    other_scopes.insert("global.activity".to_string());
+    hub.set_scopes(other, &other_scopes);
+
+    let delivered = hub.publish("tool_finder.scan", |seq| {
+        jeryu_readmodel::contracts::WebEvent {
+            seq,
+            timestamp: "t".to_string(),
+            scope: "tool_finder.scan".to_string(),
+            kind: "tool_finder.scan.progress".to_string(),
+            entity: "system/host".to_string(),
+            summary: "scan progress".to_string(),
+            payload: json!({}),
+        }
+    });
+    assert_eq!(delivered, 1, "only the subscribed connection receives");
+    match rx_sub.try_recv() {
+        Ok(ServerWsMessage::Event { event }) => {
+            assert_eq!(event.scope, "tool_finder.scan");
+            assert!(event.seq > 0);
+        }
+        other => panic!("expected pushed event, got {other:?}"),
+    }
+    assert!(
+        rx_other.try_recv().is_err(),
+        "unsubscribed conn gets nothing"
+    );
+
+    // A connection whose socket loop died (receiver dropped) is pruned.
+    drop(rx_sub);
+    let delivered = hub.publish("tool_finder.scan", |seq| {
+        jeryu_readmodel::contracts::WebEvent {
+            seq,
+            timestamp: "t".to_string(),
+            scope: "tool_finder.scan".to_string(),
+            kind: "tool_finder.scan.progress".to_string(),
+            entity: "system/host".to_string(),
+            summary: "scan progress".to_string(),
+            payload: json!({}),
+        }
+    });
+    assert_eq!(delivered, 0, "dead subscriber pruned on publish");
 }
 
 #[test]
@@ -4374,4 +4430,182 @@ async fn repo_list_filters_apply_server_side() {
     .await
     .0;
     assert_eq!(archived.total, 0, "no archived repos exist in this fixture");
+}
+
+#[tokio::test]
+async fn tool_finder_scan_status_idle_busy_guard_and_snapshot_arm() {
+    let core = ForgeCore::new();
+    let mut raw_state = WebState::new(core);
+    // No manifests wired: a scan cannot start, with a typed repair path.
+    let state = Arc::new(raw_state.clone());
+    let idle = response_json(
+        super::tool_finder::scan_status(State(state.clone()))
+            .await
+            .into_response(),
+    )
+    .await;
+    assert_eq!(idle["phase"], "idle");
+    assert_eq!(idle["running"], false);
+    let no_manifests =
+        response_json(super::tool_finder::scan_start(State(state.clone())).await).await;
+    assert_eq!(no_manifests["code"], "tool_finder_no_manifests");
+
+    // With manifests wired and the single flight already claimed, POST is a
+    // 409 with the running snapshot's repair hints.
+    raw_state.split_manifests = vec![PathBuf::from("/tmp/fixture-split/repos.manifest.toml")];
+    let state = Arc::new(raw_state);
+    state
+        .tool_finder_scan
+        .try_begin()
+        .expect("claim the single flight");
+    let busy = response_json(super::tool_finder::scan_start(State(state.clone())).await).await;
+    assert_eq!(busy["code"], "tool_finder_scan_running");
+
+    // The websocket snapshot arm serves the live status for the scope.
+    let event = snapshot_event(&state, "tool_finder.scan").expect("tool_finder.scan snapshot");
+    assert_eq!(event.kind, "tool_finder.scan.snapshot");
+    assert_eq!(event.entity, "system/host");
+    assert_eq!(event.payload["running"], true);
+    assert_eq!(event.payload["phase"], "discover");
+}
+
+#[tokio::test]
+async fn tool_finder_dashboard_and_propose_round_trip() {
+    let core = ForgeCore::new();
+    let mut raw_state = WebState::new(core);
+
+    // A writable fixture registry so propose can append.
+    let registry_dir = tempdir().expect("registry fixture");
+    write_file(
+        registry_dir.path(),
+        "tools-registry.toml",
+        "schema_version = \"1\"\n\n[[tool]]\nid = \"existing\"\nname = \"Existing\"\nkind = \"rust-crate\"\nstatus = \"published\"\nadopting_repos = []\ncandidate_repos = []\nloc_saved = 10\nloc_saved_estimate = 0\n",
+    );
+    raw_state.tool_registry_path = Some(registry_dir.path().join("tools-registry.toml"));
+    let state = Arc::new(raw_state);
+
+    // Persist a cross-repo fixture scan under the system repo id.
+    let repo_a = tempdir().expect("repo-a");
+    let repo_b = tempdir().expect("repo-b");
+    let repeated = r#"
+pub fn alpha(input: &str) -> Result<String, String> {
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let response = call_remote(input);
+        if response.is_ok() {
+            return response;
+        }
+        if attempts > 3 {
+            return Err("failed".to_string());
+        }
+    }
+}
+"#;
+    write_file(repo_a.path(), "src/lib.rs", repeated);
+    write_file(
+        repo_b.path(),
+        "src/lib.rs",
+        &repeated.replace("alpha", "beta"),
+    );
+    let report = jeryu_codegraph::scan_tool_build_family(
+        &[
+            ("repo-a".to_string(), repo_a.path().to_path_buf()),
+            ("repo-b".to_string(), repo_b.path().to_path_buf()),
+        ],
+        "system/host",
+        "working-tree",
+        ToolBuildScanConfig {
+            window_lines: 5,
+            min_normalized_tokens: 12,
+            min_occurrences: 2,
+            max_file_bytes: 64 * 1024,
+            max_clusters: 10,
+            min_repo_count: 2,
+        },
+    )
+    .unwrap();
+    assert!(!report.clusters.is_empty());
+    state
+        .codegraph_store
+        .persist_tool_build_report(&report)
+        .unwrap();
+
+    // Dashboard: families over the persisted scan, enriched per cluster.
+    let dashboard = response_json(
+        super::tool_finder::dashboard(
+            State(state.clone()),
+            Query(super::tool_finder::DashboardQuery {
+                limit: Some(50),
+                include_ignored: false,
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert!(dashboard["family_count"].as_u64().unwrap() >= 1);
+    assert!(dashboard["cluster_count"].as_u64().unwrap() >= 1);
+    let family = &dashboard["families"][0];
+    let cluster = &family["clusters"][0];
+    let cluster_id = cluster["cluster_id"]
+        .as_str()
+        .expect("cluster id")
+        .to_string();
+    assert!(cluster["suggested_kind"].as_str().is_some());
+    assert!(cluster["anticipated_loc_saved"].as_u64().is_some());
+    assert_eq!(cluster["occurrences"][0]["repo_id"], "repo-a");
+    assert!(dashboard["scan"]["scanned_at"].as_str().is_some());
+
+    // Propose: files a registry entry + build task, idempotent on re-post.
+    let receipt = response_json(
+        super::tool_finder::propose(
+            State(state.clone()),
+            AxumPath(cluster_id.clone()),
+            axum::body::Bytes::new(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(receipt["created"], true);
+    let tool_id = receipt["tool_id"].as_str().expect("tool id").to_string();
+    let task_id = receipt["task_id"].as_str().expect("task id").to_string();
+    let registry_text =
+        std::fs::read_to_string(registry_dir.path().join("tools-registry.toml")).unwrap();
+    assert!(registry_text.contains(&format!("origin_cluster = \"{cluster_id}\"")));
+    assert!(registry_text.contains("status = \"proposed\""));
+    assert!(
+        registry_text.starts_with("schema_version"),
+        "append preserves header"
+    );
+    assert!(
+        registry_dir
+            .path()
+            .join("tasks")
+            .join(format!("{task_id}-{tool_id}.toml"))
+            .is_file()
+    );
+
+    let replay = response_json(
+        super::tool_finder::propose(
+            State(state.clone()),
+            AxumPath(cluster_id.clone()),
+            axum::body::Bytes::new(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(replay["created"], false);
+    assert_eq!(replay["tool_id"], tool_id);
+
+    // Unknown cluster ids get a typed not-found.
+    let missing = response_json(
+        super::tool_finder::propose(
+            State(state.clone()),
+            AxumPath("toolbuild-doesnotexist".to_string()),
+            axum::body::Bytes::new(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(missing["code"], "tool_finder_cluster_not_found");
 }

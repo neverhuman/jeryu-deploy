@@ -519,7 +519,10 @@ fn record_authoritative_jankurai_score(
     if let Some(base) = &base {
         command.arg("--base-ref").arg(base);
     }
-    command.arg("--json").arg(&out_json_str).arg("--advisory-only");
+    command
+        .arg("--json")
+        .arg(&out_json_str)
+        .arg("--advisory-only");
     if skip_proof {
         command.arg("--skip-proof");
     }
@@ -559,8 +562,7 @@ fn record_authoritative_jankurai_score(
             let hard = decision_u64(report, "hard_findings");
             // Strict gate: score ≥ floor AND no hard findings AND no NEW caps.
             let floor = decision_u64(report, "minimum_score").unwrap_or(85);
-            let pass =
-                score.unwrap_or(0) >= floor && hard.unwrap_or(0) == 0 && caps.is_empty();
+            let pass = score.unwrap_or(0) >= floor && hard.unwrap_or(0) == 0 && caps.is_empty();
             (
                 RecordJankuraiScoreRequest {
                     branch: branch.to_string(),

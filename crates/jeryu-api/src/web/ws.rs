@@ -20,11 +20,28 @@ pub(super) async fn ws(
 }
 
 async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>) {
-    let conn_id = state.ws.register();
+    // The hub queues producer events (`WsHub::publish`) onto this channel;
+    // the select! loop below drains it onto the socket. One owner for every
+    // write keeps snapshot-on-subscribe and pushed deltas strictly ordered.
+    let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel::<ServerWsMessage>();
+    let conn_id = state.ws.register(push_tx);
     let _ = send_server_message(&mut socket, hello_message(&state)).await;
     // Per-connection scope subscription set, mirrored into the hub registry.
     let mut scopes: BTreeSet<String> = BTreeSet::new();
-    while let Some(message) = socket.next().await {
+    loop {
+        let message = tokio::select! {
+            pushed = push_rx.recv() => {
+                let Some(frame) = pushed else { break };
+                if send_server_message(&mut socket, frame).await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            inbound = socket.next() => {
+                let Some(message) = inbound else { break };
+                message
+            }
+        };
         match message {
             Ok(Message::Text(text)) => {
                 if let Ok(value) = serde_json::from_str::<Value>(&text) {
@@ -200,6 +217,9 @@ pub(super) fn snapshot_event(state: &WebState, scope: &str) -> Option<WebEvent> 
     }
     if let Some(agent_run_id) = scope.strip_prefix("agent_run.") {
         return super::agent_runs::snapshot_event(state, agent_run_id);
+    }
+    if scope == super::tool_finder::SCAN_SCOPE {
+        return Some(super::tool_finder::snapshot_event(state, seq, timestamp));
     }
     None
 }
