@@ -17,7 +17,7 @@ use jeryu_readmodel::contracts::{
     AvailableAction, BlobEncoding, BlobResponse, EntityHandle, JankuraiScoreListResponse,
     JankuraiScoreSummary, RefKind, RefSelectorItem, RenderedMarkdown, RepositoryFacets,
     RepositoryId, RepositoryListResponse, RepositoryMirrorStatus, RepositorySummary,
-    RepositoryVisibility, TreeEntry,
+    RepositoryVisibility, ToolFleetEntry, ToolFleetResponse, TreeEntry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -198,6 +198,92 @@ pub(super) async fn repo_jankurai_scores_list(
         .unwrap_or_default();
     Json(JankuraiScoreListResponse {
         scores: scores.iter().map(score_summary).collect(),
+    })
+    .into_response()
+}
+
+/// GET /api/v1/fleet/tool-adoption — the tool-compounding visibility matrix.
+/// Projects every repo's latest recorded score (`tool_adoption.items`) into a
+/// per-tool view of who adopts each tool and who is applicable-but-missing. No
+/// new data is computed — it reuses the scores the forge already ingests.
+pub(super) async fn fleet_tool_adoption(
+    State(state): State<std::sync::Arc<WebState>>,
+) -> AxumResponse {
+    let core = state.github.core();
+    // tool id -> (category, adopting repos, applicable-but-missing repos)
+    let mut by_tool: BTreeMap<String, (String, BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    let mut repos_scored: u32 = 0;
+
+    for repo in core.list_repositories(None) {
+        let slug = format!("{}/{}", repo.owner, repo.name);
+        // Newest recorded score for the repo, across any branch.
+        let scores = core
+            .list_jankurai_scores(&repo.owner, &repo.name, None, None)
+            .unwrap_or_default();
+        let Some(report) = scores
+            .first()
+            .and_then(|score| score.report_json.as_deref())
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        else {
+            continue;
+        };
+        let Some(items) = report
+            .get("tool_adoption")
+            .and_then(|ta| ta.get("items"))
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        repos_scored += 1;
+        for item in items {
+            let Some(id) = item.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if id.is_empty() {
+                continue;
+            }
+            let category = item
+                .get("category")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let applicable = item
+                .get("applicable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let status = item
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let entry = by_tool
+                .entry(id.to_string())
+                .or_insert_with(|| (category.to_string(), BTreeSet::new(), BTreeSet::new()));
+            if entry.0.is_empty() {
+                entry.0 = category.to_string();
+            }
+            // "adopted" = configured or better; anything else applicable is a
+            // "should adopt" opportunity. Not-applicable tools are ignored.
+            let adopted = !matches!(status, "" | "missing" | "not_applicable" | "not_configured");
+            if applicable && adopted {
+                entry.1.insert(slug.clone());
+            } else if applicable {
+                entry.2.insert(slug.clone());
+            }
+        }
+    }
+
+    let tools = by_tool
+        .into_iter()
+        .map(|(tool, (category, adopting, missing))| ToolFleetEntry {
+            tool,
+            category,
+            adopting_repos: adopting.into_iter().collect(),
+            applicable_missing_repos: missing.into_iter().collect(),
+        })
+        .collect();
+    Json(ToolFleetResponse {
+        repos_scored,
+        tools,
     })
     .into_response()
 }
