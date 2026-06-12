@@ -22,7 +22,9 @@ pub use agent::{
     AgentToolArg,
 };
 pub use ci::{CiCommands, CiKindArg};
-pub use control_plane::{ArtifactsCommands, RepoGraphCommands, RunnersCommands};
+pub use control_plane::{
+    ArtifactsCommands, RepoGraphCommands, RunnersCommands, ToolFinderCommands,
+};
 pub use forge::{ForgeCommands, IssueCommands, PrCommands, RepoCommands};
 pub use operator::{AutonomyCommands, AutonomyInitArgs, AutonomyProfile, GhSetupArgs, OnboardArgs};
 pub use proof::ProofCommands;
@@ -102,6 +104,10 @@ pub enum Commands {
     /// Repo graph intelligence and clusters.
     #[command(name = "repo-graph", subcommand)]
     RepoGraph(RepoGraphCommands),
+
+    /// Tool-finder: cross-repo tool candidates and the reusable-tool registry.
+    #[command(name = "tool-finder", subcommand)]
+    ToolFinder(ToolFinderCommands),
 
     /// Artifact evidence status.
     #[command(subcommand)]

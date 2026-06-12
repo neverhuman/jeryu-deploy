@@ -4,7 +4,7 @@ use std::io::Write;
 
 use serde_json::{Value, json};
 
-use crate::cli::{ArtifactsCommands, RepoGraphCommands, RunnersCommands};
+use crate::cli::{ArtifactsCommands, RepoGraphCommands, RunnersCommands, ToolFinderCommands};
 use crate::client::{ClientError, ClientResult};
 use crate::commands::api::ApiClient;
 use crate::commands::render;
@@ -144,6 +144,59 @@ pub(crate) fn run_runners(
             )
         }
     }
+}
+
+pub(crate) fn run_tool_finder(
+    json_output: bool,
+    api_url: Option<&str>,
+    command: ToolFinderCommands,
+    out: &mut dyn Write,
+) -> ClientResult<()> {
+    match command {
+        ToolFinderCommands::Clusters { repo, limit } => {
+            let mut path = format!(
+                "/api/v1/codegraph/tool-build/clusters?repo={}",
+                urlencode(&repo)
+            );
+            if let Some(limit) = limit {
+                path.push_str(&format!("&top={}", limit.max(1)));
+            }
+            let value = api(api_url)?.get(&path)?;
+            let clusters = match &value {
+                Value::Array(items) => items.clone(),
+                other => other
+                    .get("clusters")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            render(
+                out,
+                json_output,
+                &json!({ "repo": repo, "clusters": clusters }),
+                &format!("tool-finder clusters ({repo}): {} candidate(s)", clusters.len()),
+            )
+        }
+        ToolFinderCommands::Summary => {
+            let value = api(api_url)?.get("/api/v1/tools/registry/summary")?;
+            let human = format!(
+                "tool registry: tools={} (published={} proposed={}) adopting_repos={} open_tasks={} loc_saved={} (+{} anticipated)",
+                number(&value, "tool_count"),
+                number(&value, "published_count"),
+                number(&value, "proposed_count"),
+                number(&value, "adopting_repo_count"),
+                number(&value, "open_task_count"),
+                number(&value, "realized_loc_saved"),
+                number(&value, "anticipated_loc_saved"),
+            );
+            render(out, json_output, &value, &human)
+        }
+    }
+}
+
+/// Minimal percent-encoding for the `/` in a repo id like `family/jeryu-split`.
+fn urlencode(value: &str) -> String {
+    value.replace('/', "%2F")
 }
 
 fn api(api_url: Option<&str>) -> ClientResult<ApiClient> {

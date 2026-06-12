@@ -31,6 +31,9 @@ impl jeryu_mcp::ToolBackend for WebMcpBackend {
         if let Some(response) = self.call_tool_build(tool, args.clone())? {
             return Ok(response);
         }
+        if let Some(response) = self.call_tool_finder(tool, args.clone())? {
+            return Ok(response);
+        }
         if let Some(response) = self.call_control_plane(tool, &args)? {
             return Ok(response);
         }
@@ -236,6 +239,50 @@ impl WebMcpBackend {
                     .codegraph_store
                     .ignore_tool_build_cluster(cluster_id, reason, ignored_by)?;
                 jeryu_mcp::ToolResponse::ok("tool-build feedback recorded", json!(ignored))
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(response))
+    }
+
+    /// The jeryu-tool-finder MCP namespace: cross-repo cluster discovery and the
+    /// reusable-tool registry summary. `tool_finder.clusters` reuses the
+    /// persisted tool-build index, defaulting to the family/jeryu-split scan so
+    /// an agent can "ask for clusters for consideration" with no arguments.
+    fn call_tool_finder(
+        &self,
+        tool: &str,
+        args: Value,
+    ) -> anyhow::Result<Option<jeryu_mcp::ToolResponse>> {
+        let response = match tool {
+            "tool_finder.clusters" => {
+                let repo = args
+                    .get("repo")
+                    .and_then(Value::as_str)
+                    .unwrap_or("family/jeryu-split");
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+                let include_ignored = args
+                    .get("include_ignored")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let clusters = self.state.codegraph_store.tool_build_clusters(
+                    Some(repo),
+                    limit,
+                    include_ignored,
+                )?;
+                jeryu_mcp::ToolResponse::ok(
+                    "tool-finder cross-repo clusters",
+                    json!({
+                        "repo": repo,
+                        "include_ignored": include_ignored,
+                        "clusters": clusters,
+                    }),
+                )
+            }
+            "tool_registry.summary" => {
+                let summary =
+                    super::tool_registry::build_summary(self.state.tool_registry_path.as_deref());
+                jeryu_mcp::ToolResponse::ok("reusable-tool registry summary", json!(summary))
             }
             _ => return Ok(None),
         };

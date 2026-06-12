@@ -50,8 +50,9 @@ pub(super) async fn summary(State(state): State<std::sync::Arc<WebState>>) -> Js
 
 /// Build the summary from `tools-registry.toml`, or an empty summary if the
 /// registry is absent/malformed. Aggregation mirrors
-/// `jeryu-tool/ops/registry_summary.py` (kept trivial on purpose).
-fn build_summary(registry_path: Option<&Path>) -> ToolRegistrySummary {
+/// `jeryu-tool/ops/registry_summary.py` (kept trivial on purpose). Shared with
+/// the MCP backend (`tool_registry.summary`).
+pub(super) fn build_summary(registry_path: Option<&Path>) -> ToolRegistrySummary {
     let empty = || ToolRegistrySummary {
         generated_at: server_time(),
         tool_count: 0,

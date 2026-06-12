@@ -33,3 +33,19 @@ pub enum RunnersCommands {
     /// Show local runner fabric plus optional mirror evidence.
     Status,
 }
+
+/// jeryu-tool-finder + reusable-tool registry command group.
+#[derive(Debug, Subcommand)]
+pub enum ToolFinderCommands {
+    /// Show cross-repo repeated-code clusters — candidates for shared tools.
+    Clusters {
+        /// Repo id to query; defaults to the whole-family cross-repo scan.
+        #[arg(long, default_value = "family/jeryu-split")]
+        repo: String,
+        /// Maximum number of clusters to fetch.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show the reusable-tool registry summary (the golden-box numbers).
+    Summary,
+}

@@ -45,6 +45,9 @@ pub fn dispatch(
         Commands::RepoGraph(cmd) => {
             commands::control_plane::run_repo_graph(json, api_url.as_deref(), cmd, out)
         }
+        Commands::ToolFinder(cmd) => {
+            commands::control_plane::run_tool_finder(json, api_url.as_deref(), cmd, out)
+        }
         Commands::Artifacts(cmd) => {
             commands::control_plane::run_artifacts(json, api_url.as_deref(), cmd, out)
         }
