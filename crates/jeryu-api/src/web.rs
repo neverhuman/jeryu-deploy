@@ -16,6 +16,7 @@ mod surface;
 mod tool_build;
 mod tool_finder;
 mod tool_registry;
+mod tool_status_messages;
 mod workcells;
 mod workcells_support;
 mod ws;

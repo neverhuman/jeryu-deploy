@@ -3013,63 +3013,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
-name = "jeryu-compliance-export"
+name = "jeryu-cache"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-evidence"
+name = "jeryu-cache-adversary"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-git-guard"
+name = "jeryu-cache-cli"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-kernel"
+name = "jeryu-cache-core"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-lifecycle"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-mapcheck"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-ops"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase11-audit"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase11-bin"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase11-core"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-replay-verifier"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-signrail"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-tenant"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-review"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-rustjet-cli"
+name = "jeryu-cache-service"
 version = "5.0.0"
 
 [[patch.unused]]
@@ -3121,21 +3081,61 @@ name = "jeryu-tui"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-cache"
+name = "jeryu-review"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-cache-adversary"
+name = "jeryu-rustjet-cli"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-cache-cli"
+name = "jeryu-compliance-export"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-cache-core"
+name = "jeryu-evidence"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-cache-service"
+name = "jeryu-git-guard"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-kernel"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-lifecycle"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-mapcheck"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-ops"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase11-audit"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase11-bin"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase11-core"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-replay-verifier"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-signrail"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-tenant"
 version = "5.0.0"

@@ -13,6 +13,9 @@ use axum::extract::State;
 use jeryu_readmodel::contracts::{ToolRegistryEntry, ToolRegistrySummary};
 use serde::Deserialize;
 
+use super::tool_status_messages::{
+    STATUS_BUILDING, STATUS_PROPOSED, STATUS_PUBLISHED, STATUS_RETIRED,
+};
 use super::{WebState, server_time};
 
 #[derive(Debug, Default, Deserialize)]
@@ -82,7 +85,7 @@ pub(super) fn build_summary(registry_path: Option<&Path>) -> ToolRegistrySummary
 
     let mut adopting: BTreeSet<String> = BTreeSet::new();
     let mut candidates: BTreeSet<String> = BTreeSet::new();
-    let (mut published, mut building, mut proposed, mut deprecated) = (0u32, 0u32, 0u32, 0u32);
+    let (mut published, mut building, mut proposed, mut retired) = (0u32, 0u32, 0u32, 0u32);
     let (mut realized, mut anticipated) = (0u32, 0u32);
     let mut tools: Vec<ToolRegistryEntry> = Vec::with_capacity(registry.tool.len());
 
@@ -90,10 +93,10 @@ pub(super) fn build_summary(registry_path: Option<&Path>) -> ToolRegistrySummary
         adopting.extend(tool.adopting_repos.iter().cloned());
         candidates.extend(tool.candidate_repos.iter().cloned());
         match tool.status.as_str() {
-            "published" => published += 1,
-            "building" => building += 1,
-            "proposed" => proposed += 1,
-            "deprecated" => deprecated += 1,
+            STATUS_PUBLISHED => published += 1,
+            STATUS_BUILDING => building += 1,
+            STATUS_PROPOSED => proposed += 1,
+            STATUS_RETIRED => retired += 1,
             _ => {}
         }
         realized = realized.saturating_add(tool.loc_saved);
@@ -124,7 +127,7 @@ pub(super) fn build_summary(registry_path: Option<&Path>) -> ToolRegistrySummary
         published_count: published,
         building_count: building,
         proposed_count: proposed,
-        deprecated_count: deprecated,
+        deprecated_count: retired,
         adopting_repo_count: adopting.len() as u32,
         candidate_repo_count: candidates.len() as u32,
         open_task_count: count_open_tasks(path),

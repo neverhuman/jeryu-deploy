@@ -179,7 +179,7 @@ fn epoch_ms() -> u128 {
         .unwrap_or(0)
 }
 
-/// `GET /api/v1/tool-finder/scan` — current/last scan status (poll fallback).
+/// `GET /api/v1/tool-finder/scan` — current/last scan status (poll path).
 pub(super) async fn scan_status(State(state): State<Arc<WebState>>) -> Json<ToolFinderScanStatus> {
     Json(state.tool_finder_scan.snapshot())
 }
@@ -308,7 +308,10 @@ fn manifest_parents(manifests: &[PathBuf]) -> Vec<PathBuf> {
 fn publish_scan_event(state: &Arc<WebState>, kind: &str, status: &ToolFinderScanStatus) {
     let kind = kind.to_string();
     let summary = scan_summary(status);
-    let payload = serde_json::to_value(status).unwrap_or_else(|_| json!({}));
+    let payload = match serde_json::to_value(status) {
+        Ok(value) => value,
+        Err(error) => json!({ "serialize_error": error.to_string() }),
+    };
     state.ws.publish(SCAN_SCOPE, move |seq| WebEvent {
         seq,
         timestamp: server_time(),
@@ -352,7 +355,10 @@ pub(super) fn snapshot_event(state: &WebState, seq: u64, timestamp: String) -> W
         kind: "tool_finder.scan.snapshot".to_string(),
         entity: SYSTEM_REPO_ID.to_string(),
         summary,
-        payload: serde_json::to_value(&status).unwrap_or_else(|_| json!({})),
+        payload: match serde_json::to_value(&status) {
+            Ok(value) => value,
+            Err(error) => json!({ "serialize_error": error.to_string() }),
+        },
     }
 }
 
