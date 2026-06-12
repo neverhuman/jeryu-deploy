@@ -739,10 +739,18 @@ fn resolve_session_backend(
     run_id: &str,
 ) -> (PtyBackend, Option<CommandSpec>, Option<CommandSpec>) {
     let native_ok = !agent_program.as_os_str().is_empty() && agent_program.is_file();
-    let native_spec = native_ok.then(|| CommandSpec {
-        program: agent_program.to_string_lossy().to_string(),
-        args: container.command.iter().skip(1).cloned().collect(),
-        env: env.clone(),
+    let native_spec = native_ok.then(|| {
+        // The native binary is launched directly (no in-image entrypoint), so the
+        // default launch flags the docker path bakes into `in_image_agent_command`
+        // are merged in here too — appended only when the caller did not already
+        // pass them, so the two backends stay flag-for-flag identical.
+        let mut args: Vec<String> = container.command.iter().skip(1).cloned().collect();
+        append_missing_flags(&mut args, agent_default_flags(agent_id));
+        CommandSpec {
+            program: agent_program.to_string_lossy().to_string(),
+            args,
+            env: env.clone(),
+        }
     });
     let docker_spec = config
         .docker_bin
@@ -1236,21 +1244,44 @@ fn docker_command(
     }
 }
 
-/// Map an `agent_id` to the agent CLI on the image's PATH. The hardened sandbox
-/// image bundles the coding-agent CLIs under stable names; an unknown id falls back
-/// to the standard `agent` entrypoint (its absence inside the image surfaces as the
-/// container exiting, which the live stream shows).
-fn in_image_agent_command(agent_id: &str) -> Vec<String> {
+/// The default launch flags a session agent always runs with when started by the
+/// web tool. Interactive sessions run inside the hardened, network-deny sandbox, so
+/// the agents are launched in their non-interactive "trust the sandbox" modes:
+/// `agy`/`claude` skip the per-action permission prompt and `codex` runs in
+/// full-auto (`--yolo`). An id with no entry runs bare.
+fn agent_default_flags(agent_id: &str) -> &'static [&'static str] {
     match agent_id {
-        "codex" => vec!["codex".to_string()],
-        "claude" => vec!["claude".to_string()],
-        "jekko" => vec!["jekko".to_string()],
-        "agy" => vec![
-            "agy".to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ],
-        _ => vec!["agent".to_string()],
+        "agy" | "claude" => &["--dangerously-skip-permissions"],
+        "codex" => &["--yolo"],
+        _ => &[],
     }
+}
+
+/// Append each of `flags` to `args` only when it is not already present, so the
+/// merge is idempotent against a caller who already passed the flag.
+fn append_missing_flags(args: &mut Vec<String>, flags: &[&str]) {
+    for flag in flags {
+        if !args.iter().any(|existing| existing == flag) {
+            args.push((*flag).to_string());
+        }
+    }
+}
+
+/// Map an `agent_id` to the agent CLI on the image's PATH plus its default launch
+/// flags. The hardened sandbox image bundles the coding-agent CLIs under stable
+/// names; an unknown id falls back to the standard `agent` entrypoint (its absence
+/// inside the image surfaces as the container exiting, which the live stream shows).
+fn in_image_agent_command(agent_id: &str) -> Vec<String> {
+    let binary = match agent_id {
+        "codex" => "codex",
+        "claude" => "claude",
+        "jekko" => "jekko",
+        "agy" => "agy",
+        _ => "agent",
+    };
+    let mut command = vec![binary.to_string()];
+    append_missing_flags(&mut command, agent_default_flags(agent_id));
+    command
 }
 
 /// Which container/native runtime a launched session uses.
