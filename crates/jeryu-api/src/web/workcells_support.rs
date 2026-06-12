@@ -22,33 +22,6 @@ pub(super) fn normalize_deprecated_host_path(path: &std::path::Path) -> std::pat
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::normalize_deprecated_host_path;
-
-    #[test]
-    fn normalize_deprecated_host_path_moves_retired_jekko_prefix() {
-        assert_eq!(
-            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko")),
-            Path::new("/home/ubuntu/jekko-split/jekko")
-        );
-        assert_eq!(
-            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko/jnoccio-fusion")),
-            Path::new("/home/ubuntu/jekko-split/jekko/jnoccio-fusion")
-        );
-        assert_eq!(
-            normalize_deprecated_host_path(Path::new("/home/ubuntu/.jekko")),
-            Path::new("/home/ubuntu/.jekko")
-        );
-        assert_eq!(
-            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko-split/jekko")),
-            Path::new("/home/ubuntu/jekko-split/jekko")
-        );
-    }
-}
-
 pub(super) struct TypedError<'a> {
     pub status: StatusCode,
     pub code: &'a str,
@@ -257,5 +230,32 @@ pub(super) fn map_state(state: jeryu_runnerd::WorkcellState) -> jeryu_readmodel:
         jeryu_runnerd::WorkcellState::Repairing => jeryu_readmodel::WorkcellState::Repairing,
         jeryu_runnerd::WorkcellState::Blocked => jeryu_readmodel::WorkcellState::Blocked,
         jeryu_runnerd::WorkcellState::Released => jeryu_readmodel::WorkcellState::Released,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::normalize_deprecated_host_path;
+
+    #[test]
+    fn normalize_deprecated_host_path_moves_retired_jekko_prefix() {
+        assert_eq!(
+            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko")),
+            Path::new("/home/ubuntu/jekko-split/jekko")
+        );
+        assert_eq!(
+            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko/jnoccio-fusion")),
+            Path::new("/home/ubuntu/jekko-split/jekko/jnoccio-fusion")
+        );
+        assert_eq!(
+            normalize_deprecated_host_path(Path::new("/home/ubuntu/.jekko")),
+            Path::new("/home/ubuntu/.jekko")
+        );
+        assert_eq!(
+            normalize_deprecated_host_path(Path::new("/home/ubuntu/jekko-split/jekko")),
+            Path::new("/home/ubuntu/jekko-split/jekko")
+        );
     }
 }

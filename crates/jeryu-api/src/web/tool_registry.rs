@@ -151,10 +151,10 @@ fn count_open_tasks(registry_path: &Path) -> u32 {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if let Ok(task) = toml::from_str::<TaskFile>(&text) {
-            if matches!(task.status.as_deref(), Some("open") | Some("in-progress")) {
-                open += 1;
-            }
+        if let Ok(task) = toml::from_str::<TaskFile>(&text)
+            && matches!(task.status.as_deref(), Some("open") | Some("in-progress"))
+        {
+            open += 1;
         }
     }
     open

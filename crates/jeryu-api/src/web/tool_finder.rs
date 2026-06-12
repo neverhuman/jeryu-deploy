@@ -94,10 +94,10 @@ impl ScanInner {
 impl ToolFinderScanState {
     /// Atomically claim the single flight. `Err` carries the running snapshot
     /// for the 409 body.
-    pub(super) fn try_begin(&self) -> Result<ToolFinderScanStatus, ToolFinderScanStatus> {
+    pub(super) fn try_begin(&self) -> Result<ToolFinderScanStatus, Box<ToolFinderScanStatus>> {
         let mut inner = self.inner.lock().expect("tool-finder scan mutex poisoned");
         if inner.running {
-            return Err(inner.status());
+            return Err(Box::new(inner.status()));
         }
         inner.running = true;
         inner.scan_id = inner.scan_id.saturating_add(1);
@@ -230,7 +230,7 @@ pub(super) fn start_system_scan(
     let status = state
         .tool_finder_scan
         .try_begin()
-        .map_err(|running| StartScanError::Busy(Box::new(running)))?;
+        .map_err(StartScanError::Busy)?;
     publish_scan_event(state, "tool_finder.scan.started", &status);
 
     let task_state = state.clone();
