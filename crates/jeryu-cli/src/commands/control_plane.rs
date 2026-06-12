@@ -174,7 +174,10 @@ pub(crate) fn run_tool_finder(
                 out,
                 json_output,
                 &json!({ "repo": repo, "clusters": clusters }),
-                &format!("tool-finder clusters ({repo}): {} candidate(s)", clusters.len()),
+                &format!(
+                    "tool-finder clusters ({repo}): {} candidate(s)",
+                    clusters.len()
+                ),
             )
         }
         ToolFinderCommands::Summary => {
