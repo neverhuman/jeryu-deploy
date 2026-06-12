@@ -14,6 +14,7 @@ mod repositories;
 mod sessions;
 mod surface;
 mod tool_build;
+mod tool_registry;
 mod workcells;
 mod workcells_support;
 mod ws;
@@ -45,8 +46,9 @@ use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
 use jeryu_runnerd::{WarmPool, WorkcellManager};
 use repositories::{
-    repo_blob, repo_detail, repo_jankurai_scores_ingest, repo_jankurai_scores_list, repo_raw,
-    repo_readme, repo_readme_update, repo_refs, repo_tree, repo_update, repos,
+    fleet_tool_adoption, repo_blob, repo_detail, repo_jankurai_scores_ingest,
+    repo_jankurai_scores_list, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree,
+    repo_update, repos,
 };
 use surface::{bootstrap_payload, github_forward, graphql, markdown_render, repo_entry};
 
@@ -94,9 +96,50 @@ struct SplitManifest {
 
 #[derive(Debug, Deserialize)]
 struct SplitManifestRepo {
+    name: Option<String>,
     github_slug: Option<String>,
     jeryu_slug: Option<String>,
     profile: Option<String>,
+}
+
+/// Role for a split-family repo. The tool control plane and its discovery arm
+/// ride the same scripts/docs `public-portal` build profile as the real portal,
+/// so role can't be read from the profile alone: the `-tool` / `-tool-finder`
+/// names disambiguate (and generalize across families, e.g. `jekko-tool`).
+fn role_for(name: Option<&str>, profile: Option<&str>) -> RepositoryRole {
+    match name {
+        Some(n) if n.ends_with("-tool-finder") => RepositoryRole::SplitMember,
+        Some(n) if n.ends_with("-tool") => RepositoryRole::ToolControlPlane,
+        _ if profile == Some("public-portal") => RepositoryRole::PublicPortal,
+        _ => RepositoryRole::SplitMember,
+    }
+}
+
+/// The canonical repo name: the manifest `name` if present, else the last
+/// segment of a slug (so role classification works even without an explicit
+/// name field).
+fn repo_canonical_name(repo: &SplitManifestRepo) -> Option<String> {
+    if let Some(name) = repo.name.as_ref().filter(|n| !n.trim().is_empty()) {
+        return Some(name.clone());
+    }
+    repo.jeryu_slug
+        .as_ref()
+        .or(repo.github_slug.as_ref())
+        .and_then(|slug| slug.rsplit('/').next())
+        .map(str::to_string)
+}
+
+/// Resolve `jeryu-tool/tools-registry.toml` from the split manifest, which lives
+/// at the split root. `None` when no manifest is wired, so the golden-box
+/// endpoint reports an empty registry.
+fn resolve_tool_registry_path(manifests: &[PathBuf]) -> Option<PathBuf> {
+    let manifest = manifests.first()?;
+    let split_root = manifest
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    Some(split_root.join("jeryu-tool").join("tools-registry.toml"))
 }
 
 impl SplitCatalog {
@@ -129,6 +172,9 @@ impl SplitCatalog {
         for slug in ["neverhuman/jeryu", "jeryu/jeryu"] {
             catalog.insert(slug, &family, RepositoryRole::PublicPortal);
         }
+        for slug in ["neverhuman/jeryu-tool", "jeryu/jeryu-tool"] {
+            catalog.insert(slug, &family, RepositoryRole::ToolControlPlane);
+        }
         for slug in [
             "neverhuman/jeryu-core",
             "neverhuman/jeryu-ci-runner",
@@ -137,6 +183,7 @@ impl SplitCatalog {
             "neverhuman/jeryu-web",
             "neverhuman/jeryu-release-ops",
             "neverhuman/jeryu-deploy",
+            "neverhuman/jeryu-tool-finder",
             "jeryu/jeryu-core",
             "jeryu/jeryu-ci-runner",
             "jeryu/jeryu-cache",
@@ -144,6 +191,7 @@ impl SplitCatalog {
             "jeryu/jeryu-web",
             "jeryu/jeryu-release-ops",
             "jeryu/jeryu-deploy",
+            "jeryu/jeryu-tool-finder",
         ] {
             catalog.insert(slug, &family, RepositoryRole::SplitMember);
         }
@@ -159,6 +207,8 @@ impl SplitCatalog {
             .unwrap_or_else(|| "jeryu-split".to_string());
         let mut catalog = Self::empty();
         for repo in manifest.repo.unwrap_or_default() {
+            // Compute role before the slugs move github_slug/jeryu_slug out.
+            let role = role_for(repo_canonical_name(&repo).as_deref(), repo.profile.as_deref());
             let slugs: Vec<String> = [repo.github_slug, repo.jeryu_slug]
                 .into_iter()
                 .flatten()
@@ -167,11 +217,6 @@ impl SplitCatalog {
             if slugs.is_empty() {
                 continue;
             }
-            let role = if repo.profile.as_deref() == Some("public-portal") {
-                RepositoryRole::PublicPortal
-            } else {
-                RepositoryRole::SplitMember
-            };
             for slug in slugs {
                 catalog.insert(&slug, &family, role.clone());
             }
@@ -232,6 +277,10 @@ pub(crate) struct WebState {
     /// never mutates process-global env.
     pub(crate) session_runtime: sessions::SessionRuntimeConfig,
     split_catalog: SplitCatalog,
+    /// Path to `jeryu-tool/tools-registry.toml`, resolved from the split
+    /// manifest in `serve()`. `None` in tests and when no manifest is wired, in
+    /// which case the golden-box endpoint reports an empty registry.
+    tool_registry_path: Option<PathBuf>,
 }
 
 impl WebState {
@@ -283,7 +332,15 @@ impl WebState {
             warm_pool,
             session_runtime: sessions::SessionRuntimeConfig::from_env(),
             split_catalog,
+            tool_registry_path: None,
         }
+    }
+
+    /// Point the golden-box endpoint at `jeryu-tool/tools-registry.toml`.
+    /// Production-only chaining in `serve()`; tests leave it unset.
+    fn with_tool_registry_path(mut self, path: Option<PathBuf>) -> Self {
+        self.tool_registry_path = path;
+        self
     }
 
     /// Attach the merge-to-GitHub mirror (loaded from the split manifest) to
@@ -448,6 +505,7 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     let core = ForgeCore::open_sqlite(db_path)?
         .with_repo_materializer(Arc::new(GitMaterializer::new(repo_manager.clone())));
     let split_catalog = SplitCatalog::load(&config.split_manifests);
+    let tool_registry_path = resolve_tool_registry_path(&config.split_manifests);
     // Merge-to-GitHub mirroring: targets come from the same manifest; with no
     // manifest (or JERYU_GITHUB_PUSH=0) the mirror loads disabled and merges
     // never attempt a push.
@@ -462,7 +520,8 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
             config.data_dir.clone(),
             split_catalog,
         )
-        .with_github_mirror(github_mirror),
+        .with_github_mirror(github_mirror)
+        .with_tool_registry_path(tool_registry_path),
         &config.spa_dir,
     );
     let listener = TcpListener::bind(config.bind).await?;
@@ -570,6 +629,11 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
         .route(
             "/api/v1/repos/:id/jankurai-scores",
             get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),
+        )
+        .route("/api/v1/fleet/tool-adoption", get(fleet_tool_adoption))
+        .route(
+            "/api/v1/tools/registry/summary",
+            get(tool_registry::summary),
         )
         .route("/api/v1/repos/:id/refs", get(repo_refs))
         .route("/api/v1/repos/:id/tree", get(repo_tree))

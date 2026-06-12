@@ -2162,6 +2162,57 @@ profile = "split-member"
 }
 
 #[test]
+fn split_catalog_classifies_tool_control_plane_and_finder() {
+    // The tool control plane and its discovery arm ride the same `public-portal`
+    // build profile as the real portal; the `-tool` / `-tool-finder` names must
+    // disambiguate so only `jeryu` is the portal.
+    let root = tempdir().expect("split manifests dir");
+    write_file(
+        root.path(),
+        "jeryu.toml",
+        r#"
+repo_family = "jeryu-split"
+
+[[repo]]
+name = "jeryu"
+github_slug = "neverhuman/jeryu"
+jeryu_slug = "jeryu/jeryu"
+profile = "public-portal"
+
+[[repo]]
+name = "jeryu-tool"
+github_slug = "neverhuman/jeryu-tool"
+jeryu_slug = "jeryu/jeryu-tool"
+profile = "public-portal"
+
+[[repo]]
+name = "jeryu-tool-finder"
+github_slug = "neverhuman/jeryu-tool-finder"
+jeryu_slug = "jeryu/jeryu-tool-finder"
+profile = "public-portal"
+"#,
+    );
+    let catalog = SplitCatalog::load(&[root.path().join("jeryu.toml")]);
+    assert_eq!(
+        catalog.classify("jeryu", "jeryu"),
+        Some(("jeryu-split".to_string(), RepositoryRole::PublicPortal))
+    );
+    assert_eq!(
+        catalog.classify("jeryu", "jeryu-tool"),
+        Some(("jeryu-split".to_string(), RepositoryRole::ToolControlPlane))
+    );
+    assert_eq!(
+        catalog.classify("neverhuman", "jeryu-tool"),
+        Some(("jeryu-split".to_string(), RepositoryRole::ToolControlPlane))
+    );
+    // The finder rides public-portal but is a normal member, not a portal.
+    assert_eq!(
+        catalog.classify("jeryu", "jeryu-tool-finder"),
+        Some(("jeryu-split".to_string(), RepositoryRole::SplitMember))
+    );
+}
+
+#[test]
 fn repo_list_family_filter_uses_multi_manifest_catalog() {
     let manifest_root = tempdir().expect("split manifests dir");
     write_file(
