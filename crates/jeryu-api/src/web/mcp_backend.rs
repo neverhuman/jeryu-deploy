@@ -700,6 +700,7 @@ pub fn alpha(input: &str) -> Result<String, String> {
                 min_occurrences: 2,
                 max_file_bytes: 64 * 1024,
                 max_clusters: 10,
+                min_repo_count: 1,
             },
         )
         .expect("scan tool-build clusters");
