@@ -42,9 +42,17 @@ owner/test-map proof lane and regenerate the witness before retrying merge.
 
 Jeryu does not repair a local-host GitHub CLI problem by running `gh auth login`,
 `gh auth refresh`, scraping `hosts.yml`, or hunting credential stores. Configure
-the host entry with `jeryu gh-setup --host <local-jeryu-url>`, then use
-`/.jeryu/capabilities`, the Jeryu REST routes, or the `jeryu.*` MCP tools for
-the original PR, CI, issue, or repository task.
+the host entry with `jeryu gh-setup --host <local-jeryu-url> --token-file
+~/.jeryu/secrets/merge-token`, then use `/.jeryu/capabilities`, the Jeryu REST
+routes, or the `jeryu.*` MCP tools for the original PR, CI, issue, or repository
+task.
+
+If `gh` reports a stale or invalid token for an existing local Jeryu host entry,
+rerun `jeryu gh-setup --host <same-local-host> --token-file
+~/.jeryu/secrets/merge-token`. GitHub.com auth and local Jeryu host auth are
+separate; do not run `gh auth login` for Jeryu hosts. The vault bootstrap file
+at `~/.jeryu/vault/bootstrap.json` contains vault bootstrap material and is not
+the `gh` host repair path.
 
 Native agent credentials are separate from the GitHub-compatible host entry.
 Use `jeryu agent auth doctor <tool>` and `jeryu agent auth import --from-host

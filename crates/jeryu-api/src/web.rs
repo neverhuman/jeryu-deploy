@@ -44,7 +44,9 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::GithubRouter;
 use crate::git_materializer::GitMaterializer;
-use crate::github::{MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL};
+use crate::github::{
+    GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_TOKEN_FILE, MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL,
+};
 use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
 use jeryu_runnerd::{WarmPool, WorkcellManager};
@@ -902,9 +904,9 @@ fn capabilities_payload() -> Value {
         "mcp_endpoint": "/mcp",
         "mcp_tools": MCP_GUIDANCE_TOOLS,
         "gh_command_map": {
-            "gh auth login": "Do not run direct gh auth against a Jeryu host; run jeryu gh-setup --host <local-jeryu-url> instead.",
-            "gh auth refresh": "Do not refresh host auth manually; rerun jeryu gh-setup for the Jeryu host entry.",
-            "gh auth status": "If status fails for the Jeryu host, do not start a login flow; rerun jeryu gh-setup and inspect /.jeryu/capabilities.",
+            "gh auth login": "Do not run direct gh auth against a Jeryu host; run jeryu gh-setup --host <local-jeryu-url> --token-file ~/.jeryu/secrets/merge-token instead.",
+            "gh auth refresh": "Do not refresh host auth manually; rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token for the Jeryu host entry.",
+            "gh auth status": "If status fails for the Jeryu host, do not start a login flow; rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token and inspect /.jeryu/capabilities.",
             "gh pr create": MCP_PATCH_TOOL,
             "gh pr merge": MCP_MERGE_TOOL,
             "gh pr list": "GET /repos/{owner}/{repo}/pulls",
@@ -921,7 +923,10 @@ fn capabilities_payload() -> Value {
         },
         "gh_auth_policy": {
             "do_not_run": ["gh auth login", "gh auth refresh", "credential-store token hunting"],
-            "run_instead": "jeryu gh-setup --host http://127.0.0.1:8787 --token JERYU-TOKEN",
+            "run_instead": GH_SETUP_COMMAND,
+            "token_file": GH_SETUP_TOKEN_FILE,
+            "stale_host_repair": "jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token",
+            "host_auth_boundary": GH_AUTH_BOUNDARY,
             "agent_auth": "jeryu agent auth doctor <tool>; jeryu agent auth import --from-host <tool>",
         },
         "fast_path_advice":

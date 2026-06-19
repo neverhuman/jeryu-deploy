@@ -33,6 +33,7 @@ use serde_json::json;
 
 use crate::routes::Response;
 
+pub(crate) use support::{GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_TOKEN_FILE};
 #[allow(unused_imports)]
 pub(crate) use support::{MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL};
 use support::{

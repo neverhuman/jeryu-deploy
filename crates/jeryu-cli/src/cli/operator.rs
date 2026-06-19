@@ -15,16 +15,20 @@ use clap::{Args, Subcommand, ValueEnum};
 /// pointed at the jeryu base URL makes status checks resolve against jeryu.
 /// If auth looks wrong, rerun this command; do not start a `gh auth login` or
 /// refresh flow against the Jeryu host. Idempotent: re-running with the same
-/// host/token reproduces the same entry.
+/// host/token source reproduces the same entry.
 #[derive(Debug, Args)]
 pub struct GhSetupArgs {
     /// jeryu server base URL the GitHub CLI should target.
     #[arg(long, default_value = "http://localhost:8080")]
     pub host: String,
 
-    /// OAuth token to record for the host (defaults to a placeholder).
-    #[arg(long, default_value = "JERYU-TOKEN")]
-    pub token: String,
+    /// OAuth token to record for the host. Overrides --token-file when both are provided.
+    #[arg(long)]
+    pub token: Option<String>,
+
+    /// Path to an OAuth token file (defaults to ~/.jeryu/secrets/merge-token).
+    #[arg(long, value_name = "PATH")]
+    pub token_file: Option<String>,
 
     /// Print the resulting config to stdout instead of writing the hosts file.
     #[arg(long, default_value_t = false)]

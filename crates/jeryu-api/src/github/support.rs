@@ -29,6 +29,10 @@ pub(crate) const MCP_GUIDANCE_TOOLS: &[&str] = &[
 ];
 
 pub(crate) const MCP_RUN_TESTS_TOOL: &str = "jeryu.run_tests";
+pub(crate) const GH_SETUP_TOKEN_FILE: &str = "~/.jeryu/secrets/merge-token";
+pub(crate) const GH_SETUP_COMMAND: &str =
+    "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token";
+pub(crate) const GH_AUTH_BOUNDARY: &str = "GitHub.com auth and local Jeryu host auth are separate; do not run gh auth login for Jeryu hosts.";
 
 /// The fast-path pointer surfaced on every error body so a confused agent is
 /// always handed the capability manifest instead of being left to guess.
@@ -373,21 +377,24 @@ pub(super) fn gh_auth_workaround_response(path: &str) -> Response {
             "documentation_url": "docs/errors.md#github-cli-auth-steering",
             "jeryu_repair_hint": {
                 "purpose": "route GitHub CLI auth setup through Jeryu",
-                "reason": "Jeryu uses an explicit gh hosts.yml entry plus portable agent-auth receipts; running gh auth login, refresh, or token-hunting workarounds against the Jeryu host is the wrong repair path.",
+                "reason": "Jeryu uses an explicit gh hosts.yml entry plus portable agent-auth receipts; running gh auth login, refresh, or token-hunting workarounds against the Jeryu host is the wrong repair path. GitHub.com auth and local Jeryu host auth are separate.",
                 "common_fixes": [
                     "stop running gh auth login, gh auth refresh, or credential-store searches for the Jeryu host",
-                    "run jeryu gh-setup --host http://127.0.0.1:8787 --token JERYU-TOKEN, or rerun it with the live JERYU_API_URL",
+                    GH_SETUP_COMMAND,
+                    "for a stale gh host token entry, rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token",
+                    GH_AUTH_BOUNDARY,
                     "use GET /.jeryu/capabilities or the listed jeryu.* MCP tools for PR, CI, issue, and repo workflows",
                     "for agent native CLI credentials, run jeryu agent auth doctor <tool> and jeryu agent auth import --from-host <tool>"
                 ],
                 "docs_url": "docs/errors.md#github-cli-auth-steering",
-                "repair_hint": "rerun jeryu gh-setup for the Jeryu host, then retry the original Jeryu CLI/MCP/API operation instead of gh auth"
+                "repair_hint": "rerun jeryu gh-setup for the Jeryu host with --token-file ~/.jeryu/secrets/merge-token, then retry the original Jeryu CLI/MCP/API operation instead of gh auth"
             },
             "jeryu_connection": {
                 "capabilities": FASTER_PATH,
                 "first_contact": "/.jeryu/agents/first-contact",
                 "mcp": "/mcp",
-                "gh_setup": "jeryu gh-setup --host http://127.0.0.1:8787 --token JERYU-TOKEN",
+                "gh_setup": GH_SETUP_COMMAND,
+                "gh_token_file": GH_SETUP_TOKEN_FILE,
                 "agent_auth_doctor": "jeryu agent auth doctor <codex|claude|jekko>",
                 "agent_auth_import": "jeryu agent auth import --from-host <codex|claude|jekko>"
             },
@@ -459,12 +466,17 @@ pub(super) fn first_contact_response() -> Response {
             "advice": [
                 "GET /.jeryu/capabilities for the live endpoint + gh-command map.",
                 "Prefer the typed jeryu.* MCP tools over bespoke gh REST calls; they are faster and never dead-end.",
-                "Do not run gh auth login or gh auth refresh for a Jeryu host; run jeryu gh-setup for the host entry.",
+                "Do not run gh auth login or gh auth refresh for a Jeryu host; run jeryu gh-setup with --token-file ~/.jeryu/secrets/merge-token for the host entry.",
+                "If gh reports a stale local host token, rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token.",
+                GH_AUTH_BOUNDARY,
                 "Every error reply carries a jeryu_steering block naming the MCP tool that serves your intent.",
             ],
             "gh_auth_policy": {
                 "do_not_run": ["gh auth login", "gh auth refresh", "credential-store token hunting"],
-                "run_instead": "jeryu gh-setup --host http://127.0.0.1:8787 --token JERYU-TOKEN",
+                "run_instead": GH_SETUP_COMMAND,
+                "token_file": GH_SETUP_TOKEN_FILE,
+                "stale_host_repair": "jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token",
+                "host_auth_boundary": GH_AUTH_BOUNDARY,
                 "agent_auth": "jeryu agent auth doctor <tool>; jeryu agent auth import --from-host <tool>",
             },
             "mcp_tools": MCP_GUIDANCE_TOOLS,

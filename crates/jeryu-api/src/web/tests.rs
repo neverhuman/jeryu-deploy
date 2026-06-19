@@ -2907,8 +2907,13 @@ async fn live_gh_auth_workaround_route_returns_guided_json_not_spa() {
     );
     assert_eq!(
         parsed["jeryu_connection"]["gh_setup"],
-        "jeryu gh-setup --host http://127.0.0.1:8787 --token JERYU-TOKEN"
+        "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token"
     );
+    assert_eq!(
+        parsed["jeryu_connection"]["gh_token_file"],
+        "~/.jeryu/secrets/merge-token"
+    );
+    assert!(!parsed.to_string().contains("JERYU-TOKEN"));
 }
 
 #[tokio::test]
@@ -3431,8 +3436,25 @@ fn capabilities_payload_exposes_the_gh_command_map() {
     );
     assert_eq!(
         payload["gh_auth_policy"]["run_instead"],
-        "jeryu gh-setup --host http://127.0.0.1:8787 --token JERYU-TOKEN"
+        "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token"
     );
+    assert_eq!(
+        payload["gh_auth_policy"]["token_file"],
+        "~/.jeryu/secrets/merge-token"
+    );
+    assert!(
+        payload["gh_auth_policy"]["stale_host_repair"]
+            .as_str()
+            .expect("stale host repair")
+            .contains("--token-file ~/.jeryu/secrets/merge-token")
+    );
+    assert!(
+        payload["gh_auth_policy"]["host_auth_boundary"]
+            .as_str()
+            .expect("host auth boundary")
+            .contains("GitHub.com auth and local Jeryu host auth are separate")
+    );
+    assert!(!payload.to_string().contains("JERYU-TOKEN"));
 }
 
 #[test]

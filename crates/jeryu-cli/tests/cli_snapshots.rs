@@ -951,7 +951,7 @@ fn dispatch_gh_setup_writes_idempotent_hosts_file() {
         "--host",
         "http://localhost:8080",
         "--token",
-        "T",
+        "secret-token",
         "--path",
         &path_str,
     ];
@@ -962,15 +962,66 @@ fn dispatch_gh_setup_writes_idempotent_hosts_file() {
         out.contains("wrote gh host localhost:8080"),
         "stdout {out:?}"
     );
+    assert!(
+        out.contains("token source: explicit --token"),
+        "stdout {out:?}"
+    );
     assert!(out.contains("do not run gh auth login"), "stdout {out:?}");
+    assert!(!out.contains("secret-token"), "stdout leaked token {out:?}");
     let first = std::fs::read_to_string(&path).expect("hosts.yml written");
-    assert!(first.contains("oauth_token: T"));
+    assert!(first.contains("oauth_token: secret-token"));
 
     // Re-running with identical inputs is idempotent (byte-identical file).
     let (code, _, _) = run_cli(&client, &argv);
     assert_eq!(code, 0);
     let second = std::fs::read_to_string(&path).expect("hosts.yml rewritten");
     assert_eq!(first, second, "gh-setup must be idempotent");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn dispatch_gh_setup_reads_token_file_without_printing_token() {
+    let client = InMemoryClient::new();
+    let dir = scratch_dir("gh-token-file");
+    let token_path = dir.join("merge-token");
+    let hosts_path = dir.join("hosts.yml");
+    std::fs::write(&token_path, "file-secret-token\n").expect("write token file");
+    let token_path_str = token_path.to_str().unwrap().to_string();
+    let hosts_path_str = hosts_path.to_str().unwrap().to_string();
+
+    let (code, out, err) = run_cli(
+        &client,
+        &[
+            "jeryu",
+            "gh-setup",
+            "--host",
+            "http://127.0.0.1:8787",
+            "--token-file",
+            &token_path_str,
+            "--path",
+            &hosts_path_str,
+        ],
+    );
+
+    assert_eq!(code, 0);
+    assert!(err.is_empty(), "stderr was {err:?}");
+    assert!(
+        out.contains(&format!("token file used: {token_path_str}")),
+        "stdout {out:?}"
+    );
+    assert!(
+        out.contains(
+            "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token"
+        ),
+        "stdout {out:?}"
+    );
+    assert!(
+        !out.contains("file-secret-token"),
+        "stdout leaked token {out:?}"
+    );
+    let hosts = std::fs::read_to_string(&hosts_path).expect("hosts.yml written");
+    assert!(hosts.contains("oauth_token: file-secret-token"));
 
     std::fs::remove_dir_all(&dir).ok();
 }

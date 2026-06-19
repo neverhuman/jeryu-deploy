@@ -1002,8 +1002,19 @@ fn first_contact_returns_a_steering_doc() {
     );
     assert_eq!(
         parsed["gh_auth_policy"]["run_instead"],
-        "jeryu gh-setup --host http://127.0.0.1:8787 --token JERYU-TOKEN"
+        "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token"
     );
+    assert_eq!(
+        parsed["gh_auth_policy"]["token_file"],
+        "~/.jeryu/secrets/merge-token"
+    );
+    assert!(
+        parsed["gh_auth_policy"]["stale_host_repair"]
+            .as_str()
+            .expect("stale host repair")
+            .contains("--token-file ~/.jeryu/secrets/merge-token")
+    );
+    assert!(!doc.body.contains("JERYU-TOKEN"));
     for tool in parsed["mcp_tools"].as_array().expect("mcp_tools array") {
         assert!(tool.as_str().unwrap().starts_with("jeryu."));
     }
@@ -1030,9 +1041,17 @@ fn gh_auth_workaround_paths_return_typed_jeryu_guidance() {
                 .as_array()
                 .expect("common fixes")
                 .iter()
-                .any(|fix| fix.as_str().unwrap_or("").contains("jeryu gh-setup")),
+                .any(|fix| fix
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("--token-file ~/.jeryu/secrets/merge-token")),
             "guidance must point agents at jeryu gh-setup"
         );
+        assert_eq!(
+            parsed["jeryu_connection"]["gh_setup"],
+            "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token"
+        );
+        assert!(!response.body.contains("JERYU-TOKEN"));
         assert!(
             parsed["jeryu_repair_hint"]["reason"]
                 .as_str()
