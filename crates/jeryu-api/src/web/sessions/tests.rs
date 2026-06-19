@@ -56,15 +56,25 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 /// Register a repository in the forge AND materialize a one-commit bare repo on
-/// disk whose `main` the session planner can resolve. Returns the `main` tip oid.
+/// disk whose default branch the session planner can resolve. Returns the branch tip oid.
 fn seed_repo(core: &ForgeCore, storage_root: &Path, owner: &str, name: &str) -> String {
+    seed_repo_on_branch(core, storage_root, owner, name, "main")
+}
+
+fn seed_repo_on_branch(
+    core: &ForgeCore,
+    storage_root: &Path,
+    owner: &str,
+    name: &str,
+    default_branch: &str,
+) -> String {
     core.create_repository(
         owner,
         CreateRepositoryRequest {
             name: name.to_string(),
             private: false,
             description: None,
-            default_branch: Some("main".to_string()),
+            default_branch: Some(default_branch.to_string()),
         },
     )
     .expect("create repository");
@@ -74,11 +84,11 @@ fn seed_repo(core: &ForgeCore, storage_root: &Path, owner: &str, name: &str) -> 
     let work = storage_root.join(format!("{owner}-{name}-work"));
     std::fs::create_dir_all(&work).expect("create work dir");
 
-    git(&["init", "--quiet", "-b", "main"], &work);
+    git(&["init", "--quiet", "-b", default_branch], &work);
     std::fs::write(work.join("README.md"), "# seed\n").expect("write seed");
     git(&["add", "README.md"], &work);
     git(&["commit", "--quiet", "-m", "seed"], &work);
-    let main_oid = git(&["rev-parse", "HEAD"], &work);
+    let branch_oid = git(&["rev-parse", "HEAD"], &work);
     git(
         &[
             "clone",
@@ -89,7 +99,7 @@ fn seed_repo(core: &ForgeCore, storage_root: &Path, owner: &str, name: &str) -> 
         ],
         &work,
     );
-    main_oid
+    branch_oid
 }
 
 /// Author a child commit on top of `parent_oid` and push it into the bare repo on
@@ -275,6 +285,67 @@ async fn create_claims_a_prewarmed_cell_on_unique_branch_at_latest_main() {
         registered.oid, main_oid,
         "branch registered at latest-main oid"
     );
+}
+
+#[tokio::test]
+async fn create_uses_repository_default_branch_when_it_is_not_main() {
+    let storage = tempfile::tempdir().expect("git storage");
+    let core = ForgeCore::new();
+    let master_oid = seed_repo_on_branch(&core, storage.path(), "alice", "legacy-web", "master");
+    let (state, _fake) = fake_state(core, storage.path());
+
+    let created = create_session(
+        &state,
+        "alice/legacy-web",
+        json!({ "agent_id": "agent-7", "run_id": "run-master" }),
+    )
+    .await;
+
+    assert_eq!(created["branch"], "agents/agent-7/sessions/run-master");
+    assert_eq!(created["base_oid"], master_oid);
+
+    let resolved = state
+        .repo_manager
+        .resolve_parts("alice", "legacy-web")
+        .expect("resolve bare");
+    let refs = jeryu_gitd::refs::RefService::new((*state.repo_manager).clone());
+    let registered = refs
+        .list_refs(&resolved)
+        .expect("list refs")
+        .into_iter()
+        .find(|r| r.name == "refs/heads/agents/agent-7/sessions/run-master")
+        .expect("session branch registered on the forge");
+    assert_eq!(
+        registered.oid, master_oid,
+        "branch registered at default-branch oid"
+    );
+}
+
+#[tokio::test]
+async fn create_auto_run_id_skips_persisted_session_branch_after_restart() {
+    let storage = tempfile::tempdir().expect("git storage");
+    let core = ForgeCore::new();
+    let main_oid = seed_repo(&core, storage.path(), "alice", "jeryu");
+    let (state, _fake) = fake_state(core, storage.path());
+
+    let resolved = state
+        .repo_manager
+        .resolve_parts("alice", "jeryu")
+        .expect("resolve bare");
+    let refs = jeryu_gitd::refs::RefService::new((*state.repo_manager).clone());
+    refs.update_ref(
+        &resolved,
+        "test",
+        "refs/heads/agents/agent-7/sessions/ar-000001",
+        &main_oid,
+        None,
+    )
+    .expect("seed persisted session branch");
+
+    let created = create_session(&state, "alice/jeryu", json!({ "agent_id": "agent-7" })).await;
+
+    assert_eq!(created["run_id"], "ar-000002");
+    assert_eq!(created["branch"], "agents/agent-7/sessions/ar-000002");
 }
 
 /// A second New Session reuses ANOTHER pre-warmed cell: across two back-to-back

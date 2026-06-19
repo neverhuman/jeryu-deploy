@@ -3,7 +3,7 @@
 //!
 //! These three handlers turn the landed session-launch planner into a real
 //! product flow. A session is always cut onto a fresh, namespaced branch off the
-//! latest `main` (never `main` itself), runs inside the hardened agent container,
+//! repository default branch, runs inside the hardened agent container,
 //! and is recorded against the owning repository so the web Active-Agents page can
 //! render exactly that repository's runs. Publishing is HOST-mediated: the agent's
 //! captured commits advance the branch ref through the protected, compare-and-swap
@@ -229,19 +229,31 @@ fn create_session(
         .resolve_parts(&owner, &name)
         .map_err(|err| Box::new(gitd_error(err)))?;
     let refs = RefService::new((*state.repo_manager).clone());
-    let base_oid = refs
+    let repo_refs = refs
         .list_refs(&resolved)
-        .map_err(|err| Box::new(gitd_error(err)))?
-        .into_iter()
-        .find(|git_ref| git_ref.name == "refs/heads/main")
-        .map(|git_ref| git_ref.oid)
-        .ok_or_else(|| Box::new(session_repo_uninitialized(&full_name)))?;
+        .map_err(|err| Box::new(gitd_error(err)))?;
+    let default_branch = repo.default_branch.clone();
+    let default_ref = format!("refs/heads/{default_branch}");
+    let base_oid = repo_refs
+        .iter()
+        .find(|git_ref| git_ref.name == default_ref)
+        .map(|git_ref| git_ref.oid.clone())
+        .ok_or_else(|| Box::new(session_repo_uninitialized(&full_name, &default_branch)))?;
 
-    let run_id = request
-        .run_id
-        .clone()
-        .unwrap_or_else(|| state.agent_runs.allocate_id());
     let agent_id = request.agent_id.clone();
+    let run_id = match request.run_id.clone() {
+        Some(run_id) => run_id,
+        None => loop {
+            let candidate = state.agent_runs.allocate_id();
+            let candidate_ref = format!("refs/heads/agents/{agent_id}/sessions/{candidate}");
+            if !repo_refs
+                .iter()
+                .any(|git_ref| git_ref.name == candidate_ref)
+            {
+                break candidate;
+            }
+        },
+    };
     let runner = request
         .runner
         .clone()
@@ -286,7 +298,7 @@ fn create_session(
     )
     .map_err(|err| Box::new(runner_error(err)))?;
 
-    // Register the unique session branch on the forge at the latest-main oid via
+    // Register the unique session branch on the forge at the default-branch oid via
     // the protected, compare-and-swap ref service (create: no prior oid). The
     // branch is namespaced (`agents/<id>/sessions/<run>`) so it can never collide
     // with or spoof `main`.
@@ -302,7 +314,7 @@ fn create_session(
 
     // Claim a PRE-WARMED cell from the landed warm pool instead of cold-starting
     // a fresh container. The pool reuses a detached `sleep infinity` container,
-    // materializes the latest-main checkout on the unique session branch, and
+    // materializes the default-branch checkout on the unique session branch, and
     // refills back to its target depth — so this New Session pays no cold-start.
     // The reused container's plan still carries the full hardening (read-only
     // root, all caps dropped, `--network none`, workspace-only mount), and the
@@ -329,7 +341,7 @@ fn create_session(
                 git_status_summary: "clean".to_string(),
                 ci_snapshot_age_ms: Some(0),
                 startup: StartupSync::Rebased {
-                    main_ref: "origin/main".to_string(),
+                    main_ref: format!("origin/{default_branch}"),
                     base_sha: base_oid.clone(),
                     head_sha: base_oid.clone(),
                 },
@@ -684,7 +696,7 @@ fn materialize_workspace(
         None,
     )?;
     // Force the session branch to the exact base oid and check it out, so the agent
-    // starts on its own namespaced branch at latest-main (never `main` itself).
+    // starts on its own namespaced branch at the default-branch tip.
     run_git(
         git_bin,
         &["-C", &workspace_arg, "checkout", "-B", branch, base_oid],
@@ -1457,18 +1469,19 @@ fn run_not_found(run_id: &str) -> AxumResponse {
     )
 }
 
-fn session_repo_uninitialized(full_name: &str) -> AxumResponse {
-    let message = format!("repository {full_name} has no main branch to cut a session from");
+fn session_repo_uninitialized(full_name: &str, default_branch: &str) -> AxumResponse {
+    let message =
+        format!("repository {full_name} has no {default_branch} branch to cut a session from");
     session_typed_error(
         StatusCode::FAILED_DEPENDENCY,
         "session_repo_uninitialized",
         "create an agent session for a repository",
         &message,
         &[
-            "push an initial commit to main before launching a session",
+            "push an initial commit to the repository default branch before launching a session",
             "confirm the bare repo was materialized for this repository",
         ],
-        "seed main, then rerun cargo test -p jeryu-api --features web --jobs 4 sessions",
+        "seed the default branch, then rerun cargo test -p jeryu-api --features web --jobs 4 sessions",
     )
 }
 
