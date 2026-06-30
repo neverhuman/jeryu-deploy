@@ -23,10 +23,30 @@ fn git_available() -> bool {
         .unwrap_or(false)
 }
 
+fn git_lfs_available() -> bool {
+    Command::new("git")
+        .args(["lfs", "version"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
 fn run_git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
         .current_dir(dir)
+        .status()
+        .unwrap_or_else(|err| panic!("git {args:?}: {err}"));
+    assert!(status.success(), "git {args:?} failed in {}", dir.display());
+}
+
+fn run_git_env(dir: &Path, args: &[&str], envs: &[(&str, &str)]) {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(dir);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let status = command
         .status()
         .unwrap_or_else(|err| panic!("git {args:?}: {err}"));
     assert!(status.success(), "git {args:?} failed in {}", dir.display());
@@ -48,6 +68,14 @@ fn run_git_failure(dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+fn write_bytes(path: &Path, seed: u8, len: usize) -> Vec<u8> {
+    let bytes: Vec<u8> = (0..len)
+        .map(|idx| seed.wrapping_add((idx % 251) as u8))
+        .collect();
+    std::fs::write(path, &bytes).unwrap();
+    bytes
 }
 
 fn write_incompressible_file(path: &Path, len: usize) {
@@ -83,6 +111,18 @@ async fn wait_until_listening(addr: SocketAddr) {
         assert!(Instant::now() < deadline, "server never listened on {addr}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+fn assert_lfs_content_type(resp: &reqwest::Response) {
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.starts_with("application/vnd.git-lfs+json"),
+        "expected Git LFS JSON content type, got {content_type}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -234,6 +274,182 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
         !main.status.success(),
         "refs/heads/main must not be created by a rejected direct push"
     );
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s4_git_lfs_batch_and_locks_verify_routes_return_protocol_json() {
+    let base = std::env::temp_dir().join(format!("jeryu-s4-lfs-routes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let data_dir = base.join("data");
+    let git_root = base.join("git");
+    let spa_dir = base.join("spa");
+    std::fs::create_dir_all(&spa_dir).unwrap();
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let config = WebServerConfig {
+        bind: addr,
+        spa_dir,
+        data_dir,
+        git_storage_root: git_root,
+        split_manifests: Vec::new(),
+    };
+    let server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/repos"))
+        .json(&serde_json::json!({ "name": "lfs-routes" }))
+        .send()
+        .await
+        .expect("POST /repos");
+    assert_eq!(resp.status().as_u16(), 201);
+
+    let batch = client
+        .post(format!(
+            "http://{addr}/git/jeryu/lfs-routes.git/info/lfs/objects/batch"
+        ))
+        .json(&serde_json::json!({
+            "operation": "upload",
+            "transfers": ["basic"],
+            "objects": []
+        }))
+        .send()
+        .await
+        .expect("POST LFS batch");
+    assert_eq!(batch.status().as_u16(), 200);
+    assert_lfs_content_type(&batch);
+    let batch_body: serde_json::Value = batch.json().await.expect("LFS batch JSON body");
+    assert_eq!(batch_body["transfer"], "basic");
+    assert_eq!(batch_body["objects"].as_array().unwrap().len(), 0);
+
+    let locks = client
+        .post(format!(
+            "http://{addr}/git/jeryu/lfs-routes.git/info/lfs/locks/verify"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("POST LFS locks verify");
+    assert_eq!(locks.status().as_u16(), 200);
+    assert_lfs_content_type(&locks);
+    let locks_body: serde_json::Value = locks.json().await.expect("LFS locks verify JSON body");
+    assert_eq!(locks_body["ours"].as_array().unwrap().len(), 0);
+    assert_eq!(locks_body["theirs"].as_array().unwrap().len(), 0);
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
+    if !git_available() || !git_lfs_available() {
+        eprintln!("git or git-lfs unavailable; skipping s4 LFS live-HTTP e2e");
+        return;
+    }
+
+    let base = std::env::temp_dir().join(format!("jeryu-s4-lfs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let data_dir = base.join("data");
+    let git_root = base.join("git");
+    let spa_dir = base.join("spa");
+    let work = base.join("work");
+    std::fs::create_dir_all(&spa_dir).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let config = WebServerConfig {
+        bind: addr,
+        spa_dir,
+        data_dir,
+        git_storage_root: git_root.clone(),
+        split_manifests: Vec::new(),
+    };
+    let server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/repos"))
+        .json(&serde_json::json!({ "name": "lfs-demo" }))
+        .send()
+        .await
+        .expect("POST /repos");
+    assert_eq!(resp.status().as_u16(), 201);
+
+    let clone_url = format!("http://{addr}/git/jeryu/lfs-demo.git");
+    run_git(
+        &work,
+        &[GIT_HTTP_GUARD, &["clone", clone_url.as_str(), "source"]].concat(),
+    );
+    let source = work.join("source");
+    run_git(&source, &["config", "user.email", "tester@jeryu.invalid"]);
+    run_git(&source, &["config", "user.name", "Tester"]);
+    run_git(&source, &["lfs", "install", "--local"]);
+    run_git(&source, &["lfs", "track", "*.cpkt"]);
+
+    let v1 = write_bytes(&source.join("model.cpkt"), 11, 4096);
+    run_git(&source, &["add", ".gitattributes", "model.cpkt"]);
+    run_git(&source, &["commit", "-m", "model v1"]);
+    run_git(
+        &source,
+        &[
+            GIT_HTTP_GUARD,
+            &["push", "origin", "HEAD:refs/heads/feature"],
+        ]
+        .concat(),
+    );
+
+    let v2 = write_bytes(&source.join("model.cpkt"), 29, 6144);
+    run_git(&source, &["add", "model.cpkt"]);
+    run_git(&source, &["commit", "-m", "model v2"]);
+    run_git(
+        &source,
+        &[
+            GIT_HTTP_GUARD,
+            &["push", "origin", "HEAD:refs/heads/feature"],
+        ]
+        .concat(),
+    );
+
+    run_git_env(
+        &work,
+        &[
+            GIT_HTTP_GUARD,
+            &[
+                "clone",
+                "--branch",
+                "feature",
+                clone_url.as_str(),
+                "skip-smudge",
+            ],
+        ]
+        .concat(),
+        &[("GIT_LFS_SKIP_SMUDGE", "1")],
+    );
+    let skip = work.join("skip-smudge");
+    let pointer = std::fs::read_to_string(skip.join("model.cpkt")).unwrap();
+    assert!(
+        pointer.contains("version https://git-lfs.github.com/spec/v1")
+            && pointer.contains("oid sha256:"),
+        "expected LFS pointer, got {pointer}"
+    );
+
+    run_git(&skip, &["lfs", "pull"]);
+    assert_eq!(std::fs::read(skip.join("model.cpkt")).unwrap(), v2);
+
+    run_git(&skip, &["checkout", "HEAD~1"]);
+    run_git(&skip, &["lfs", "pull"]);
+    assert_eq!(std::fs::read(skip.join("model.cpkt")).unwrap(), v1);
 
     server.abort();
     let _ = std::fs::remove_dir_all(&base);

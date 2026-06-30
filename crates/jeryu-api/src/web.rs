@@ -787,6 +787,23 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
                     "/git/:owner/:repo/git-receive-pack",
                     post(crate::git_transport::git_receive_pack),
                 )
+                .route(
+                    "/git/:owner/:repo/info/lfs/objects/batch",
+                    post(crate::git_transport::git_lfs_batch),
+                )
+                .route(
+                    "/git/:owner/:repo/info/lfs/objects/:oid",
+                    get(crate::git_transport::git_lfs_download)
+                        .put(crate::git_transport::git_lfs_upload),
+                )
+                .route(
+                    "/git/:owner/:repo/info/lfs/objects/:oid/verify",
+                    post(crate::git_transport::git_lfs_verify),
+                )
+                .route(
+                    "/git/:owner/:repo/info/lfs/locks/verify",
+                    post(crate::git_transport::git_lfs_locks_verify),
+                )
                 .route_layer(DefaultBodyLimit::disable()),
         )
         .fallback_service(spa)
