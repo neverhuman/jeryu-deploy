@@ -1,6 +1,8 @@
 //! Repository routes (`/repos`, `/repos/{owner}/{repo}`) and their
 //! GitHub-shaped repository renderer.
 
+#[cfg(feature = "web")]
+use jeryu_core::{AccountSummary, UserRole};
 use jeryu_core::{CreateRepositoryRequest, Repository};
 use serde_json::{Value, json};
 
@@ -15,6 +17,27 @@ impl GithubRouter {
     pub(super) fn list_repos(&self, path: &str, page: Pagination) -> Response {
         let repos = self.core.list_repositories(None);
         let body: Vec<Value> = repos.iter().map(repository_json).collect();
+        paginate(path, page, &body, |slice, _total| {
+            Value::Array(slice.to_vec())
+        })
+    }
+
+    #[cfg(feature = "web")]
+    pub(crate) fn list_repos_for_account(&self, path: &str, account: &AccountSummary) -> Response {
+        let path = super::normalize_github_path(path);
+        let (_route_path, query) = path.split_once('?').unwrap_or((path, ""));
+        let page = Pagination::from_query(query);
+        let repos = self.core.list_repositories(None);
+        let body: Vec<Value> = repos
+            .iter()
+            .filter(|repo| {
+                account.role == UserRole::Admin
+                    || self
+                        .core
+                        .user_can_read_repo(&account.login, &repo.owner, &repo.name)
+            })
+            .map(repository_json)
+            .collect();
         paginate(path, page, &body, |slice, _total| {
             Value::Array(slice.to_vec())
         })

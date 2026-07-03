@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64 = { version = "0.22", optional = true }
 chrono.workspace = true
 jeryu-bench = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.0", package = "jeryu-bench" }
 jeryu-obs = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.0", package = "jeryu-obs" }
@@ -19,6 +20,7 @@ jeryu-agent-stream = { git = "https://github.com/neverhuman/jeryu-ci-runner.git"
 jeryu-agentbridge = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-agentbridge", optional = true }
 jeryu-autonomy = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.0", package = "jeryu-autonomy", optional = true }
 jeryu-gitd = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1", package = "jeryu-gitd", optional = true }
+jeryu-jira = { path = "../../../jeryu-jira/crates/jeryu-jira" }
 jeryu-mcp = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.0", package = "jeryu-mcp", optional = true }
 jeryu-readmodel = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1", package = "jeryu-readmodel" }
 jeryu-runner-core = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-runner-core", optional = true }
@@ -45,7 +47,7 @@ tower = "0.5"
 
 [features]
 default = []
-web = ["dep:axum", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:tower-http", "dep:uuid"]
+web = ["dep:axum", "dep:base64", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:tower-http", "dep:uuid"]
 
 [lints]
 workspace = true

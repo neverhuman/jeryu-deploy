@@ -2,10 +2,15 @@
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::State;
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method as HttpMethod, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response as AxumResponse};
-use jeryu_readmodel::contracts::{RenderedMarkdown, Viewer, WebBootstrap, WebFeatureFlags};
+use jeryu_core::{AccountSummary, UserRole};
+use jeryu_readmodel::contracts::{
+    RenderedMarkdown, RepositorySummary, Viewer, WebBootstrap, WebFeatureFlags,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -13,7 +18,9 @@ use tokio::fs;
 
 use super::markdown::render_markdown;
 use super::permissions::permissions;
+#[cfg(test)]
 use super::repositories::repo_summaries;
+use super::repositories::repo_summaries_for_user;
 use crate::{Method, Response as GithubResponse};
 
 #[derive(Debug, Deserialize)]
@@ -30,8 +37,13 @@ pub(super) async fn markdown_render(
 
 pub(super) async fn graphql(
     State(state): State<std::sync::Arc<super::WebState>>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
+    if let Err(response) = github_account_from_headers(&state, peer.as_ref(), &headers) {
+        return *response;
+    }
     let body = std::str::from_utf8(&body).unwrap_or_default();
     github_response(state.github.handle(Method::Post, "/graphql", body))
 }
@@ -40,6 +52,7 @@ pub(super) async fn graphql(
 /// navigations and the GitHub-compatible REST edge to API clients.
 pub(super) async fn repo_entry(
     State(state): State<std::sync::Arc<super::WebState>>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     method: HttpMethod,
     headers: HeaderMap,
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
@@ -47,14 +60,14 @@ pub(super) async fn repo_entry(
 ) -> AxumResponse {
     if method == HttpMethod::GET {
         let path = uri.path();
-        if is_browser_navigation(&headers)
-            || is_browser_repo_route(path)
+        let browser_navigation = is_browser_navigation(&headers) || accepts_html(&headers);
+        if (browser_navigation && is_browser_repo_route(path))
             || (is_repo_index(path) && !accepts_json(&headers))
         {
             return spa_shell_response(&state.spa_dir).await;
         }
     }
-    github_forward_request(state, method, uri, body).await
+    github_forward_request(state, peer, method, headers, uri, body).await
 }
 
 /// Forwards a GitHub-compatible REST request to the in-process [`GithubRouter`],
@@ -63,16 +76,20 @@ pub(super) async fn repo_entry(
 /// unchanged; an unsupported HTTP verb returns a GitHub-shaped `405`.
 pub(super) async fn github_forward(
     State(state): State<std::sync::Arc<super::WebState>>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     method: HttpMethod,
+    headers: HeaderMap,
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
     body: Bytes,
 ) -> AxumResponse {
-    github_forward_request(state, method, uri, body).await
+    github_forward_request(state, peer, method, headers, uri, body).await
 }
 
 async fn github_forward_request(
     state: std::sync::Arc<super::WebState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     method: HttpMethod,
+    headers: HeaderMap,
     uri: axum::http::Uri,
     body: Bytes,
 ) -> AxumResponse {
@@ -81,13 +98,43 @@ async fn github_forward_request(
             StatusCode::METHOD_NOT_ALLOWED,
             "Method Not Allowed",
             "route unsupported GitHub-compatible REST method",
-            "the Jeryu GitHub edge accepts GET, POST, and PUT for the guided compatibility subset",
+            "the Jeryu GitHub edge accepts GET, PATCH, POST, and PUT for the guided compatibility subset",
             uri.path(),
         );
+    };
+    let account = match github_account_from_headers(&state, peer.as_ref(), &headers) {
+        Ok(account) => account,
+        Err(response) => return *response,
     };
     let path_and_query = uri
         .path_and_query()
         .map_or_else(|| uri.path().to_string(), ToString::to_string);
+    if let Some(response) = authorize_github_repo_request(&state, method, &path_and_query, &account)
+    {
+        return response;
+    }
+    if github_repo_list_path(&path_and_query) && method == Method::Get {
+        return github_response(
+            state
+                .github
+                .list_repos_for_account(&path_and_query, &account),
+        );
+    }
+    if github_user_path(&path_and_query) && method == Method::Get {
+        return github_response(GithubResponse {
+            status: 200,
+            body: json!({
+                "login": account.login,
+                "id": 1,
+                "node_id": format!("U_{}", account.login),
+                "type": "User",
+                "name": account.login,
+                "url": "/user",
+            })
+            .to_string(),
+            headers: Vec::new(),
+        });
+    }
     let body = std::str::from_utf8(&body).unwrap_or_default();
     github_response(state.github.handle(method, &path_and_query, body))
 }
@@ -96,7 +143,25 @@ fn accepts_json(headers: &HeaderMap) -> bool {
     headers
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|accept| accept.contains("application/json"))
+        .is_some_and(|accept| {
+            accept
+                .split(',')
+                .map(|part| part.split(';').next().unwrap_or("").trim())
+                .any(|media| {
+                    media == "application/json"
+                        || media == "application/vnd.github+json"
+                        || media
+                            .strip_prefix("application/")
+                            .is_some_and(|suffix| suffix.ends_with("+json"))
+                })
+        })
+}
+
+fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"))
 }
 
 fn is_repo_index(path: &str) -> bool {
@@ -119,24 +184,137 @@ fn is_browser_navigation(headers: &HeaderMap) -> bool {
 }
 
 fn is_browser_repo_route(path: &str) -> bool {
-    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
-    match (
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-    ) {
-        (Some("repos"), Some(_host), Some(_repo), None, None) => true,
-        (Some("repos"), Some(_host), Some(_repo), Some("code"), None) => true,
-        (Some("repos"), Some(_host), Some(_repo), Some("settings"), Some("merge")) => true,
-        (Some("repos"), Some(_host), Some(_repo), Some("blob"), Some(_)) => true,
-        (Some("repos"), Some(_host), Some(_repo), Some("tree"), Some(_)) => true,
-        (Some("repos"), Some(_host), Some(_repo), Some("pulls"), Some(number)) => {
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        ["repos", "family", _family] => true,
+        ["repos", _host, _repo] => true,
+        ["repos", _host, _repo, "code"] => true,
+        ["repos", _host, _repo, "settings", ..] => true,
+        ["repos", _host, _repo, "blob", ..] => true,
+        ["repos", _host, _repo, "tree", ..] => true,
+        ["repos", _host, _repo, "pulls"] => true,
+        ["repos", _host, _repo, "pulls", number] => number.chars().all(|ch| ch.is_ascii_digit()),
+        ["repos", _provider, _owner, _name] => true,
+        ["repos", _provider, _owner, _name, "agents", ..] => true,
+        ["repos", _provider, _owner, _name, "code"] => true,
+        ["repos", _provider, _owner, _name, "settings", ..] => true,
+        ["repos", _provider, _owner, _name, "blob", ..] => true,
+        ["repos", _provider, _owner, _name, "tree", ..] => true,
+        ["repos", _provider, _owner, _name, "pulls"] => true,
+        ["repos", _provider, _owner, _name, "pulls", number] => {
             number.chars().all(|ch| ch.is_ascii_digit())
         }
+        ["repos", _provider, _owner, _name, "issues", ..] => true,
+        ["repos", _provider, _owner, _name, "work", ..] => true,
         _ => false,
     }
+}
+
+fn github_account_from_headers(
+    state: &super::WebState,
+    peer: Option<&ConnectInfo<SocketAddr>>,
+    headers: &HeaderMap,
+) -> Result<AccountSummary, Box<AxumResponse>> {
+    if !state.auth_required || super::auth::local_dev_trusted(state, peer.map(|connect| connect.0))
+    {
+        return Ok(super::auth::trusted_local_account(state));
+    }
+    super::auth::authenticate_headers(state, headers)
+        .map(|auth| auth.account)
+        .ok_or_else(|| {
+            Box::new(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [(header::WWW_AUTHENTICATE, "Basic realm=\"Jeryu\"")],
+                    Json(json!({
+                        "message": "Requires authentication",
+                        "documentation_url": "/docs/rest",
+                    })),
+                )
+                    .into_response(),
+            )
+        })
+}
+
+fn authorize_github_repo_request(
+    state: &super::WebState,
+    method: Method,
+    path_and_query: &str,
+    account: &AccountSummary,
+) -> Option<AxumResponse> {
+    let normalized = normalize_github_edge_path(path_and_query);
+    let route_path = normalized
+        .split_once('?')
+        .map_or(normalized, |(path, _)| path);
+    let segments: Vec<&str> = route_path
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    match (method, segments.as_slice()) {
+        (Method::Post, ["repos"]) if account.role != UserRole::Admin => Some(github_forbidden(
+            "repository creation requires admin access",
+        )),
+        (_, ["repos", owner, repo, ..]) => {
+            let allowed = match method {
+                Method::Get => {
+                    account.role == UserRole::Admin
+                        || state.core.user_can_read_repo(&account.login, owner, repo)
+                }
+                Method::Patch | Method::Post | Method::Put => {
+                    account.role == UserRole::Admin
+                        || state.core.user_can_write_repo(&account.login, owner, repo)
+                }
+            };
+            (!allowed).then(|| github_forbidden("repository access denied"))
+        }
+        _ => None,
+    }
+}
+
+fn github_repo_list_path(path_and_query: &str) -> bool {
+    let normalized = normalize_github_edge_path(path_and_query);
+    let route_path = normalized
+        .split_once('?')
+        .map_or(normalized, |(path, _)| path);
+    route_path.trim_matches('/') == "repos"
+}
+
+fn github_user_path(path_and_query: &str) -> bool {
+    let normalized = normalize_github_edge_path(path_and_query);
+    let route_path = normalized
+        .split_once('?')
+        .map_or(normalized, |(path, _)| path);
+    route_path.trim_matches('/') == "user"
+}
+
+fn normalize_github_edge_path(path: &str) -> &str {
+    let Some(rest) = path.strip_prefix("/api/v3") else {
+        return path;
+    };
+    if rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') {
+        if rest.is_empty() || rest.starts_with('?') {
+            "/"
+        } else {
+            rest
+        }
+    } else {
+        path
+    }
+}
+
+fn github_forbidden(message: &str) -> AxumResponse {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "message": message,
+            "documentation_url": "/docs/rest",
+        })),
+    )
+        .into_response()
 }
 
 async fn spa_shell_response(spa_dir: &Path) -> AxumResponse {
@@ -151,18 +329,36 @@ async fn spa_shell_response(spa_dir: &Path) -> AxumResponse {
     }
 }
 
+#[cfg(test)]
 pub(super) fn bootstrap_payload(
     state: &super::WebState,
 ) -> Result<WebBootstrap, serde_json::Error> {
     let repos = repo_summaries(state);
+    bootstrap_payload_with_repos(state, "local", Some("Local Operator".to_string()), repos)
+}
+
+pub(super) fn bootstrap_payload_for_user(
+    state: &super::WebState,
+    account: &AccountSummary,
+) -> Result<WebBootstrap, serde_json::Error> {
+    let repos = repo_summaries_for_user(state, Some(account));
+    bootstrap_payload_with_repos(state, &account.login, None, repos)
+}
+
+fn bootstrap_payload_with_repos(
+    state: &super::WebState,
+    login: &str,
+    display_name: Option<String>,
+    repos: Vec<RepositorySummary>,
+) -> Result<WebBootstrap, serde_json::Error> {
     let tui = serialize_payload(&super::workcells::live_tui(state))?;
     Ok(WebBootstrap {
         generated_at: state.tui.generated_at.to_rfc3339(),
         schema_version: "0.1.0-alpha".to_string(),
         viewer: Viewer {
-            id: "local-operator".to_string(),
-            login: "local".to_string(),
-            display_name: Some("Local Operator".to_string()),
+            id: login.to_string(),
+            login: login.to_string(),
+            display_name,
             avatar_url: None,
             global_permissions: permissions(),
         },
@@ -189,6 +385,7 @@ pub(super) fn serialize_payload<T: Serialize>(value: &T) -> Result<Value, serde_
 pub(super) fn map_method(method: &HttpMethod) -> Option<Method> {
     match *method {
         HttpMethod::GET => Some(Method::Get),
+        HttpMethod::PATCH => Some(Method::Patch),
         HttpMethod::POST => Some(Method::Post),
         HttpMethod::PUT => Some(Method::Put),
         _ => None,

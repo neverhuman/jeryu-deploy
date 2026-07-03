@@ -136,6 +136,31 @@ not trigger another version bump.
   the recorded floor; raise it deliberately with
   `JERYU_COVERAGE_UPDATE_BASELINE=1` and commit the updated baseline.
 
+### Public Portal Auth Hardening
+
+When public portal auth, repository grants, source browsing, or split-browser
+behavior changes, the release receipt must include:
+
+- migration evidence for `jeryu-core/db/migrations/0008_user_auth_access.sql`
+  and its rollback note. Take a pre-migration SQLite copy with `VACUUM INTO`;
+  rollback for populated stores is restore-from-copy, not deleting credential
+  rows in place.
+- bootstrap credential handling evidence: generated bootstrap/admin-reset
+  passwords are temporary, first login must change them, and reset revokes the
+  user's existing sessions and personal access tokens.
+- local-dev trust evidence: `trust_local_dev` is valid only for loopback peers,
+  and server startup fails if it is combined with a public bind address.
+- token/session evidence: cookie-auth unsafe API requests require
+  `X-Jeryu-CSRF`; bearer/PAT clients are exempt; new PATs default to a 90-day
+  expiry and cannot exceed 365 days.
+- route proof: `cargo test -p jeryu-core --jobs 40 auth`,
+  `cargo test -p jeryu-api --features web --jobs 40 auth`,
+  `cargo test -p jeryu-api --features web --jobs 40 github`, and
+  `npm --workspace @jeryu/web run typecheck && npm --workspace @jeryu/web run test`.
+- rendered proof for the split browser and auth gate:
+  `npm --workspace @jeryu/web run test:e2e` plus
+  `npm --workspace @jeryu/web run ux-qa` when the browser surface changes.
+
 ## Release Receipt
 
 Every final release receipt is `jeryu.release-receipt/v2`. It is built from

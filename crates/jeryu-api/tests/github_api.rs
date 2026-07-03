@@ -6,6 +6,7 @@
 //! status code at each step. Negative tests pin the 404 / 422 / 405 contracts.
 
 use jeryu_api::{GithubRouter, Method};
+use jeryu_jira::WorkStore;
 use serde_json::Value;
 
 fn body(response: &jeryu_api::Response) -> Value {
@@ -511,6 +512,59 @@ fn issues_and_comments_roundtrip() {
     let issues = router.get("/repos/alice/jeryu/issues");
     assert_eq!(issues.status, 200);
     assert_eq!(body(&issues).as_array().expect("array").len(), 1);
+
+    let detail = router.get(&format!("/repos/alice/jeryu/issues/{number}"));
+    assert_eq!(detail.status, 200);
+    assert_eq!(body(&detail)["number"], number);
+
+    let updated = router.handle(
+        Method::Patch,
+        &format!("/repos/alice/jeryu/issues/{number}"),
+        r#"{"title":"fixed bug report","state":"closed","labels":["bug","p1"]}"#,
+    );
+    assert_eq!(updated.status, 200, "update issue: {}", updated.body);
+    let updated_body = body(&updated);
+    assert_eq!(updated_body["title"], "fixed bug report");
+    assert_eq!(updated_body["state"], "closed");
+    assert_eq!(updated_body["labels"][1], "p1");
+}
+
+#[test]
+fn issue_bridge_failure_records_repair_evidence_without_breaking_issue_create() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let db_dir = temp.path().join("work-db");
+    let db_path = db_dir.join("work.sqlite");
+    let work = WorkStore::open(&db_path).expect("open work store");
+    std::fs::remove_file(&db_path).expect("remove sqlite file");
+    std::fs::remove_dir(&db_dir).expect("remove sqlite dir");
+    std::fs::write(&db_dir, "not a directory").expect("block sqlite parent path");
+
+    let router = GithubRouter::new().with_work_store(work);
+    let repo = router.post(
+        "/repos",
+        r#"{"owner":"alice","name":"jeryu","private":false,"description":"forge"}"#,
+    );
+    assert_eq!(repo.status, 201, "create repo: {}", repo.body);
+
+    let created = router.post(
+        "/repos/alice/jeryu/issues",
+        r#"{"title":"bug report","body":"it broke","labels":["bug"],"actor":"alice"}"#,
+    );
+    assert_eq!(created.status, 201, "create issue: {}", created.body);
+    assert_eq!(header(&created, "X-Jeryu-Work-Bridge"), Some("degraded"));
+    assert_eq!(
+        header(&created, "X-Jeryu-Work-Repair-Code"),
+        Some("work_bridge_lookup_failed")
+    );
+
+    let repairs = router.work_bridge_repairs();
+    assert_eq!(repairs.len(), 1);
+    assert_eq!(repairs[0].operation, "create issue");
+    assert_eq!(repairs[0].owner, "alice");
+    assert_eq!(repairs[0].repo, "jeryu");
+    assert_eq!(repairs[0].issue_number, 1);
+    assert!(!repairs[0].reason.is_empty());
+    assert!(!repairs[0].repair_hint.is_empty());
 }
 
 #[test]

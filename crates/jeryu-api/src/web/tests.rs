@@ -14,7 +14,7 @@ use jeryu_codegraph::{
 use jeryu_core::CheckConclusion;
 use jeryu_core::{
     CreateCheckRunRequest, CreatePullRequestRequest, CreateRepositoryRequest, CreateReviewRequest,
-    ReviewState, SetBranchProtectionRequest,
+    RepoAccessLevel, ReviewState, SetBranchProtectionRequest, UserRole,
 };
 use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage};
 use jeryu_readmodel::{HealthLevel, sample_read_model};
@@ -2356,13 +2356,27 @@ async fn readme_update_round_trips_through_the_local_api() {
     assert_eq!(updated["markdown"], markdown);
     assert!(updated["html"].as_str().unwrap().contains("Managed README"));
 
-    let readme =
-        response_json(repo_readme(State(state.clone()), AxumPath(repo.id.to_string())).await).await;
+    let readme = response_json(
+        repo_readme(
+            State(state.clone()),
+            AxumPath(repo.id.to_string()),
+            Query(super::repositories::SourceQuery::default()),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(readme["markdown"], markdown);
     assert!(readme["html"].as_str().unwrap().contains("Managed README"));
 
-    let blob =
-        response_json(repo_blob(State(state.clone()), AxumPath(repo.id.to_string())).await).await;
+    let blob = response_json(
+        repo_blob(
+            State(state.clone()),
+            AxumPath(repo.id.to_string()),
+            Query(super::repositories::SourceQuery::default()),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(blob["text"], markdown);
     assert!(
         blob["rendered_markdown"]["html"]
@@ -2371,7 +2385,12 @@ async fn readme_update_round_trips_through_the_local_api() {
             .contains("Managed README")
     );
 
-    let raw = repo_raw(State(state), AxumPath(repo.id.to_string())).await;
+    let raw = repo_raw(
+        State(state),
+        AxumPath(repo.id.to_string()),
+        Query(super::repositories::SourceQuery::default()),
+    )
+    .await;
     let raw_bytes = axum::body::to_bytes(raw.into_body(), usize::MAX)
         .await
         .expect("raw response bytes");
@@ -2392,10 +2411,13 @@ fn markdown_renderer_escapes_html_and_builds_toc() {
 #[test]
 fn map_method_covers_supported_verbs_only() {
     assert!(matches!(map_method(&HttpMethod::GET), Some(Method::Get)));
+    assert!(matches!(
+        map_method(&HttpMethod::PATCH),
+        Some(Method::Patch)
+    ));
     assert!(matches!(map_method(&HttpMethod::POST), Some(Method::Post)));
     assert!(matches!(map_method(&HttpMethod::PUT), Some(Method::Put)));
     assert!(map_method(&HttpMethod::DELETE).is_none());
-    assert!(map_method(&HttpMethod::PATCH).is_none());
 }
 
 #[test]
@@ -2482,9 +2504,15 @@ async fn browser_repo_routes_serve_the_spa_shell() {
 
     for path in [
         "/repos",
+        "/repos/family/jeryu-split",
         "/repos/alice/jeryu",
         "/repos/alice/jeryu/pulls/99",
         "/repos/alice/jeryu/settings/merge",
+        "/repos/jeryu/alice/jeryu",
+        "/repos/jeryu/alice/jeryu/code",
+        "/repos/jeryu/alice/jeryu/blob/main/src/lib.rs",
+        "/repos/jeryu/alice/jeryu/settings/general",
+        "/repos/jeryu/alice/jeryu/agents/run-1",
         "/tools",
     ] {
         let response = app
@@ -2522,6 +2550,391 @@ async fn browser_repo_routes_serve_the_spa_shell() {
     }
 }
 
+#[tokio::test]
+async fn signup_issues_session_cookie_for_followup_api_calls() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login": "newuser",
+                        "password": "correct horse"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("signup sets a session cookie")
+        .split(';')
+        .next()
+        .expect("cookie name and value")
+        .to_string();
+    let body = response_json(response).await;
+    assert_eq!(body["login"], "newuser");
+    assert_eq!(body["role"], "user");
+
+    let me = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(me.status(), StatusCode::OK);
+    let body = response_json(me).await;
+    assert_eq!(body["login"], "newuser");
+    assert_eq!(body["mustChangePassword"], false);
+    assert!(body["csrfToken"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn cookie_auth_mutations_require_csrf_and_pat_lifecycle_is_user_scoped() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let signup = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login": "tokenuser",
+                        "password": "correct horse"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = signup
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("signup sets cookie")
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let signup_body = response_json(signup).await;
+    let csrf = signup_body["csrfToken"].as_str().expect("csrf token");
+
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/tokens")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::json!({ "name": "cli" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/tokens")
+                .header(header::COOKIE, &cookie)
+                .header("x-jeryu-csrf", csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::json!({ "name": "cli" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body = response_json(created).await;
+    let token_id = created_body["id"].as_str().expect("token id").to_string();
+    assert!(
+        created_body["token"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("jpat_")
+    );
+    assert!(created_body["expiresAt"].as_str().is_some());
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/tokens")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body = response_json(list).await;
+    assert_eq!(list_body.as_array().unwrap().len(), 1);
+    assert!(list_body[0].get("token").is_none(), "list omits PAT secret");
+
+    let deleted = app
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::DELETE)
+                .uri(format!("/api/v1/auth/tokens/{token_id}"))
+                .header(header::COOKIE, &cookie)
+                .header("x-jeryu-csrf", csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn auth_rate_limit_returns_429_for_repeated_login_failures() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let mut last_status = StatusCode::OK;
+    for _ in 0..=10 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(HttpMethod::POST)
+                    .uri("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "login": "missing",
+                            "password": "incorrect password"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        last_status = response.status();
+    }
+    assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn trust_local_dev_requires_loopback_peer() {
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()).with_auth(true, true, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let no_peer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_peer.status(), StatusCode::UNAUTHORIZED);
+
+    let mut request = Request::builder()
+        .uri("/api/v1/auth/me")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            9988,
+        ))));
+    let loopback = app.oneshot(request).await.unwrap();
+    assert_eq!(loopback.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn github_rest_repo_edge_requires_auth_and_filters_grants() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "secret".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("jordanh", "jordanh-password", UserRole::User)
+        .unwrap();
+    core.grant_repo_access(
+        "jeryu-admin",
+        "jordanh",
+        "alice",
+        "jeryu",
+        RepoAccessLevel::Read,
+    )
+    .unwrap();
+    let token = core
+        .create_personal_access_token("jordanh", "test", None)
+        .unwrap()
+        .secret;
+
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/repos")
+                .header(header::ACCEPT, "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/repos")
+                .header(header::ACCEPT, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let body = response_json(list).await;
+    let names: Vec<_> = body
+        .as_array()
+        .expect("repo list is an array")
+        .iter()
+        .filter_map(|repo| repo["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["jeryu"]);
+
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/repos/alice/secret")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let api_v3 = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v3/repos")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(api_v3.status(), StatusCode::OK);
+    let body = response_json(api_v3).await;
+    assert_eq!(body.as_array().expect("repo list is an array").len(), 1);
+}
+
+#[tokio::test]
+async fn source_browser_rejects_unsafe_paths_before_storage_lookup() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu-core".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core));
+    for path in ["/etc/passwd", "../Cargo.toml", "src/\0secret"] {
+        let response = super::repositories::repo_tree(
+            State(state.clone()),
+            AxumPath("jeryu/jeryu-core".to_string()),
+            Query(super::repositories::SourceQuery {
+                path: Some(path.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsafe path should be rejected before git storage lookup: {path:?}"
+        );
+    }
+}
+
 #[test]
 fn app_router_builds_without_route_conflicts() {
     // Axum panics during construction on overlapping/ambiguous routes, so
@@ -2531,6 +2944,23 @@ fn app_router_builds_without_route_conflicts() {
         WebState::new(ForgeCore::new()),
         std::path::Path::new("/tmp"),
     );
+}
+
+#[tokio::test]
+async fn serve_rejects_trust_local_dev_on_public_bind() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = WebServerConfig {
+        bind: std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+        spa_dir: temp.path().join("spa"),
+        data_dir: temp.path().join("data"),
+        git_storage_root: temp.path().join("git"),
+        split_manifests: Vec::new(),
+        auth_required: true,
+        trust_local_dev: true,
+        secure_cookies: false,
+    };
+    let err = serve(config).await.expect_err("public bind must fail");
+    assert!(err.to_string().contains("trust_local_dev"));
 }
 
 fn header_value<'a>(headers: &'a [(&'static str, String)], name: &str) -> Option<&'a str> {
@@ -2708,6 +3138,157 @@ async fn response_json(response: AxumResponse) -> Value {
         .expect("response body reads");
     serde_json::from_slice(&bytes)
         .unwrap_or_else(|err| panic!("response body is not JSON ({err}): {bytes:?}"))
+}
+
+#[tokio::test]
+async fn work_repo_create_persists_item_and_linked_issue() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .expect("create repo");
+    let state = Arc::new(WebState::new(core));
+    let created = response_json(
+        super::work::repo_create(
+            State(state.clone()),
+            AxumPath(repo.id.to_string()),
+            Json(jeryu_jira::CreateWorkItemRequest {
+                title: "Fix flaky CI".to_string(),
+                body: Some("The required lane flickers.".to_string()),
+                kind: Some(jeryu_jira::WorkItemKind::Ci),
+                labels: vec!["ci".to_string()],
+                ..jeryu_jira::CreateWorkItemRequest::default()
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(created["key"], "JRY-1");
+    assert_eq!(created["repo"]["id"], repo.id.to_string());
+    assert_eq!(created["issue"]["number"], 1);
+
+    let issues = state
+        .core
+        .list_issues("alice", "jeryu", None)
+        .expect("list issues");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].title, "Fix flaky CI");
+
+    let listed = response_json(
+        super::work::repo_list(
+            State(state),
+            AxumPath(repo.id.to_string()),
+            Query(super::work::WorkListQuery::default()),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["items"][0]["issue"]["number"], 1);
+}
+
+#[test]
+fn github_issue_create_is_mirrored_into_work() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .expect("create repo");
+    let state = WebState::new(core);
+    let created = state.github.handle(
+        Method::Post,
+        "/repos/alice/jeryu/issues",
+        r#"{"title":"bug report","body":"it broke","labels":["bug"],"assignees":["alice"]}"#,
+    );
+    assert_eq!(created.status, 201, "create issue: {}", created.body);
+
+    let work = state
+        .work
+        .list(jeryu_jira::WorkFilter::default())
+        .expect("list work");
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].title, "bug report");
+    assert_eq!(work[0].kind, jeryu_jira::WorkItemKind::Bug);
+    let issue = work[0].issue.as_ref().expect("issue link");
+    assert_eq!(issue.number, 1);
+    assert_eq!(
+        issue.url.as_deref(),
+        Some("/repos/jeryu/alice/jeryu/issues#1")
+    );
+
+    let comment = state.github.handle(
+        Method::Post,
+        "/repos/alice/jeryu/issues/1/comments",
+        r#"{"body":"confirmed reproduction","actor":"bob"}"#,
+    );
+    assert_eq!(comment.status, 201, "create comment: {}", comment.body);
+    let detail = state.work.detail("JRY-1").expect("work detail");
+    assert_eq!(detail.comments.len(), 1);
+    assert_eq!(detail.comments[0].body, "confirmed reproduction");
+    assert_eq!(detail.comments[0].author.id, "bob");
+
+    let updated = state.github.handle(
+        Method::Patch,
+        "/repos/alice/jeryu/issues/1",
+        r#"{"title":"fixed bug report","state":"closed","labels":["bug","p1"]}"#,
+    );
+    assert_eq!(updated.status, 200, "update issue: {}", updated.body);
+    let synced = state.work.get("JRY-1").expect("synced work");
+    assert_eq!(synced.title, "fixed bug report");
+    assert_eq!(synced.status, jeryu_jira::WorkStatus::Done);
+    assert_eq!(synced.labels, vec!["bug", "p1"]);
+}
+
+#[test]
+fn pull_request_marker_issues_do_not_appear_as_work() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .expect("create repo");
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "change".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .expect("create pr");
+    assert_eq!(
+        core.list_issues("alice", "jeryu", None)
+            .expect("list marker issues")
+            .len(),
+        1
+    );
+    let state = WebState::new(core);
+    let work = state
+        .work
+        .list(jeryu_jira::WorkFilter::default())
+        .expect("list work");
+    assert!(work.is_empty());
 }
 
 #[test]
@@ -2938,7 +3519,50 @@ async fn live_api_v3_user_alias_serves_github_cli_status() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let parsed = response_json(response).await;
-    assert_eq!(parsed["login"], "jeryu");
+    assert_eq!(parsed["login"], "jeryu-admin");
+}
+
+#[tokio::test]
+async fn github_vendor_json_accept_is_not_served_the_spa_shell() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let app = app(
+        WebState::new(core),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/repos")
+                .header(header::ACCEPT, "application/vnd.github+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.starts_with("application/json"));
+    let parsed = response_json(response).await;
+    assert_eq!(parsed.as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -3097,10 +3721,10 @@ async fn live_unsupported_verb_returns_guided_json() {
         WebState::new(ForgeCore::new()),
         std::path::Path::new("/tmp/jeryu-no-spa"),
     );
-    let patch = app
+    let delete = app
         .oneshot(
             Request::builder()
-                .method(HttpMethod::PATCH)
+                .method(HttpMethod::DELETE)
                 .uri("/repos/alice/jeryu")
                 .header(header::USER_AGENT, "curl/8.0")
                 .body(Body::empty())
@@ -3108,8 +3732,8 @@ async fn live_unsupported_verb_returns_guided_json() {
         )
         .await
         .unwrap();
-    assert_eq!(patch.status(), StatusCode::METHOD_NOT_ALLOWED);
-    let parsed = response_json(patch).await;
+    assert_eq!(delete.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let parsed = response_json(delete).await;
     assert_eq!(
         parsed["jeryu_repair_hint"]["purpose"],
         "route unsupported GitHub-compatible REST method"
@@ -4384,9 +5008,17 @@ async fn repo_list_filters_apply_server_side() {
         }
     }
     let state = Arc::new(WebState::new(core));
+    let account = Extension(AccountSummary {
+        login: "jeryu-admin".to_string(),
+        role: jeryu_core::UserRole::Admin,
+        must_change_password: false,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    });
 
     let family_only = repos(
         State(state.clone()),
+        account.clone(),
         Query(super::repositories::RepoListQuery {
             family: Some("jmcp-split".to_string()),
             ..Default::default()
@@ -4412,6 +5044,7 @@ async fn repo_list_filters_apply_server_side() {
 
     let searched = repos(
         State(state.clone()),
+        account.clone(),
         Query(super::repositories::RepoListQuery {
             q: Some("veox".to_string()),
             ..Default::default()
@@ -4424,6 +5057,7 @@ async fn repo_list_filters_apply_server_side() {
 
     let sorted = repos(
         State(state.clone()),
+        account.clone(),
         Query(super::repositories::RepoListQuery {
             sort: Some("name".to_string()),
             ..Default::default()
@@ -4444,6 +5078,7 @@ async fn repo_list_filters_apply_server_side() {
     // Archived repos are excluded by default and exclusive under ?archived=1.
     let archived = repos(
         State(state),
+        account,
         Query(super::repositories::RepoListQuery {
             archived: Some("1".to_string()),
             ..Default::default()

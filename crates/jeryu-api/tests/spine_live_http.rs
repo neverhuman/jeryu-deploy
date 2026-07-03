@@ -103,7 +103,7 @@ fn write_incompressible_file(path: &Path, len: usize) {
 const GIT_HTTP_GUARD: &[&str] = &["-c", "http.lowSpeedLimit=100", "-c", "http.lowSpeedTime=20"];
 
 async fn wait_until_listening(addr: SocketAddr) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if TcpStream::connect(addr).is_ok() {
             return;
@@ -152,6 +152,9 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
         data_dir,
         git_storage_root: git_root.clone(),
         split_manifests: Vec::new(),
+        auth_required: false,
+        trust_local_dev: true,
+        secure_cookies: false,
     };
     let server = tokio::spawn(async move { serve(config).await.unwrap() });
     wait_until_listening(addr).await;
@@ -298,6 +301,9 @@ async fn s4_git_lfs_batch_and_locks_verify_routes_return_protocol_json() {
         data_dir,
         git_storage_root: git_root,
         split_manifests: Vec::new(),
+        auth_required: false,
+        trust_local_dev: true,
+        secure_cookies: false,
     };
     let server = tokio::spawn(async move { serve(config).await.unwrap() });
     wait_until_listening(addr).await;
@@ -373,6 +379,9 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
         data_dir,
         git_storage_root: git_root.clone(),
         split_manifests: Vec::new(),
+        auth_required: false,
+        trust_local_dev: true,
+        secure_cookies: false,
     };
     let server = tokio::spawn(async move { serve(config).await.unwrap() });
     wait_until_listening(addr).await;

@@ -29,7 +29,10 @@ mod repos;
 mod support;
 
 use jeryu_core::ForgeCore;
+use jeryu_jira::WorkStore;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 use crate::routes::Response;
 
@@ -48,8 +51,23 @@ pub const JERYU_API_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Method {
     Get,
+    Patch,
     Post,
     Put,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WorkBridgeRepair {
+    pub code: String,
+    pub operation: String,
+    pub owner: String,
+    pub repo: String,
+    pub issue_number: u64,
+    pub work_key: Option<String>,
+    pub reason: String,
+    pub common_fixes: Vec<String>,
+    pub docs_url: String,
+    pub repair_hint: String,
 }
 
 /// GitHub-compatible REST router backed by an in-memory [`ForgeCore`] store.
@@ -62,6 +80,8 @@ pub enum Method {
 #[derive(Clone, Debug, Default)]
 pub struct GithubRouter {
     core: ForgeCore,
+    work_store: Option<WorkStore>,
+    work_bridge_repairs: Arc<Mutex<Vec<WorkBridgeRepair>>>,
     #[cfg(feature = "web")]
     repo_manager: Option<std::sync::Arc<jeryu_gitd::RepoManager>>,
     #[cfg(feature = "web")]
@@ -78,11 +98,21 @@ impl GithubRouter {
     pub fn with_core(core: ForgeCore) -> Self {
         Self {
             core,
+            work_store: None,
+            work_bridge_repairs: Arc::new(Mutex::new(Vec::new())),
             #[cfg(feature = "web")]
             repo_manager: None,
             #[cfg(feature = "web")]
             github_mirror: None,
         }
+    }
+
+    /// Attach the Work Tracker store used by the web server to mirror
+    /// user-created GitHub-compatible issues into Work items.
+    #[must_use]
+    pub fn with_work_store(mut self, work_store: WorkStore) -> Self {
+        self.work_store = Some(work_store);
+        self
     }
 
     /// Attach a git [`RepoManager`](jeryu_gitd::RepoManager) so the PR merge
@@ -118,6 +148,20 @@ impl GithubRouter {
     /// Borrows the backing forge store (used by tests and embedding callers).
     pub fn core(&self) -> &ForgeCore {
         &self.core
+    }
+
+    pub fn work_bridge_repairs(&self) -> Vec<WorkBridgeRepair> {
+        self.work_bridge_repairs
+            .lock()
+            .expect("work bridge repair queue lock")
+            .clone()
+    }
+
+    fn record_work_bridge_repair(&self, repair: WorkBridgeRepair) {
+        self.work_bridge_repairs
+            .lock()
+            .expect("work bridge repair queue lock")
+            .push(repair);
     }
 
     /// Dispatches a request. `body` is the raw JSON request body (empty for
@@ -162,7 +206,7 @@ impl GithubRouter {
         page: Pagination,
         pull_state: PullStateSelector,
     ) -> std::result::Result<Response, u16> {
-        use Method::{Get, Post, Put};
+        use Method::{Get, Patch, Post, Put};
         match (method, segments) {
             (Get, ["health"]) => Ok(json_response(
                 200,
@@ -215,6 +259,12 @@ impl GithubRouter {
                 Ok(self.list_issues(owner, repo, path, page))
             }
             (Post, ["repos", owner, repo, "issues"]) => Ok(self.create_issue(owner, repo, body)),
+            (Get, ["repos", owner, repo, "issues", number]) => {
+                Ok(self.get_issue(owner, repo, number))
+            }
+            (Patch, ["repos", owner, repo, "issues", number]) => {
+                Ok(self.update_issue(owner, repo, number, body))
+            }
             (Get, ["repos", owner, repo, "issues", number, "comments"]) => {
                 Ok(self.list_comments(owner, repo, number))
             }

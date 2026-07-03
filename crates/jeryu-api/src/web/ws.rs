@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Extension, State};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
+use jeryu_core::{AccountSummary, UserRole};
 use jeryu_readmodel::Bottleneck;
 use jeryu_readmodel::contracts::{ServerWsMessage, WebEvent};
 use serde_json::{Value, json};
@@ -15,11 +16,12 @@ use super::{WebState, server_time, workcells};
 pub(super) async fn ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+    ws.on_upgrade(move |socket| handle_ws(socket, state, account))
 }
 
-async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>) {
+async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>, account: AccountSummary) {
     // The hub queues producer events (`WsHub::publish`) onto this channel;
     // the select! loop below drains it onto the socket. One owner for every
     // write keeps snapshot-on-subscribe and pushed deltas strictly ordered.
@@ -63,7 +65,11 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>) {
                         Some("hello") => {
                             // A `hello` may carry an initial subscription set.
                             for scope in requested_scopes(&value) {
-                                scopes.insert(scope);
+                                if authorize_scope(&state, &account, &scope) {
+                                    scopes.insert(scope);
+                                } else {
+                                    send_scope_denied(&mut socket, &scope).await;
+                                }
                             }
                             state.ws.set_scopes(conn_id, &scopes);
                             let _ = send_server_message(&mut socket, hello_message(&state)).await;
@@ -74,11 +80,18 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>) {
                             // a snapshot Event frame for each, so the client paints
                             // from live read-model data without waiting for a delta.
                             let added: Vec<String> = requested_scopes(&value);
+                            let mut authorized = Vec::new();
                             for scope in &added {
-                                scopes.insert(scope.clone());
+                                if authorize_scope(&state, &account, scope) {
+                                    scopes.insert(scope.clone());
+                                    authorized.push(scope.clone());
+                                } else {
+                                    send_scope_denied(&mut socket, scope).await;
+                                }
                             }
                             state.ws.set_scopes(conn_id, &scopes);
-                            let snapshot_scopes: BTreeSet<String> = added.into_iter().collect();
+                            let snapshot_scopes: BTreeSet<String> =
+                                authorized.into_iter().collect();
                             send_scope_snapshots(&mut socket, &state, &snapshot_scopes).await;
                         }
                         Some("unsubscribe") => {
@@ -222,6 +235,40 @@ pub(super) fn snapshot_event(state: &WebState, scope: &str) -> Option<WebEvent> 
         return Some(super::tool_finder::snapshot_event(state, seq, timestamp));
     }
     None
+}
+
+fn authorize_scope(state: &WebState, account: &AccountSummary, scope: &str) -> bool {
+    if account.role == UserRole::Admin {
+        return known_scope(scope);
+    }
+    if let Some(rest) = scope.strip_prefix("repo.") {
+        let mut parts = rest.splitn(2, '.');
+        if let (Some(owner), Some(repo)) = (parts.next(), parts.next()) {
+            return state.core.user_can_read_repo(&account.login, owner, repo);
+        }
+    }
+    false
+}
+
+fn known_scope(scope: &str) -> bool {
+    scope == "global.activity"
+        || scope == "system.health"
+        || scope == super::tool_finder::SCAN_SCOPE
+        || scope.starts_with("pool.")
+        || scope.starts_with("workcell.")
+        || scope.starts_with("agent_run.")
+        || scope.starts_with("repo.")
+}
+
+async fn send_scope_denied(socket: &mut WebSocket, scope: &str) {
+    let _ = send_server_message(
+        socket,
+        ServerWsMessage::Error {
+            code: "subscription_denied".to_string(),
+            message: format!("not authorized for websocket scope {scope}"),
+        },
+    )
+    .await;
 }
 
 async fn send_server_message(socket: &mut WebSocket, message: ServerWsMessage) -> Result<(), ()> {

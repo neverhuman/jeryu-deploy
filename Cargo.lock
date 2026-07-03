@@ -81,6 +81,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2",
+ "cpufeatures 0.2.17",
+ "password-hash",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -190,6 +202,15 @@ name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
+
+[[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "blake3"
@@ -1073,6 +1094,7 @@ dependencies = [
  "jeryu-core",
  "jeryu-enterprise",
  "jeryu-gitd",
+ "jeryu-jira",
  "jeryu-mcp",
  "jeryu-obs",
  "jeryu-readmodel",
@@ -1163,10 +1185,12 @@ dependencies = [
 name = "jeryu-core"
 version = "5.0.0"
 dependencies = [
+ "argon2",
  "chrono",
  "hex",
  "hmac",
  "parking_lot",
+ "rand_core",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1186,6 +1210,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "jeryu-jira"
+version = "5.0.0"
+dependencies = [
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -1559,6 +1596,17 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core",
+ "subtle",
 ]
 
 [[package]]
@@ -2380,6 +2428,7 @@ checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
 dependencies = [
  "thiserror 2.0.18",
  "ts-rs-macros",
+ "uuid",
 ]
 
 [[package]]
@@ -3014,54 +3063,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
-name = "jeryu-cache"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-adversary"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-cli"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-core"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-service"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-agent-auth"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-artifact-metadata"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-policy"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-ci-bin"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-ci-governor"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-egress"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase7-cli"
-version = "5.0.0"
-
-[[patch.unused]]
 name = "jeryu-compliance-export"
 version = "5.0.0"
 
@@ -3114,6 +3115,34 @@ name = "jeryu-tenant"
 version = "5.0.0"
 
 [[patch.unused]]
+name = "jeryu-agent-auth"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-artifact-metadata"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-policy"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-ci-bin"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-ci-governor"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-egress"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase7-cli"
+version = "5.0.0"
+
+[[patch.unused]]
 name = "jeryu-bugtracker"
 version = "5.0.0"
 
@@ -3139,4 +3168,24 @@ version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-rustjet-cli"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-adversary"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-cli"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-core"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-service"
 version = "5.0.0"

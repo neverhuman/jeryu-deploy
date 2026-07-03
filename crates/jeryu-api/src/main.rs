@@ -54,12 +54,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             let data_dir = expand_tilde(data_dir);
             let git_storage_root = data_dir.join("git");
+            let trust_local_dev = env_flag("JERYU_WEB_TRUST_LOCAL");
             jeryu_api::web::serve(jeryu_api::web::WebServerConfig {
                 bind,
                 spa_dir,
                 data_dir,
                 git_storage_root,
                 split_manifests: split_manifest,
+                auth_required: true,
+                trust_local_dev,
+                secure_cookies: !trust_local_dev,
             })
             .await
         }
@@ -70,6 +74,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
     }
+}
+
+#[cfg(feature = "web")]
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 #[cfg(feature = "web")]

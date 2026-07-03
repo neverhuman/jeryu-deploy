@@ -1,6 +1,7 @@
 //! Axum HTTP/WebSocket edge for the local live Jeryu API.
 
 mod agent_runs;
+pub(crate) mod auth;
 mod ci_evidence;
 mod codegraph;
 mod control_plane;
@@ -17,26 +18,30 @@ mod tool_build;
 mod tool_finder;
 mod tool_registry;
 mod tool_status_messages;
+mod work;
 mod workcells;
 mod workcells_support;
 mod ws;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{DefaultBodyLimit, Path as AxumPath, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path as AxumPath, Request, State};
 use axum::http::{HeaderName, HeaderValue, Method as HttpMethod, StatusCode, header};
-use axum::middleware::{Next, from_fn};
+use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{any, get, post};
 use axum::{Json, Router as AxumRouter};
 use jeryu_codegraph::CodeGraphStore;
-use jeryu_core::ForgeCore;
+use jeryu_core::{AccountSummary, ForgeCore};
+use jeryu_jira::WorkStore;
 use jeryu_readmodel::TuiReadModel;
 use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage, WebEvent};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::UnboundedSender;
@@ -55,7 +60,7 @@ use repositories::{
     repo_jankurai_scores_list, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree,
     repo_update, repos,
 };
-use surface::{bootstrap_payload, github_forward, graphql, markdown_render, repo_entry};
+use surface::{bootstrap_payload_for_user, github_forward, graphql, markdown_render, repo_entry};
 
 const WS_PROTOCOL: &str = "jeryu.ws.v1";
 const MCP_READ_TOOL: &str = "jeryu.get_system_snapshot";
@@ -77,6 +82,12 @@ pub struct WebServerConfig {
     pub git_storage_root: PathBuf,
     /// Optional split-family manifests used to classify portal/member repos.
     pub split_manifests: Vec<PathBuf>,
+    /// Enforce account/session auth on `/api/v1/*`.
+    pub auth_required: bool,
+    /// Explicit single-host development bypass for local demos/tests.
+    pub trust_local_dev: bool,
+    /// Use Secure `__Host-` cookies. Disable only for plain-HTTP local dev.
+    pub secure_cookies: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -272,6 +283,8 @@ pub(crate) struct WebState {
     pub(crate) repo_manager: Arc<RepoManager>,
     /// Forge handle for the push->CI bridge (shares state with `github`).
     pub(crate) core: ForgeCore,
+    /// Local-first Work Tracker store shared by Work routes and the issue bridge.
+    pub(crate) work: WorkStore,
     /// Pool of pre-warmed agent containers a New Session claims from, so the
     /// launch reuses a ready cell with no cold-start. It needs `&mut self` to
     /// claim and refill, so it lives behind the same `Mutex` style the rest of
@@ -295,6 +308,10 @@ pub(crate) struct WebState {
     /// Single-flight state for the system-wide tool-finder scan, retained
     /// across scans so the page can paint the last result.
     pub(crate) tool_finder_scan: tool_finder::ToolFinderScanState,
+    pub(crate) auth_required: bool,
+    pub(crate) trust_local_dev: bool,
+    pub(crate) secure_cookies: bool,
+    pub(crate) auth_rate_limits: Arc<Mutex<BTreeMap<String, auth::RateLimitBucket>>>,
 }
 
 impl WebState {
@@ -332,6 +349,24 @@ impl WebState {
             }
         };
         let codegraph_store = CodeGraphStore::open(codegraph_path).expect("open codegraph store");
+        let work_path = {
+            #[cfg(test)]
+            {
+                let _ = &data_dir;
+                static TEST_WORK_DB_SEQ: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                std::env::temp_dir().join(format!(
+                    "jeryu-web-work-{}-{}.sqlite",
+                    jeryu_runner_core::receipt::now_ms(),
+                    TEST_WORK_DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ))
+            }
+            #[cfg(not(test))]
+            {
+                data_dir.join("work.sqlite")
+            }
+        };
+        let work = WorkStore::open(work_path).expect("open work store");
         // Pre-warm the agent pool over the real CLI lifecycle. With the OCI gate
         // closed this only records planned cells (no daemon), so construction is
         // infallible in every environment the web edge boots in.
@@ -340,7 +375,9 @@ impl WebState {
             WarmPool::new(warm_runtime, WARM_POOL_TARGET).expect("pre-warm the agent pool"),
         ));
         Self {
-            github: GithubRouter::with_core(core).with_repo_manager(repo_manager.clone()),
+            github: GithubRouter::with_core(core)
+                .with_repo_manager(repo_manager.clone())
+                .with_work_store(work.clone()),
             tui,
             spa_dir,
             ws: WsHub::new(),
@@ -349,13 +386,25 @@ impl WebState {
             codegraph_store,
             repo_manager,
             core: core_handle,
+            work,
             warm_pool,
             session_runtime: sessions::SessionRuntimeConfig::from_env(),
             split_catalog,
             tool_registry_path: None,
             split_manifests: Vec::new(),
             tool_finder_scan: tool_finder::ToolFinderScanState::default(),
+            auth_required: false,
+            trust_local_dev: true,
+            secure_cookies: false,
+            auth_rate_limits: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    fn with_auth(mut self, required: bool, trust_local_dev: bool, secure_cookies: bool) -> Self {
+        self.auth_required = required;
+        self.trust_local_dev = trust_local_dev;
+        self.secure_cookies = secure_cookies;
+        self
     }
 
     /// Point the golden-box endpoint at `jeryu-tool/tools-registry.toml`.
@@ -553,6 +602,12 @@ impl WsHub {
 }
 
 pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Error>> {
+    if config.trust_local_dev && !config.bind.ip().is_loopback() {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "trust_local_dev requires a loopback bind address",
+        )));
+    }
     std::fs::create_dir_all(&config.data_dir)?;
     std::fs::create_dir_all(&config.git_storage_root)?;
     let db_path = config.data_dir.join("forge.sqlite");
@@ -572,19 +627,23 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     let github_mirror = Arc::new(crate::github_mirror::GithubMirror::load(
         &config.split_manifests,
     ));
-    let app = app(
-        WebState::with_repo_manager(
-            core,
-            repo_manager,
-            config.spa_dir.clone(),
-            config.data_dir.clone(),
-            split_catalog,
-        )
-        .with_github_mirror(github_mirror)
-        .with_tool_registry_path(tool_registry_path)
-        .with_split_manifests(config.split_manifests.clone()),
-        &config.spa_dir,
+    let state = WebState::with_repo_manager(
+        core,
+        repo_manager,
+        config.spa_dir.clone(),
+        config.data_dir.clone(),
+        split_catalog,
+    )
+    .with_github_mirror(github_mirror)
+    .with_tool_registry_path(tool_registry_path)
+    .with_split_manifests(config.split_manifests.clone())
+    .with_auth(
+        config.auth_required,
+        config.trust_local_dev,
+        config.secure_cookies,
     );
+    bootstrap_public_accounts(&state, &config.data_dir)?;
+    let app = app(state, &config.spa_dir);
     let listener = TcpListener::bind(config.bind).await?;
     // ConnectInfo gives the git handlers the peer address so the gitd auth layer
     // can apply its loopback-permissive policy.
@@ -594,6 +653,102 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     )
     .await?;
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct BootstrapCredential {
+    login: String,
+    role: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BootstrapCredentialFile {
+    generated_at: String,
+    credentials: Vec<BootstrapCredential>,
+}
+
+fn bootstrap_public_accounts(
+    state: &WebState,
+    data_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut credentials = Vec::new();
+    for (login, role) in [
+        ("jeryu-admin", jeryu_core::UserRole::Admin),
+        ("jordanh", jeryu_core::UserRole::User),
+        ("jepsont", jeryu_core::UserRole::User),
+    ] {
+        if state.core.get_account(login).is_ok() {
+            continue;
+        }
+        let password = state.core.generate_one_time_password()?;
+        state
+            .core
+            .create_temporary_account(login, &password, role.clone())?;
+        credentials.push(BootstrapCredential {
+            login: login.to_string(),
+            role: match role {
+                jeryu_core::UserRole::Admin => "admin".to_string(),
+                jeryu_core::UserRole::User => "user".to_string(),
+            },
+            password,
+        });
+    }
+
+    for repo in state.core.list_repositories(Some("jeryu")) {
+        let split = state
+            .split_catalog
+            .classify(&repo.owner, &repo.name)
+            .map(|(family, _)| family == "jeryu-split")
+            .unwrap_or(false)
+            || repo.family.as_deref() == Some("jeryu-split");
+        if split {
+            state.core.grant_repo_access(
+                "bootstrap",
+                "jeryu-admin",
+                &repo.owner,
+                &repo.name,
+                jeryu_core::RepoAccessLevel::Admin,
+            )?;
+        }
+    }
+
+    if credentials.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(data_dir)?;
+    let receipt = BootstrapCredentialFile {
+        generated_at: chrono_like_now(),
+        credentials,
+    };
+    let path = next_bootstrap_receipt_path(data_dir);
+    let json = serde_json::to_vec_pretty(&receipt)?;
+    let mut file = secure_create(&path)?;
+    file.write_all(&json)?;
+    file.write_all(b"\n")?;
+    Ok(())
+}
+
+fn next_bootstrap_receipt_path(data_dir: &Path) -> PathBuf {
+    let primary = data_dir.join("bootstrap-credentials.json");
+    if !primary.exists() {
+        return primary;
+    }
+    data_dir.join(format!(
+        "bootstrap-credentials-{}.json",
+        jeryu_runner_core::receipt::now_ms()
+    ))
+}
+
+fn secure_create(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
@@ -611,6 +766,36 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
         .route("/.jeryu/capabilities", get(capabilities))
         .route("/api/v1/bootstrap", get(bootstrap))
         .route("/api/v1/bootstrap.tui", get(bootstrap_tui))
+        .route("/api/v1/work", get(work::list).post(work::create))
+        .route("/api/v1/work/:key", get(work::detail).patch(work::patch))
+        .route("/api/v1/work/:key/comments", post(work::comment))
+        .route("/api/v1/work/:key/links", post(work::link))
+        .route("/api/v1/auth/signup", post(auth::signup))
+        .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/auth/me", get(auth::me))
+        .route("/api/v1/auth/password", post(auth::change_password))
+        .route(
+            "/api/v1/auth/tokens",
+            get(auth::list_tokens).post(auth::create_token),
+        )
+        .route(
+            "/api/v1/auth/tokens/:id",
+            axum::routing::delete(auth::delete_token),
+        )
+        .route("/api/v1/admin/users", get(auth::admin_users))
+        .route(
+            "/api/v1/admin/users/:login/reset-password",
+            post(auth::admin_reset_password),
+        )
+        .route(
+            "/api/v1/admin/repos/:owner/:repo/grants",
+            get(auth::admin_repo_grants),
+        )
+        .route(
+            "/api/v1/admin/repos/:owner/:repo/grants/:login",
+            post(auth::admin_grant_repo).delete(auth::admin_revoke_repo),
+        )
         .route(
             "/api/v1/agent-runs",
             get(agent_runs::list).post(agent_runs::start),
@@ -666,6 +851,10 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
         // per-repo agent-runs list the web Active-Agents page consumes.
         .route("/api/v1/repos/:id/sessions", post(sessions::create))
         .route("/api/v1/repos/:id/agent-runs", get(sessions::list))
+        .route(
+            "/api/v1/repos/:id/work",
+            get(work::repo_list).post(work::repo_create),
+        )
         .route("/api/v1/repos/:id/pulls", get(pulls::list))
         .route("/api/v1/repos/:id/pulls/:number", get(pulls::detail))
         .route("/api/v1/repos/:id/pulls/:number/diff", get(pulls::diff))
@@ -810,6 +999,7 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
         // Response middleware that stamps every reply with advisory steering
         // headers (and a per-route MCP tool hint for gh/automation UAs).
         .layer(from_fn(steer_headers))
+        .layer(from_fn_with_state(state.clone(), auth::gate))
         .with_state(state)
         .merge(jeryu_mcp::mcp_router(mcp_state))
 }
@@ -951,8 +1141,11 @@ fn capabilities_payload() -> Value {
     })
 }
 
-async fn bootstrap(State(state): State<Arc<WebState>>) -> AxumResponse {
-    match bootstrap_payload(&state) {
+async fn bootstrap(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+) -> AxumResponse {
+    match bootstrap_payload_for_user(&state, &account) {
         Ok(payload) => Json(payload).into_response(),
         Err(err) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -996,7 +1189,7 @@ fn chrono_like_now() -> String {
         .to_rfc3339()
 }
 
-fn api_error(status: StatusCode, code: &str, message: &str) -> AxumResponse {
+pub(super) fn api_error(status: StatusCode, code: &str, message: &str) -> AxumResponse {
     (status, Json(json!({ "code": code, "message": message }))).into_response()
 }
 

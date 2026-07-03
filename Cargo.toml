@@ -91,6 +91,9 @@ jeryu-review = { path = "../jeryu-intelligence/crates/jeryu-review" }
 jeryu-rustjet = { path = "../jeryu-intelligence/crates/jeryu-rustjet" }
 jeryu-rustjet-cli = { path = "../jeryu-intelligence/crates/jeryu-rustjet-cli" }
 
+[patch."https://github.com/neverhuman/jeryu-jira.git"]
+jeryu-jira = { path = "../jeryu-jira/crates/jeryu-jira" }
+
 [patch."https://github.com/neverhuman/jeryu-release-ops.git"]
 jeryu-bench = { path = "../jeryu-release-ops/crates/jeryu-bench" }
 jeryu-compliance-export = { path = "../jeryu-release-ops/crates/jeryu-compliance-export" }

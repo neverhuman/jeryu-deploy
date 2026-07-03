@@ -16,12 +16,11 @@ use axum::extract::{ConnectInfo, Path as AxumPath, Query as AxumQuery, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use futures_util::StreamExt;
-use jeryu_gitd::auth::extract_bearer_or_basic;
 use jeryu_gitd::lfs::{LfsStore, normalize_oid};
 use jeryu_gitd::smart_http::{
     HttpRequest as GitHttpRequest, HttpResponse as GitHttpResponse, SmartHttpServer,
 };
-use jeryu_gitd::{AuthDecision, AuthRegistry, GitdError, RepoManager};
+use jeryu_gitd::{GitdError, RepoManager};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
@@ -29,11 +28,7 @@ use crate::web::WebState;
 
 fn forwarded_git_headers(headers: &HeaderMap) -> HashMap<String, String> {
     let mut forwarded = HashMap::new();
-    for name in [
-        header::AUTHORIZATION,
-        header::HOST,
-        HeaderName::from_static("x-forwarded-proto"),
-    ] {
+    for name in [header::HOST, HeaderName::from_static("x-forwarded-proto")] {
         if let Some(value) = headers.get(&name).and_then(|value| value.to_str().ok()) {
             forwarded.insert(name.as_str().to_ascii_lowercase(), value.to_string());
         }
@@ -57,6 +52,7 @@ async fn route_git(
         headers: forwarded_git_headers(headers),
         body,
         is_loopback: peer.ip().is_loopback(),
+        auth_prechecked: true,
     };
     // The gitd router shells out to `git` (blocking) and does file IO; run it on
     // the blocking pool so it never stalls an async worker.
@@ -96,6 +92,13 @@ pub(crate) async fn git_info_refs(
     AxumQuery(query): AxumQuery<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> AxumResponse {
+    let write = matches!(
+        query.get("service").map(String::as_str),
+        Some("git-receive-pack")
+    );
+    if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, write) {
+        return *response;
+    }
     route_git(
         &state,
         peer,
@@ -115,6 +118,9 @@ pub(crate) async fn git_upload_pack(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
+    if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, false) {
+        return *response;
+    }
     route_git(
         &state,
         peer,
@@ -134,6 +140,9 @@ pub(crate) async fn git_receive_pack(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
+    if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, true) {
+        return *response;
+    }
     let manager = (*state.repo_manager).clone();
     let before = snapshot_refs(&manager, &owner, &repo);
     let origin_base_url = origin_base_url(&headers);
@@ -169,6 +178,9 @@ pub(crate) async fn git_lfs_batch(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
+    if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, true) {
+        return *response;
+    }
     route_git(
         &state,
         peer,
@@ -187,6 +199,9 @@ pub(crate) async fn git_lfs_download(
     AxumPath((owner, repo, oid)): AxumPath<(String, String, String)>,
     headers: HeaderMap,
 ) -> AxumResponse {
+    if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, false) {
+        return *response;
+    }
     route_git(
         &state,
         peer,
@@ -206,6 +221,9 @@ pub(crate) async fn git_lfs_verify(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
+    if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, true) {
+        return *response;
+    }
     route_git(
         &state,
         peer,
@@ -225,6 +243,9 @@ pub(crate) async fn git_lfs_locks_verify(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
+    if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, true) {
+        return *response;
+    }
     route_git(
         &state,
         peer,
@@ -245,7 +266,7 @@ pub(crate) async fn git_lfs_upload(
 ) -> AxumResponse {
     let headers = request.headers().clone();
     let manager = (*state.repo_manager).clone();
-    if let Err(response) = authorize_lfs(&manager, peer, &headers, &owner, true) {
+    if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, true) {
         return *response;
     }
     let oid = match normalize_oid(&oid) {
@@ -285,34 +306,41 @@ fn origin_base_url(headers: &HeaderMap) -> String {
     }
 }
 
-fn authorize_lfs(
-    manager: &RepoManager,
+fn authorize_git_core(
+    state: &WebState,
     peer: SocketAddr,
     headers: &HeaderMap,
     owner: &str,
+    repo: &str,
     write: bool,
 ) -> Result<(), Box<AxumResponse>> {
-    let registry = AuthRegistry::open(&manager.config().storage_root)
-        .map_err(|err| Box::new(gitd_error_to_axum(err)))?;
-    let credential = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(extract_bearer_or_basic);
-    match registry.decide(credential.as_deref(), peer.ip().is_loopback(), owner, write) {
-        AuthDecision::Allow(_) => Ok(()),
-        AuthDecision::Deny401 => Err(Box::new(gitd_to_axum_response(
+    if !state.auth_required || (state.trust_local_dev && peer.ip().is_loopback()) {
+        return Ok(());
+    }
+    let Some(auth) = crate::web::auth::authenticate_headers(state, headers) else {
+        return Err(Box::new(gitd_to_axum_response(
             &GitHttpResponse::text(401, "Requires authentication\n")
                 .with_header("WWW-Authenticate", "Basic realm=\"jeryu\""),
-        ))),
-        AuthDecision::Deny403 => Err(Box::new(gitd_to_axum_response(&GitHttpResponse::bytes(
+        )));
+    };
+    let account = auth.account;
+    let allowed = if write {
+        state.core.user_can_write_repo(&account.login, owner, repo)
+    } else {
+        state.core.user_can_read_repo(&account.login, owner, repo)
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(Box::new(gitd_to_axum_response(&GitHttpResponse::bytes(
             403,
             "application/json; charset=utf-8",
             format!(
-                "{{\"message\":\"principal not authorized to {} {owner}\",\"documentation_url\":\"https://docs.jeryu/auth\"}}",
+                "{{\"message\":\"principal not authorized to {} {owner}/{repo}\",\"documentation_url\":\"https://docs.jeryu/auth\"}}",
                 if write { "write" } else { "read" }
             )
             .into_bytes(),
-        )))),
+        ))))
     }
 }
 

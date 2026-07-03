@@ -54,6 +54,7 @@ fn serve(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = expand_tilde(data_dir);
     let git_storage_root = data_dir.join("git");
+    let trust_local_dev = env_flag("JERYU_WEB_TRUST_LOCAL");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -63,7 +64,16 @@ fn serve(
         data_dir,
         git_storage_root,
         split_manifests,
+        auth_required: true,
+        trust_local_dev,
+        secure_cookies: !trust_local_dev,
     }))
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 fn expand_tilde(path: PathBuf) -> PathBuf {
