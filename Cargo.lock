@@ -3063,6 +3063,62 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
+name = "jeryu-review"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-rustjet-cli"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-adversary"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-cli"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-core"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-service"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-agent-auth"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-artifact-metadata"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-cache-policy"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-ci-bin"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-ci-governor"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-egress"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase7-cli"
+version = "5.0.0"
+
+[[patch.unused]]
 name = "jeryu-compliance-export"
 version = "5.0.0"
 
@@ -3115,54 +3171,6 @@ name = "jeryu-tenant"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-agent-auth"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-artifact-metadata"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-policy"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-ci-bin"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-ci-governor"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-egress"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase7-cli"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-adversary"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-cli"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-core"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-cache-service"
-version = "5.0.0"
-
-[[patch.unused]]
 name = "jeryu-bugtracker"
 version = "5.0.0"
 
@@ -3180,12 +3188,4 @@ version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-tui"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-review"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-rustjet-cli"
 version = "5.0.0"
