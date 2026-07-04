@@ -117,7 +117,8 @@ else
 fi
 
 echo "[pr-ci] jankurai audit (>= 85)" >&2
-"$JANKURAI_BIN" . --json .jankurai/repo-score.json --md .jankurai/repo-score.md
+"$JANKURAI_BIN" audit . --full --mode advisory --policy agent/audit-policy.toml \
+  --json .jankurai/repo-score.json --md .jankurai/repo-score.md
 python3 - <<'PY'
 import json, sys
 d = json.load(open(".jankurai/repo-score.json"))
