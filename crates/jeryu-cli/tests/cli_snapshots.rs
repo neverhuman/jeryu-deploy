@@ -10,7 +10,7 @@ use clap::{CommandFactory, Parser};
 use jeryu_cli::ForgeClient;
 use jeryu_cli::cli::{Cli, Commands};
 use jeryu_cli::client::{InMemoryClient, IssueState, PullRequestState};
-use jeryu_cli::dispatch;
+use jeryu_cli::dispatch_with_api_url_env;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, Mutex};
@@ -417,7 +417,7 @@ fn run_cli(client: &dyn ForgeClient, argv: &[&str]) -> (i32, String, String) {
     let cli = Cli::try_parse_from(argv).expect("argv parses");
     let mut out = Vec::new();
     let mut err = Vec::new();
-    let code = dispatch(cli, client, &mut out, &mut err);
+    let code = dispatch_with_api_url_env(cli, client, &mut out, &mut err, || None);
     (
         code,
         String::from_utf8(out).unwrap(),

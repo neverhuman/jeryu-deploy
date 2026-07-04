@@ -17,4 +17,4 @@ pub mod dispatch;
 
 pub use cli::Cli;
 pub use client::{ForgeClient, InMemoryClient};
-pub use dispatch::dispatch;
+pub use dispatch::{dispatch, dispatch_with_api_url_env};

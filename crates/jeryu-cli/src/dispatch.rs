@@ -19,12 +19,28 @@ pub fn dispatch(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    dispatch_with_api_url_env(cli, client, out, err, || {
+        std::env::var("JERYU_API_URL").ok()
+    })
+}
+
+/// Dispatch with an injectable `JERYU_API_URL` source.
+///
+/// Tests use this to keep in-memory dispatch isolated from the host
+/// environment while production dispatch still honors the real environment.
+pub fn dispatch_with_api_url_env(
+    cli: Cli,
+    client: &dyn ForgeClient,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    api_url_env: impl FnOnce() -> Option<String>,
+) -> i32 {
     let owner = cli.owner;
     let json = cli.json;
     let api_url = match cli.api_url {
         Some(api_url) if !api_url.trim().is_empty() => Some(api_url),
-        _ => match std::env::var("JERYU_API_URL") {
-            Ok(api_url) if !api_url.trim().is_empty() => Some(api_url),
+        _ => match api_url_env() {
+            Some(api_url) if !api_url.trim().is_empty() => Some(api_url),
             _ => None,
         },
     };
