@@ -35,6 +35,13 @@ fi
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$JOBS}"
 JANKURAI_BIN="${JANKURAI_BIN:-$HOME/.cargo/bin/jankurai}"
 
+restore_cargo_lock_ci_noise() {
+  if ! git diff --quiet -- Cargo.lock; then
+    echo "[pr-ci] restoring Cargo.lock after cargo metadata normalization" >&2
+    git checkout -- Cargo.lock
+  fi
+}
+
 echo "[pr-ci] (jobs=$JOBS) cargo fmt --all --check" >&2
 cargo fmt --all --check
 
@@ -116,6 +123,7 @@ else
   echo "[pr-ci] web lane: build+vitest green" >&2
 fi
 
+restore_cargo_lock_ci_noise
 echo "[pr-ci] jankurai audit (>= 85)" >&2
 "$JANKURAI_BIN" audit . --full --mode advisory --policy agent/audit-policy.toml \
   --json .jankurai/repo-score.json --md .jankurai/repo-score.md
