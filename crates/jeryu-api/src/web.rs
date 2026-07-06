@@ -6,6 +6,7 @@ mod ci_evidence;
 mod codegraph;
 mod control_plane;
 mod ecosystem;
+mod embedded_web;
 mod markdown;
 mod mcp_backend;
 mod permissions;
@@ -37,7 +38,7 @@ use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{any, get, post};
 use axum::{Json, Router as AxumRouter};
 use jeryu_codegraph::CodeGraphStore;
-use jeryu_core::{AccountSummary, ForgeCore};
+use jeryu_core::{AccountSummary, ForgeCore, UserRole};
 use jeryu_jira::WorkStore;
 use jeryu_readmodel::TuiReadModel;
 use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage, WebEvent};
@@ -45,7 +46,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::UnboundedSender;
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::GithubRouter;
 use crate::git_materializer::GitMaterializer;
@@ -72,6 +72,8 @@ const MCP_ISSUE_TOOL: &str = "jeryu.bug_submit";
 /// Steady-state depth of pre-warmed agent containers the pool refills back to, so
 /// a New Session claims a ready cell instead of paying a cold-start.
 const WARM_POOL_TARGET: usize = 2;
+const BOOTSTRAP_ADMIN_LOGIN: &str = "jeryu-admin";
+const BOOTSTRAP_ADMIN_PASSWORD_ENV: &str = "JERYU_BOOTSTRAP_ADMIN_PASSWORD";
 
 #[derive(Clone, Debug)]
 pub struct WebServerConfig {
@@ -672,12 +674,36 @@ fn bootstrap_public_accounts(
     state: &WebState,
     data_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let admin_password = match std::env::var(BOOTSTRAP_ADMIN_PASSWORD_ENV) {
+        Ok(password) => Some(password),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    bootstrap_public_accounts_with_admin_password(state, data_dir, admin_password.as_deref())
+}
+
+fn bootstrap_public_accounts_with_admin_password(
+    state: &WebState,
+    data_dir: &Path,
+    admin_password: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut credentials = Vec::new();
-    for (login, role) in [
-        ("jeryu-admin", jeryu_core::UserRole::Admin),
-        ("jordanh", jeryu_core::UserRole::User),
-        ("jepsont", jeryu_core::UserRole::User),
-    ] {
+    if let Some(password) = admin_password {
+        create_or_reset_bootstrap_admin(state, password)?;
+    }
+    if admin_password.is_none() && state.core.get_account(BOOTSTRAP_ADMIN_LOGIN).is_err() {
+        let password = state.core.generate_one_time_password()?;
+        state
+            .core
+            .create_temporary_account(BOOTSTRAP_ADMIN_LOGIN, &password, UserRole::Admin)?;
+        credentials.push(BootstrapCredential {
+            login: BOOTSTRAP_ADMIN_LOGIN.to_string(),
+            role: bootstrap_role_name(&UserRole::Admin).to_string(),
+            password,
+        });
+    }
+
+    for (login, role) in [("jordanh", UserRole::User), ("jepsont", UserRole::User)] {
         if state.core.get_account(login).is_ok() {
             continue;
         }
@@ -687,10 +713,7 @@ fn bootstrap_public_accounts(
             .create_temporary_account(login, &password, role.clone())?;
         credentials.push(BootstrapCredential {
             login: login.to_string(),
-            role: match role {
-                jeryu_core::UserRole::Admin => "admin".to_string(),
-                jeryu_core::UserRole::User => "user".to_string(),
-            },
+            role: bootstrap_role_name(&role).to_string(),
             password,
         });
     }
@@ -705,7 +728,7 @@ fn bootstrap_public_accounts(
         if split {
             state.core.grant_repo_access(
                 "bootstrap",
-                "jeryu-admin",
+                BOOTSTRAP_ADMIN_LOGIN,
                 &repo.owner,
                 &repo.name,
                 jeryu_core::RepoAccessLevel::Admin,
@@ -727,6 +750,41 @@ fn bootstrap_public_accounts(
     file.write_all(&json)?;
     file.write_all(b"\n")?;
     Ok(())
+}
+
+fn create_or_reset_bootstrap_admin(
+    state: &WebState,
+    password: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match state.core.get_account(BOOTSTRAP_ADMIN_LOGIN) {
+        Ok(account) => {
+            if account.role != UserRole::Admin {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{BOOTSTRAP_ADMIN_LOGIN} exists without admin role"),
+                )));
+            }
+            state
+                .core
+                .reset_account_password(BOOTSTRAP_ADMIN_LOGIN, password)?;
+            state
+                .core
+                .force_password_change(BOOTSTRAP_ADMIN_LOGIN, false)?;
+        }
+        Err(_) => {
+            state
+                .core
+                .create_account(BOOTSTRAP_ADMIN_LOGIN, password, UserRole::Admin)?;
+        }
+    }
+    Ok(())
+}
+
+fn bootstrap_role_name(role: &UserRole) -> &'static str {
+    match role {
+        UserRole::Admin => "admin",
+        UserRole::User => "user",
+    }
 }
 
 fn next_bootstrap_receipt_path(data_dir: &Path) -> PathBuf {
@@ -754,7 +812,6 @@ fn secure_create(path: &Path) -> std::io::Result<std::fs::File> {
 fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
     let mut state = state;
     state.spa_dir = spa_dir.to_path_buf();
-    let spa = ServeDir::new(spa_dir).fallback(ServeFile::new(spa_dir.join("index.html")));
     let state = Arc::new(state);
     let mcp_state = Arc::new(jeryu_mcp::McpHttpState::new(Arc::new(
         mcp_backend::WebMcpBackend::new(state.clone()),
@@ -995,7 +1052,7 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
                 )
                 .route_layer(DefaultBodyLimit::disable()),
         )
-        .fallback_service(spa)
+        .fallback(surface::spa_fallback)
         // Response middleware that stamps every reply with advisory steering
         // headers (and a per-route MCP tool hint for gh/automation UAs).
         .layer(from_fn(steer_headers))

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
@@ -20,7 +21,7 @@ jeryu-agent-stream = { git = "https://github.com/neverhuman/jeryu-ci-runner.git"
 jeryu-agentbridge = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-agentbridge", optional = true }
 jeryu-autonomy = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.0", package = "jeryu-autonomy", optional = true }
 jeryu-gitd = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1", package = "jeryu-gitd", optional = true }
-jeryu-jira = { path = "../../../jeryu-jira/crates/jeryu-jira" }
+jeryu-jira = { git = "https://github.com/neverhuman/jeryu-jira.git", tag = "jeryu-jira-v5.0.0-split.0", package = "jeryu-jira" }
 jeryu-mcp = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.0", package = "jeryu-mcp", optional = true }
 jeryu-readmodel = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1", package = "jeryu-readmodel" }
 jeryu-runner-core = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-runner-core", optional = true }
@@ -37,7 +38,6 @@ sha2 = { workspace = true, optional = true }
 toml = { workspace = true }
 uuid = { workspace = true, optional = true }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"], optional = true }
-tower-http = { version = "0.6", features = ["fs"], optional = true }
 
 [dev-dependencies]
 base64 = "0.22"
@@ -47,7 +47,7 @@ tower = "0.5"
 
 [features]
 default = []
-web = ["dep:axum", "dep:base64", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:tower-http", "dep:uuid"]
+web = ["dep:axum", "dep:base64", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:uuid"]
 
 [lints]
 workspace = true

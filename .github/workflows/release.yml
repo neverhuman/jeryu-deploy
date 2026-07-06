@@ -2,7 +2,7 @@ name: release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['jeryu-deploy-v*']
   workflow_dispatch:
 
 permissions:

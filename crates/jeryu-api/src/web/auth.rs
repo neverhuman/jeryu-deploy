@@ -492,6 +492,14 @@ pub(super) async fn gate(
     };
     let account = auth.account.clone();
 
+    if account.must_change_password && !password_change_allowed_path(request.uri().path()) {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "password_change_required",
+            "password change required before continuing",
+        );
+    }
+
     if unsafe_method(request.method())
         && auth.source == AuthSource::Session
         && !csrf_valid(&state, request.headers())
@@ -582,6 +590,13 @@ pub(super) fn forbidden(message: &str) -> AxumResponse {
 
 fn auth_applies(path: &str) -> bool {
     path.starts_with("/api/v1/") && !matches!(path, "/api/v1/auth/signup" | "/api/v1/auth/login")
+}
+
+fn password_change_allowed_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/v1/auth/me" | "/api/v1/auth/logout" | "/api/v1/auth/password"
+    )
 }
 
 pub(crate) fn local_dev_trusted(state: &WebState, peer: Option<SocketAddr>) -> bool {

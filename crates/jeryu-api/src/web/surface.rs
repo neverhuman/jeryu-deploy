@@ -13,7 +13,7 @@ use jeryu_readmodel::contracts::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use tokio::fs;
 
 use super::markdown::render_markdown;
@@ -68,6 +68,13 @@ pub(super) async fn repo_entry(
         }
     }
     github_forward_request(state, peer, method, headers, uri, body).await
+}
+
+pub(super) async fn spa_fallback(
+    State(state): State<std::sync::Arc<super::WebState>>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> AxumResponse {
+    spa_response(&state.spa_dir, uri.path()).await
 }
 
 /// Forwards a GitHub-compatible REST request to the in-process [`GithubRouter`],
@@ -318,14 +325,84 @@ fn github_forbidden(message: &str) -> AxumResponse {
 }
 
 async fn spa_shell_response(spa_dir: &Path) -> AxumResponse {
+    spa_response(spa_dir, "/index.html").await
+}
+
+async fn spa_response(spa_dir: &Path, request_path: &str) -> AxumResponse {
+    if let Some(relative_path) = clean_spa_path(request_path)
+        && !relative_path.as_os_str().is_empty()
+    {
+        let disk_path = spa_dir.join(&relative_path);
+        if disk_path.is_file()
+            && let Ok(bytes) = fs::read(&disk_path).await
+        {
+            return (
+                [(header::CONTENT_TYPE, content_type_for_path(&relative_path))],
+                bytes,
+            )
+                .into_response();
+        }
+
+        let embedded_path = relative_path.to_string_lossy().replace('\\', "/");
+        if let Some(asset) = super::embedded_web::get(&embedded_path) {
+            return embedded_asset_response(asset);
+        }
+    }
+
     match fs::read_to_string(spa_dir.join("index.html")).await {
         Ok(html) => Html(html).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            format!("failed to load SPA shell from {}: {err}", spa_dir.display()),
-        )
-            .into_response(),
+        Err(_) => match super::embedded_web::index() {
+            Some(asset) => embedded_asset_response(asset),
+            None => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                format!(
+                    "failed to load SPA shell from {} and no embedded web assets were compiled",
+                    spa_dir.display()
+                ),
+            )
+                .into_response(),
+        },
+    }
+}
+
+fn embedded_asset_response(asset: &'static super::embedded_web::EmbeddedAsset) -> AxumResponse {
+    (
+        [(header::CONTENT_TYPE, asset.content_type)],
+        asset.bytes.to_vec(),
+    )
+        .into_response()
+}
+
+fn clean_spa_path(request_path: &str) -> Option<PathBuf> {
+    let trimmed = request_path.trim_start_matches('/');
+    if trimmed.is_empty() {
+        return Some(PathBuf::new());
+    }
+
+    let mut clean = PathBuf::new();
+    for component in Path::new(trimmed).components() {
+        match component {
+            Component::Normal(part) => clean.push(part),
+            _ => return None,
+        }
+    }
+    Some(clean)
+}
+
+fn content_type_for_path(path: &Path) -> &'static str {
+    match path.extension().and_then(|part| part.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") | Some("map") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("ico") => "image/x-icon",
+        Some("txt") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
     }
 }
 

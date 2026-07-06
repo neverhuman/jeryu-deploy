@@ -2609,6 +2609,291 @@ async fn signup_issues_session_cookie_for_followup_api_calls() {
     assert!(body["csrfToken"].as_str().is_some());
 }
 
+#[test]
+fn bootstrap_admin_password_creates_and_resets_admin_without_receipt_secret() {
+    let state = WebState::new(ForgeCore::new());
+    let data_dir = tempdir().expect("bootstrap data dir");
+
+    bootstrap_public_accounts_with_admin_password(
+        &state,
+        data_dir.path(),
+        Some("operator-admin-password-123"),
+    )
+    .expect("bootstrap admin with operator password");
+    let admin = state
+        .core
+        .authenticate_password("jeryu-admin", "operator-admin-password-123")
+        .expect("operator admin password works");
+    assert_eq!(admin.role, UserRole::Admin);
+    assert!(!admin.must_change_password);
+
+    let receipt: Value = serde_json::from_slice(
+        &std::fs::read(data_dir.path().join("bootstrap-credentials.json"))
+            .expect("bootstrap receipt exists for non-admin users"),
+    )
+    .expect("bootstrap receipt is json");
+    let logins: Vec<_> = receipt["credentials"]
+        .as_array()
+        .expect("credentials array")
+        .iter()
+        .filter_map(|credential| credential["login"].as_str())
+        .collect();
+    assert_eq!(logins, vec!["jordanh", "jepsont"]);
+
+    bootstrap_public_accounts_with_admin_password(
+        &state,
+        data_dir.path(),
+        Some("operator-admin-password-456"),
+    )
+    .expect("bootstrap admin reset with operator password");
+    assert!(
+        state
+            .core
+            .authenticate_password("jeryu-admin", "operator-admin-password-123")
+            .is_err(),
+        "reset must revoke the prior bootstrap admin password"
+    );
+    let reset = state
+        .core
+        .authenticate_password("jeryu-admin", "operator-admin-password-456")
+        .expect("reset operator admin password works");
+    assert_eq!(reset.role, UserRole::Admin);
+    assert!(!reset.must_change_password);
+}
+
+#[tokio::test]
+async fn admin_sees_all_repositories_but_fresh_signup_sees_none() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    for name in ["jeryu-core", "jeryu-web"] {
+        core.create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: true,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    core.create_account("jeryu-admin", "admin-password-123", UserRole::Admin)
+        .unwrap();
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    let admin_login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login": "jeryu-admin",
+                        "password": "admin-password-123"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_login.status(), StatusCode::OK);
+    let admin_cookie = admin_login
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("admin login sets a session cookie")
+        .split(';')
+        .next()
+        .expect("cookie name and value")
+        .to_string();
+    let admin_repos = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/repos")
+                .header(header::COOKIE, admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_repos.status(), StatusCode::OK);
+    let admin_repos_body = response_json(admin_repos).await;
+    assert_eq!(admin_repos_body["total"], 2);
+    let admin_names: Vec<_> = admin_repos_body["repositories"]
+        .as_array()
+        .expect("repositories array")
+        .iter()
+        .filter_map(|repo| repo["id"]["name"].as_str())
+        .collect();
+    assert!(admin_names.contains(&"jeryu-core"));
+    assert!(admin_names.contains(&"jeryu-web"));
+
+    let signup = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login": "freshuser",
+                        "password": "fresh-password-123"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(signup.status(), StatusCode::OK);
+    let fresh_cookie = signup
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("signup sets a session cookie")
+        .split(';')
+        .next()
+        .expect("cookie name and value")
+        .to_string();
+    let fresh_repos = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/repos")
+                .header(header::COOKIE, fresh_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fresh_repos.status(), StatusCode::OK);
+    let fresh_repos_body = response_json(fresh_repos).await;
+    assert_eq!(fresh_repos_body["total"], 0);
+    assert_eq!(
+        fresh_repos_body["repositories"]
+            .as_array()
+            .expect("repositories array")
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn forced_password_change_blocks_other_authenticated_routes_until_changed() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_temporary_account("resetuser", "temporary-pass-123", UserRole::User)
+        .expect("create temporary account");
+    let session = core.create_session("resetuser").expect("create session");
+    let cookie = format!("jeryu-session={}", session.token);
+    let csrf = session.session.csrf_token.clone();
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    let me = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(me.status(), StatusCode::OK);
+    let me_body = response_json(me).await;
+    assert_eq!(me_body["login"], "resetuser");
+    assert_eq!(me_body["mustChangePassword"], true);
+
+    let repos = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/repos")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repos.status(), StatusCode::FORBIDDEN);
+    let repos_body = response_json(repos).await;
+    assert_eq!(repos_body["code"], "password_change_required");
+
+    let token_denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/tokens")
+                .header(header::COOKIE, &cookie)
+                .header("x-jeryu-csrf", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::json!({ "name": "cli" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(token_denied.status(), StatusCode::FORBIDDEN);
+    let token_denied_body = response_json(token_denied).await;
+    assert_eq!(token_denied_body["code"], "password_change_required");
+
+    let changed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/password")
+                .header(header::COOKIE, &cookie)
+                .header("x-jeryu-csrf", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "currentPassword": "temporary-pass-123",
+                        "newPassword": "new-password-12345"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::OK);
+    let changed_body = response_json(changed).await;
+    assert_eq!(changed_body["mustChangePassword"], false);
+
+    let token_created = app
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/tokens")
+                .header(header::COOKIE, &cookie)
+                .header("x-jeryu-csrf", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::json!({ "name": "cli" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(token_created.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn cookie_auth_mutations_require_csrf_and_pat_lifecycle_is_user_scoped() {
     use axum::body::Body;

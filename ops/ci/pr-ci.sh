@@ -135,5 +135,6 @@ caps = d.get("caps_applied", [])
 print(f"[pr-ci] jankurai score={score} caps={caps}", file=sys.stderr)
 sys.exit(0 if score >= 85 and not caps else 1)
 PY
+restore_cargo_lock_ci_noise
 
 echo "[pr-ci] PASS — fmt + clippy + workspace tests + jankurai all green" >&2

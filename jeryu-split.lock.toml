@@ -36,6 +36,14 @@ commit = "de5b22d50e21b9cac3efd239ea2ec2eda1df6327"
 required_check = "jeryu-intelligence/required"
 
 [[repo]]
+name = "jeryu-jira"
+github_slug = "neverhuman/jeryu-jira"
+local_path = "/home/ubuntu/jeryu-split/jeryu-jira"
+tag = "jeryu-jira-v5.0.0-split.0"
+commit = "669d3a2261ae6570c518c95169feaebd4ab23956"
+required_check = "jeryu-jira/required"
+
+[[repo]]
 name = "jeryu-web"
 github_slug = "neverhuman/jeryu-web"
 local_path = "/home/ubuntu/jeryu-split/jeryu-web"

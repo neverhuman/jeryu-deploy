@@ -42,6 +42,9 @@ BIN="target/release/jeryu"
 [ -x "${BIN}" ] || { echo "[release] FATAL: ${BIN} not built" >&2; exit 1; }
 log "built $(${BIN} --version 2>/dev/null || echo jeryu)"
 
+log "running release binary route smoke"
+bash "${HERE}/release_smoke.sh" "${BIN}"
+
 # --- 2. SBOM + grype + SLSA provenance + cosign (over the SBOM) -------------
 bash "${HERE}/sbom-provenance.sh"
 SBOM_DIR="target/jankurai/security/sbom"
@@ -49,7 +52,7 @@ SBOM_DIR="target/jankurai/security/sbom"
 # --- 3. assemble the release bundle ----------------------------------------
 if [ ! -f "${ARTIFACT_SUPPORT_BUNDLE_SRC}" ] || [ ! -d "${ARTIFACT_SUPPORT_SIGNRAIL_SRC}" ]; then
   log "artifact-support evidence missing; running ops/ci/artifact_support.sh"
-  bash "${HERE}/artifact_support.sh"
+  JERYU_ARTIFACT_SUPPORT_STRICT=1 bash "${HERE}/artifact_support.sh"
 fi
 [ -f "${ARTIFACT_SUPPORT_BUNDLE_SRC}" ] \
   || die "missing artifact-support bundle after artifact_support.sh: ${ARTIFACT_SUPPORT_BUNDLE_SRC}"
