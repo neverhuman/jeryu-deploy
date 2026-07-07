@@ -8,7 +8,7 @@ use axum::extract::{ConnectInfo, Extension, Path as AxumPath, State};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response as AxumResponse};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use jeryu_core::{
     AccountSummary, ForgeError, PersonalAccessTokenSummary, RepoAccessGrant, RepoAccessLevel,
     UserRole,
@@ -25,6 +25,7 @@ const LOCAL_SESSION_COOKIE: &str = "jeryu-session";
 const CSRF_HEADER: &str = "x-jeryu-csrf";
 const AUTH_LIMIT_MAX: u32 = 10;
 const AUTH_LIMIT_WINDOW_SECS: i64 = 60;
+const REMEMBER_ME_MAX_AGE_SECS: i64 = 60 * 60 * 24 * 30;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct SignupRequest {
@@ -33,9 +34,12 @@ pub(super) struct SignupRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct LoginRequest {
     login: String,
     password: String,
+    #[serde(default)]
+    remember_me: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,7 +185,7 @@ pub(super) async fn signup(
     };
     let csrf_token = session.session.csrf_token.clone();
     let mut response = Json(AuthUserResponse::new(account, Some(csrf_token))).into_response();
-    if let Ok(value) = cookie_header(&state, &session.token) {
+    if let Ok(value) = cookie_header(&state, &session.token, None) {
         response.headers_mut().append(header::SET_COOKIE, value);
     }
     response
@@ -209,7 +213,13 @@ pub(super) async fn login(
             );
         }
     };
-    let session = match state.core.create_session(&account.login) {
+    let session = match if request.remember_me {
+        state
+            .core
+            .create_session_with_ttl(&account.login, Duration::seconds(REMEMBER_ME_MAX_AGE_SECS))
+    } else {
+        state.core.create_session(&account.login)
+    } {
         Ok(session) => session,
         Err(error) => {
             return api_error(
@@ -221,7 +231,8 @@ pub(super) async fn login(
     };
     let csrf_token = session.session.csrf_token.clone();
     let mut response = Json(AuthUserResponse::new(account, Some(csrf_token))).into_response();
-    if let Ok(value) = cookie_header(&state, &session.token) {
+    let max_age = request.remember_me.then_some(REMEMBER_ME_MAX_AGE_SECS);
+    if let Ok(value) = cookie_header(&state, &session.token, max_age) {
         response.headers_mut().append(header::SET_COOKIE, value);
     }
     response
@@ -747,6 +758,7 @@ fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
 fn cookie_header(
     state: &WebState,
     token: &str,
+    max_age_secs: Option<i64>,
 ) -> Result<axum::http::HeaderValue, axum::http::header::InvalidHeaderValue> {
     let name = if state.secure_cookies {
         HOST_SESSION_COOKIE
@@ -754,8 +766,11 @@ fn cookie_header(
         LOCAL_SESSION_COOKIE
     };
     let secure = if state.secure_cookies { "; Secure" } else { "" };
+    let max_age = max_age_secs
+        .map(|seconds| format!("; Max-Age={seconds}"))
+        .unwrap_or_default();
     axum::http::HeaderValue::from_str(&format!(
-        "{name}={token}; Path=/; HttpOnly; SameSite=Lax{secure}"
+        "{name}={token}; Path=/; HttpOnly; SameSite=Lax{max_age}{secure}"
     ))
 }
 

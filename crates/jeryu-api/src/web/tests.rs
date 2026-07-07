@@ -2579,11 +2579,17 @@ async fn signup_issues_session_cookie_for_followup_api_calls() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let cookie = response
+    let signup_cookie_header = response
         .headers()
         .get(header::SET_COOKIE)
         .and_then(|value| value.to_str().ok())
         .expect("signup sets a session cookie")
+        .to_string();
+    assert!(
+        !signup_cookie_header.contains("Max-Age="),
+        "signup keeps the browser-session cookie behavior"
+    );
+    let cookie = signup_cookie_header
         .split(';')
         .next()
         .expect("cookie name and value")
@@ -2607,6 +2613,118 @@ async fn signup_issues_session_cookie_for_followup_api_calls() {
     assert_eq!(body["login"], "newuser");
     assert_eq!(body["mustChangePassword"], false);
     assert!(body["csrfToken"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn login_remember_me_controls_session_cookie_max_age_and_logout_expiry() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("remembered", "correct horse battery", UserRole::User)
+        .unwrap();
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    let normal_login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login": "remembered",
+                        "password": "correct horse battery"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(normal_login.status(), StatusCode::OK);
+    let normal_cookie = normal_login
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("normal login sets a session cookie")
+        .to_string();
+    assert!(normal_cookie.contains("jeryu-session="));
+    assert!(normal_cookie.contains("HttpOnly"));
+    assert!(normal_cookie.contains("SameSite=Lax"));
+    assert!(
+        !normal_cookie.contains("Max-Age="),
+        "normal logins stay browser-session scoped"
+    );
+    let normal_body = response_json(normal_login).await;
+    assert!(normal_body["csrfToken"].as_str().is_some());
+
+    let remembered_login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login": "remembered",
+                        "password": "correct horse battery",
+                        "rememberMe": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(remembered_login.status(), StatusCode::OK);
+    let remembered_cookie_header = remembered_login
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("remembered login sets a persistent session cookie")
+        .to_string();
+    assert!(remembered_cookie_header.contains("jeryu-session="));
+    assert!(remembered_cookie_header.contains("Max-Age=2592000"));
+    assert!(remembered_cookie_header.contains("HttpOnly"));
+    assert!(remembered_cookie_header.contains("SameSite=Lax"));
+    let remembered_cookie = remembered_cookie_header
+        .split(';')
+        .next()
+        .expect("cookie name and value")
+        .to_string();
+    let remembered_body = response_json(remembered_login).await;
+    let remembered_csrf = remembered_body["csrfToken"]
+        .as_str()
+        .expect("remembered login includes csrf token")
+        .to_string();
+
+    let logout = app
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/logout")
+                .header(header::COOKIE, remembered_cookie)
+                .header("x-jeryu-csrf", remembered_csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), StatusCode::OK);
+    let expired_cookie = logout
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("logout expires the session cookie");
+    assert!(expired_cookie.contains("jeryu-session="));
+    assert!(expired_cookie.contains("Max-Age=0"));
 }
 
 #[test]
