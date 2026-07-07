@@ -253,6 +253,10 @@ when `JERYU_CI_SOURCE_ROOTS` is set.
    pushes the bundle/web/manifest/runtime env to `atomicsoul`, and verifies the
    checksum manifest and signature on the host. It does not restart the service
    unless `--restart` is supplied.
+   For a first production install with no previous artifact on the host, set
+   `JERYU_RELEASE_INITIAL_DEPLOY=1` and use a concrete rollback marker such as
+   `atomicsoul-initial-install` for both `SIGNRAIL_ROLLBACK_TARGET` and
+   `JERYU_RELEASE_ROLLBACK_TAG`.
 9. Tag only after the v2 receipt names the exact signed commit, PR publication
    path, prior signed rollback artifact, stage receipts, and checksum manifest.
 

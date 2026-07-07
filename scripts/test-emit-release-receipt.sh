@@ -135,6 +135,21 @@ run_emitter() {
     bash "$EMITTER" "$bundle" >"$receipt"
 }
 
+run_initial_emitter() {
+  local bundle="$1" signrail="$2" publish="$3" support_bundle="$4" receipt="$5" marker="$6"
+  PATH="${FAKE_BIN}:$PATH" \
+  FAKE_GIT_VERIFY_OK="${FAKE_GIT_VERIFY_OK:-1}" \
+  JERYU_RELEASE_COMMIT="$FAKE_COMMIT" \
+  JERYU_RELEASE_TAG="v0.0.0-test" \
+  GITHUB_REPOSITORY="jeryu/jeryu-deploy" \
+  JERYU_RELEASE_INITIAL_DEPLOY=1 \
+  JERYU_RELEASE_ROLLBACK_TAG="$marker" \
+  JERYU_RELEASE_PUBLICATION_FILE="$publish" \
+  JERYU_RELEASE_SIGNRAIL_DIR="$signrail" \
+  JERYU_RELEASE_ARTIFACT_SUPPORT_BUNDLE="$support_bundle" \
+    bash "$EMITTER" "$bundle" >"$receipt"
+}
+
 BUNDLE="${WORK}/bundle"
 SIGNRAIL="${BUNDLE}/artifact-support-signrail"
 PUBLISH="${WORK}/publish.json"
@@ -155,6 +170,27 @@ CHECKSUM_ACTUAL="$(sha256sum "${BUNDLE}/SHA256SUMS" | awk '{print $1}')"
 CHECKSUM_RECEIPT="$(jq -r '.checksum_manifest.sha256' "$RECEIPT")"
 check "receipt checksum manifest digest matches" "[ '${CHECKSUM_ACTUAL}' = '${CHECKSUM_RECEIPT}' ]"
 check "rollback.json written + valid JSON" "jq -e . '${BUNDLE}/rollback.json' >/dev/null"
+
+INITIAL_MARKER="atomicsoul-initial-install"
+INITIAL="${WORK}/initial"
+make_bundle "$INITIAL/bundle" "$INITIAL/bundle/artifact-support-signrail" "$INITIAL/publish.json" "$INITIAL/bundle/artifact-support-evidence.tar.gz"
+for file in "$INITIAL/bundle/artifact-support-signrail/release.json" "$INITIAL/bundle/artifact-support-signrail/stage-receipts/"*.json; do
+  tmp="${file}.tmp"
+  jq --arg marker "$INITIAL_MARKER" \
+    '(.rollback.previous_release? // empty) |= $marker
+     | (.payload.rollback_target? // empty) |= $marker' \
+    "$file" >"$tmp"
+  mv "$tmp" "$file"
+done
+run_initial_emitter \
+  "$INITIAL/bundle" \
+  "$INITIAL/bundle/artifact-support-signrail" \
+  "$INITIAL/publish.json" \
+  "$INITIAL/bundle/artifact-support-evidence.tar.gz" \
+  "$INITIAL/bundle/release-receipt.json" \
+  "$INITIAL_MARKER"
+check "initial deploy receipt avoids previous artifact digests" "jq -e --arg marker '${INITIAL_MARKER}' '.rollback.initial_deploy==true and .rollback.previous_release==\$marker and (.rollback.previous_binary_sha256|not)' '${INITIAL}/bundle/release-receipt.json' >/dev/null"
+check "initial deploy rollback.json is explicit" "jq -e '.initial_deploy==true and (.rollback_command|contains(\"disable --now jeryu.service\"))' '${INITIAL}/bundle/rollback.json' >/dev/null"
 
 NEG="${WORK}/neg-unsigned"
 make_bundle "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publish.json" "$NEG/bundle/artifact-support-evidence.tar.gz"

@@ -129,6 +129,16 @@ SignRail seed, or deploy signing key.
    bash ops/ci/release.sh
    ```
 
+   For a first production install on a host with no previous Jeryu production
+   artifact, use an explicit rollback marker instead of inventing previous
+   digests:
+
+   ```bash
+   export JERYU_RELEASE_INITIAL_DEPLOY=1
+   export SIGNRAIL_ROLLBACK_TARGET=atomicsoul-initial-install
+   export JERYU_RELEASE_ROLLBACK_TAG=atomicsoul-initial-install
+   ```
+
 3. Sign the deploy SHA manifest and push/install artifacts on `atomicsoul`:
 
    ```bash

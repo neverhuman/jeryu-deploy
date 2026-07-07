@@ -19,6 +19,9 @@
 #       JERYU_RELEASE_ROLLBACK_SHA256
 #       JERYU_RELEASE_ROLLBACK_SIGNATURE_SHA256
 #       JERYU_RELEASE_ROLLBACK_CERTIFICATE_SHA256
+#     For a first production install with no previous production artifact, set
+#       JERYU_RELEASE_INITIAL_DEPLOY=1
+#       JERYU_RELEASE_ROLLBACK_TAG=<operator marker, e.g. atomicsoul-initial-install>
 #   * PR publication metadata at JERYU_RELEASE_PUBLICATION_FILE
 #     (default: target/ci-fast/publish.json)
 #   * artifact-support SignRail outputs at JERYU_RELEASE_SIGNRAIL_DIR
@@ -103,8 +106,17 @@ PREV_TAG="${JERYU_RELEASE_ROLLBACK_TAG:-}"
 PREV_SHA="${JERYU_RELEASE_ROLLBACK_SHA256:-}"
 PREV_SIG_SHA="${JERYU_RELEASE_ROLLBACK_SIGNATURE_SHA256:-}"
 PREV_CERT_SHA="${JERYU_RELEASE_ROLLBACK_CERTIFICATE_SHA256:-}"
+INITIAL_DEPLOY="${JERYU_RELEASE_INITIAL_DEPLOY:-0}"
 
 resolve_previous_signed_release() {
+  if [ "$INITIAL_DEPLOY" = "1" ]; then
+    if [ -z "$PREV_TAG" ]; then
+      PREV_TAG="initial-production-install"
+    fi
+    [ "$PREV_TAG" != "$RELEASE_TAG" ] || fail "initial deploy rollback marker must not equal release tag ($RELEASE_TAG)"
+    return
+  fi
+
   if [ -n "$PREV_TAG" ] || [ -n "$PREV_SHA" ] || [ -n "$PREV_SIG_SHA" ] || [ -n "$PREV_CERT_SHA" ]; then
     [ -n "$PREV_TAG" ] || fail "JERYU_RELEASE_ROLLBACK_TAG is required with rollback digest overrides"
     [ -n "$PREV_SHA" ] || fail "JERYU_RELEASE_ROLLBACK_SHA256 is required with rollback digest overrides"
@@ -237,6 +249,19 @@ validate_signrail_outputs() {
 
 write_rollback_json() {
   local rollback_cmd
+  if [ "$INITIAL_DEPLOY" = "1" ]; then
+    rollback_cmd="systemctl --user disable --now jeryu.service || true; rm -f \"\${HOME}/.jeryu/bin/jeryu\"; rm -f \"\${HOME}/.jeryu/share/web-dist\"; rm -f \"\${HOME}/.jeryu/share/repos.manifest.toml\""
+    jq -n \
+      --arg marker "$PREV_TAG" \
+      --arg cmd "$rollback_cmd" \
+      --arg cfg "none - no previous production artifact" \
+      --arg mig "initial production install; rollback disables the new service and removes active symlinks" \
+      --argjson epoch "$NOW_EPOCH" \
+      '{initial_deploy: true, previous_release: $marker, rollback_command: $cmd, config_digest: $cfg, data_migration: $mig, verified_at_epoch: $epoch}' \
+      >"${BUNDLE_DIR}/rollback.json"
+    return
+  fi
+
   rollback_cmd="gh release download ${PREV_TAG} --repo ${REPO} --pattern jeryu --pattern jeryu.sig --pattern jeryu.pem && cosign verify-blob --signature jeryu.sig --certificate jeryu.pem --certificate-identity-regexp 'https://github.com/${REPO}/.*release.yml@.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com jeryu && install -m755 jeryu \"\$(command -v jeryu)\""
   jq -n \
     --arg prev "$PREV_TAG" \
@@ -330,6 +355,7 @@ jq -n \
   --arg signrail_dev "$SIGNRAIL_DEV_SHA" \
   --arg signrail_prod "$SIGNRAIL_PROD_SHA" \
   --arg signrail_summary "$SIGNRAIL_SUMMARY_SHA" \
+  --arg initial_deploy "$INITIAL_DEPLOY" \
   '{
     schema: $schema,
     release: $release,
@@ -384,13 +410,21 @@ jq -n \
       jankurai_baseline: "agent/baselines/main.repo-score.json (ratchet audit, fail-under 85)",
       sbom_dir: "target/jankurai/security/sbom"
     },
-    rollback: {
-      previous_release: $prev,
-      previous_binary_sha256: $prevsha,
-      previous_signature_sha256: $prevsig,
-      previous_certificate_sha256: $prevcert,
-      artifact: "rollback.json"
-    },
+    rollback: (
+      if $initial_deploy == "1" then {
+        initial_deploy: true,
+        previous_release: $prev,
+        artifact: "rollback.json",
+        strategy: "disable/remove newly installed production service; no previous production artifact existed"
+      } else {
+        initial_deploy: false,
+        previous_release: $prev,
+        previous_binary_sha256: $prevsha,
+        previous_signature_sha256: $prevsig,
+        previous_certificate_sha256: $prevcert,
+        artifact: "rollback.json"
+      } end
+    ),
     artifact_support: ({
       bundle: "artifact-support-evidence.tar.gz",
       bundle_sha256: $support_bundle,
