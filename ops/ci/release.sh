@@ -37,8 +37,12 @@ git verify-commit --raw HEAD >/dev/null 2>&1 \
 
 # --- 1. validate + build the release binary --------------------------------
 cargo test --workspace --jobs "${JERYU_CI_JOBS}"
-cargo build --release -p jeryu-cli --bin jeryu --jobs "${JERYU_CI_JOBS}"
-BIN="target/release/jeryu"
+BIN="${JERYU_RELEASE_BINARY:-target/release/jeryu}"
+if [ -n "${JERYU_RELEASE_BINARY:-}" ]; then
+  log "using prebuilt release binary ${BIN}"
+else
+  cargo build --release -p jeryu-cli --bin jeryu --jobs "${JERYU_CI_JOBS}"
+fi
 [ -x "${BIN}" ] || { echo "[release] FATAL: ${BIN} not built" >&2; exit 1; }
 log "built $(${BIN} --version 2>/dev/null || echo jeryu)"
 
