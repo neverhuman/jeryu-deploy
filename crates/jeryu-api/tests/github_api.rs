@@ -322,6 +322,46 @@ fn pulls_list_honors_state_query_filter() {
     );
 }
 
+#[test]
+fn patch_pull_request_updates_draft_and_state() {
+    let router = router_with_repo();
+
+    let opened = router.post(
+        "/repos/alice/jeryu/pulls",
+        r#"{"title":"draft work","head":"feat-draft","base":"main","head_sha":"sha-draft","draft":true}"#,
+    );
+    assert_eq!(opened.status, 201, "open draft pr: {}", opened.body);
+    let number = body(&opened)["number"].as_u64().expect("pr number");
+    assert_eq!(body(&opened)["draft"], true);
+
+    let ready = router.handle(
+        Method::Patch,
+        &format!("/repos/alice/jeryu/pulls/{number}"),
+        r#"{"draft":false,"title":"ready work"}"#,
+    );
+    assert_eq!(ready.status, 200, "ready patch: {}", ready.body);
+    let ready_body = body(&ready);
+    assert_eq!(ready_body["draft"], false);
+    assert_eq!(ready_body["title"], "ready work");
+    assert_eq!(ready_body["state"], "open");
+
+    let closed = router.handle(
+        Method::Patch,
+        &format!("/repos/alice/jeryu/pulls/{number}"),
+        r#"{"state":"closed"}"#,
+    );
+    assert_eq!(closed.status, 200, "close patch: {}", closed.body);
+    let closed_body = body(&closed);
+    assert_eq!(closed_body["state"], "closed");
+    assert_eq!(closed_body["draft"], false);
+    assert_eq!(closed_body["merged"], false);
+
+    let open_only = pull_numbers(&router.get("/repos/alice/jeryu/pulls?state=open"));
+    assert!(open_only.is_empty(), "closed PR must not appear as open");
+    let closed_only = pull_numbers(&router.get("/repos/alice/jeryu/pulls?state=closed"));
+    assert_eq!(closed_only, vec![number]);
+}
+
 /// Returns the number of pull requests currently open on the repo.
 fn open_pr_count(router: &GithubRouter) -> usize {
     let listed = router.get("/repos/alice/jeryu/pulls");

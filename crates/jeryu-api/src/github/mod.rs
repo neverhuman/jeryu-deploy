@@ -250,6 +250,9 @@ impl GithubRouter {
             (Get, ["repos", owner, repo, "pulls", number]) => {
                 Ok(self.get_pull(owner, repo, number))
             }
+            (Patch, ["repos", owner, repo, "pulls", number]) => {
+                Ok(self.update_pull(owner, repo, number, body))
+            }
             (Put, ["repos", owner, repo, "pulls", number, "merge"]) => {
                 Ok(self.merge_pull(owner, repo, number, body))
             }

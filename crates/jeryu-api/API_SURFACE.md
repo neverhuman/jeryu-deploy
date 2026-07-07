@@ -26,7 +26,8 @@ Jeryu's own parity assertions, not vendored from any external spec. The
 - `GET /health`, `GET /api/v1/version`, `GET /user`
 - `GET /repos`, `POST /repos`, `GET /repos/{owner}/{repo}`
 - `GET /repos/{o}/{r}/pulls`, `POST /repos/{o}/{r}/pulls`,
-  `GET /repos/{o}/{r}/pulls/{number}`, `PUT /repos/{o}/{r}/pulls/{number}/merge`
+  `GET /repos/{o}/{r}/pulls/{number}`, `PATCH /repos/{o}/{r}/pulls/{number}`,
+  `PUT /repos/{o}/{r}/pulls/{number}/merge`
 - `GET /repos/{o}/{r}/issues`, `POST /repos/{o}/{r}/issues`,
   `GET|POST /repos/{o}/{r}/issues/{number}/comments`
 - `GET /repos/{o}/{r}/commits/{ref}/status`, `POST /repos/{o}/{r}/statuses/{sha}`

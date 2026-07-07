@@ -3,7 +3,8 @@
 
 use jeryu_core::{
     ChangeSet, CreatePullRequestRequest, ForgeError, MergePullRequestRequest, MergeReadiness,
-    OpenPr, OverlapConfig, OverlapDecision, PullRequest, PullRequestState, decide,
+    OpenPr, OverlapConfig, OverlapDecision, PullRequest, PullRequestState,
+    UpdatePullRequestRequest, decide,
 };
 use serde_json::{Value, json};
 
@@ -235,6 +236,27 @@ impl GithubRouter {
             Err(response) => return response,
         };
         match self.core.get_pull_request(owner, repo, number) {
+            Ok(pr) => json_response(200, &pull_request_json(&pr)),
+            Err(err) => error_response(err),
+        }
+    }
+
+    pub(super) fn update_pull(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: &str,
+        body: &str,
+    ) -> Response {
+        let number = match parse_number(number) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let req: UpdatePullRequestRequest = match parse_body(body) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        match self.core.update_pull_request(owner, repo, number, req) {
             Ok(pr) => json_response(200, &pull_request_json(&pr)),
             Err(err) => error_response(err),
         }
