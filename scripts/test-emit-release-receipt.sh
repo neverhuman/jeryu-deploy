@@ -125,6 +125,7 @@ run_emitter() {
   JERYU_RELEASE_COMMIT="$FAKE_COMMIT" \
   JERYU_RELEASE_TAG="v0.0.0-test" \
   GITHUB_REPOSITORY="neverhuman/jeryu" \
+  JERYU_RELEASE_INITIAL_DEPLOY=0 \
   JERYU_RELEASE_ROLLBACK_TAG="$PREV_TAG" \
   JERYU_RELEASE_ROLLBACK_SHA256="$PREV_BIN_SHA" \
   JERYU_RELEASE_ROLLBACK_SIGNATURE_SHA256="$PREV_SIG_SHA" \
@@ -205,6 +206,7 @@ make_bundle "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publish.
 if PATH="${FAKE_BIN}:$PATH" \
   JERYU_RELEASE_COMMIT="$FAKE_COMMIT" \
   JERYU_RELEASE_TAG="v0.0.0-test" \
+  JERYU_RELEASE_INITIAL_DEPLOY=0 \
   JERYU_RELEASE_PUBLICATION_FILE="$NEG/publish.json" \
   JERYU_RELEASE_SIGNRAIL_DIR="$NEG/bundle/artifact-support-signrail" \
   JERYU_RELEASE_ARTIFACT_SUPPORT_BUNDLE="$NEG/bundle/artifact-support-evidence.tar.gz" \
