@@ -3053,58 +3053,6 @@ name = "jeryu-rustjet-cli"
 version = "5.0.0"
 
 [[patch.unused]]
-name = "jeryu-compliance-export"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-evidence"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-git-guard"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-kernel"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-lifecycle"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-mapcheck"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-ops"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase11-audit"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase11-bin"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-phase11-core"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-replay-verifier"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-signrail"
-version = "5.0.0"
-
-[[patch.unused]]
-name = "jeryu-tenant"
-version = "5.0.0"
-
-[[patch.unused]]
 name = "jeryu-agent-auth"
 version = "5.0.0"
 
@@ -3170,4 +3118,56 @@ version = "5.0.0"
 
 [[patch.unused]]
 name = "jeryu-cache-service"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-compliance-export"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-evidence"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-git-guard"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-kernel"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-lifecycle"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-mapcheck"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-ops"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase11-audit"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase11-bin"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-phase11-core"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-replay-verifier"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-signrail"
+version = "5.0.0"
+
+[[patch.unused]]
+name = "jeryu-tenant"
 version = "5.0.0"
