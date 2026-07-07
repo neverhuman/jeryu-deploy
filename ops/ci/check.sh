@@ -34,7 +34,7 @@ if "jeryu" not in data.get("required_repos", []):
     raise SystemExit("repos.manifest.toml must require the public portal repo")
 PY
 fi
-for script in scripts/*.sh ops/ci/*.sh; do
+for script in scripts/*.sh ops/ci/*.sh ops/deploy/*.sh; do
   [[ -e "$script" ]] || continue
   bash -n "$script"
 done

@@ -15,6 +15,8 @@ Run these from the canonical repository root before creating a release receipt:
 - `bash scripts/ci-phases.sh`
 - `SIGNRAIL_ROLLBACK_TARGET=<previous-signed-release> bash ops/ci/artifact_support.sh`
 - `bash ops/ci/release.sh`
+- `bash ops/deploy/test-atomicsoul-release.sh` when production deploy helpers
+  or this atomicsoul process changes.
 - `bash ops/ci/proof-evidence.sh`
 - `cargo test -p jeryu-wsversion --jobs 40`,
   `cargo run -q -p jeryu-wsversion -- inherit-guard`, and
@@ -97,6 +99,50 @@ PR-backed publication path, the previous signed rollback artifact, and all gates
 above are green. Publish closeout changes through a PR branch first; do not tag
 from an uncommitted worktree, an unsigned commit, placeholder rollback evidence,
 or hosted-only state.
+
+## Atomicsoul Autonomous Deploy Handoff
+
+Production deploys to `atomicsoul` are AI-runnable only after fresh per-release
+env material exists. Do not reuse a prior release's env, admin password,
+SignRail seed, or deploy signing key.
+
+1. Generate release-local production material:
+
+   ```bash
+   ops/deploy/make-production-env.sh --release <release-tag>
+   ```
+
+   The secret output is written under
+   `~/.jeryu/deploy-env/<release-tag>/production.env`. It includes a fresh
+   `JERYU_BOOTSTRAP_ADMIN_PASSWORD`, a fresh
+   `JERYU_SIGNRAIL_ED25519_SEED`, and a fresh Ed25519 key used to sign the
+   deployment checksum manifest.
+
+2. Source the generated env before artifact-support signing and release bundle
+   creation:
+
+   ```bash
+   set -a
+   . ~/.jeryu/deploy-env/<release-tag>/production.env
+   set +a
+   SIGNRAIL_ROLLBACK_TARGET=<previous-signed-release> bash ops/ci/artifact_support.sh
+   bash ops/ci/release.sh
+   ```
+
+3. Sign the deploy SHA manifest and push/install artifacts on `atomicsoul`:
+
+   ```bash
+   ops/deploy/sign-and-push-atomicsoul.sh \
+     --env ~/.jeryu/deploy-env/<release-tag>/production.env
+   ```
+
+   The push creates `target/release/bundle/atomicsoul-deploy/SHA256SUMS`,
+   signs it with the per-release Ed25519 key, pushes the bundle, web dist,
+   split manifest, runtime env, and user systemd unit to `atomicsoul`, then
+   verifies the checksum manifest and signature on the host. The default path
+   updates `~/.jeryu/bin/jeryu`, `~/.jeryu/share/web-dist`, and
+   `~/.jeryu/share/repos.manifest.toml`, but does not restart the service.
+   Pass `--restart` only when the release is approved for live activation.
 
 ## Rollback
 

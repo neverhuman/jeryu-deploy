@@ -23,6 +23,9 @@ The release structure is intentionally artifact-backed:
 - Release control surface: `docs/release.md`.
 - CI or script evidence: `target/ci-fast/publish.json` and `target/jankurai/`.
 - Integrity and provenance evidence: `target/artifact-support/signrail/`.
+- Production env and atomicsoul deploy handoff:
+  `ops/deploy/make-production-env.sh` and
+  `ops/deploy/sign-and-push-atomicsoul.sh`.
 - Rollback guidance: `docs/release.md#rollback`.
 
 ## Version Source
@@ -69,6 +72,8 @@ not trigger another version bump.
 - `./ops/ci/full.sh`
 - `SIGNRAIL_ROLLBACK_TARGET=<previous-signed-release> bash ops/ci/artifact_support.sh`
 - `bash ops/ci/release.sh`
+- `bash ops/deploy/test-atomicsoul-release.sh` when atomicsoul deploy helpers
+  or production deployment docs change.
 - `just security`
 - `just audit`
 - `bash ops/ci/proof-evidence.sh`
@@ -240,7 +245,15 @@ when `JERYU_CI_SOURCE_ROOTS` is set.
    evidence into the bundle, records binary/SBOM/provenance/cosign digests,
    writes `rollback.json`, emits `release-receipt.json`, and writes
    `SHA256SUMS`.
-8. Tag only after the v2 receipt names the exact signed commit, PR publication
+8. For production deploys, generate fresh per-release env material with
+   `ops/deploy/make-production-env.sh --release <release-tag>`, source the
+   generated `production.env`, and push the signed artifact handoff with
+   `ops/deploy/sign-and-push-atomicsoul.sh --env <production.env>`. This writes
+   and Ed25519-signs `target/release/bundle/atomicsoul-deploy/SHA256SUMS`,
+   pushes the bundle/web/manifest/runtime env to `atomicsoul`, and verifies the
+   checksum manifest and signature on the host. It does not restart the service
+   unless `--restart` is supplied.
+9. Tag only after the v2 receipt names the exact signed commit, PR publication
    path, prior signed rollback artifact, stage receipts, and checksum manifest.
 
 ## Autonomy Gate
@@ -283,6 +296,11 @@ server moves off `127.0.0.1`, the launch checklist is:
 - **Launch / production rollout:** promote only a signed, gate-green commit;
   deploy behind the unified `jeryu serve` listener; canary one node, widen on
   green, and keep the prior signed artifact staged for rollback.
+- **Atomicsoul handoff:** each production release gets fresh env material and a
+  fresh deploy signing key from `ops/deploy/make-production-env.sh`. The
+  artifact bundle must be pushed with
+  `ops/deploy/sign-and-push-atomicsoul.sh`, which verifies the signed SHA
+  manifest on `atomicsoul` before updating `~/.jeryu` symlinks.
 - **Rate limiting:** the GitHub-shaped edge emits `X-RateLimit-*` headers
   already; enforce per-token rate limits and abuse-control 429s before any
   public exposure.
