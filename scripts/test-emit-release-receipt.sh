@@ -179,7 +179,8 @@ for file in "$INITIAL/bundle/artifact-support-signrail/release.json" "$INITIAL/b
   tmp="${file}.tmp"
   jq --arg marker "$INITIAL_MARKER" \
     '(.rollback.previous_release? // empty) |= $marker
-     | (.payload.rollback_target? // empty) |= $marker' \
+     | (.payload.rollback_target? // empty) |= $marker
+     | (.payload.artifact_digest? // empty) |= sub("^sha256:"; "")' \
     "$file" >"$tmp"
   mv "$tmp" "$file"
 done
@@ -191,6 +192,7 @@ run_initial_emitter \
   "$INITIAL/bundle/release-receipt.json" \
   "$INITIAL_MARKER"
 check "initial deploy receipt avoids previous artifact digests" "jq -e --arg marker '${INITIAL_MARKER}' '.rollback.initial_deploy==true and .rollback.previous_release==\$marker and (.rollback.previous_binary_sha256|not)' '${INITIAL}/bundle/release-receipt.json' >/dev/null"
+check "raw SignRail artifact digest is normalized" "jq -e --arg digest '${SUPPORT_DIGEST}' '.artifact_support.signed_artifact_digest==\$digest' '${INITIAL}/bundle/release-receipt.json' >/dev/null"
 check "initial deploy rollback.json is explicit" "jq -e '.initial_deploy==true and (.rollback_command|contains(\"disable --now jeryu.service\"))' '${INITIAL}/bundle/rollback.json' >/dev/null"
 
 NEG="${WORK}/neg-unsigned"

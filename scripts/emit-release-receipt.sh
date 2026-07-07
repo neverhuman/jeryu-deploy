@@ -229,7 +229,10 @@ validate_signrail_outputs() {
       '.payload.stage == $stage and .payload.sha == $commit and .payload.rollback_target == $rollback and .payload.signature_coverage_percent == 100' \
       "$receipt" >/dev/null || fail "SignRail $stage stage receipt disagrees with commit, rollback target, or signature coverage"
     artifact_digest="$(jq -r '.payload.artifact_digest // ""' "$receipt")"
-    [[ "$artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "SignRail $stage artifact digest is not sha256-tagged"
+    if [[ "$artifact_digest" =~ ^[0-9a-f]{64}$ ]]; then
+      artifact_digest="sha256:${artifact_digest}"
+    fi
+    [[ "$artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "SignRail $stage artifact digest is not a SHA-256 digest"
     if [ -z "$SIGNRAIL_STAGE_ARTIFACT_DIGEST" ]; then
       SIGNRAIL_STAGE_ARTIFACT_DIGEST="$artifact_digest"
     elif [ "$SIGNRAIL_STAGE_ARTIFACT_DIGEST" != "$artifact_digest" ]; then
