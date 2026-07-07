@@ -303,6 +303,7 @@ release_dir="$2"
 force="$3"
 case "$staging" in /home/ubuntu/.jeryu/incoming/*) ;; *) echo "unsafe staging dir: $staging" >&2; exit 1 ;; esac
 case "$release_dir" in /home/ubuntu/.jeryu/releases/*) ;; *) echo "unsafe release dir: $release_dir" >&2; exit 1 ;; esac
+mkdir -p "$(dirname "$release_dir")"
 if [ -e "$release_dir" ] && [ "$force" != "1" ]; then
   echo "remote release directory already exists: $release_dir" >&2
   exit 1
@@ -338,6 +339,7 @@ if [ -e "$release_dir" ]; then
     exit 1
   fi
 fi
+mkdir -p "$(dirname "$release_dir")"
 mv "$staging" "$release_dir"
 
 cd "$release_dir/bundle"
