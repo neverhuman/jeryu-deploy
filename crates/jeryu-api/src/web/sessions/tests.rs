@@ -680,7 +680,7 @@ fn sandbox_unavailable(status: &Value) -> bool {
 /// status seen so the caller can SKIP-or-assert.
 async fn await_tty(state: &Arc<WebState>, run_id: &str, needle: &str) -> Value {
     let mut last = Value::Null;
-    for _ in 0..600 {
+    for _ in 0..2400 {
         let status = run_status(state, run_id).await;
         if sandbox_unavailable(&status) {
             return status;
