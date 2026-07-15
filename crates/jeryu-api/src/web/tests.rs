@@ -1109,7 +1109,7 @@ async fn mounted_pulls_routes_are_reachable() {
 }
 
 #[tokio::test]
-async fn web_pull_passport_uses_latest_run_per_check_name() {
+async fn web_pull_passport_uses_latest_run_per_check_name_within_current_head() {
     let core = ForgeCore::new();
     let repo = core
         .create_repository(
@@ -1151,6 +1151,18 @@ async fn web_pull_passport_uses_latest_run_per_check_name() {
         )
         .unwrap();
     }
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jankurai/proof".to_string(),
+            head_sha: "different-head".to_string(),
+            status: Some(jeryu_core::CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
     core.create_review(
         "alice",
         "jeryu",
@@ -1169,6 +1181,13 @@ async fn web_pull_passport_uses_latest_run_per_check_name() {
             .total_count,
         2,
         "historical check-runs remain in forge history"
+    );
+    assert_eq!(
+        core.list_check_runs("alice", "jeryu", None)
+            .unwrap()
+            .total_count,
+        3,
+        "another head's newer failure remains historical but cannot affect this passport"
     );
     let state = Arc::new(WebState::new(core));
     let detail = response_json(

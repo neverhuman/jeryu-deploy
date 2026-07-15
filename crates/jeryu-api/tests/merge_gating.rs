@@ -193,6 +193,65 @@ fn router_with_pr(fixture: &GitFixture) -> (GithubRouter, u64) {
 }
 
 #[test]
+fn commit_check_runs_resolve_and_filter_one_exact_head() {
+    if !git_available() {
+        return;
+    }
+    let fixture = seed_fixture("jeryu-check-runs-exact-head");
+    let router = GithubRouter::new().with_repo_manager(fixture.manager.clone());
+    let created = router.post(
+        "/repos",
+        r#"{"owner":"acme","name":"demo","private":false,"default_branch":"main"}"#,
+    );
+    assert_eq!(created.status, 201, "create repo: {}", created.body);
+
+    let base_check = router.post(
+        "/repos/acme/demo/check-runs",
+        &format!(
+            r#"{{"name":"demo/required","head_sha":"{}","status":"completed","conclusion":"failure"}}"#,
+            fixture.base_oid
+        ),
+    );
+    assert_eq!(base_check.status, 201, "base check: {}", base_check.body);
+    let head_check = router.post(
+        "/repos/acme/demo/check-runs",
+        &format!(
+            r#"{{"name":"demo/required","head_sha":"{}","status":"completed","conclusion":"success"}}"#,
+            fixture.head_oid
+        ),
+    );
+    assert_eq!(head_check.status, 201, "head check: {}", head_check.body);
+
+    let by_head = router.get(&format!(
+        "/repos/acme/demo/commits/{}/check-runs",
+        fixture.head_oid
+    ));
+    assert_eq!(by_head.status, 200, "head lookup: {}", by_head.body);
+    let head_runs = body(&by_head);
+    assert_eq!(head_runs["total_count"], 1);
+    assert_eq!(head_runs["check_runs"][0]["head_sha"], fixture.head_oid);
+    assert_eq!(head_runs["check_runs"][0]["conclusion"], "success");
+
+    let by_main = router.get("/repos/acme/demo/commits/main/check-runs");
+    assert_eq!(by_main.status, 200, "main lookup: {}", by_main.body);
+    let main_runs = body(&by_main);
+    assert_eq!(main_runs["total_count"], 1);
+    assert_eq!(main_runs["check_runs"][0]["head_sha"], fixture.base_oid);
+    assert_eq!(main_runs["check_runs"][0]["conclusion"], "failure");
+
+    let unknown = router.get("/repos/acme/demo/commits/does-not-exist/check-runs");
+    assert_eq!(unknown.status, 422, "unknown lookup: {}", unknown.body);
+    assert!(
+        body(&unknown)["message"]
+            .as_str()
+            .expect("message")
+            .contains("unknown or ambiguous")
+    );
+
+    fixture.cleanup();
+}
+
+#[test]
 fn gated_merge_moves_main_in_bare_repo() {
     if !git_available() {
         return;
