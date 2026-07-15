@@ -28,7 +28,11 @@ use crate::web::WebState;
 
 fn forwarded_git_headers(headers: &HeaderMap) -> HashMap<String, String> {
     let mut forwarded = HashMap::new();
-    for name in [header::HOST, HeaderName::from_static("x-forwarded-proto")] {
+    for name in [
+        header::HOST,
+        header::AUTHORIZATION,
+        HeaderName::from_static("x-forwarded-proto"),
+    ] {
         if let Some(value) = headers.get(&name).and_then(|value| value.to_str().ok()) {
             forwarded.insert(name.as_str().to_ascii_lowercase(), value.to_string());
         }
@@ -306,6 +310,10 @@ fn origin_base_url(headers: &HeaderMap) -> String {
     }
 }
 
+fn logical_repo_name(repo: &str) -> &str {
+    repo.strip_suffix(".git").unwrap_or(repo)
+}
+
 fn authorize_git_core(
     state: &WebState,
     peer: SocketAddr,
@@ -324,10 +332,15 @@ fn authorize_git_core(
         )));
     };
     let account = auth.account;
+    let logical_repo = logical_repo_name(repo);
     let allowed = if write {
-        state.core.user_can_write_repo(&account.login, owner, repo)
+        state
+            .core
+            .user_can_write_repo(&account.login, owner, logical_repo)
     } else {
-        state.core.user_can_read_repo(&account.login, owner, repo)
+        state
+            .core
+            .user_can_read_repo(&account.login, owner, logical_repo)
     };
     if allowed {
         Ok(())
@@ -477,4 +490,19 @@ fn snapshot_refs(manager: &RepoManager, owner: &str, repo: &str) -> Vec<jeryu_gi
             jeryu_gitd::refs::RefService::new(manager.clone()).list_refs(&resolved)
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::logical_repo_name;
+
+    #[test]
+    fn logical_repo_name_strips_only_the_transport_suffix() {
+        assert_eq!(logical_repo_name("project.git"), "project");
+        assert_eq!(logical_repo_name("project"), "project");
+        assert_eq!(
+            logical_repo_name("project.git.backup"),
+            "project.git.backup"
+        );
+    }
 }

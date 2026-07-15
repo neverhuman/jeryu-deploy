@@ -14,6 +14,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use jeryu_api::web::{WebServerConfig, serve};
+use sha2::Digest;
 
 fn git_available() -> bool {
     Command::new("git")
@@ -317,14 +318,29 @@ async fn s4_git_lfs_batch_and_locks_verify_routes_return_protocol_json() {
         .expect("POST /repos");
     assert_eq!(resp.status().as_u16(), 201);
 
+    let credential = "Basic dGVzdC11c2VyOnRlc3QtdG9rZW4=";
+    let object = b"authenticated-lfs-download";
+    let oid = format!("{:x}", sha2::Sha256::digest(object));
+    let upload = client
+        .put(format!(
+            "http://{addr}/git/jeryu/lfs-routes.git/info/lfs/objects/{oid}"
+        ))
+        .header(reqwest::header::AUTHORIZATION, credential)
+        .body(object.to_vec())
+        .send()
+        .await
+        .expect("PUT LFS object");
+    assert_eq!(upload.status().as_u16(), 200);
+
     let batch = client
         .post(format!(
             "http://{addr}/git/jeryu/lfs-routes.git/info/lfs/objects/batch"
         ))
+        .header(reqwest::header::AUTHORIZATION, credential)
         .json(&serde_json::json!({
-            "operation": "upload",
+            "operation": "download",
             "transfers": ["basic"],
-            "objects": []
+            "objects": [{ "oid": oid, "size": object.len() }]
         }))
         .send()
         .await
@@ -333,7 +349,11 @@ async fn s4_git_lfs_batch_and_locks_verify_routes_return_protocol_json() {
     assert_lfs_content_type(&batch);
     let batch_body: serde_json::Value = batch.json().await.expect("LFS batch JSON body");
     assert_eq!(batch_body["transfer"], "basic");
-    assert_eq!(batch_body["objects"].as_array().unwrap().len(), 0);
+    assert_eq!(batch_body["objects"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        batch_body["objects"][0]["actions"]["download"]["header"]["Authorization"],
+        credential
+    );
 
     let locks = client
         .post(format!(
