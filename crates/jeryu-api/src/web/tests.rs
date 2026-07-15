@@ -1109,6 +1109,80 @@ async fn mounted_pulls_routes_are_reachable() {
 }
 
 #[tokio::test]
+async fn web_pull_passport_uses_latest_run_per_check_name() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let head_sha = "current-head".to_string();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "jeryu",
+            "alice",
+            CreatePullRequestRequest {
+                title: "latest proof wins".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(head_sha.clone()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    for conclusion in [CheckConclusion::Failure, CheckConclusion::Success] {
+        core.create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: "jankurai/proof".to_string(),
+                head_sha: head_sha.clone(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(conclusion),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    }
+    core.create_review(
+        "alice",
+        "jeryu",
+        pr.number,
+        "bob",
+        CreateReviewRequest {
+            body: None,
+            event: ReviewState::Approved,
+            comments: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        core.list_check_runs("alice", "jeryu", Some(&head_sha))
+            .unwrap()
+            .total_count,
+        2,
+        "historical check-runs remain in forge history"
+    );
+    let state = Arc::new(WebState::new(core));
+    let detail = response_json(
+        super::pulls::detail(State(state), AxumPath((repo.id.to_string(), pr.number))).await,
+    )
+    .await;
+
+    assert_eq!(detail["summary"]["checks"]["total"], 1);
+    assert_eq!(detail["summary"]["checks"]["passing"], 1);
+    assert_eq!(detail["summary"]["checks"]["failing"], 0);
+    assert_eq!(detail["merge_passport"]["status"], "pass");
+}
+
+#[tokio::test]
 async fn control_plane_status_priorities_and_absence_states_are_live() {
     let core = ForgeCore::new();
     core.create_repository(

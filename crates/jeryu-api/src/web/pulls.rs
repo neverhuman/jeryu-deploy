@@ -5,6 +5,7 @@
 //! React cockpit. Missing diff hunks or review threads are explicit empty
 //! payloads derived from the PR metadata, never synthetic review content.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -709,7 +710,7 @@ fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestChecks {
         .core()
         .list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha))
     {
-        Ok(list) => list.check_runs,
+        Ok(list) => latest_check_runs_by_name(list.check_runs),
         Err(_) => Vec::new(),
     };
     let mut passing = 0;
@@ -746,6 +747,24 @@ fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestChecks {
         skipped,
         checks,
     }
+}
+
+fn latest_check_runs_by_name(runs: Vec<CheckRun>) -> Vec<CheckRun> {
+    let mut latest = BTreeMap::<String, CheckRun>::new();
+    for run in runs {
+        match latest.entry(run.name.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(run);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry)
+                if run.started_at >= entry.get().started_at =>
+            {
+                entry.insert(run);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+    latest.into_values().collect()
 }
 
 fn check_bucket(run: &CheckRun) -> &'static str {
