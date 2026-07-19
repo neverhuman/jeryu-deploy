@@ -139,15 +139,13 @@ fn governed_jankurai_authority_requires_complete_content_addressed_receipt() {
 
     let valid_document = governed_receipt(&binary, &binary_sha);
     let valid = write_content_addressed_receipt(temp.path(), &valid_document);
-    assert!(
-        verify_jankurai_authority(
-            &binary,
-            std::slice::from_ref(&valid),
-            "jankurai 1.6.11",
-            &binary_sha,
-        )
-        .is_ok()
+    let valid_result = verify_jankurai_authority(
+        &binary,
+        std::slice::from_ref(&valid),
+        "jankurai 1.6.11",
+        &binary_sha,
     );
+    assert!(valid_result.is_ok(), "{valid_result:?}");
     assert!(verify_jankurai_authority(&binary, &[], "jankurai 1.6.11", &binary_sha).is_err());
 
     let tampered = write_content_addressed_receipt(temp.path(), &valid_document);
