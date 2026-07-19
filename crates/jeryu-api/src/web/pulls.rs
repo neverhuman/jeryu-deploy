@@ -5,7 +5,7 @@
 //! React cockpit. Missing diff hunks or review threads are explicit empty
 //! payloads derived from the PR metadata, never synthetic review content.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::Json;
@@ -14,9 +14,9 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use jeryu_core::{
-    CheckConclusion, CheckRun, CheckRunStatus, CreateReviewRequest, ForgeError,
-    MergePullRequestRequest as CoreMergePullRequestRequest, PullRequest, ReviewCommentInput,
-    ReviewState, check_conclusion_wire_value,
+    CheckConclusion, CheckRun, CheckRunStatus, CommitStatusState, CreateReviewRequest, ForgeError,
+    MergeBlocker, MergePullRequestRequest as CoreMergePullRequestRequest, PullRequest,
+    ReviewCommentInput, ReviewState, check_conclusion_wire_value,
 };
 use jeryu_readmodel::contracts::{
     AgentPosture, AvailableAction, CheckPosture, CreateReviewCommentRequest, EntityHandle,
@@ -26,6 +26,7 @@ use jeryu_readmodel::contracts::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use super::repositories::{find_repo, repo_id};
 use super::{WebState, server_time};
@@ -94,6 +95,33 @@ struct PullRequestCheck {
     description: Option<String>,
     started_at: Option<String>,
     completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RequiredContextState {
+    Missing,
+    Failing,
+    Pending,
+    Passing,
+}
+
+impl RequiredContextState {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Failing => "failing",
+            Self::Pending => "pending",
+            Self::Passing => "passing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RequiredContextPosture {
+    name: String,
+    state: RequiredContextState,
+    details: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -430,6 +458,24 @@ pub(super) async fn merge(
             })),
         );
     }
+    if current.merge_passport.status != MergePassportStatus::Pass {
+        return repair_error(
+            StatusCode::CONFLICT,
+            "merge_blocked",
+            "merge pull request",
+            "the current exact-head merge passport is blocked",
+            &[
+                "refresh the PR detail and resolve every merge-passport blocker",
+                "rerun the mapped proof lane before retrying merge",
+            ],
+            PROOF_LANE,
+            Some(json!({
+                "expected_head_sha": request.expected_head_sha,
+                "passport_status": current.merge_passport.status,
+                "blockers": current.merge_passport.blockers,
+            })),
+        );
+    }
     let merge_payload = CoreMergePullRequestRequest {
         commit_title: request.commit_title,
         commit_message: request.commit_message,
@@ -501,8 +547,27 @@ fn state_matches(pr: &PullRequest, filter: Option<&str>) -> bool {
 }
 
 fn detail_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestDetail {
-    let summary = summary(state, pr);
-    let merge_passport = passport(&summary, pr);
+    let required_contexts = required_contexts(state, pr);
+    detail_for_pr_with_required_contexts(state, pr, &required_contexts)
+}
+
+#[cfg(test)]
+pub(super) fn detail_for_pr_with_audit_enforcement(
+    state: &WebState,
+    pr: &PullRequest,
+    audit_enforce_merge: bool,
+) -> PullRequestDetail {
+    let required_contexts = required_contexts_with_enforcement(state, pr, audit_enforce_merge);
+    detail_for_pr_with_required_contexts(state, pr, &required_contexts)
+}
+
+fn detail_for_pr_with_required_contexts(
+    state: &WebState,
+    pr: &PullRequest,
+    required_contexts: &[RequiredContextPosture],
+) -> PullRequestDetail {
+    let summary = summary_with_required_contexts(state, pr, required_contexts);
+    let merge_passport = passport(&summary, pr, required_contexts);
     PullRequestDetail {
         passport_hash: summary.passport_hash.clone(),
         summary,
@@ -512,6 +577,15 @@ fn detail_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestDetail {
 }
 
 fn summary(state: &WebState, pr: &PullRequest) -> PullRequestSummary {
+    let required_contexts = required_contexts(state, pr);
+    summary_with_required_contexts(state, pr, &required_contexts)
+}
+
+fn summary_with_required_contexts(
+    state: &WebState,
+    pr: &PullRequest,
+    required_contexts: &[RequiredContextPosture],
+) -> PullRequestSummary {
     let repo = find_repo(state, &format!("{}/{}", pr.owner, pr.repo))
         .expect("PR owner/repo must resolve to a repository");
     let checks = checks_for_pr(state, pr);
@@ -521,21 +595,24 @@ fn summary(state: &WebState, pr: &PullRequest) -> PullRequestSummary {
         && !pr.merged
         && matches!(web_state, WebPullRequestState::Open)
         && pr.mergeable
-        && checks.failing == 0
-        && checks.pending == 0
-        && checks.total > 0
+        && required_contexts
+            .iter()
+            .all(|context| context.state == RequiredContextState::Passing)
         && review.approvals >= review.required_approvals
         && review.unresolved_threads == 0;
     let reason = if mergeable {
         None
     } else if pr.draft {
         Some("draft pull request".to_string())
-    } else if checks.total == 0 {
-        Some("no head checks recorded".to_string())
-    } else if checks.failing > 0 {
-        Some("failing checks".to_string())
-    } else if checks.pending > 0 {
-        Some("queued or running checks".to_string())
+    } else if let Some(context) = required_contexts
+        .iter()
+        .find(|context| context.state != RequiredContextState::Passing)
+    {
+        Some(format!(
+            "required context {} is {}",
+            context.name,
+            context.state.wire_name()
+        ))
     } else if review.approvals < review.required_approvals {
         Some("required approvals missing".to_string())
     } else if review.unresolved_threads > 0 {
@@ -550,21 +627,14 @@ fn summary(state: &WebState, pr: &PullRequest) -> PullRequestSummary {
     } else {
         MergePassportStatus::Blocked
     };
-    let blocker_count = passport_blockers(
-        &CheckPosture {
-            total: checks.total,
-            passing: checks.passing,
-            failing: checks.failing,
-            pending: checks.pending,
-            skipped: checks.skipped,
-        },
-        &review,
+    let blockers = passport_blockers(required_contexts, &review, pr);
+    let passport_hash = passport_hash(
+        state,
         pr,
-    )
-    .len();
-    let passport_hash = format!(
-        "passport:{}:{:?}:{}:{}:{}:{}",
-        pr.head.sha, status, blocker_count, checks.failing, checks.pending, review.approvals
+        status.clone(),
+        &blockers,
+        &review,
+        required_contexts,
     );
     PullRequestSummary {
         repo: repo_id(&repo),
@@ -624,7 +694,67 @@ fn summary(state: &WebState, pr: &PullRequest) -> PullRequestSummary {
     }
 }
 
-fn passport(summary: &PullRequestSummary, pr: &PullRequest) -> MergePassport {
+fn passport_hash(
+    state: &WebState,
+    pr: &PullRequest,
+    status: MergePassportStatus,
+    blockers: &[MergePassportBlocker],
+    review: &ReviewPosture,
+    required_contexts: &[RequiredContextPosture],
+) -> String {
+    let core = state.github.core();
+    let branch_protection = core
+        .get_branch_protection(&pr.owner, &pr.repo, &pr.base.ref_name)
+        .ok()
+        .map(|rule| {
+            let mut required_status_checks = rule.required_status_checks;
+            required_status_checks.sort();
+            required_status_checks.dedup();
+            json!({
+                "required_status_checks": required_status_checks,
+                "required_approving_review_count": rule.required_approving_review_count,
+                "enforce_admins": rule.enforce_admins,
+                "required_linear_history": rule.required_linear_history,
+                "require_signed_commits": rule.require_signed_commits,
+                "require_jankurai_proof": rule.require_jankurai_proof,
+            })
+        });
+    let blocker_codes = blockers
+        .iter()
+        .map(|blocker| blocker.code.as_str())
+        .collect::<Vec<_>>();
+    let required_context_states = required_contexts
+        .iter()
+        .map(|context| {
+            json!({
+                "name": context.name,
+                "state": context.state.wire_name(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let fingerprint = json!({
+        "head_sha": pr.head.sha,
+        "base_sha": pr.base.sha,
+        "draft": pr.draft,
+        "mergeable": pr.mergeable,
+        "mergeable_state": pr.mergeable_state,
+        "status": status,
+        "blocker_codes": blocker_codes,
+        "review": review,
+        "branch_protection": branch_protection,
+        "required_contexts": required_context_states,
+    });
+    format!(
+        "passport:{}",
+        hex::encode(Sha256::digest(fingerprint.to_string().as_bytes()))
+    )
+}
+
+fn passport(
+    summary: &PullRequestSummary,
+    pr: &PullRequest,
+    required_contexts: &[RequiredContextPosture],
+) -> MergePassport {
     let status = if summary.mergeable.can_merge {
         MergePassportStatus::Pass
     } else {
@@ -633,13 +763,13 @@ fn passport(summary: &PullRequestSummary, pr: &PullRequest) -> MergePassport {
     MergePassport {
         status,
         head_sha: summary.head_sha.clone(),
-        blockers: passport_blockers(&summary.checks, &summary.review, pr),
+        blockers: passport_blockers(required_contexts, &summary.review, pr),
         evaluated_at: server_time(),
     }
 }
 
 fn passport_blockers(
-    checks: &CheckPosture,
+    required_contexts: &[RequiredContextPosture],
     review: &ReviewPosture,
     pr: &PullRequest,
 ) -> Vec<MergePassportBlocker> {
@@ -651,25 +781,29 @@ fn passport_blockers(
             None,
         ));
     }
-    if checks.total == 0 {
+    for context in required_contexts {
+        let (code, message) = match context.state {
+            RequiredContextState::Missing => (
+                "passport_blocked_checks_missing",
+                format!(
+                    "Required context `{}` has not run on this head.",
+                    context.name
+                ),
+            ),
+            RequiredContextState::Failing => (
+                "passport_blocked_checks",
+                format!("Required context `{}` is failing.", context.name),
+            ),
+            RequiredContextState::Pending => (
+                "passport_blocked_pending_checks",
+                format!("Required context `{}` is queued or running.", context.name),
+            ),
+            RequiredContextState::Passing => continue,
+        };
         blockers.push(blocker(
-            "passport_blocked_checks_missing",
-            "No checks have run on this head.",
-            Some("Create or refresh check-runs for the PR head before merge."),
-        ));
-    }
-    if checks.failing > 0 {
-        blockers.push(blocker(
-            "passport_blocked_checks",
-            "One or more checks are failing.",
-            None,
-        ));
-    }
-    if checks.pending > 0 {
-        blockers.push(blocker(
-            "passport_blocked_pending_checks",
-            "Checks are still queued or running.",
-            None,
+            code,
+            &message,
+            Some(context.details.as_deref().unwrap_or(&context.name)),
         ));
     }
     if review.approvals < review.required_approvals {
@@ -686,10 +820,10 @@ fn passport_blockers(
             None,
         ));
     }
-    if !pr.mergeable && pr.mergeable_state != "clean" && blockers.is_empty() {
+    if !pr.mergeable && blockers.is_empty() {
         blockers.push(blocker(
             "passport_blocked_mergeability",
-            "Forge mergeability is not clean.",
+            "The authoritative forge merge gate is blocked.",
             Some(&pr.mergeable_state),
         ));
     }
@@ -702,6 +836,147 @@ fn blocker(code: &str, message: &str, details: Option<&str>) -> MergePassportBlo
         message: message.to_string(),
         details: details.map(ToString::to_string),
     }
+}
+
+fn required_contexts(state: &WebState, pr: &PullRequest) -> Vec<RequiredContextPosture> {
+    required_contexts_with_enforcement(state, pr, audit_merge_enforced())
+}
+
+fn required_contexts_with_enforcement(
+    state: &WebState,
+    pr: &PullRequest,
+    audit_enforce_merge: bool,
+) -> Vec<RequiredContextPosture> {
+    let core = state.github.core();
+    let mut names = BTreeSet::new();
+    match core.get_branch_protection(&pr.owner, &pr.repo, &pr.base.ref_name) {
+        Ok(rule) => {
+            names.extend(rule.required_status_checks);
+            if rule.require_jankurai_proof {
+                names.insert("jankurai/proof".to_string());
+            }
+        }
+        Err(ForgeError::NotFound(_)) => {}
+        Err(_) => {
+            return vec![RequiredContextPosture {
+                name: "branch-protection/readback".to_string(),
+                state: RequiredContextState::Failing,
+                details: Some("could not read the exact base-branch protection rule".to_string()),
+            }];
+        }
+    }
+
+    if audit_enforce_merge {
+        names.insert("jankurai/proof".to_string());
+    }
+
+    match core.evaluate_pull_request(&pr.owner, &pr.repo, pr.number, Some(&pr.head.sha)) {
+        Ok(evaluation)
+            if evaluation
+                .blockers
+                .iter()
+                .any(|blocker| matches!(blocker, MergeBlocker::JankuraiProofRequired)) =>
+        {
+            names.insert("jankurai/proof".to_string());
+        }
+        Ok(_) => {}
+        Err(_) => {
+            return vec![RequiredContextPosture {
+                name: "branch-protection/evaluation".to_string(),
+                state: RequiredContextState::Failing,
+                details: Some("could not evaluate the exact pull-request head".to_string()),
+            }];
+        }
+    }
+
+    let statuses = match core.combined_status(&pr.owner, &pr.repo, &pr.head.sha) {
+        Ok(statuses) => statuses.statuses,
+        Err(_) => {
+            return vec![RequiredContextPosture {
+                name: "required-context/status-readback".to_string(),
+                state: RequiredContextState::Failing,
+                details: Some("could not read exact-head commit statuses".to_string()),
+            }];
+        }
+    };
+    let check_runs = match core.list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha)) {
+        Ok(runs) => runs.check_runs,
+        Err(_) => {
+            return vec![RequiredContextPosture {
+                name: "required-context/check-readback".to_string(),
+                state: RequiredContextState::Failing,
+                details: Some("could not read exact-head check runs".to_string()),
+            }];
+        }
+    };
+
+    names
+        .into_iter()
+        .map(|name| {
+            let status = statuses
+                .iter()
+                .filter(|status| status.context == name)
+                .max_by_key(|status| status.updated_at);
+            if let Some(status) = status {
+                let state = match status.state {
+                    CommitStatusState::Success => RequiredContextState::Passing,
+                    CommitStatusState::Pending => RequiredContextState::Pending,
+                    CommitStatusState::Error | CommitStatusState::Failure => {
+                        RequiredContextState::Failing
+                    }
+                };
+                return RequiredContextPosture {
+                    name,
+                    state,
+                    details: status
+                        .target_url
+                        .clone()
+                        .or_else(|| status.description.clone()),
+                };
+            }
+
+            let check = check_runs
+                .iter()
+                .filter(|check| check.name == name)
+                .max_by_key(|check| check.completed_at.unwrap_or(check.started_at));
+            match check {
+                Some(check) => RequiredContextPosture {
+                    name,
+                    state: match check.status {
+                        CheckRunStatus::Queued | CheckRunStatus::InProgress => {
+                            RequiredContextState::Pending
+                        }
+                        CheckRunStatus::Completed
+                            if check.conclusion == Some(CheckConclusion::Success) =>
+                        {
+                            RequiredContextState::Passing
+                        }
+                        CheckRunStatus::Completed => RequiredContextState::Failing,
+                    },
+                    details: check
+                        .details_url
+                        .clone()
+                        .or_else(|| check.output.as_ref().map(|output| output.summary.clone())),
+                },
+                None => RequiredContextPosture {
+                    details: Some(format!("required context `{name}` is missing")),
+                    name,
+                    state: RequiredContextState::Missing,
+                },
+            }
+        })
+        .collect()
+}
+
+fn audit_merge_enforced() -> bool {
+    audit_merge_enforced_value(std::env::var("JERYU_AUDIT_ENFORCE_MERGE").ok().as_deref())
+}
+
+pub(super) fn audit_merge_enforced_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
 }
 
 fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestChecks {
@@ -757,7 +1032,8 @@ fn latest_check_runs_by_name(runs: Vec<CheckRun>) -> Vec<CheckRun> {
                 entry.insert(run);
             }
             std::collections::btree_map::Entry::Occupied(mut entry)
-                if run.started_at >= entry.get().started_at =>
+                if run.completed_at.unwrap_or(run.started_at)
+                    >= entry.get().completed_at.unwrap_or(entry.get().started_at) =>
             {
                 entry.insert(run);
             }
@@ -817,8 +1093,14 @@ fn review_posture(state: &WebState, pr: &PullRequest) -> ReviewPosture {
         .core()
         .list_review_comments(&pr.owner, &pr.repo, pr.number)
         .unwrap_or_default();
+    let required_approvals = state
+        .github
+        .core()
+        .get_branch_protection(&pr.owner, &pr.repo, &pr.base.ref_name)
+        .map(|rule| u32::try_from(rule.required_approving_review_count).unwrap_or(u32::MAX))
+        .unwrap_or(0);
     ReviewPosture {
-        required_approvals: 1,
+        required_approvals,
         approvals: reviews
             .iter()
             .filter(|review| review.state == ReviewState::Approved)

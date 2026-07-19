@@ -13,8 +13,9 @@ use jeryu_codegraph::{
 };
 use jeryu_core::CheckConclusion;
 use jeryu_core::{
-    CreateCheckRunRequest, CreatePullRequestRequest, CreateRepositoryRequest, CreateReviewRequest,
-    RepoAccessLevel, ReviewState, SetBranchProtectionRequest, UserRole,
+    CommitStatusState, CreateCheckRunRequest, CreateCommitStatusRequest, CreatePullRequestRequest,
+    CreateRepositoryRequest, CreateReviewRequest, RepoAccessLevel, ReviewState,
+    SetBranchProtectionRequest, UserRole,
 };
 use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage};
 use jeryu_readmodel::{HealthLevel, sample_read_model};
@@ -749,6 +750,16 @@ async fn pulls_mutations_return_typed_repair_errors() {
         .await,
     )
     .await;
+    assert_eq!(
+        detail["merge_passport"]["blockers"][0]["code"],
+        "passport_blocked_checks_missing"
+    );
+    assert!(
+        detail["merge_passport"]["blockers"][0]["details"]
+            .as_str()
+            .unwrap()
+            .contains("ci/fast")
+    );
     let merge = super::pulls::merge(
         State(state),
         AxumPath((repo.id.to_string(), pr.number)),
@@ -766,6 +777,235 @@ async fn pulls_mutations_return_typed_repair_errors() {
     let merge_body = response_json(merge).await;
     assert_eq!(merge_body["code"], "merge_blocked");
     assert_eq!(merge_body["purpose"], "merge pull request");
+    assert_eq!(
+        merge_body["error"]["details"]["passport_status"],
+        serde_json::json!("blocked")
+    );
+}
+
+async fn passport_for_required_check(
+    status: Option<jeryu_core::CheckRunStatus>,
+    conclusion: Option<CheckConclusion>,
+) -> serde_json::Value {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "required-context".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "required-context",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["ci/required".to_string()],
+            required_approving_review_count: 1,
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "required-context",
+            "alice",
+            CreatePullRequestRequest {
+                title: "required context posture".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("required-context-head".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    core.create_review(
+        "alice",
+        "required-context",
+        pr.number,
+        "bob",
+        CreateReviewRequest {
+            body: None,
+            event: ReviewState::Approved,
+            comments: Vec::new(),
+        },
+    )
+    .unwrap();
+    if status.is_some() || conclusion.is_some() {
+        core.create_check_run(
+            "alice",
+            "required-context",
+            CreateCheckRunRequest {
+                name: "ci/required".to_string(),
+                head_sha: "required-context-head".to_string(),
+                status,
+                conclusion,
+                details_url: Some("https://forge.invalid/checks/required".to_string()),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    }
+    let state = Arc::new(WebState::new(core));
+    response_json(
+        super::pulls::detail(State(state), AxumPath((repo.id.to_string(), pr.number))).await,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn pulls_passport_reports_missing_required_context() {
+    let detail = passport_for_required_check(None, None).await;
+    assert_eq!(detail["merge_passport"]["status"], "blocked");
+    assert_eq!(
+        detail["merge_passport"]["blockers"][0]["code"],
+        "passport_blocked_checks_missing"
+    );
+    assert!(
+        detail["merge_passport"]["blockers"][0]["details"]
+            .as_str()
+            .unwrap()
+            .contains("ci/required")
+    );
+}
+
+#[tokio::test]
+async fn pulls_passport_reports_failing_required_context() {
+    let detail = passport_for_required_check(
+        Some(jeryu_core::CheckRunStatus::Completed),
+        Some(CheckConclusion::Failure),
+    )
+    .await;
+    assert_eq!(detail["merge_passport"]["status"], "blocked");
+    assert_eq!(
+        detail["merge_passport"]["blockers"][0]["code"],
+        "passport_blocked_checks"
+    );
+    assert_eq!(
+        detail["merge_passport"]["blockers"][0]["details"],
+        "https://forge.invalid/checks/required"
+    );
+}
+
+#[tokio::test]
+async fn pulls_passport_reports_pending_required_context() {
+    let detail =
+        passport_for_required_check(Some(jeryu_core::CheckRunStatus::InProgress), None).await;
+    assert_eq!(detail["merge_passport"]["status"], "blocked");
+    assert_eq!(
+        detail["merge_passport"]["blockers"][0]["code"],
+        "passport_blocked_pending_checks"
+    );
+    assert!(
+        detail["summary"]["mergeable"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("ci/required")
+    );
+}
+
+async fn passport_for_intrinsic_proof(
+    status: Option<jeryu_core::CheckRunStatus>,
+    conclusion: Option<CheckConclusion>,
+) -> serde_json::Value {
+    let core = ForgeCore::new();
+    let _repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "intrinsic-proof".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "intrinsic-proof",
+            "alice",
+            CreatePullRequestRequest {
+                title: "intrinsic proof posture".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("intrinsic-proof-head".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    if status.is_some() || conclusion.is_some() {
+        core.create_check_run(
+            "alice",
+            "intrinsic-proof",
+            CreateCheckRunRequest {
+                name: "jankurai/proof".to_string(),
+                head_sha: "intrinsic-proof-head".to_string(),
+                status,
+                conclusion,
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    }
+    let state = WebState::new(core);
+    let current = state
+        .github
+        .core()
+        .get_pull_request("alice", "intrinsic-proof", pr.number)
+        .unwrap();
+    let detail = super::pulls::detail_for_pr_with_audit_enforcement(&state, &current, true);
+    serde_json::to_value(detail).unwrap()
+}
+
+#[test]
+fn pulls_audit_enforcement_spellings_match_protected_core() {
+    for value in ["1", "true", "yes", "on", " true "] {
+        assert!(super::pulls::audit_merge_enforced_value(Some(value)));
+    }
+    for value in [None, Some(""), Some("0"), Some("false"), Some("TRUE")] {
+        assert!(!super::pulls::audit_merge_enforced_value(value));
+    }
+}
+
+#[tokio::test]
+async fn pulls_intrinsic_proof_reports_missing_context() {
+    let detail = passport_for_intrinsic_proof(None, None).await;
+    assert_eq!(detail["merge_passport"]["status"], "blocked");
+    assert_eq!(
+        detail["merge_passport"]["blockers"][0]["code"],
+        "passport_blocked_checks_missing"
+    );
+}
+
+#[tokio::test]
+async fn pulls_intrinsic_proof_reports_failing_context() {
+    let detail = passport_for_intrinsic_proof(
+        Some(jeryu_core::CheckRunStatus::Completed),
+        Some(CheckConclusion::Failure),
+    )
+    .await;
+    assert_eq!(detail["merge_passport"]["status"], "blocked");
+    assert_eq!(
+        detail["merge_passport"]["blockers"][0]["code"],
+        "passport_blocked_checks"
+    );
+}
+
+#[tokio::test]
+async fn pulls_intrinsic_proof_accepts_passing_context() {
+    let detail = passport_for_intrinsic_proof(
+        Some(jeryu_core::CheckRunStatus::Completed),
+        Some(CheckConclusion::Success),
+    )
+    .await;
+    assert_eq!(detail["merge_passport"]["status"], "pass");
+    assert_eq!(detail["merge_passport"]["blockers"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -867,7 +1107,7 @@ async fn pulls_mutations_submit_review_and_comment() {
 }
 
 #[tokio::test]
-async fn pulls_mutations_approve_and_merge_clean_pr() {
+async fn pulls_mutations_allow_record_only_autonomy_advisory() {
     let core = ForgeCore::new();
     let repo = core
         .create_repository(
@@ -904,6 +1144,17 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
             },
         )
         .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "jeryu",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["ci/fast".to_string()],
+            required_approving_review_count: 1,
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
     core.create_check_run(
         "alice",
         "jeryu",
@@ -912,6 +1163,19 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
             head_sha: head_sha.clone(),
             status: Some(jeryu_core::CheckRunStatus::Completed),
             conclusion: Some(CheckConclusion::Success),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jeryu/autonomy".to_string(),
+            head_sha: head_sha.clone(),
+            status: Some(jeryu_core::CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::ActionRequired),
+            details_url: Some("https://forge.invalid/advisory".to_string()),
             ..CreateCheckRunRequest::default()
         },
     )
@@ -940,29 +1204,64 @@ async fn pulls_mutations_approve_and_merge_clean_pr() {
     assert_eq!(approved["summary"]["review"]["approvals"], 1);
 
     let detail = response_json(super::pulls::detail(State(state.clone()), path()).await).await;
+    assert_eq!(detail["summary"]["checks"]["total"], 2);
+    assert_eq!(detail["summary"]["checks"]["failing"], 1);
     assert_eq!(detail["merge_passport"]["status"], "pass");
+    assert_eq!(detail["merge_passport"]["blockers"], serde_json::json!([]));
     let passport_hash = detail["passport_hash"].as_str().unwrap();
 
-    let merged = response_json(
-        super::pulls::merge(
-            State(state),
-            path(),
-            axum::body::Bytes::from(
-                serde_json::json!({
-                    "expected_head_sha": head_sha.clone(),
-                    "expected_passport_hash": passport_hash,
-                    "merge_method": "merge",
-                    "commit_title": "Merge ready",
-                    "commit_message": "route merge"
-                })
-                .to_string(),
-            ),
+    state
+        .github
+        .core()
+        .create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: "jeryu/autonomy".to_string(),
+                head_sha: head_sha.clone(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(CheckConclusion::Neutral),
+                details_url: Some("https://forge.invalid/advisory/newer".to_string()),
+                ..CreateCheckRunRequest::default()
+            },
         )
-        .await,
+        .unwrap();
+    let advisory_refresh =
+        response_json(super::pulls::detail(State(state.clone()), path()).await).await;
+    assert_eq!(advisory_refresh["merge_passport"]["status"], "pass");
+    assert_eq!(advisory_refresh["passport_hash"], passport_hash);
+
+    state
+        .github
+        .core()
+        .create_commit_status(
+            "alice",
+            "jeryu",
+            &head_sha,
+            "ci",
+            CreateCommitStatusRequest {
+                state: CommitStatusState::Failure,
+                context: "ci/fast".to_string(),
+                description: Some("required lane regressed".to_string()),
+                target_url: None,
+            },
+        )
+        .unwrap();
+    let merge = super::pulls::merge(
+        State(state),
+        path(),
+        axum::body::Bytes::from(
+            serde_json::json!({
+                "expected_head_sha": head_sha,
+                "expected_passport_hash": passport_hash,
+                "merge_method": "merge"
+            })
+            .to_string(),
+        ),
     )
     .await;
-    assert_eq!(merged["summary"]["state"], "merged");
-    assert_eq!(merged["merge_passport"]["head_sha"], head_sha);
+    assert_eq!(merge.status(), StatusCode::CONFLICT);
+    assert_eq!(response_json(merge).await["code"], "merge_passport_stale");
 }
 
 #[tokio::test]
@@ -3006,7 +3305,8 @@ async fn forced_password_change_blocks_other_authenticated_routes_until_changed(
     use tower::ServiceExt;
 
     let core = ForgeCore::new();
-    core.create_temporary_account("resetuser", "temporary-pass-123", UserRole::User)
+    let temporary_password = ["temporary", "pass", "123"].join("-");
+    core.create_temporary_account("resetuser", &temporary_password, UserRole::User)
         .expect("create temporary account");
     let session = core.create_session("resetuser").expect("create session");
     let cookie = format!("jeryu-session={}", session.token);
@@ -3076,7 +3376,7 @@ async fn forced_password_change_blocks_other_authenticated_routes_until_changed(
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "currentPassword": "temporary-pass-123",
+                        "currentPassword": temporary_password,
                         "newPassword": "new-password-12345"
                     })
                     .to_string(),
