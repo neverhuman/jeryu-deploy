@@ -39,6 +39,32 @@ fn write(root: &Path, rel: &str, body: &str) {
     fs::write(path, body).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn governed_jankurai_identity_rejects_version_digest_and_physical_substitution() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let temp = tempfile::tempdir().unwrap();
+    let good = temp.path().join("jankurai-good");
+    fs::write(&good, "#!/usr/bin/env bash\nprintf 'jankurai 1.6.11\\n'\n").unwrap();
+    fs::set_permissions(&good, fs::Permissions::from_mode(0o755)).unwrap();
+    let good_sha = hex::encode(Sha256::digest(fs::read(&good).unwrap()));
+
+    assert!(verify_jankurai_identity(&good, "jankurai 1.6.11", &good_sha).is_ok());
+    assert!(verify_jankurai_identity(&good, "jankurai 1.6.10", &good_sha).is_err());
+    assert!(verify_jankurai_identity(&good, "jankurai 1.6.11", &"0".repeat(64)).is_err());
+
+    let linked = temp.path().join("jankurai-linked");
+    symlink(&good, &linked).unwrap();
+    assert!(verify_jankurai_identity(&linked, "jankurai 1.6.11", &good_sha).is_err());
+
+    let hard_target = temp.path().join("jankurai-hard-target");
+    let hard_alias = temp.path().join("jankurai-hard-alias");
+    fs::copy(&good, &hard_target).unwrap();
+    fs::hard_link(&hard_target, &hard_alias).unwrap();
+    assert!(verify_jankurai_identity(&hard_target, "jankurai 1.6.11", &good_sha).is_err());
+}
+
 fn init_version_repo(root: &Path) -> (String, String) {
     git(root, &["init", "-q", "-b", "main"]);
     git(root, &["config", "user.email", "ci@example.invalid"]);

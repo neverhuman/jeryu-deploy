@@ -1,6 +1,6 @@
 schema_version = 1
 worker_count = 40
-jankurai_version = "jankurai 1.6.10"
+jankurai_version = "jankurai 1.6.11"
 
 # Setup commands may appear in hosted workflows because they only prepare the
 # same local scripts that developers run. Every substantive test command belongs
@@ -45,10 +45,7 @@ full = false
 id = "jankurai"
 workflow = ".github/workflows/jankurai.yml"
 job = "jankurai-audit"
-command = """
-jankurai security run . --script ./ops/ci/security.sh --strict --out target/jankurai/security/evidence.json --profile ci
-jankurai . --json .jankurai/repo-score.json --md .jankurai/repo-score.md --fail-under "${JERYU_JANKURAI_FAIL_UNDER:-85}"
-"""
+command = "bash ops/ci/jankurai.sh"
 full = true
 
 [[lanes]]

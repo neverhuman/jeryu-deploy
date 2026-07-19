@@ -24,6 +24,7 @@ use jeryu_runner_core::job::{NetworkPolicy, SecretPolicy, TokenPolicy};
 use jeryu_runner_core::receipt::ReceiptStatus;
 use jeryu_runner_core::trust::{RunnerClass, TrustTier};
 use jeryu_runnerd::submit as submit_runner_job;
+use sha2::{Digest, Sha256};
 
 /// All-zero oid: a ref delete, which carries no commit to build.
 const ZERO_OID: &str = "0000000000000000000000000000000000000000";
@@ -385,27 +386,71 @@ workspace = "unconfigured"
 minimum_score = 85
 hard_findings_allowed = 0
 required_tool = "jankurai"
-required_tool_version = "1.6.10"
+required_tool_version = "1.6.11"
 
 [scan]
 excluded_paths = [".jankurai/", "apps/web/dist/"]
 "#;
 
-/// Resolve the pinned auditor: the explicit `JERYU_JANKURAI_BIN` wins, then the
-/// jeryu-owned global at `~/.jeryu/bin/jankurai`, then a bare PATH lookup.
-fn jankurai_bin() -> String {
-    if let Ok(bin) = std::env::var("JERYU_JANKURAI_BIN")
-        && !bin.trim().is_empty()
-    {
-        return bin;
+const GOVERNED_JANKURAI_PATH: &str = "/home/ubuntu/.jeryu/bin/jankurai";
+const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
+const GOVERNED_JANKURAI_SHA256: &str =
+    "fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e";
+
+/// Verify a physical auditor file before every authoritative score. An explicit
+/// path supports the offline sandbox image, but it never relaxes identity and
+/// there is no ambient PATH or network-install fallback.
+fn verify_jankurai_identity(
+    path: &Path,
+    expected_version: &str,
+    expected_sha256: &str,
+) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("governed jankurai path is not absolute".to_string());
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let candidate = Path::new(&home).join(".jeryu/bin/jankurai");
-        if candidate.is_file() {
-            return candidate.to_string_lossy().into_owned();
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("governed jankurai metadata failed: {error}"))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("governed jankurai is not a physical regular file".to_string());
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("governed jankurai canonicalization failed: {error}"))?;
+    if canonical != path {
+        return Err("governed jankurai path traverses a symlink".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.nlink() != 1 {
+            return Err("governed jankurai has multiple physical links".to_string());
+        }
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err("governed jankurai is not executable".to_string());
         }
     }
-    "jankurai".to_string()
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("governed jankurai read failed: {error}"))?;
+    let digest = hex::encode(Sha256::digest(bytes));
+    if digest != expected_sha256 {
+        return Err(format!("governed jankurai digest mismatch: {digest}"));
+    }
+    let output = Command::new(path)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("governed jankurai version failed: {error}"))?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || version != expected_version {
+        return Err(format!("governed jankurai version mismatch: {version}"));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn jankurai_bin() -> Result<PathBuf, String> {
+    let path = std::env::var_os("JERYU_JANKURAI_BIN")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(GOVERNED_JANKURAI_PATH));
+    verify_jankurai_identity(&path, GOVERNED_JANKURAI_VERSION, GOVERNED_JANKURAI_SHA256)
 }
 
 /// THE GUARANTEE (Layer 2). Compute the authoritative jankurai diff-score for a
@@ -513,25 +558,32 @@ fn record_authoritative_jankurai_score(
         let _ = std::fs::create_dir_all(parent);
     }
     let out_json_str = out_json.to_string_lossy().to_string();
-    let jankurai = jankurai_bin();
-    let mut command = Command::new(&jankurai);
-    command.arg("diff-audit").arg(&worktree_str);
-    if let Some(base) = &base {
-        command.arg("--base-ref").arg(base);
-    }
-    command
-        .arg("--json")
-        .arg(&out_json_str)
-        .arg("--advisory-only");
-    if skip_proof {
-        command.arg("--skip-proof");
-    }
-    let exit_code = command
-        .status()
-        .ok()
-        .and_then(|status| status.code())
-        .map(i64::from)
-        .unwrap_or(-1);
+    let exit_code = match jankurai_bin() {
+        Ok(jankurai) => {
+            let mut command = Command::new(&jankurai);
+            command.arg("diff-audit").arg(&worktree_str);
+            if let Some(base) = &base {
+                command.arg("--base-ref").arg(base);
+            }
+            command
+                .arg("--json")
+                .arg(&out_json_str)
+                .arg("--advisory-only");
+            if skip_proof {
+                command.arg("--skip-proof");
+            }
+            command
+                .status()
+                .ok()
+                .and_then(|status| status.code())
+                .map(i64::from)
+                .unwrap_or(-1)
+        }
+        Err(error) => {
+            eprintln!("authoritative Jankurai identity rejected: {error}");
+            -1
+        }
+    };
 
     let report: Option<serde_json::Value> = std::fs::read(&out_json)
         .ok()

@@ -52,10 +52,10 @@ for arg in "$@"; do
   esac
 done
 
-# Verify the pinned auditor ONCE up front; every invocation below uses the explicit
-# "${JERYU_JANKURAI_BIN}" path — never bare `jankurai`, which a stale 1.5.1 build
-# earlier on PATH shadows on this host.
-ensure_pinned_jankurai
+# Verify the governed auditor once up front. Every invocation below repeats the
+# same physical/digest/version check and executes the exact path; ambient PATH
+# and installers are never consulted.
+require_jankurai
 
 # Per-repo stdout/stderr logs and outcome records live here; the dir survives the run
 # so the operator can inspect failures.
@@ -171,7 +171,7 @@ audit_one() {
   local rc=0
   (
     cd "${tmp}/src"
-    "${JERYU_JANKURAI_BIN}" audit . \
+    run_governed_jankurai audit . \
       --json .jankurai/repo-score.json \
       --md .jankurai/repo-score.md \
       --no-score-history

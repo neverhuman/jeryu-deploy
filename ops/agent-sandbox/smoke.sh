@@ -15,6 +15,23 @@
 # dedicated runner). The daemonless CI never reaches the engine path.
 set -euo pipefail
 
+# BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
+export JERYU_GOVERNED_JANKURAI_BIN="${JERYU_JANKURAI_BIN:-/home/ubuntu/.jeryu/bin/jankurai}"
+export JERYU_JANKURAI_SOURCE_REPO="http://127.0.0.1:8787/git/jeryu/jankurai.git"
+export JERYU_JANKURAI_VERSION="jankurai 1.6.11"
+export JERYU_JANKURAI_SHA256="fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e"
+export JERYU_JANKURAI_SOURCE_REV="dface7397fe24d46b0b1885ddd5782c34edbff49"
+export JERYU_JANKURAI_SOURCE_TAG="v1.6.11-deadlang-precision-split.1"
+export JERYU_JANKURAI_SOURCE_TREE="34a8a1fb59bc4ebfadf12c45d95f169d06acc781"
+export JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256="2fbca5d04083e3c8d32f383d5b6b4520b8911690b26968c6fbcb210e1202b938"
+export JERYU_JANKURAI_CARGO_LOCK_SHA256="b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a"
+export JERYU_JANKURAI_RUST_TOOLCHAIN="1.95.0"
+export JERYU_JANKURAI_RUSTC_VERSION="rustc 1.95.0 (59807616e 2026-04-14)"
+export JERYU_JANKURAI_CARGO_VERSION="cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+export JERYU_JANKURAI_TARGET_TRIPLE="x86_64-unknown-linux-gnu"
+export JERYU_JANKURAI_BUILD_MODE="cargo-install-locked-offline-path-v1"
+# END GENERATED JANKURAI PIN
+
 mode="${1:-smoke}"
 runtime="${JERYU_OCI_RUNTIME:-podman}"
 image="localhost/jeryu/agent-sandbox:smoke"
@@ -152,12 +169,15 @@ expect_zero "node is present" node --version
 expect_zero "tsc is present" tsc --version
 
 # The pinned jankurai auditor ships in the image (the runtime is --network none, so CI
-# lanes can never install it at session time). KEEP IN SYNC with ops/ci/ensure-jankurai.sh:
-# the version must be the pin, the binary must resolve unshadowed at the exact path
-# ops/ci/common.sh derives from CARGO_HOME, and JERYU_JANKURAI_BIN must point there so
-# lanes never fall back to a bare `jankurai` PATH lookup.
-expect_zero "jankurai is the pinned 1.6.10" \
-  sh -c '[ "$(/opt/rust/cargo/bin/jankurai --version)" = "jankurai 1.6.10" ]'
+# lanes can never install it at session time). KEEP IN SYNC with ops/ci/lib.sh:
+# the version and digest must be the pin, the binary must resolve unshadowed at
+# the exact explicit path, and JERYU_JANKURAI_BIN must point there.
+expect_zero "jankurai is the pinned 1.6.11" \
+  sh -c '[ "$(/opt/rust/cargo/bin/jankurai --version)" = "jankurai 1.6.11" ]'
+expect_zero "jankurai is a single-link physical file" \
+  sh -c '[ -f /opt/rust/cargo/bin/jankurai ] && [ ! -L /opt/rust/cargo/bin/jankurai ] && [ "$(realpath -e /opt/rust/cargo/bin/jankurai)" = /opt/rust/cargo/bin/jankurai ] && [ "$(stat -c %h /opt/rust/cargo/bin/jankurai)" = 1 ]'
+expect_zero "jankurai has the governed digest" \
+  sh -c '[ "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '\''{print $1}'\'')" = fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e ]'
 expect_zero "jankurai resolves to the pinned path (no shadowing)" \
   sh -c '[ "$(command -v jankurai)" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \

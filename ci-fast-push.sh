@@ -7,6 +7,7 @@ set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || { echo "not in a git repo"; exit 1; }
 source "$(pwd)/ops/ci/ci-env.sh"
+source "$(pwd)/ops/ci/lib.sh"
 
 JOBS="${JERYU_CI_JOBS:-40}"
 RUST_TEST_MODE="${JERYU_CI_RUST_TEST_MODE:-inline}"
@@ -134,20 +135,8 @@ record_sharded_rust_tests() {
   printf '\033[33m↷ %s covered by external rust-test-shards matrix\033[0m\n' "$name"
 }
 
-JERYU_JANKURAI_VERSION="${JANKURAI_VERSION:-jankurai 1.6.10}"
-JERYU_JANKURAI_BIN="${JERYU_JANKURAI_BIN:-${CARGO_HOME:-$HOME/.cargo}/bin/jankurai}"
-
 run_pinned_jankurai() {
-  bash ops/ci/ensure-jankurai.sh >/dev/null || return 1
-  if [ ! -x "${JERYU_JANKURAI_BIN}" ]; then
-    echo "pinned jankurai binary missing: ${JERYU_JANKURAI_BIN}" >&2
-    return 1
-  fi
-  if ! "${JERYU_JANKURAI_BIN}" --version | grep -qx "${JERYU_JANKURAI_VERSION}"; then
-    echo "wrong pinned jankurai version at ${JERYU_JANKURAI_BIN}: $("${JERYU_JANKURAI_BIN}" --version 2>&1 || true)" >&2
-    return 1
-  fi
-  "${JERYU_JANKURAI_BIN}" "$@"
+  run_governed_jankurai "$@"
 }
 
 write_changed_list() {
@@ -275,6 +264,7 @@ if [ "$FORCE_FULL" = "1" ]; then
 fi
 run_step "jeryu environment" bash ops/ci/verify-jeryu-env.sh "${env_args[@]}"
 run_step "jankurai bootstrap" bash ops/ci/ensure-jankurai.sh
+run_step "jankurai hostile identity tests" bash ops/ci/test-governed-jankurai.sh
 run_step "ci lane drift guard" jeryu_gate jeryu-repogate ci-lanes-check
 run_step "affected-plan" \
   jeryu_gate jeryu-repogate affected-plan --base "$BASE_REF" --out "$PLAN" --workers "$JOBS"

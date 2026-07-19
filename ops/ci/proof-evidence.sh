@@ -18,9 +18,10 @@ source "${ROOT}/ops/ci/common.sh"
 
 BASE_REF="${JERYU_JANKURAI_BASE_REF:-origin/main}"
 
-# Reviewed, accepted ratchet baseline that has been committed to the repo. The
-# final ratchet audit scores against THIS baseline, never against the candidate
-# evidence produced in the same run.
+# Reviewed, accepted ratchet baseline committed for the governed tool identity.
+# It is intentionally absent during the 1.6.11 cutover, so this lane remains
+# fail-closed until protected-main evidence is freshly generated and reviewed.
+# The ratchet never accepts candidate evidence produced in the same run.
 ACCEPTED_BASELINE_SRC="agent/baselines/main.repo-score.json"
 
 ensure_base_ref() {
@@ -135,7 +136,8 @@ printf 'language bad-behavior detectors executed by jankurai audit/security on %
 # against this accepted baseline rather than the candidate advisory score
 # produced above.
 if [ ! -f "${ACCEPTED_BASELINE_SRC}" ]; then
-  echo "missing reviewed accepted baseline: ${ACCEPTED_BASELINE_SRC}" >&2
+  echo "active accepted baseline intentionally absent during the governed Jankurai 1.6.11 cutover: ${ACCEPTED_BASELINE_SRC}" >&2
+  echo "generate it only from a protected-main 1.6.11 run and obtain detached review" >&2
   exit 1
 fi
 cp "${ACCEPTED_BASELINE_SRC}" target/jankurai/accepted-baseline.json

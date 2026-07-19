@@ -34,9 +34,9 @@ requires_portable_auth = true
 [[tools]]
 id = "jankurai"
 category = "audit_cli"
-version = "1.6.10"
-binary = "jankurai"
-observed_path = "/home/ubuntu/.local/bin/jankurai"
-observed_digest = "sha256:bb8d0866f78ed18fa3c3617940f4e349bdb46aedcd7dcb19af518d2351b6a3ad"
-health_command = ["jankurai", "doctor"]
+version = "1.6.11"
+binary = "/home/ubuntu/.jeryu/bin/jankurai"
+observed_path = "/home/ubuntu/.jeryu/bin/jankurai"
+observed_digest = "sha256:fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e"
+health_command = ["/home/ubuntu/.jeryu/bin/jankurai", "--version"]
 requires_portable_auth = false

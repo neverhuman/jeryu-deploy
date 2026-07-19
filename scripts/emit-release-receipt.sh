@@ -410,7 +410,7 @@ jq -n \
       required_lanes: ["ci-fast-full-local", "ci-fast-full-github-clean", "jankurai-audit", "security", "proof-evidence", "release", "artifact-support"],
       local_full_command: "bash ci-fast-push.sh --full --no-push",
       github_clean_full_command: "JERYU_CI_PROFILE=github JERYU_CI_USE_SCCACHE=0 bash ci-fast-push.sh --full --no-push",
-      jankurai_baseline: "agent/baselines/main.repo-score.json (ratchet audit, fail-under 85)",
+      jankurai_baseline: "active 1.6.11 baseline pending protected-main generation and detached review; 1.6.10 history is non-authoritative",
       sbom_dir: "target/jankurai/security/sbom"
     },
     rollback: (

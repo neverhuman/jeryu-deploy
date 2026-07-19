@@ -9,7 +9,28 @@
 # them here too once their tooling is provisioned on the runner.
 set -euo pipefail
 
+# BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
+export JERYU_GOVERNED_JANKURAI_BIN="${JERYU_JANKURAI_BIN:-/home/ubuntu/.jeryu/bin/jankurai}"
+export JERYU_JANKURAI_SOURCE_REPO="http://127.0.0.1:8787/git/jeryu/jankurai.git"
+export JERYU_JANKURAI_VERSION="jankurai 1.6.11"
+export JERYU_JANKURAI_SHA256="fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e"
+export JERYU_JANKURAI_SOURCE_REV="dface7397fe24d46b0b1885ddd5782c34edbff49"
+export JERYU_JANKURAI_SOURCE_TAG="v1.6.11-deadlang-precision-split.1"
+export JERYU_JANKURAI_SOURCE_TREE="34a8a1fb59bc4ebfadf12c45d95f169d06acc781"
+export JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256="2fbca5d04083e3c8d32f383d5b6b4520b8911690b26968c6fbcb210e1202b938"
+export JERYU_JANKURAI_CARGO_LOCK_SHA256="b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a"
+export JERYU_JANKURAI_RUST_TOOLCHAIN="1.95.0"
+export JERYU_JANKURAI_RUSTC_VERSION="rustc 1.95.0 (59807616e 2026-04-14)"
+export JERYU_JANKURAI_CARGO_VERSION="cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+export JERYU_JANKURAI_TARGET_TRIPLE="x86_64-unknown-linux-gnu"
+export JERYU_JANKURAI_BUILD_MODE="cargo-install-locked-offline-path-v1"
+# END GENERATED JANKURAI PIN
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${repo_root}"
+source ops/ci/lib.sh
+require_jankurai
+bash "${repo_root}/ops/ci/test-governed-jankurai.sh"
 
 # jankurai pin: jeryu-tool/tool-manifest.toml is the family-wide source of truth.
 # When the control-plane repo is reachable (on-host family layout), fail fast if
@@ -18,9 +39,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 JERYU_TOOL_RENDER="${JERYU_TOOL_RENDER:-$repo_root/../jeryu-tool/ops/render-tool-manifest.sh}"
 if [ -x "$JERYU_TOOL_RENDER" ]; then
   echo "[pr-ci] jankurai pin drift check" >&2
-  bash "$JERYU_TOOL_RENDER" --check
+  bash "$JERYU_TOOL_RENDER" --check --repo jeryu-deploy \
+    --repo-root "jeryu-deploy=$repo_root"
 fi
-cd "$repo_root"
 
 # jeryu governs the worker count from live load (overrides any request). host-ci
 # already exports a governed JERYU_CI_JOBS; honor it, else ask the governor, else a
@@ -33,7 +54,6 @@ else
   JOBS=8
 fi
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$JOBS}"
-JANKURAI_BIN="${JANKURAI_BIN:-$HOME/.cargo/bin/jankurai}"
 
 restore_cargo_lock_ci_noise() {
   if ! git diff --quiet -- Cargo.lock; then
@@ -125,7 +145,7 @@ fi
 
 restore_cargo_lock_ci_noise
 echo "[pr-ci] jankurai audit (>= 85)" >&2
-"$JANKURAI_BIN" audit . --full --mode advisory --policy agent/audit-policy.toml \
+run_governed_jankurai audit . --full --mode advisory --policy agent/audit-policy.toml \
   --json .jankurai/repo-score.json --md .jankurai/repo-score.md
 python3 - <<'PY'
 import json, sys

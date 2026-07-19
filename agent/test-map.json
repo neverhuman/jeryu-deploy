@@ -35,6 +35,11 @@
       "lane": "score",
       "purpose": "verify split metadata and agent maps"
     },
+    "CLAUDE.md": {
+      "command": "just score",
+      "lane": "score",
+      "purpose": "verify the concise agent entrypoint routes to canonical instructions"
+    },
     "CHANGELOG.md": {
       "command": "just score",
       "lane": "score",

@@ -2,51 +2,30 @@
 # Shared local CI defaults. Keep this file source-only.
 set -euo pipefail
 
+# BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
+export JERYU_GOVERNED_JANKURAI_BIN="${JERYU_JANKURAI_BIN:-/home/ubuntu/.jeryu/bin/jankurai}"
+export JERYU_JANKURAI_SOURCE_REPO="http://127.0.0.1:8787/git/jeryu/jankurai.git"
+export JERYU_JANKURAI_VERSION="jankurai 1.6.11"
+export JERYU_JANKURAI_SHA256="fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e"
+export JERYU_JANKURAI_SOURCE_REV="dface7397fe24d46b0b1885ddd5782c34edbff49"
+export JERYU_JANKURAI_SOURCE_TAG="v1.6.11-deadlang-precision-split.1"
+export JERYU_JANKURAI_SOURCE_TREE="34a8a1fb59bc4ebfadf12c45d95f169d06acc781"
+export JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256="2fbca5d04083e3c8d32f383d5b6b4520b8911690b26968c6fbcb210e1202b938"
+export JERYU_JANKURAI_CARGO_LOCK_SHA256="b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a"
+export JERYU_JANKURAI_RUST_TOOLCHAIN="1.95.0"
+export JERYU_JANKURAI_RUSTC_VERSION="rustc 1.95.0 (59807616e 2026-04-14)"
+export JERYU_JANKURAI_CARGO_VERSION="cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+export JERYU_JANKURAI_TARGET_TRIPLE="x86_64-unknown-linux-gnu"
+export JERYU_JANKURAI_BUILD_MODE="cargo-install-locked-offline-path-v1"
+# END GENERATED JANKURAI PIN
+
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-env.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 JERYU_CI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-JERYU_JANKURAI_VERSION="${JANKURAI_VERSION:-jankurai 1.6.10}"
-
-# Default to the jeryu-OWNED global auditor (~/.jeryu/bin/jankurai) when present,
-# else the legacy cargo-home install. An explicit JERYU_JANKURAI_BIN always wins —
-# the agent sandbox sets it to its baked /opt/rust/cargo/bin/jankurai (--network
-# none) and must NOT be repointed here.
-_jeryu_default_jankurai() {
-  if [ -x "${HOME}/.jeryu/bin/jankurai" ]; then
-    printf '%s' "${HOME}/.jeryu/bin/jankurai"
-  else
-    printf '%s' "${CARGO_HOME:-$HOME/.cargo}/bin/jankurai"
-  fi
-}
-JERYU_JANKURAI_BIN="${JERYU_JANKURAI_BIN:-$(_jeryu_default_jankurai)}"
-
-# ensure_pinned_jankurai
-#
-# Always verify and execute the pinned auditor so stale PATH shadows (e.g.
-# ~/.local/bin before ~/.cargo/bin) cannot change audit semantics mid-lane. When
-# resolved to the jeryu-owned global binary, (re)install it from the jeryu-tool
-# control plane (tool-manifest.toml pin); otherwise fall back to the repo-local
-# ensure-jankurai.sh.
-ensure_pinned_jankurai() {
-  local tool_installer="${JERYU_CI_ROOT}/../jeryu-tool/ops/install-jankurai.sh"
-  if [ "${JERYU_JANKURAI_BIN}" = "${HOME}/.jeryu/bin/jankurai" ] && [ -x "${tool_installer}" ]; then
-    bash "${tool_installer}" >/dev/null
-  else
-    bash "${JERYU_CI_ROOT}/ops/ci/ensure-jankurai.sh" >/dev/null
-  fi
-  if [ ! -x "${JERYU_JANKURAI_BIN}" ]; then
-    echo "pinned jankurai binary missing: ${JERYU_JANKURAI_BIN}" >&2
-    return 1
-  fi
-  if ! "${JERYU_JANKURAI_BIN}" --version | grep -qx "${JERYU_JANKURAI_VERSION}"; then
-    echo "wrong pinned jankurai version at ${JERYU_JANKURAI_BIN}: $("${JERYU_JANKURAI_BIN}" --version 2>&1 || true)" >&2
-    return 1
-  fi
-}
 
 jeryu_jankurai() {
-  ensure_pinned_jankurai
-  "${JERYU_JANKURAI_BIN}" "$@"
+  run_governed_jankurai "$@"
 }
 
 # jeryu_gate <crate> [args...]

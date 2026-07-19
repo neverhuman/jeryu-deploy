@@ -28,6 +28,23 @@ The release structure is intentionally artifact-backed:
   `ops/deploy/sign-and-push-atomicsoul.sh`.
 - Rollback guidance: `docs/release.md#rollback`.
 
+### Governed Jankurai identity
+
+Release and score lanes consume Jankurai only through `ops/ci/lib.sh`. The
+release-authoritative source is the local Jeryu tag
+`v1.6.11-deadlang-precision-split.1`; the installed binary must report
+`jankurai 1.6.11` and match SHA-256
+`fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e`.
+The verifier rejects missing files, symlinks, PATH shadows, version drift, and
+byte substitution. The embedded API bridge additionally rejects multi-link
+files. Verification never installs or fetches a tool, and GitHub is neither
+release authority nor a dependency of this verification path.
+
+The former 1.6.10 score is preserved byte-identically under
+`agent/baselines/historical/` as audit history. The active ratchet remains
+fail-closed until a fresh 1.6.11 baseline is generated on protected `main` and
+independently reviewed; candidate-branch output cannot become its own baseline.
+
 ## Version Source
 
 - `jeryu-wsversion` owns workspace version decisions. `decide` classifies the
@@ -77,6 +94,7 @@ not trigger another version bump.
 - `just security`
 - `just audit`
 - `bash ops/ci/proof-evidence.sh`
+- `bash ops/ci/test-governed-jankurai.sh`
 - `cargo test -p jeryu-runnerd workcell --jobs 40` when the workcell control plane, tar safety, or CI repair snapshot helpers change.
 - `cargo test -p jeryu-readmodel -p jeryu-tui --jobs 40` when the workcells,
   agent-runs, codegraph/oracle dashboard, or TUI projection contract changes.

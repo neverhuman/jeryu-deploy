@@ -32,12 +32,11 @@ cd "${ROOT}"
 
 # shellcheck source=ops/ci/ci-env.sh
 source "${ROOT}/ops/ci/ci-env.sh"
+source "${ROOT}/ops/ci/lib.sh"
 
 # Pinned tool versions. Bump deliberately; never float.
 CARGO_LLVM_COV_VERSION="${CARGO_LLVM_COV_VERSION:-0.8.7}"
 CARGO_MUTANTS_VERSION="${CARGO_MUTANTS_VERSION:-25.3.1}"
-JERYU_JANKURAI_VERSION="${JANKURAI_VERSION:-jankurai 1.6.10}"
-JERYU_JANKURAI_BIN="${JERYU_JANKURAI_BIN:-${CARGO_HOME:-$HOME/.cargo}/bin/jankurai}"
 
 # Critical engine crates measured for line coverage.
 #
@@ -153,9 +152,7 @@ fi
 # jankurai is what consumes the artifacts; without the pinned binary there is
 # no audit to run. Use the Cargo-installed path directly so ~/.local/bin cannot
 # shadow a different auditor version.
-if ! bash "${ROOT}/ops/ci/ensure-jankurai.sh" >/dev/null ||
-  [ ! -x "${JERYU_JANKURAI_BIN}" ] ||
-  ! "${JERYU_JANKURAI_BIN}" --version | grep -qx "${JERYU_JANKURAI_VERSION}"; then
+if ! require_jankurai; then
   skip_with_receipt "pinned ${JERYU_JANKURAI_VERSION} unavailable"
 fi
 
@@ -228,7 +225,7 @@ log "mutation artifact ready: ${MUTANTS_OUTCOMES} (+ mirror ${MUTANTS_OUTCOMES_M
 # --- 4. jankurai coverage audit + hard==0 assertion ------------------------
 mkdir -p target/jankurai/coverage
 log "jankurai coverage audit . --config agent/coverage-sources.toml"
-audit_out="$("${JERYU_JANKURAI_BIN}" coverage audit . \
+audit_out="$(run_governed_jankurai coverage audit . \
   --config agent/coverage-sources.toml \
   --json target/jankurai/coverage/coverage-audit.json \
   --md target/jankurai/coverage/coverage-audit.md 2>&1)"

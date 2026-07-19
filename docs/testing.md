@@ -141,6 +141,15 @@ PENDING=0, FAIL=0; if a future live capability is missing, mark only that gate
 PENDING with evidence.
 
 CI parity checks:
+
+Jankurai identity failures are diagnosed before any score is trusted. Run
+`bash ops/ci/test-governed-jankurai.sh`; a missing/non-physical file, symlink,
+wrong version, digest mismatch, or PATH shadow is a hard lane failure. The
+embedded API bridge also rejects hardlinks. The verifier prints the rejected
+path and observed identity. Audit evidence belongs in `.jankurai/` and
+`target/jankurai/`; never repair an identity failure by editing a score or
+relabeling `agent/baselines/historical/` evidence.
+
 - `ops/ci/verify-jeryu-env.sh --build-local` builds the repo-local `jeryu`
   binary, accepts the canonical GitHub remote or the loopback local Jeryu
   remote on `127.0.0.1:8787`, and ensures CI does not select the retired
@@ -153,7 +162,7 @@ CI parity checks:
   Additional source-root retired-CI sweeps run only when
   `JERYU_CI_SOURCE_ROOTS` is set.
 - `ops/ci/ensure-jankurai.sh` is the single local/hosted bootstrap for pinned
-  Jankurai 1.6.10.
+  governed Jankurai 1.6.11. It is a verifier, not an installer.
 - `agent/ci-lanes.toml` is the committed CI lane manifest. `cargo run -q -p
   jeryu-repogate -- ci-lanes-check` fails if a workflow adds hosted-only `run:`
   commands or stops calling the manifest-declared local lane.
