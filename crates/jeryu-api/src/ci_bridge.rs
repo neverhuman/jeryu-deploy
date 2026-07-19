@@ -564,7 +564,6 @@ fn verify_jankurai_receipt(
         "/build/dedicated_cargo_home",
         "/build/git_global_config_disabled",
         "/build/git_system_config_disabled",
-        "/build/git_terminal_prompt",
         "/governance/protected_main",
         "/installation/atomic",
     ];
@@ -581,6 +580,7 @@ fn verify_jankurai_receipt(
     }
     let expected_false = [
         "/build/git_http_follow_redirects",
+        "/build/git_terminal_prompt",
         "/build/jankurai_update_check",
         "/test_mode",
     ];
