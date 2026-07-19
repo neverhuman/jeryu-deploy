@@ -605,12 +605,17 @@ fn verify_jankurai_authority(
     expected_sha256: &str,
 ) -> Result<PathBuf, String> {
     let binary = verify_jankurai_identity(path, expected_version, expected_sha256)?;
-    if receipt_paths.iter().any(|receipt| {
-        verify_jankurai_receipt(receipt, &binary, expected_version, expected_sha256).is_ok()
-    }) {
-        return Ok(binary);
+    let mut failures = Vec::new();
+    for receipt in receipt_paths {
+        match verify_jankurai_receipt(receipt, &binary, expected_version, expected_sha256) {
+            Ok(()) => return Ok(binary),
+            Err(error) => failures.push(error),
+        }
     }
-    Err("governed jankurai has no matching installation receipt".to_string())
+    Err(format!(
+        "governed jankurai has no matching installation receipt: {}",
+        failures.join("; ")
+    ))
 }
 
 fn jankurai_bin() -> Result<PathBuf, String> {
