@@ -1,0 +1,48 @@
+{
+  "binary": {
+    "sha256": "fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e",
+    "version_output": "jankurai 1.6.11"
+  },
+  "build": {
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "cargo_net_offline": true,
+    "dedicated_cargo_home": true,
+    "git_global_config_disabled": true,
+    "git_http_follow_redirects": false,
+    "git_system_config_disabled": true,
+    "git_terminal_prompt": false,
+    "jankurai_update_check": false,
+    "mode": "cargo-install-locked-offline-path-v1",
+    "network_scope": "local-forge-source-plus-offline-cargo",
+    "no_proxy": "127.0.0.1,localhost,::1",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "target_triple": "x86_64-unknown-linux-gnu"
+  },
+  "conclusion": "success",
+  "governance": {
+    "manifest_commit": "de80b657e1be5580289dfecdc0cd3c71348261e0",
+    "manifest_repo": "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git",
+    "manifest_sha256": "707f57b7f60b65025303315b050cc1c138c7fb2e2080e775ef97a971f286e9b5",
+    "manifest_tree": "8dd6f773dce3ec2e5a82c8f0b606c240760489f9",
+    "protected_main": true,
+    "protection_policy": "immutable-main-v1",
+    "status": "governed"
+  },
+  "installation": {
+    "atomic": true,
+    "path": "/opt/rust/cargo/bin/jankurai"
+  },
+  "operator": "jeryu-agent-sandbox-build",
+  "run_id": "agent-sandbox-jankurai-1.6.11",
+  "schema": "jeryu.jankurai-installation/v1",
+  "source": {
+    "archive_sha256": "2fbca5d04083e3c8d32f383d5b6b4520b8911690b26968c6fbcb210e1202b938",
+    "cargo_lock_sha256": "b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a",
+    "commit": "dface7397fe24d46b0b1885ddd5782c34edbff49",
+    "remote": "http://127.0.0.1:8787/git/jeryu/jankurai.git",
+    "tag": "v1.6.11-deadlang-precision-split.1",
+    "tree": "34a8a1fb59bc4ebfadf12c45d95f169d06acc781",
+    "verification": "release-authoritative"
+  },
+  "test_mode": false
+}

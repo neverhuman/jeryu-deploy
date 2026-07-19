@@ -64,10 +64,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # invoked with host networking solely to reach loopback; runtime is networkless.
 RUN set -eu; \
     source_dir="$(mktemp -d)"; \
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0; \
-    git -C "$source_dir" init -q; \
-    git -C "$source_dir" remote add origin "$JANKURAI_REPO"; \
-    git -C "$source_dir" fetch --depth 1 origin \
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+      JANKURAI_NO_UPDATE_CHECK=1 NO_PROXY=127.0.0.1,localhost,::1; \
+    git -c http.followRedirects=false -C "$source_dir" init -q; \
+    git -c http.followRedirects=false -C "$source_dir" remote add origin "$JANKURAI_REPO"; \
+    git -c http.followRedirects=false -C "$source_dir" fetch --depth 1 origin \
       "$JANKURAI_REV" "refs/tags/$JANKURAI_TAG:refs/tags/$JANKURAI_TAG"; \
     test "$(git -C "$source_dir" rev-parse "$JANKURAI_REV^{commit}")" = "$JANKURAI_REV"; \
     test "$(git -C "$source_dir" rev-list -n 1 "$JANKURAI_TAG")" = "$JANKURAI_REV"; \
@@ -76,7 +77,9 @@ RUN set -eu; \
     git -C "$source_dir" archive --format=tar HEAD > /tmp/jankurai-source.tar; \
     echo "$JANKURAI_SOURCE_ARCHIVE_SHA256  /tmp/jankurai-source.tar" | sha256sum -c -; \
     echo "$JANKURAI_CARGO_LOCK_SHA256  $source_dir/Cargo.lock" | sha256sum -c -; \
-    cargo install --path "$source_dir/crates/jankurai" --locked --bin jankurai; \
+    cargo fetch --locked --manifest-path "$source_dir/Cargo.toml"; \
+    CARGO_NET_OFFLINE=true cargo install --offline \
+      --path "$source_dir/crates/jankurai" --locked --bin jankurai; \
     /opt/rust/cargo/bin/jankurai --version | grep -qx "$JANKURAI_VERSION"; \
     echo "$JANKURAI_BINARY_SHA256  /opt/rust/cargo/bin/jankurai" | sha256sum -c -; \
     rm -rf "$source_dir" /tmp/jankurai-source.tar
@@ -97,7 +100,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # slim base. The rest is exactly what a Rust/Node build of this repo needs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates curl build-essential pkg-config libssl-dev \
-      python3 passwd \
+      jq python3 passwd \
     && rm -rf /var/lib/apt/lists/*
 
 # Rust toolchain (pinned), no docs/components beyond the build set.
@@ -112,11 +115,18 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 ARG JANKURAI_VERSION="jankurai 1.6.11"
 ARG JANKURAI_BINARY_SHA256="fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e"
 COPY --from=jankurai-build /opt/rust/cargo/bin/jankurai /opt/rust/cargo/bin/jankurai
-ENV JERYU_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai
+COPY images/agent-sandbox/jankurai-installation-receipt.json \
+  /opt/jeryu/receipts/jankurai/sha256/98278aeffcc8bc7e4a4441bff1097bde5fc21edbd37ebf30eaaba0f10a765f2a.json
+COPY ops/ci/ensure-jankurai.sh /opt/jeryu/governance/ensure-jankurai.sh
+ENV JERYU_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
+    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/98278aeffcc8bc7e4a4441bff1097bde5fc21edbd37ebf30eaaba0f10a765f2a.json
 RUN test ! -L /opt/rust/cargo/bin/jankurai \
     && test "$(stat -c '%h' /opt/rust/cargo/bin/jankurai)" = "1" \
     && test "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '{print $1}')" = "${JANKURAI_BINARY_SHA256}" \
-    && /opt/rust/cargo/bin/jankurai --version | grep -qx "${JANKURAI_VERSION}"
+    && /opt/rust/cargo/bin/jankurai --version | grep -qx "${JANKURAI_VERSION}" \
+    && chmod 0444 "${JERYU_JANKURAI_RECEIPT}" \
+    && chmod 0555 /opt/jeryu/governance/ensure-jankurai.sh \
+    && bash /opt/jeryu/governance/ensure-jankurai.sh
 
 # Node + the Vite/TS/React toolchain, then the agent CLIs.
 RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \

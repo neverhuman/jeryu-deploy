@@ -393,9 +393,27 @@ excluded_paths = [".jankurai/", "apps/web/dist/"]
 "#;
 
 const GOVERNED_JANKURAI_PATH: &str = "/home/ubuntu/.jeryu/bin/jankurai";
+const GOVERNED_JANKURAI_RECEIPT_DIR: &str = "/home/ubuntu/.jeryu/receipts/jankurai/sha256";
 const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
 const GOVERNED_JANKURAI_SHA256: &str =
     "fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e";
+const GOVERNED_JANKURAI_SOURCE_REPO: &str = "http://127.0.0.1:8787/git/jeryu/jankurai.git";
+const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.6.11-deadlang-precision-split.1";
+const GOVERNED_JANKURAI_SOURCE_REV: &str = "dface7397fe24d46b0b1885ddd5782c34edbff49";
+const GOVERNED_JANKURAI_SOURCE_TREE: &str = "34a8a1fb59bc4ebfadf12c45d95f169d06acc781";
+const GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256: &str =
+    "2fbca5d04083e3c8d32f383d5b6b4520b8911690b26968c6fbcb210e1202b938";
+const GOVERNED_JANKURAI_CARGO_LOCK_SHA256: &str =
+    "b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a";
+const GOVERNED_JANKURAI_RUSTC_VERSION: &str = "rustc 1.95.0 (59807616e 2026-04-14)";
+const GOVERNED_JANKURAI_CARGO_VERSION: &str = "cargo 1.95.0 (f2d3ce0bd 2026-03-21)";
+const GOVERNED_JANKURAI_TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+const GOVERNED_JANKURAI_BUILD_MODE: &str = "cargo-install-locked-offline-path-v1";
+const GOVERNED_JANKURAI_MANIFEST_REPO: &str = "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git";
+const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "de80b657e1be5580289dfecdc0cd3c71348261e0";
+const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "8dd6f773dce3ec2e5a82c8f0b606c240760489f9";
+const GOVERNED_JANKURAI_MANIFEST_SHA256: &str =
+    "707f57b7f60b65025303315b050cc1c138c7fb2e2080e775ef97a971f286e9b5";
 
 /// Verify a physical auditor file before every authoritative score. An explicit
 /// path supports the offline sandbox image, but it never relaxes identity and
@@ -445,12 +463,182 @@ fn verify_jankurai_identity(
     Ok(path.to_path_buf())
 }
 
+fn verify_jankurai_receipt(
+    receipt_path: &Path,
+    binary_path: &Path,
+    expected_version: &str,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    if !receipt_path.is_absolute() {
+        return Err("governed jankurai receipt path is not absolute".to_string());
+    }
+    let metadata = std::fs::symlink_metadata(receipt_path)
+        .map_err(|error| format!("governed jankurai receipt metadata failed: {error}"))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("governed jankurai receipt is not a physical regular file".to_string());
+    }
+    let canonical = std::fs::canonicalize(receipt_path)
+        .map_err(|error| format!("governed jankurai receipt canonicalization failed: {error}"))?;
+    if canonical != receipt_path {
+        return Err("governed jankurai receipt path traverses a symlink".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err("governed jankurai receipt has multiple physical links".to_string());
+        }
+    }
+    let bytes = std::fs::read(receipt_path)
+        .map_err(|error| format!("governed jankurai receipt read failed: {error}"))?;
+    let digest = hex::encode(Sha256::digest(&bytes));
+    let named_digest = receipt_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if named_digest.len() != 64
+        || !named_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || digest != named_digest
+    {
+        return Err("governed jankurai receipt content address mismatch".to_string());
+    }
+    let document: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("governed jankurai receipt JSON failed: {error}"))?;
+    let expected_strings = [
+        ("/schema", "jeryu.jankurai-installation/v1"),
+        ("/source/remote", GOVERNED_JANKURAI_SOURCE_REPO),
+        ("/source/tag", GOVERNED_JANKURAI_SOURCE_TAG),
+        ("/source/commit", GOVERNED_JANKURAI_SOURCE_REV),
+        ("/source/tree", GOVERNED_JANKURAI_SOURCE_TREE),
+        (
+            "/source/archive_sha256",
+            GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256,
+        ),
+        (
+            "/source/cargo_lock_sha256",
+            GOVERNED_JANKURAI_CARGO_LOCK_SHA256,
+        ),
+        ("/source/verification", "release-authoritative"),
+        ("/build/rustc", GOVERNED_JANKURAI_RUSTC_VERSION),
+        ("/build/cargo", GOVERNED_JANKURAI_CARGO_VERSION),
+        ("/build/target_triple", GOVERNED_JANKURAI_TARGET_TRIPLE),
+        ("/build/mode", GOVERNED_JANKURAI_BUILD_MODE),
+        (
+            "/build/network_scope",
+            "local-forge-source-plus-offline-cargo",
+        ),
+        ("/build/no_proxy", "127.0.0.1,localhost,::1"),
+        ("/governance/status", "governed"),
+        ("/governance/manifest_repo", GOVERNED_JANKURAI_MANIFEST_REPO),
+        (
+            "/governance/manifest_commit",
+            GOVERNED_JANKURAI_MANIFEST_COMMIT,
+        ),
+        ("/governance/manifest_tree", GOVERNED_JANKURAI_MANIFEST_TREE),
+        (
+            "/governance/manifest_sha256",
+            GOVERNED_JANKURAI_MANIFEST_SHA256,
+        ),
+        ("/governance/protection_policy", "immutable-main-v1"),
+        ("/binary/sha256", expected_sha256),
+        ("/binary/version_output", expected_version),
+        (
+            "/installation/path",
+            binary_path.to_str().unwrap_or_default(),
+        ),
+        ("/conclusion", "success"),
+    ];
+    for (pointer, expected) in expected_strings {
+        if document
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            != Some(expected)
+        {
+            return Err(format!(
+                "governed jankurai receipt authority mismatch: {pointer}"
+            ));
+        }
+    }
+    let expected_true = [
+        "/build/cargo_net_offline",
+        "/build/dedicated_cargo_home",
+        "/build/git_global_config_disabled",
+        "/build/git_system_config_disabled",
+        "/build/git_terminal_prompt",
+        "/governance/protected_main",
+        "/installation/atomic",
+    ];
+    for pointer in expected_true {
+        if document
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            return Err(format!(
+                "governed jankurai receipt authority mismatch: {pointer}"
+            ));
+        }
+    }
+    let expected_false = [
+        "/build/git_http_follow_redirects",
+        "/build/jankurai_update_check",
+        "/test_mode",
+    ];
+    for pointer in expected_false {
+        if document
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        {
+            return Err(format!(
+                "governed jankurai receipt authority mismatch: {pointer}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_jankurai_authority(
+    path: &Path,
+    receipt_paths: &[PathBuf],
+    expected_version: &str,
+    expected_sha256: &str,
+) -> Result<PathBuf, String> {
+    let binary = verify_jankurai_identity(path, expected_version, expected_sha256)?;
+    if receipt_paths.iter().any(|receipt| {
+        verify_jankurai_receipt(receipt, &binary, expected_version, expected_sha256).is_ok()
+    }) {
+        return Ok(binary);
+    }
+    Err("governed jankurai has no matching installation receipt".to_string())
+}
+
 fn jankurai_bin() -> Result<PathBuf, String> {
     let path = std::env::var_os("JERYU_JANKURAI_BIN")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(GOVERNED_JANKURAI_PATH));
-    verify_jankurai_identity(&path, GOVERNED_JANKURAI_VERSION, GOVERNED_JANKURAI_SHA256)
+    let mut receipt_paths = if let Some(receipt) =
+        std::env::var_os("JERYU_JANKURAI_RECEIPT").filter(|value| !value.is_empty())
+    {
+        vec![PathBuf::from(receipt)]
+    } else if path == Path::new(GOVERNED_JANKURAI_PATH) {
+        std::fs::read_dir(GOVERNED_JANKURAI_RECEIPT_DIR)
+            .map_err(|error| format!("governed jankurai receipt directory failed: {error}"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|candidate| candidate.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect()
+    } else {
+        return Err("non-default governed jankurai requires an explicit receipt".to_string());
+    };
+    receipt_paths.sort();
+    verify_jankurai_authority(
+        &path,
+        &receipt_paths,
+        GOVERNED_JANKURAI_VERSION,
+        GOVERNED_JANKURAI_SHA256,
+    )
 }
 
 /// THE GUARANTEE (Layer 2). Compute the authoritative jankurai diff-score for a

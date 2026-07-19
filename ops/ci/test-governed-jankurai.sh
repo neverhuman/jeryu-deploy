@@ -39,9 +39,15 @@ printf '#!/usr/bin/env bash\nprintf "jankurai 1.6.11\\n"\n' > "${TEST_ROOT}/same
 chmod 0755 "${TEST_ROOT}/same-version-substitute"
 expect_rejected same-version-wrong-digest "${TEST_ROOT}/same-version-substitute"
 
-# Ambient PATH cannot redirect execution away from the exact verified path.
+# A hostile ambient PATH is neutralized deterministically: the verifier prepends
+# the governed binary directory, then proves the resulting resolution and receipt.
 mkdir "${TEST_ROOT}/hostile-path"
 cp -- "${TEST_ROOT}/same-version-substitute" "${TEST_ROOT}/hostile-path/jankurai"
-PATH="${TEST_ROOT}/hostile-path:${PATH}" verify_at "${GOVERNED}"
+before="$(PATH="${TEST_ROOT}/hostile-path:${PATH}" command -v jankurai)"
+[[ "${before}" == "${TEST_ROOT}/hostile-path/jankurai" ]]
+after="$(JERYU_JANKURAI_BIN="${GOVERNED}" PATH="${TEST_ROOT}/hostile-path:${PATH}" \
+  bash -c 'set -euo pipefail; source "$1/ops/ci/lib.sh"; require_jankurai; command -v jankurai' \
+  _ "${ROOT}")"
+[[ "${after}" == "${GOVERNED}" ]]
 
-printf 'governed jankurai hostile identity tests ok\n'
+printf 'governed jankurai hostile identity and PATH neutralization tests ok\n'

@@ -144,9 +144,12 @@ CI parity checks:
 
 Jankurai identity failures are diagnosed before any score is trusted. Run
 `bash ops/ci/test-governed-jankurai.sh`; a missing/non-physical file, symlink,
-wrong version, digest mismatch, or PATH shadow is a hard lane failure. The
-embedded API bridge also rejects hardlinks. The verifier prints the rejected
-path and observed identity. Audit evidence belongs in `.jankurai/` and
+wrong version, digest mismatch, or missing/mismatched installation receipt is a
+hard lane failure. A hostile initial PATH is not described as rejected: the
+test proves it initially resolves the substitute and that governed prepending
+then neutralizes it before execution. The embedded API bridge also rejects
+hardlinks and incomplete or wrong-authority receipts. The verifier prints the
+rejected path and observed identity. Audit evidence belongs in `.jankurai/` and
 `target/jankurai/`; never repair an identity failure by editing a score or
 relabeling `agent/baselines/historical/` evidence.
 

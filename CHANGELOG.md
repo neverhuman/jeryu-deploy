@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Govern every active Jankurai consumer on the local-authority 1.6.11 tag and
-  exact binary digest, with physical-file and hostile-substitution tests; retain
+  exact binary digest and installation receipt, with physical-file,
+  wrong-authority, hostile-substitution, and PATH-neutralization tests; retain
   the 1.6.10 score baseline only as non-authoritative history.
 
 ## jeryu-deploy-v5.0.0-split.0 - 2026-06-11

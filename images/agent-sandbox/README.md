@@ -54,11 +54,12 @@ revert, etc. on its assigned branch and submit to jeryu for PR CI.
 Lanes always resolve jankurai via **`$JERYU_JANKURAI_BIN`** (baked into the image as
 `/opt/rust/cargo/bin/jankurai`) or that explicit path — **never** a bare `jankurai`
 PATH lookup, which a stale build earlier on PATH can shadow with the wrong version.
-The pin (local forge repo/tag/rev, version, and SHA-256) **must stay in sync with
-`ops/ci/lib.sh`**. `ops/ci/ensure-jankurai.sh` verifies only; it never installs or
-discovers a PATH binary. A pin bump requires rebuilding this image because the
-runtime has no network. The build and smoke assert physical file, digest, and
-version identity.
+The pin (local forge repo/tag/rev/tree/archive/lock, version, binary SHA-256, and
+protected jeryu-tool authority) **must stay in sync with `ops/ci/lib.sh`**. The
+image carries a content-addressed, path-bound installation receipt and the
+standalone verifier; live smoke executes that verifier inside the networkless
+container. `ops/ci/ensure-jankurai.sh` verifies only and never installs a tool.
+A pin bump requires rebuilding this image because the runtime has no network.
 
 ## Build
 ```

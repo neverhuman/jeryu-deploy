@@ -65,6 +65,121 @@ fn governed_jankurai_identity_rejects_version_digest_and_physical_substitution()
     assert!(verify_jankurai_identity(&hard_target, "jankurai 1.6.11", &good_sha).is_err());
 }
 
+fn governed_receipt(binary: &Path, binary_sha: &str) -> serde_json::Value {
+    serde_json::json!({
+        "binary": {
+            "sha256": binary_sha,
+            "version_output": "jankurai 1.6.11"
+        },
+        "build": {
+            "cargo": GOVERNED_JANKURAI_CARGO_VERSION,
+            "cargo_net_offline": true,
+            "dedicated_cargo_home": true,
+            "git_global_config_disabled": true,
+            "git_http_follow_redirects": false,
+            "git_system_config_disabled": true,
+            "git_terminal_prompt": false,
+            "jankurai_update_check": false,
+            "mode": GOVERNED_JANKURAI_BUILD_MODE,
+            "network_scope": "local-forge-source-plus-offline-cargo",
+            "no_proxy": "127.0.0.1,localhost,::1",
+            "rustc": GOVERNED_JANKURAI_RUSTC_VERSION,
+            "target_triple": GOVERNED_JANKURAI_TARGET_TRIPLE
+        },
+        "conclusion": "success",
+        "governance": {
+            "manifest_commit": GOVERNED_JANKURAI_MANIFEST_COMMIT,
+            "manifest_repo": GOVERNED_JANKURAI_MANIFEST_REPO,
+            "manifest_sha256": GOVERNED_JANKURAI_MANIFEST_SHA256,
+            "manifest_tree": GOVERNED_JANKURAI_MANIFEST_TREE,
+            "protected_main": true,
+            "protection_policy": "immutable-main-v1",
+            "status": "governed"
+        },
+        "installation": {
+            "atomic": true,
+            "path": binary
+        },
+        "schema": "jeryu.jankurai-installation/v1",
+        "source": {
+            "archive_sha256": GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256,
+            "cargo_lock_sha256": GOVERNED_JANKURAI_CARGO_LOCK_SHA256,
+            "commit": GOVERNED_JANKURAI_SOURCE_REV,
+            "remote": GOVERNED_JANKURAI_SOURCE_REPO,
+            "tag": GOVERNED_JANKURAI_SOURCE_TAG,
+            "tree": GOVERNED_JANKURAI_SOURCE_TREE,
+            "verification": "release-authoritative"
+        },
+        "test_mode": false
+    })
+}
+
+fn write_content_addressed_receipt(root: &Path, document: &serde_json::Value) -> PathBuf {
+    let bytes = serde_json::to_vec_pretty(document).unwrap();
+    let digest = hex::encode(Sha256::digest(&bytes));
+    let path = root.join(format!("{digest}.json"));
+    fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn governed_jankurai_authority_requires_complete_content_addressed_receipt() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let binary = temp.path().join("jankurai");
+    fs::write(
+        &binary,
+        "#!/usr/bin/env bash\nprintf 'jankurai 1.6.11\\n'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    let binary_sha = hex::encode(Sha256::digest(fs::read(&binary).unwrap()));
+
+    let valid_document = governed_receipt(&binary, &binary_sha);
+    let valid = write_content_addressed_receipt(temp.path(), &valid_document);
+    assert!(
+        verify_jankurai_authority(
+            &binary,
+            std::slice::from_ref(&valid),
+            "jankurai 1.6.11",
+            &binary_sha,
+        )
+        .is_ok()
+    );
+    assert!(verify_jankurai_authority(&binary, &[], "jankurai 1.6.11", &binary_sha).is_err());
+
+    let tampered = write_content_addressed_receipt(temp.path(), &valid_document);
+    fs::write(&tampered, b"{}").unwrap();
+    assert!(
+        verify_jankurai_authority(&binary, &[tampered], "jankurai 1.6.11", &binary_sha,).is_err()
+    );
+
+    for pointer in [
+        "/source/remote",
+        "/source/tag",
+        "/source/commit",
+        "/source/tree",
+        "/source/archive_sha256",
+        "/source/cargo_lock_sha256",
+        "/governance/manifest_commit",
+        "/governance/manifest_tree",
+        "/governance/manifest_sha256",
+        "/binary/sha256",
+        "/installation/path",
+    ] {
+        let mut wrong = valid_document.clone();
+        *wrong.pointer_mut(pointer).unwrap() = serde_json::json!("wrong-authority");
+        let wrong_path = write_content_addressed_receipt(temp.path(), &wrong);
+        assert!(
+            verify_jankurai_authority(&binary, &[wrong_path], "jankurai 1.6.11", &binary_sha,)
+                .is_err(),
+            "receipt mutation was accepted: {pointer}"
+        );
+    }
+}
+
 fn init_version_repo(root: &Path) -> (String, String) {
     git(root, &["init", "-q", "-b", "main"]);
     git(root, &["config", "user.email", "ci@example.invalid"]);

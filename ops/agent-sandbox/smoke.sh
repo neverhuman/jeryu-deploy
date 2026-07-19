@@ -170,8 +170,8 @@ expect_zero "tsc is present" tsc --version
 
 # The pinned jankurai auditor ships in the image (the runtime is --network none, so CI
 # lanes can never install it at session time). KEEP IN SYNC with ops/ci/lib.sh:
-# the version and digest must be the pin, the binary must resolve unshadowed at
-# the exact explicit path, and JERYU_JANKURAI_BIN must point there.
+# the version, digest, and installation receipt must bind the exact explicit
+# path. The same governed verifier used by score/CI must pass inside the image.
 expect_zero "jankurai is the pinned 1.6.11" \
   sh -c '[ "$(/opt/rust/cargo/bin/jankurai --version)" = "jankurai 1.6.11" ]'
 expect_zero "jankurai is a single-link physical file" \
@@ -182,6 +182,10 @@ expect_zero "jankurai resolves to the pinned path (no shadowing)" \
   sh -c '[ "$(command -v jankurai)" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \
   sh -c '[ "$JERYU_JANKURAI_BIN" = "/opt/rust/cargo/bin/jankurai" ]'
+expect_zero "JERYU_JANKURAI_RECEIPT points at the baked content-addressed receipt" \
+  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/98278aeffcc8bc7e4a4441bff1097bde5fc21edbd37ebf30eaaba0f10a765f2a.json" ]'
+expect_zero "governed Jankurai verifier passes against the baked receipt" \
+  bash /opt/jeryu/governance/ensure-jankurai.sh
 
 echo "agent-sandbox smoke: $passes passed, $fails failed"
 if [[ "$mode" == "full" ]]; then

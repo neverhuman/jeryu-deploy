@@ -35,10 +35,15 @@ release-authoritative source is the local Jeryu tag
 `v1.6.11-deadlang-precision-split.1`; the installed binary must report
 `jankurai 1.6.11` and match SHA-256
 `fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e`.
-The verifier rejects missing files, symlinks, PATH shadows, version drift, and
-byte substitution. The embedded API bridge additionally rejects multi-link
-files. Verification never installs or fetches a tool, and GitHub is neither
-release authority nor a dependency of this verification path.
+The verifier rejects missing files, symlinks, version drift, byte substitution,
+and missing or mismatched content-addressed installation receipts. It
+deterministically neutralizes an earlier ambient PATH entry by prepending the
+governed binary directory and then verifying the resulting resolution; it does
+not claim the initial PATH was rejected. The embedded API bridge additionally
+rejects multi-link files and validates the complete local source, build, and
+protected jeryu-tool manifest authority before publishing a score. Verification
+never installs or fetches a tool, and GitHub is neither release authority nor a
+dependency of this verification path.
 
 The former 1.6.10 score is preserved byte-identically under
 `agent/baselines/historical/` as audit history. The active ratchet remains
