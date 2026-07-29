@@ -143,13 +143,14 @@ fn capture_agent_commit(
 
 fn fake_state(core: ForgeCore, storage_root: &Path) -> (Arc<WebState>, Arc<FakeContainerRuntime>) {
     let fake = Arc::new(FakeContainerRuntime::default());
-    let state = Arc::new(WebState::new_with_git_storage_and_warm_pool(
+    let mut state = WebState::new_with_git_storage_and_warm_pool(
         core,
         storage_root.to_path_buf(),
         fake.clone(),
         WARM_TARGET,
-    ));
-    (state, fake)
+    );
+    state.session_runtime.spawn_companion_shell = false;
+    (Arc::new(state), fake)
 }
 
 /// Like [`fake_state`] but with the session runtime backend + docker seam injected
@@ -243,6 +244,10 @@ async fn create_claims_a_prewarmed_cell_on_unique_branch_at_latest_main() {
     assert_eq!(created["session_id"], "run-42");
     assert_eq!(created["ws_scope"], "agent_run.run-42");
     assert_eq!(created["status_url"], "/api/v1/agent-runs/run-42");
+    assert!(
+        created.get("shell_run_id").is_none(),
+        "routine hermetic fixtures must not leak a long-lived companion shell"
+    );
 
     // The session was handed a PRE-WARMED container: exactly one of the cells the
     // pool had warmed before the claim has left the warm set, proving the New
@@ -284,6 +289,72 @@ async fn create_claims_a_prewarmed_cell_on_unique_branch_at_latest_main() {
     assert_eq!(
         registered.oid, main_oid,
         "branch registered at latest-main oid"
+    );
+}
+
+#[tokio::test]
+async fn create_session_companion_shell_is_registered_and_terminates() {
+    let storage = tempfile::tempdir().expect("git storage");
+    let core = ForgeCore::new();
+    seed_repo(&core, storage.path(), "alice", "jeryu");
+    let fake = Arc::new(FakeContainerRuntime::default());
+    let state = Arc::new(WebState::new_with_git_storage_and_warm_pool(
+        core,
+        storage.path().to_path_buf(),
+        fake,
+        WARM_TARGET,
+    ));
+
+    let created = create_session(
+        &state,
+        "alice/jeryu",
+        json!({
+            "agent_id": "companion-proof",
+            "run_id": "run-companion-proof",
+            "command": "/bin/true",
+        }),
+    )
+    .await;
+    let shell_run_id = created["shell_run_id"]
+        .as_str()
+        .expect("production-enabled session returns a companion shell id");
+    let runs =
+        response_json(super::list(State(state.clone()), AxumPath("alice/jeryu".to_string())).await)
+            .await;
+    let agent_row = runs["items"]
+        .as_array()
+        .expect("repo agent runs")
+        .iter()
+        .find(|row| row["run_id"] == "run-companion-proof")
+        .expect("created agent run");
+    assert_eq!(
+        agent_row["shell_run_id"], shell_run_id,
+        "agent row must register its companion shell"
+    );
+
+    let control = response_json(
+        super::super::agent_runs::control(
+            State(state.clone()),
+            AxumPath(shell_run_id.to_string()),
+            Bytes::from(json!({"kind": "terminate"}).to_string()),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(control["accepted"], true, "terminate control: {control:?}");
+    assert_eq!(control["command"], "terminate");
+
+    let mut shell_status = run_status(&state, shell_run_id).await;
+    for _ in 0..200 {
+        if shell_status["state"] != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        shell_status = run_status(&state, shell_run_id).await;
+    }
+    assert_ne!(
+        shell_status["state"], "running",
+        "terminated companion shell must reach a terminal state: {shell_status:?}"
     );
 }
 
@@ -949,6 +1020,7 @@ fn docker_runtime(fake_docker: &Path) -> super::SessionRuntimeConfig {
     super::SessionRuntimeConfig {
         runtime: super::SessionRuntime::Docker,
         docker_bin: Some(fake_docker.to_string_lossy().to_string()),
+        spawn_companion_shell: false,
     }
 }
 
@@ -1069,6 +1141,7 @@ async fn create_session_native_runtime_uses_native_path() {
     let runtime = super::SessionRuntimeConfig {
         runtime: super::SessionRuntime::Native,
         docker_bin: Some(fake_docker.to_string_lossy().to_string()),
+        spawn_companion_shell: false,
     };
     let (state, _fake) = fake_state_with_runtime(core, storage.path(), runtime);
 
@@ -1115,6 +1188,7 @@ async fn create_session_docker_runtime_missing_docker_degrades_gracefully() {
     let runtime = super::SessionRuntimeConfig {
         runtime: super::SessionRuntime::Docker,
         docker_bin: None,
+        spawn_companion_shell: false,
     };
     let (state, _fake) = fake_state_with_runtime(core, storage.path(), runtime);
 

@@ -430,58 +430,64 @@ fn create_session(
     // ── Spawn a companion shell in the same workspace ──────────────────
     // The operator can interact with this shell freely while the agent runs
     // in the top pane. Spawned at creation time so it is ready immediately.
-    let shell_id = state.agent_runs.allocate_id();
-    let (shell_ctl_tx, shell_ctl_rx) = std::sync::mpsc::channel();
-    state.agent_runs.insert_session(SessionRecordInit {
-        run_id: shell_id.clone(),
-        repo: full_name.clone(),
-        branch: String::new(),
-        base_oid: String::new(),
-        runner: "local".to_string(),
-        agent: "shell".to_string(),
-        program: "/bin/bash".to_string(),
-        args: vec!["--norc".to_string(), "--noprofile".to_string()],
-        workspace: workspace.clone(),
-        control_tx: Some(shell_ctl_tx),
-    });
-    let mut shell_env: BTreeMap<String, String> = BTreeMap::new();
-    // Colorful prompt: green user@host, blue cwd, reset.
-    shell_env.insert(
-        "PS1".to_string(),
-        r#"\[\033[1;32m\]shell\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]\$ "#.to_string(),
-    );
-    // Enable color output for ls, grep, etc.
-    shell_env.insert("TERM".to_string(), "xterm-256color".to_string());
-    shell_env.insert("CLICOLOR".to_string(), "1".to_string());
-    shell_env.insert("CLICOLOR_FORCE".to_string(), "1".to_string());
-    shell_env.insert("LS_COLORS".to_string(),
-        "di=1;34:ln=1;36:so=1;35:pi=33:ex=1;32:bd=1;33;40:cd=1;33;40:su=37;41:sg=30;43:tw=30;42:ow=34;42".to_string());
-    let shell_spec = CommandSpec {
-        program: "/bin/bash".to_string(),
-        args: vec!["--norc".to_string(), "--noprofile".to_string()],
-        env: shell_env,
-    };
-    spawn_session_agent(
-        &state.agent_runs,
-        SessionAgentSpawn {
+    // Hermetic route tests disable this long-lived process and cover the
+    // production-enabled path explicitly, including termination.
+    let shell_id = if state.session_runtime.spawn_companion_shell {
+        let shell_id = state.agent_runs.allocate_id();
+        let (shell_ctl_tx, shell_ctl_rx) = std::sync::mpsc::channel();
+        state.agent_runs.insert_session(SessionRecordInit {
             run_id: shell_id.clone(),
-            workspace,
-            spec: Some(shell_spec),
-            backend: PtyBackend::DockerHost, // unsandboxed host PTY — operator shell
-            docker_fallback: None,
-            control_rx: shell_ctl_rx,
-            timeout: Duration::from_secs(7200),
-            output_budget: 20_971_520,
-            require_cgroup: false,
-        },
-    );
-
-    state
-        .agent_runs
-        .register_shell_companion(&run_id, &shell_id);
+            repo: full_name.clone(),
+            branch: String::new(),
+            base_oid: String::new(),
+            runner: "local".to_string(),
+            agent: "shell".to_string(),
+            program: "/bin/bash".to_string(),
+            args: vec!["--norc".to_string(), "--noprofile".to_string()],
+            workspace: workspace.clone(),
+            control_tx: Some(shell_ctl_tx),
+        });
+        let mut shell_env: BTreeMap<String, String> = BTreeMap::new();
+        // Colorful prompt: green user@host, blue cwd, reset.
+        shell_env.insert(
+            "PS1".to_string(),
+            r#"\[\033[1;32m\]shell\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]\$ "#.to_string(),
+        );
+        // Enable color output for ls, grep, etc.
+        shell_env.insert("TERM".to_string(), "xterm-256color".to_string());
+        shell_env.insert("CLICOLOR".to_string(), "1".to_string());
+        shell_env.insert("CLICOLOR_FORCE".to_string(), "1".to_string());
+        shell_env.insert("LS_COLORS".to_string(),
+            "di=1;34:ln=1;36:so=1;35:pi=33:ex=1;32:bd=1;33;40:cd=1;33;40:su=37;41:sg=30;43:tw=30;42:ow=34;42".to_string());
+        let shell_spec = CommandSpec {
+            program: "/bin/bash".to_string(),
+            args: vec!["--norc".to_string(), "--noprofile".to_string()],
+            env: shell_env,
+        };
+        spawn_session_agent(
+            &state.agent_runs,
+            SessionAgentSpawn {
+                run_id: shell_id.clone(),
+                workspace,
+                spec: Some(shell_spec),
+                backend: PtyBackend::DockerHost, // unsandboxed host PTY — operator shell
+                docker_fallback: None,
+                control_rx: shell_ctl_rx,
+                timeout: Duration::from_secs(7200),
+                output_budget: 20_971_520,
+                require_cgroup: false,
+            },
+        );
+        state
+            .agent_runs
+            .register_shell_companion(&run_id, &shell_id);
+        Some(shell_id)
+    } else {
+        None
+    };
 
     let mut resp = session_response(&run_id, &branch, &base_oid);
-    resp.shell_run_id = Some(shell_id);
+    resp.shell_run_id = shell_id;
     Ok(resp)
 }
 
@@ -1316,6 +1322,10 @@ pub(crate) struct SessionRuntimeConfig {
     /// The docker binary the seam invokes (`JERYU_DOCKER_BIN` or `docker` on PATH);
     /// `None` when no docker is resolvable, which drives the graceful path.
     pub(crate) docker_bin: Option<String>,
+    /// Whether New Session starts the production two-pane companion shell.
+    /// Production is always enabled; hermetic tests may disable the long-lived
+    /// process and exercise the enabled path in one cleanup-aware proof.
+    pub(crate) spawn_companion_shell: bool,
 }
 
 impl SessionRuntimeConfig {
@@ -1346,6 +1356,7 @@ impl SessionRuntimeConfig {
         Self {
             runtime,
             docker_bin,
+            spawn_companion_shell: true,
         }
     }
 }
