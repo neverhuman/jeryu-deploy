@@ -11,6 +11,11 @@ Keep split `main` clean. The legacy monorepo (`/home/ubuntu/jeryu`) is
 deprecated and archived as `jeryu/jeryu-monorepo`; this split family is the
 only source of truth. Land changes through PRs with green required checks.
 
+Canonical agent-readable detail is routed through `docs/architecture.md`,
+`docs/boundaries.md`, `docs/testing.md`, `docs/generated-zones.md`, and
+`docs/audit-rubric.md`. Deploy's release proof is its mapped standalone lanes;
+the monorepo-only `jeryu-mapcheck docs` marker check is not a Deploy gate.
+
 Cross-repo Rust dependencies are pinned Git dependencies using
 `*-v4.0.0-split.0` tags. Only `jeryu-deploy` may use local sibling path patches
 for split-family development.

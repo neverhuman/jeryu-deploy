@@ -153,6 +153,22 @@ rejected path and observed identity. Audit evidence belongs in `.jankurai/` and
 `target/jankurai/`; never repair an identity failure by editing a score or
 relabeling `agent/baselines/historical/` evidence.
 
+For a governed identity rotation, run the external projection invariant before
+the full lanes:
+
+```bash
+cargo test --locked --offline -p jeryu-api --features web --test jankurai_governance
+bash ops/ci/test-governed-jankurai.sh
+just score
+jankurai diff-audit --base-ref origin/main .
+```
+
+The integration test closes the tag/revision/tree/archive/binary projection,
+the image receipt and manifest authority, retired-identity absence, and
+release-broker custody behavior. `agent/test-map.json` owns the rerun route.
+The monorepo-only `jeryu-mapcheck docs` marker check is not a standalone
+Deploy proof lane; protected local `jeryu-deploy/required` is authoritative.
+
 - `ops/ci/verify-jeryu-env.sh --build-local` builds the repo-local `jeryu`
   binary, accepts the canonical GitHub remote or the loopback local Jeryu
   remote on `127.0.0.1:8787`, and ensures CI does not select the retired

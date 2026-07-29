@@ -22,3 +22,12 @@ read-only evidence that must degrade as `missing`, `stale`, `queued`, `failed`,
 or `unknown` rather than becoming an implicit green signal.
 
 Operational truth is local-first. The canonical validation surfaces are `Justfile`, `ops/ci/*.sh`, `ops/ci/gates/*.sh`, and `agent/test-map.json`.
+
+## Standalone Delivery Authority
+
+This split repository composes immutable sibling releases into the API and CLI
+delivery graph. It consumes the governed Jankurai identity rendered from the
+protected `jeryu-tool` manifest, but it never issues, signs, or silently
+substitutes that identity. The release-broker path is a deployment boundary:
+release CI must resolve the single physical broker binary before any score or
+artifact decision is trusted.

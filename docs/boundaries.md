@@ -30,6 +30,17 @@ must check before a cross-boundary change is merged.
 Cross-boundary calls must use typed ids, receipts, or explicit policy decisions;
 direct state mutation from another layer is a bug.
 
+## Governed Tool Boundary
+
+Jankurai source identity is generated from the protected `jeryu-tool`
+manifest and projected into workflows, API verification, sandbox image
+metadata, receipts, and local CI wrappers. Deploy may verify and consume that
+projection only. Ordinary lanes require a digest-bound installation receipt;
+`JAIN_RELEASE_CI=1` instead requires the root-broker path, mode `0555`, one
+physical link, and no caller-provided receipt or test-authority override.
+Unavailable or inconsistent authority fails the lane and never falls back to
+an ambient binary.
+
 ## Workcells
 
 Workcell claims can only flow through the runnerd control plane. The workcell

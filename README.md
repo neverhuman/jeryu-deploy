@@ -20,6 +20,11 @@ authority. Durable detail is intentionally routed rather than duplicated:
 - Audit and release controls: `agent/audit-policy.toml`, `docs/audit-rubric.md`,
   `docs/release.md`, and `docs/release-process.md`.
 
+Governed Jankurai rotations run the closed projection integration test, the
+hostile-identity shell verifier, full score, and protected-base diff audit
+listed in `docs/testing.md`. The monorepo-only mapcheck marker lane is not a
+standalone Deploy proof.
+
 ## Owned Cargo Packages
 
 - `crates/jeryu-api`

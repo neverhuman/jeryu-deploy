@@ -95,6 +95,11 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
+    "crates/jeryu-api/tests/jankurai_governance.rs": {
+      "command": "cargo test --locked --offline -p jeryu-api --features web --test jankurai_governance",
+      "lane": "check",
+      "purpose": "prove every generated Jankurai consumer, receipt, and release-broker verifier shares one closed governed identity"
+    },
     "crates/jeryu-api/": {
       "command": "just check",
       "lane": "check",

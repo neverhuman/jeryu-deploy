@@ -29,3 +29,12 @@ explicit without hiding the underlying delta.
 Reject fake-green tests, tautological assertions, silent fallbacks, broad
 catch-all adapters, and unowned files. Every new path needs a narrow owner and a
 local proof command.
+
+## Changed-Surface Release Proof
+
+A full score is necessary but does not replace `jankurai diff-audit --base-ref
+origin/main .`. Governed identity changes must carry an external integration or
+property-style invariant, an exact `agent/test-map.json` route, and concise
+agent-readable architecture, boundary, testing, generated-zone, and audit
+guidance. A new cap or hard finding stops publication even when the full
+repository score remains green.
