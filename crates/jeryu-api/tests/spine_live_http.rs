@@ -8,7 +8,7 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -103,15 +103,40 @@ fn write_incompressible_file(path: &Path, len: usize) {
 /// Git http config that aborts a stalled transfer instead of hanging.
 const GIT_HTTP_GUARD: &[&str] = &["-c", "http.lowSpeedLimit=100", "-c", "http.lowSpeedTime=20"];
 
-async fn wait_until_listening(addr: SocketAddr) {
+async fn wait_until_listening(addr: SocketAddr, server: &mut tokio::task::JoinHandle<()>) {
     let deadline = Instant::now() + Duration::from_secs(20);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
     loop {
-        if TcpStream::connect(addr).is_ok() {
+        if server.is_finished() {
+            let result = server.await;
+            panic!("server task exited before readiness on {addr}: {result:?}");
+        }
+        let health = client.get(format!("http://{addr}/healthz")).send().await;
+        if health.is_ok_and(|response| response.status().is_success()) {
+            tokio::task::yield_now().await;
+            if server.is_finished() {
+                let result = server.await;
+                panic!("server task exited before readiness on {addr}: {result:?}");
+            }
             return;
         }
         assert!(Instant::now() < deadline, "server never listened on {addr}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[should_panic(expected = "server task exited before readiness")]
+async fn readiness_rejects_an_already_exited_server_task() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut server = tokio::spawn(async {});
+    tokio::task::yield_now().await;
+
+    wait_until_listening(addr, &mut server).await;
 }
 
 fn assert_lfs_content_type(resp: &reqwest::Response) {
@@ -157,8 +182,8 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let server = tokio::spawn(async move { serve(config).await.unwrap() });
-    wait_until_listening(addr).await;
+    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr, &mut server).await;
 
     // 1. Create the repo over HTTP -> materializes a bare repo on disk.
     eprintln!("[s4] POST /repos ...");
@@ -306,8 +331,8 @@ async fn s4_git_lfs_batch_and_locks_verify_routes_return_protocol_json() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let server = tokio::spawn(async move { serve(config).await.unwrap() });
-    wait_until_listening(addr).await;
+    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr, &mut server).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -403,8 +428,8 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let server = tokio::spawn(async move { serve(config).await.unwrap() });
-    wait_until_listening(addr).await;
+    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr, &mut server).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -423,12 +448,17 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
     let source = work.join("source");
     run_git(&source, &["config", "user.email", "tester@jeryu.invalid"]);
     run_git(&source, &["config", "user.name", "Tester"]);
-    run_git(&source, &["lfs", "install", "--local"]);
+    run_git(&source, &["lfs", "install", "--local", "--skip-repo"]);
+    assert!(
+        !source.join(".git/hooks/pre-push").exists(),
+        "the live LFS fixture must not install or execute Git hooks"
+    );
     run_git(&source, &["lfs", "track", "*.cpkt"]);
 
     let v1 = write_bytes(&source.join("model.cpkt"), 11, 4096);
     run_git(&source, &["add", ".gitattributes", "model.cpkt"]);
     run_git(&source, &["commit", "-m", "model v1"]);
+    run_git(&source, &["lfs", "push", "origin", "HEAD"]);
     run_git(
         &source,
         &[
@@ -441,6 +471,7 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
     let v2 = write_bytes(&source.join("model.cpkt"), 29, 6144);
     run_git(&source, &["add", "model.cpkt"]);
     run_git(&source, &["commit", "-m", "model v2"]);
+    run_git(&source, &["lfs", "push", "origin", "HEAD"]);
     run_git(
         &source,
         &[
