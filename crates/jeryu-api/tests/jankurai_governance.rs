@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -130,4 +131,221 @@ fn integration_receipt_and_release_broker_contract_remain_fail_closed() {
     let smoke = read("ops/agent-sandbox/smoke.sh");
     assert!(image.contains(IMAGE_RECEIPT_SHA256));
     assert!(smoke.contains(IMAGE_RECEIPT_SHA256));
+}
+
+#[test]
+fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
+    let root: toml::Value = toml::from_str(&read("Cargo.toml")).expect("parse root Cargo.toml");
+    let patches = root
+        .get("patch")
+        .and_then(toml::Value::as_table)
+        .expect("release graph must declare its Core source unifier");
+    assert_eq!(
+        patches.len(),
+        2,
+        "release graph may patch only the historical Core and Intelligence sources"
+    );
+
+    let core_patches = patches
+        .get("https://github.com/neverhuman/jeryu-core.git")
+        .and_then(toml::Value::as_table)
+        .expect("historical Core source patch must be a table");
+    assert_eq!(
+        core_patches.len(),
+        2,
+        "Core unifier must contain only jeryu-core and jeryu-proof"
+    );
+    for package in ["jeryu-core", "jeryu-proof"] {
+        let source = core_patches
+            .get(package)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("{package} Core unifier must be a table"));
+        assert_eq!(
+            source.get("git").and_then(toml::Value::as_str),
+            Some("http://127.0.0.1:8787/git/jeryu/jeryu-core.git")
+        );
+        assert_eq!(
+            source.get("tag").and_then(toml::Value::as_str),
+            Some("jeryu-core-v5.0.0-split.3")
+        );
+        assert!(
+            source.get("path").is_none(),
+            "{package} must not resolve from a sibling path"
+        );
+    }
+    assert!(
+        !read("Cargo.toml").contains("path = \"../jeryu-"),
+        "release Cargo.toml must not contain sibling Jeryu paths"
+    );
+    let intelligence_patches = patches
+        .get("https://github.com/neverhuman/jeryu-intelligence.git")
+        .and_then(toml::Value::as_table)
+        .expect("historical Intelligence source patch must be a table");
+    assert_eq!(
+        intelligence_patches.len(),
+        1,
+        "Intelligence unifier must contain only jeryu-rustjet"
+    );
+    let rustjet_source = intelligence_patches
+        .get("jeryu-rustjet")
+        .and_then(toml::Value::as_table)
+        .expect("jeryu-rustjet unifier must be a table");
+    assert_eq!(
+        rustjet_source.get("git").and_then(toml::Value::as_str),
+        Some("http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git")
+    );
+    assert_eq!(
+        rustjet_source.get("tag").and_then(toml::Value::as_str),
+        Some("jeryu-intelligence-v5.0.0-split.1")
+    );
+    assert!(
+        rustjet_source.get("path").is_none(),
+        "jeryu-rustjet must not resolve from a sibling path"
+    );
+
+    let api: toml::Value =
+        toml::from_str(&read("crates/jeryu-api/Cargo.toml")).expect("parse API Cargo.toml");
+    let dependencies = api
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .expect("API dependencies must be a table");
+    let expected_groups = [
+        (
+            "jeryu-core-v5.0.0-split.3",
+            &[
+                "jeryu-core",
+                "jeryu-enterprise",
+                "jeryu-gitd",
+                "jeryu-readmodel",
+            ][..],
+        ),
+        (
+            "jeryu-ci-runner-v5.0.0-split.0",
+            &[
+                "jeryu-agent-stream",
+                "jeryu-agentbridge",
+                "jeryu-ci-compiler",
+                "jeryu-ci-ir",
+                "jeryu-runner-core",
+                "jeryu-runner-oci",
+                "jeryu-runnerd",
+            ][..],
+        ),
+        (
+            "jeryu-intelligence-v5.0.0-split.1",
+            &["jeryu-autonomy", "jeryu-codegraph", "jeryu-mcp"][..],
+        ),
+        (
+            "jeryu-release-ops-v5.0.0-split.0",
+            &["jeryu-bench", "jeryu-obs", "jeryu-wsversion"][..],
+        ),
+        ("jeryu-jira-v5.0.0-split.0", &["jeryu-jira"][..]),
+    ];
+    let expected_count: usize = expected_groups
+        .iter()
+        .map(|(_, packages)| packages.len())
+        .sum();
+    assert_eq!(
+        dependencies
+            .keys()
+            .filter(|name| name.starts_with("jeryu-"))
+            .count(),
+        expected_count,
+        "internal dependency set must remain closed"
+    );
+    for (tag, packages) in expected_groups {
+        for package in packages {
+            let dependency = dependencies
+                .get(*package)
+                .and_then(toml::Value::as_table)
+                .unwrap_or_else(|| panic!("{package} dependency must be an explicit table"));
+            assert!(
+                dependency
+                    .get("git")
+                    .and_then(toml::Value::as_str)
+                    .is_some(),
+                "{package} must declare a Git source"
+            );
+            assert_eq!(
+                dependency.get("tag").and_then(toml::Value::as_str),
+                Some(tag),
+                "{package} must declare the governed immutable tag"
+            );
+            assert!(
+                dependency.get("path").is_none(),
+                "{package} must not declare a sibling path"
+            );
+        }
+    }
+
+    let lock: toml::Value = toml::from_str(&read("Cargo.lock")).expect("parse Cargo.lock");
+    assert!(
+        lock.get("patch").is_none(),
+        "Cargo.lock must not retain unused patch records"
+    );
+    let packages = lock
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .expect("Cargo.lock packages must be an array");
+    let mut core_count = 0;
+    let mut proof_count = 0;
+    let mut internal_counts = BTreeMap::new();
+    for package in packages {
+        let table = package.as_table().expect("lock package must be a table");
+        let name = table
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .expect("lock package must have a name");
+        if !name.starts_with("jeryu-") || matches!(name, "jeryu-api" | "jeryu-cli") {
+            continue;
+        }
+        *internal_counts.entry(name).or_insert(0_usize) += 1;
+        let source = table
+            .get("source")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("{name} must have an immutable Git lock source"));
+        assert!(
+            source.starts_with("git+"),
+            "{name} must resolve from Git, got {source}"
+        );
+        if name == "jeryu-core" {
+            core_count += 1;
+            assert_eq!(
+                source,
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.3#ef4a743ef7bc6c8deb9105160531ec6cef5d01b6"
+            );
+        } else if name == "jeryu-proof" {
+            proof_count += 1;
+            assert_eq!(
+                source,
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.3#ef4a743ef7bc6c8deb9105160531ec6cef5d01b6"
+            );
+        } else if name == "jeryu-rustjet" {
+            assert_eq!(
+                source,
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.1#6fb845c594c3e5e9ffea8047d8a3f814fa9ba4da"
+            );
+        }
+    }
+    assert_eq!(
+        core_count, 1,
+        "release graph must contain one Core identity"
+    );
+    assert_eq!(
+        proof_count, 1,
+        "release graph must contain one proof identity"
+    );
+    assert_eq!(
+        internal_counts.get("jeryu-rustjet"),
+        Some(&1),
+        "release graph must contain one Rustjet identity"
+    );
+    let duplicates: Vec<_> = internal_counts
+        .into_iter()
+        .filter(|(_, count)| *count != 1)
+        .collect();
+    assert!(
+        duplicates.is_empty(),
+        "release graph contains duplicate internal identities: {duplicates:?}"
+    );
 }

@@ -165,7 +165,10 @@ jankurai diff-audit --base-ref origin/main .
 
 The integration test closes the tag/revision/tree/archive/binary projection,
 the image receipt and manifest authority, retired-identity absence, and
-release-broker custody behavior. `agent/test-map.json` owns the rerun route.
+release-broker custody behavior. It also proves the committed release graph
+contains no sibling path dependency, every internal package is lock-bound to
+an immutable Git source, and Core/proof plus Rustjet each resolve exactly once
+at reviewed split.3/split.1. `agent/test-map.json` owns the rerun route.
 The monorepo-only `jeryu-mapcheck docs` marker check is not a standalone
 Deploy proof lane; protected local `jeryu-deploy/required` is authoritative.
 

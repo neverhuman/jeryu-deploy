@@ -41,48 +41,12 @@ missing_docs = "allow"
 [workspace.lints.clippy]
 pedantic = { level = "allow", priority = -1 }
 
-# Local split development patches. Release builds consume the pinned Git tags above.
-[patch."https://github.com/neverhuman/jeryu-ci-runner.git"]
-jeryu-agent-stream = { path = "../jeryu-ci-runner/crates/jeryu-agent-stream" }
-jeryu-agentbridge = { path = "../jeryu-ci-runner/crates/jeryu-agentbridge" }
-jeryu-ci-compiler = { path = "../jeryu-ci-runner/crates/jeryu-ci-compiler" }
-jeryu-ci-ir = { path = "../jeryu-ci-runner/crates/jeryu-ci-ir" }
-jeryu-ci-scheduler = { path = "../jeryu-ci-runner/crates/jeryu-ci-scheduler" }
-jeryu-runner-core = { path = "../jeryu-ci-runner/crates/jeryu-runner-core" }
-jeryu-runner-microvm = { path = "../jeryu-ci-runner/crates/jeryu-runner-microvm" }
-jeryu-runner-native = { path = "../jeryu-ci-runner/crates/jeryu-runner-native" }
-jeryu-runner-oci = { path = "../jeryu-ci-runner/crates/jeryu-runner-oci" }
-jeryu-runner-protocol = { path = "../jeryu-ci-runner/crates/jeryu-runner-protocol" }
-jeryu-runner-registry = { path = "../jeryu-ci-runner/crates/jeryu-runner-registry" }
-jeryu-runnerd = { path = "../jeryu-ci-runner/crates/jeryu-runnerd" }
-jeryu-sandbox-linux = { path = "../jeryu-ci-runner/crates/jeryu-sandbox-linux" }
-
+# Release graph unification. Historical sibling releases still name the GitHub
+# Core source at split.0; redirect only those two transitive packages to the
+# reviewed local-forge split.3 tag so Cargo has one immutable Core identity.
 [patch."https://github.com/neverhuman/jeryu-core.git"]
-jeryu-core = { path = "../jeryu-core/crates/jeryu-core" }
-jeryu-enterprise = { path = "../jeryu-core/crates/jeryu-enterprise" }
-jeryu-gitd = { path = "../jeryu-core/crates/jeryu-gitd" }
-jeryu-proof = { path = "../jeryu-core/crates/jeryu-proof" }
-jeryu-readmodel = { path = "../jeryu-core/crates/jeryu-readmodel" }
-
-[patch."http://127.0.0.1:8787/git/jeryu/jeryu-core.git"]
-jeryu-core = { path = "../jeryu-core/crates/jeryu-core" }
-jeryu-proof = { path = "../jeryu-core/crates/jeryu-proof" }
+jeryu-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.3" }
+jeryu-proof = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.3" }
 
 [patch."https://github.com/neverhuman/jeryu-intelligence.git"]
-jeryu-autonomy = { path = "../jeryu-intelligence/crates/jeryu-autonomy" }
-jeryu-codegraph = { path = "../jeryu-intelligence/crates/jeryu-codegraph" }
-jeryu-mcp = { path = "../jeryu-intelligence/crates/jeryu-mcp" }
-jeryu-rustjet = { path = "../jeryu-intelligence/crates/jeryu-rustjet" }
-
-[patch."http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git"]
-jeryu-rustjet = { path = "../jeryu-intelligence/crates/jeryu-rustjet" }
-
-[patch."https://github.com/neverhuman/jeryu-jira.git"]
-jeryu-jira = { path = "../jeryu-jira/crates/jeryu-jira" }
-
-[patch."https://github.com/neverhuman/jeryu-release-ops.git"]
-jeryu-bench = { path = "../jeryu-release-ops/crates/jeryu-bench" }
-jeryu-obs = { path = "../jeryu-release-ops/crates/jeryu-obs" }
-jeryu-repogate = { path = "../jeryu-release-ops/crates/jeryu-repogate" }
-jeryu-signing = { path = "../jeryu-release-ops/crates/jeryu-signing" }
-jeryu-wsversion = { path = "../jeryu-release-ops/crates/jeryu-wsversion" }
+jeryu-rustjet = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.1" }

@@ -41,6 +41,16 @@ physical link, and no caller-provided receipt or test-authority override.
 Unavailable or inconsistent authority fails the lane and never falls back to
 an ambient binary.
 
+The committed Cargo release graph is sibling-free. Internal packages declare
+immutable Git tags, and its only patches are Git-to-Git unifiers that map
+historical Core/proof and Rustjet consumers to reviewed local-forge Core
+split.3 and Intelligence split.1 tags. Local development may supply
+command-scoped path overrides, but they are never committed or used by release
+CI. The
+`release_dependencies_are_immutable_git_sources_without_sibling_paths`
+integration test rejects path/null lock sources and any duplicate internal
+identity.
+
 ## Workcells
 
 Workcell claims can only flow through the runnerd control plane. The workcell
