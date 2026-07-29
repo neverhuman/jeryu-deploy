@@ -51,7 +51,8 @@ switching branches / push / fetch / clone / worktrees — the agent can only com
 revert, etc. on its assigned branch and submit to jeryu for PR CI.
 
 ## How CI lanes find the auditor
-Lanes always resolve jankurai via **`$JERYU_JANKURAI_BIN`** (baked into the image as
+API and shell lanes resolve jankurai via **`$JERYU_JANKURAI_BIN`** and
+**`$JERYU_GOVERNED_JANKURAI_BIN`** (both baked into the image as
 `/opt/rust/cargo/bin/jankurai`) or that explicit path — **never** a bare `jankurai`
 PATH lookup, which a stale build earlier on PATH can shadow with the wrong version.
 The pin (local forge repo/tag/rev/tree/archive/lock, version, binary SHA-256, and

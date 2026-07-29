@@ -3,14 +3,13 @@
 set -euo pipefail
 
 # BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
-export JERYU_GOVERNED_JANKURAI_BIN="${JERYU_JANKURAI_BIN:-/home/ubuntu/.jeryu/bin/jankurai}"
 export JERYU_JANKURAI_SOURCE_REPO="http://127.0.0.1:8787/git/jeryu/jankurai.git"
 export JERYU_JANKURAI_VERSION="jankurai 1.6.11"
-export JERYU_JANKURAI_SHA256="fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e"
-export JERYU_JANKURAI_SOURCE_REV="dface7397fe24d46b0b1885ddd5782c34edbff49"
-export JERYU_JANKURAI_SOURCE_TAG="v1.6.11-deadlang-precision-split.1"
-export JERYU_JANKURAI_SOURCE_TREE="34a8a1fb59bc4ebfadf12c45d95f169d06acc781"
-export JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256="2fbca5d04083e3c8d32f383d5b6b4520b8911690b26968c6fbcb210e1202b938"
+export JERYU_JANKURAI_SHA256="96d99e6e7d8dc9cf23df1081edd1f975231456592f81d9405385219a2c7298aa"
+export JERYU_JANKURAI_SOURCE_REV="4dfbdfa3585f1928d5f996d7b5e14608dff14a03"
+export JERYU_JANKURAI_SOURCE_TAG="v1.6.11-deadlang-precision-split.2"
+export JERYU_JANKURAI_SOURCE_TREE="7e5d501aa6f0ee6ced9a48c6288a9943d0b9573c"
+export JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256="1aa3d178dec0fbb8d0657dd465ea6fda830ffc4ec1f65560b7b7d1682fd87e69"
 export JERYU_JANKURAI_CARGO_LOCK_SHA256="b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a"
 export JERYU_JANKURAI_RUST_TOOLCHAIN="1.95.0"
 export JERYU_JANKURAI_RUSTC_VERSION="rustc 1.95.0 (59807616e 2026-04-14)"
@@ -20,12 +19,26 @@ export JERYU_JANKURAI_BUILD_MODE="cargo-install-locked-offline-path-v1"
 # END GENERATED JANKURAI PIN
 
 require_jankurai() {
-  local bin="${JERYU_GOVERNED_JANKURAI_BIN}"
-  local bin_dir normalized resolved actual actual_sha receipt receipt_digest receipt_sha
+  local mode=receipt-bound
+  local expected_broker="/opt/jain-ci/authority/release-bin/jankurai"
+  local expected_governed="/home/ubuntu/.jeryu/bin/jankurai"
+  local bin bin_dir governed_root normalized resolved actual actual_sha receipt receipt_digest receipt_sha
   local expected_test=false expected_verification=release-authoritative
   local expected_governance=governed expected_protected=true
   local expected_protection=immutable-main-v1 found_receipt=0
   local -a receipt_candidates=()
+  if [[ "${JAIN_RELEASE_CI:-0}" == "1" ]]; then
+    mode=release-broker
+    resolved="$(command -v jankurai 2>/dev/null || true)"
+    if [[ "${resolved}" != "${expected_broker}" ]]; then
+      printf 'release broker Jankurai path mismatch: expected %s, resolved %s\n' \
+        "${expected_broker}" "${resolved:-missing}" >&2
+      exit 1
+    fi
+    bin="${resolved}"
+  else
+    bin="${JERYU_GOVERNED_JANKURAI_BIN:-${expected_governed}}"
+  fi
   if [[ "${bin}" != /* || ! -f "${bin}" || -L "${bin}" || ! -x "${bin}" ]]; then
     printf 'governed jankurai must be an absolute executable regular file: %s\n' "${bin}" >&2
     exit 1
@@ -35,12 +48,21 @@ require_jankurai() {
     printf 'governed jankurai path traverses a symlink: %s -> %s\n' "${bin}" "${normalized}" >&2
     exit 1
   fi
-  bin_dir="$(dirname "${bin}")"
-  export PATH="${bin_dir}:${PATH}"
-  resolved="$(command -v jankurai 2>/dev/null || true)"
-  if [[ "${resolved}" != "${bin}" ]]; then
-    printf 'governed jankurai shadowed: expected %s, resolved %s\n' "${bin}" "${resolved:-missing}" >&2
+  if [[ "${mode}" == "release-broker" &&
+        "$(stat -c '%a:%h' -- "${bin}" 2>/dev/null || true)" != "555:1" ]]; then
+    printf 'release broker Jankurai custody mismatch: expected mode 0555 and one link at %s\n' \
+      "${bin}" >&2
     exit 1
+  fi
+  if [[ "${mode}" != "release-broker" ]]; then
+    bin_dir="$(dirname "${bin}")"
+    export PATH="${bin_dir}:${PATH}"
+    resolved="$(command -v jankurai 2>/dev/null || true)"
+    if [[ "${resolved}" != "${bin}" ]]; then
+      printf 'governed jankurai shadowed: expected %s, resolved %s\n' \
+        "${bin}" "${resolved:-missing}" >&2
+      exit 1
+    fi
   fi
   actual="$("${bin}" --version 2>/dev/null || true)"
   actual_sha="$(sha256sum "${bin}" 2>/dev/null | awk '{print $1}')"
@@ -50,19 +72,32 @@ require_jankurai() {
       "${bin}" "${actual:-missing}" "${actual_sha:-missing}" >&2
     exit 1
   fi
-  if [[ "${JERYU_JANKURAI_ALLOW_TEST_RECEIPT:-0}" == "1" ]]; then
+  export JERYU_GOVERNED_JANKURAI_BIN="${bin}"
+  if [[ "${mode}" == "release-broker" ]]; then
+    if [[ -n "${JERYU_JANKURAI_RECEIPT:-}" ||
+          -n "${JERYU_JANKURAI_RECEIPT_SHA256:-}" ||
+          "${JERYU_JANKURAI_ALLOW_TEST_RECEIPT:-0}" != "0" ]]; then
+      printf 'release broker Jankurai rejects caller receipt authority\n' >&2
+      exit 1
+    fi
+    found_receipt=1
+  elif [[ "${JERYU_JANKURAI_ALLOW_TEST_RECEIPT:-0}" == "1" ]]; then
     expected_test=true
     expected_verification=diagnostic-candidate
     expected_governance=diagnostic-candidate
     expected_protected=false
     expected_protection=not-applicable
   fi
-  if [[ -n "${JERYU_JANKURAI_RECEIPT:-}" ]]; then
+  if [[ "${mode}" == "release-broker" ]]; then
+    receipt_candidates=()
+  elif [[ -n "${JERYU_JANKURAI_RECEIPT:-}" ]]; then
     receipt_candidates=("${JERYU_JANKURAI_RECEIPT}")
-  elif [[ "${bin}" == "/home/ubuntu/.jeryu/bin/jankurai" ]]; then
-    receipt_candidates=(/home/ubuntu/.jeryu/receipts/jankurai/sha256/*.json)
+  elif [[ "${bin}" == "${expected_governed}" ]]; then
+    governed_root="$(dirname "$(dirname "${expected_governed}")")"
+    receipt_candidates=("${governed_root}"/receipts/jankurai/sha256/*.json)
   else
-    printf 'non-governed jankurai requires an explicit installation receipt: %s\n' "${bin}" >&2
+    printf 'non-governed jankurai requires an explicit installation receipt: %s\n' \
+      "${bin}" >&2
     exit 1
   fi
   for receipt in "${receipt_candidates[@]}"; do
@@ -119,7 +154,7 @@ require_jankurai() {
       break
     fi
   done
-  if [[ "${found_receipt}" -ne 1 ]]; then
+  if [[ "${mode}" != "release-broker" && "${found_receipt}" -ne 1 ]]; then
     printf 'governed jankurai receipt mismatch: binary=%s test_mode=%s\n' \
       "${bin}" "${expected_test}" >&2
     exit 1

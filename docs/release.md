@@ -32,9 +32,9 @@ The release structure is intentionally artifact-backed:
 
 Release and score lanes consume Jankurai only through `ops/ci/lib.sh`. The
 release-authoritative source is the local Jeryu tag
-`v1.6.11-deadlang-precision-split.1`; the installed binary must report
+`v1.6.11-deadlang-precision-split.2`; the installed binary must report
 `jankurai 1.6.11` and match SHA-256
-`fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e`.
+`96d99e6e7d8dc9cf23df1081edd1f975231456592f81d9405385219a2c7298aa`.
 The verifier rejects missing files, symlinks, version drift, byte substitution,
 and missing or mismatched content-addressed installation receipts. It
 deterministically neutralizes an earlier ambient PATH entry by prepending the
@@ -44,6 +44,12 @@ rejects multi-link files and validates the complete local source, build, and
 protected jeryu-tool manifest authority before publishing a score. Verification
 never installs or fetches a tool, and GitHub is neither release authority nor a
 dependency of this verification path.
+
+Under `JAIN_RELEASE_CI=1`, the root broker is the only path authority: the
+verifier ignores caller binary settings, requires PATH to resolve exactly to
+`/opt/jain-ci/authority/release-bin/jankurai`, requires mode `0555` with one
+physical link, and rejects caller receipt or test-authority overrides. Ordinary
+and image lanes remain content-addressed-receipt bound.
 
 The former 1.6.10 score is preserved byte-identically under
 `agent/baselines/historical/` as audit history. The active ratchet remains

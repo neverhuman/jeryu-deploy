@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- Govern every active Jankurai consumer on the local-authority 1.6.11 tag and
+- Govern every active Jankurai consumer on the local-authority 1.6.11 split.2 tag and
   exact binary digest and installation receipt, with physical-file,
-  wrong-authority, hostile-substitution, and PATH-neutralization tests; retain
-  the 1.6.10 score baseline only as non-authoritative history.
+  wrong-authority, hostile-substitution, and PATH-neutralization tests plus
+  root-broker release-custody controls; retain the 1.6.10 score baseline only as
+  non-authoritative history.
 
 ## jeryu-deploy-v5.0.0-split.0 - 2026-06-11
 - MAJOR: first standalone split-family release; the legacy monorepo
