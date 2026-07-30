@@ -21,6 +21,7 @@
     "configs/": "jeryu-deploy",
     "crates/jeryu-api/": "jeryu-deploy",
     "crates/jeryu-cli/": "jeryu-deploy",
+    "crates/jeryu-split-tool/": "jeryu-deploy",
     "deny.toml": "workspace",
     "docs/": "jeryu-deploy",
     "examples/": "jeryu-deploy",

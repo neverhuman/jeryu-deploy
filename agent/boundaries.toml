@@ -10,10 +10,8 @@ local_path_patches = true
 cargo_members = [
   "crates/jeryu-api",
   "crates/jeryu-cli",
+  "crates/jeryu-split-tool",
 ]
-
-[python]
-allowed_non_product_paths = ["ops/split/"]
 
 [db]
 root_paths = ["db"]

@@ -110,6 +110,11 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
+    "crates/jeryu-split-tool/": {
+      "command": "cargo test --locked --offline -p jeryu-split-tool && just check",
+      "lane": "check",
+      "purpose": "verify Rust-native split transition behavior and failure propagation"
+    },
     "deny.toml": {
       "command": "just security",
       "lane": "security",

@@ -1390,6 +1390,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jeryu-split-tool"
+version = "5.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "jeryu-wsversion"
 version = "5.0.0"
 source = "git+https://github.com/neverhuman/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.0#6f57a3153a9c64c7191f4fbc6c7a4e44767a8cac"

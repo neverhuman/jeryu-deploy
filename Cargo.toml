@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/jeryu-api",
   "crates/jeryu-cli",
+  "crates/jeryu-split-tool",
 ]
 exclude = [
   "fixtures/rust-small",

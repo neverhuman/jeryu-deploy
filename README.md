@@ -2,9 +2,9 @@
 
 Integration, end-user binary build, split lock, and release bundle logic.
 
-This repository was seeded from Jeryu source commit `cbecf7caa0e932c76a341b2521e66e911233860d` by
-`ops/split/materialize.py`. It is part of the seven-repo Jeryu split family and keeps source
-paths stable where practical so ownership remains auditable.
+This repository was seeded from Jeryu source commit `cbecf7caa0e932c76a341b2521e66e911233860d`.
+It is part of the Jeryu split family and keeps source paths stable where practical so ownership
+remains auditable.
 
 ## Agent Navigation
 
@@ -29,11 +29,13 @@ standalone Deploy proof.
 
 - `crates/jeryu-api`
 - `crates/jeryu-cli`
+- `crates/jeryu-split-tool`
 
 ## Source Coverage
 
 - `crates/jeryu-api/**`
 - `crates/jeryu-cli/**`
+- `crates/jeryu-split-tool/**`
 - `.github/**`
 - `ci-fast-push.sh`
 - `ops/**`
@@ -57,6 +59,12 @@ standalone Deploy proof.
 - `just score`
 - `just security`
 - `just artifact-support`
+
+Rust-native split transition checks are available through
+`cargo run --locked --offline -p jeryu-split-tool --bin jeryu-split --
+<manifest|source-coverage|fleet-ci|verify-lock|product-pipeline>`. The
+`ops/split/manifest.sh` compatibility entrypoint delegates to that binary and
+does not invoke a Python runtime.
 
 ## Quick Start
 

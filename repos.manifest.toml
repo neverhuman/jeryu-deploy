@@ -5,7 +5,7 @@ workers = 40
 source_root = "/home/ubuntu/jeryu"
 source_git_dir = "/home/ubuntu/.local/share/jeryu/git/jeryu/jeryu-monorepo.git"
 source_sha = "cbecf7caa0e932c76a341b2521e66e911233860d"
-split_root = "/home/ubuntu/jeryu-split"
+split_root = "/home/ubuntu/jain-split/jeryu-split"
 repo_family = "jeryu-split"
 dependency_tag_suffix = "v5.0.0-split.0"
 
@@ -40,7 +40,7 @@ shared_source_paths = [
 ]
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu"
 name = "jeryu"
 github_slug = "neverhuman/jeryu"
 jeryu_slug = "jeryu/jeryu"
@@ -58,7 +58,7 @@ copy_paths = []
 source_paths = []
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu-core"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu-core"
 name = "jeryu-core"
 github_slug = "neverhuman/jeryu-core"
 jeryu_slug = "jeryu/jeryu-core"
@@ -116,7 +116,7 @@ source_paths = [
 ]
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu-ci-runner"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu-ci-runner"
 name = "jeryu-ci-runner"
 github_slug = "neverhuman/jeryu-ci-runner"
 jeryu_slug = "jeryu/jeryu-ci-runner"
@@ -213,7 +213,7 @@ source_paths = [
 ]
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu-cache"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu-cache"
 name = "jeryu-cache"
 github_slug = "neverhuman/jeryu-cache"
 jeryu_slug = "jeryu/jeryu-cache"
@@ -259,7 +259,7 @@ source_paths = [
 ]
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu-intelligence"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu-intelligence"
 name = "jeryu-intelligence"
 github_slug = "neverhuman/jeryu-intelligence"
 jeryu_slug = "jeryu/jeryu-intelligence"
@@ -308,7 +308,7 @@ source_paths = [
 ]
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu-jira"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu-jira"
 name = "jeryu-jira"
 github_slug = "neverhuman/jeryu-jira"
 jeryu_slug = "jeryu/jeryu-jira"
@@ -338,7 +338,7 @@ source_paths = [
 ]
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu-web"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu-web"
 name = "jeryu-web"
 github_slug = "neverhuman/jeryu-web"
 jeryu_slug = "jeryu/jeryu-web"
@@ -372,7 +372,7 @@ source_paths = [
 ]
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu-release-ops"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu-release-ops"
 name = "jeryu-release-ops"
 github_slug = "neverhuman/jeryu-release-ops"
 jeryu_slug = "jeryu/jeryu-release-ops"
@@ -475,7 +475,7 @@ source_paths = [
 ]
 
 [[repo]]
-path = "/home/ubuntu/jeryu-split/jeryu-deploy"
+path = "/home/ubuntu/jain-split/jeryu-split/jeryu-deploy"
 name = "jeryu-deploy"
 github_slug = "neverhuman/jeryu-deploy"
 jeryu_slug = "jeryu/jeryu-deploy"
@@ -491,10 +491,12 @@ note = "Integration, end-user binary build, split lock, and release bundle logic
 cargo_members = [
   "crates/jeryu-api",
   "crates/jeryu-cli",
+  "crates/jeryu-split-tool",
 ]
 copy_paths = [
   "crates/jeryu-api",
   "crates/jeryu-cli",
+  "crates/jeryu-split-tool",
   ".github",
   "ci-fast-push.sh",
   "ops",
@@ -512,6 +514,7 @@ copy_paths = [
 source_paths = [
   "crates/jeryu-api/**",
   "crates/jeryu-cli/**",
+  "crates/jeryu-split-tool/**",
   ".github/**",
   "ci-fast-push.sh",
   "ops/**",
