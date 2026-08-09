@@ -398,7 +398,7 @@ const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
 const GOVERNED_JANKURAI_SHA256: &str =
     "96d99e6e7d8dc9cf23df1081edd1f975231456592f81d9405385219a2c7298aa";
 const GOVERNED_JANKURAI_SOURCE_REPO: &str = "http://127.0.0.1:8787/git/jeryu/jankurai.git";
-const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.6.11-deadlang-precision-split.2";
+const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.6.11-deadlang-precision-split.3";
 const GOVERNED_JANKURAI_SOURCE_REV: &str = "4dfbdfa3585f1928d5f996d7b5e14608dff14a03";
 const GOVERNED_JANKURAI_SOURCE_TREE: &str = "7e5d501aa6f0ee6ced9a48c6288a9943d0b9573c";
 const GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256: &str =
