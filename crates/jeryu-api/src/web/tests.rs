@@ -5,7 +5,7 @@ use crate::web::repositories::repo_list_response;
 use crate::web::surface::serialize_payload;
 use crate::web::surface::{bootstrap_payload, map_method};
 use crate::web::ws::{hello_message, requested_scopes, snapshot_event, unsubscribe_scopes};
-use axum::extract::Query;
+use axum::extract::{Extension, Query};
 use jeryu_agentbridge::driver::{AgentDriver, CollectingSink, CommandSpec, stage_editbot};
 use jeryu_codegraph::{
     CrateDepRow, GraphSnapshot, SymbolRefRow, SymbolRow, ToolBuildScanConfig,
@@ -13,9 +13,9 @@ use jeryu_codegraph::{
 };
 use jeryu_core::CheckConclusion;
 use jeryu_core::{
-    CommitStatusState, CreateCheckRunRequest, CreateCommitStatusRequest, CreatePullRequestRequest,
-    CreateRepositoryRequest, CreateReviewRequest, RepoAccessLevel, ReviewState,
-    SetBranchProtectionRequest, UserRole,
+    AccountSummary, CommitStatusState, CreateCheckRunRequest, CreateCommitStatusRequest,
+    CreatePullRequestRequest, CreateRepositoryRequest, CreateReviewRequest, RepoAccessLevel,
+    ReviewState, SetBranchProtectionRequest, UserRole,
 };
 use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage};
 use jeryu_readmodel::{HealthLevel, sample_read_model};
@@ -30,6 +30,16 @@ fn write_file(root: &Path, relative: &str, contents: &str) {
         std::fs::create_dir_all(parent).expect("create fixture parent");
     }
     std::fs::write(path, contents).expect("write fixture file");
+}
+
+fn authenticated_account(login: &str) -> Extension<AccountSummary> {
+    Extension(AccountSummary {
+        login: login.to_string(),
+        role: UserRole::User,
+        must_change_password: false,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    })
 }
 
 /// Seed a repo + open PR + one failing check, build `WebState`, and assert
@@ -721,6 +731,7 @@ async fn pulls_mutations_return_typed_repair_errors() {
 
     let invalid_review = super::pulls::review(
         State(state.clone()),
+        authenticated_account("bob"),
         AxumPath((repo.id.to_string(), pr.number)),
         axum::body::Bytes::from("{"),
     )
@@ -733,6 +744,7 @@ async fn pulls_mutations_return_typed_repair_errors() {
 
     let stale = super::pulls::approve(
         State(state.clone()),
+        authenticated_account("bob"),
         AxumPath((repo.id.to_string(), pr.number)),
         axum::body::Bytes::from(r#"{"expected_head_sha":"old"}"#),
     )
@@ -1056,6 +1068,7 @@ async fn pulls_mutations_submit_review_and_comment() {
     let review = response_json(
         super::pulls::review(
             State(state.clone()),
+            authenticated_account("bob"),
             path(),
             axum::body::Bytes::from(
                 serde_json::json!({
@@ -1082,6 +1095,7 @@ async fn pulls_mutations_submit_review_and_comment() {
     let comment = response_json(
         super::pulls::comment(
             State(state.clone()),
+            authenticated_account("carol"),
             path(),
             axum::body::Bytes::from(
                 serde_json::json!({
@@ -1103,6 +1117,67 @@ async fn pulls_mutations_submit_review_and_comment() {
             .unwrap()
             .iter()
             .any(|thread| thread["comments"][0]["body_markdown"] == "follow-up")
+    );
+    let reviews = state
+        .github
+        .core()
+        .list_reviews("alice", "jeryu", pr.number)
+        .unwrap();
+    assert!(
+        reviews
+            .iter()
+            .any(|review| review.author == "bob" && review.state == ReviewState::Commented)
+    );
+    assert!(
+        reviews
+            .iter()
+            .any(|review| review.author == "carol" && review.state == ReviewState::Commented)
+    );
+
+    let self_review = super::pulls::review(
+        State(state.clone()),
+        authenticated_account("alice"),
+        path(),
+        axum::body::Bytes::from(
+            serde_json::json!({
+                "verdict": "approve",
+                "expected_head_sha": "head-ready",
+                "body_markdown": "self approval",
+                "thread_comments": [],
+                "evidence": null
+            })
+            .to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(self_review.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(self_review).await["code"],
+        "pull_self_approval_forbidden"
+    );
+
+    let self_approve = super::pulls::approve(
+        State(state.clone()),
+        authenticated_account("alice"),
+        path(),
+        axum::body::Bytes::from(r#"{"expected_head_sha":"head-ready"}"#),
+    )
+    .await;
+    assert_eq!(self_approve.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(self_approve).await["code"],
+        "pull_self_approval_forbidden"
+    );
+    assert_eq!(
+        state
+            .github
+            .core()
+            .list_reviews("alice", "jeryu", pr.number)
+            .unwrap()
+            .iter()
+            .filter(|review| review.state == ReviewState::Approved)
+            .count(),
+        0
     );
 }
 
@@ -1189,6 +1264,7 @@ async fn pulls_mutations_allow_record_only_autonomy_advisory() {
     let approved = response_json(
         super::pulls::approve(
             State(state.clone()),
+            authenticated_account("bob"),
             path(),
             axum::body::Bytes::from(
                 serde_json::json!({
@@ -1202,6 +1278,13 @@ async fn pulls_mutations_allow_record_only_autonomy_advisory() {
     )
     .await;
     assert_eq!(approved["summary"]["review"]["approvals"], 1);
+    let reviews = state
+        .github
+        .core()
+        .list_reviews("alice", "jeryu", pr.number)
+        .unwrap();
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0].author, "bob");
 
     let detail = response_json(super::pulls::detail(State(state.clone()), path()).await).await;
     assert_eq!(detail["summary"]["checks"]["total"], 2);

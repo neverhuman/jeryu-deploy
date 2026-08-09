@@ -10,13 +10,14 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Extension, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use jeryu_core::{
-    CheckConclusion, CheckRun, CheckRunStatus, CommitStatusState, CreateReviewRequest, ForgeError,
-    MergeBlocker, MergePullRequestRequest as CoreMergePullRequestRequest, PullRequest,
-    ReviewCommentInput, ReviewState, check_conclusion_wire_value,
+    AccountSummary, CheckConclusion, CheckRun, CheckRunStatus, CommitStatusState,
+    CreateReviewRequest, ForgeError, MergeBlocker,
+    MergePullRequestRequest as CoreMergePullRequestRequest, PullRequest, ReviewCommentInput,
+    ReviewState, check_conclusion_wire_value,
 };
 use jeryu_readmodel::contracts::{
     AgentPosture, AvailableAction, CheckPosture, CreateReviewCommentRequest, EntityHandle,
@@ -247,6 +248,7 @@ pub(super) async fn threads(
 
 pub(super) async fn review(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
     body: Bytes,
 ) -> AxumResponse {
@@ -278,16 +280,22 @@ pub(super) async fn review(
         .into_iter()
         .filter_map(comment_input)
         .collect();
+    let event = review_state(request.verdict);
+    if event == ReviewState::Approved {
+        if let Some(response) = self_approval_forbidden(&pr, &account.login) {
+            return response;
+        }
+    }
     let review = CreateReviewRequest {
         body: request.body_markdown,
-        event: review_state(request.verdict),
+        event,
         comments,
     };
     match state.github.core().create_review(
         &repo.owner,
         &repo.name,
         pr.number,
-        "local-reviewer",
+        &account.login,
         review,
     ) {
         Ok(_) => match state
@@ -304,6 +312,7 @@ pub(super) async fn review(
 
 pub(super) async fn comment(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
     body: Bytes,
 ) -> AxumResponse {
@@ -346,7 +355,7 @@ pub(super) async fn comment(
         &repo.owner,
         &repo.name,
         pr.number,
-        "local-reviewer",
+        &account.login,
         CreateReviewRequest {
             body: None,
             event: ReviewState::Commented,
@@ -363,6 +372,7 @@ pub(super) async fn comment(
 
 pub(super) async fn approve(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
     body: Bytes,
 ) -> AxumResponse {
@@ -389,11 +399,14 @@ pub(super) async fn approve(
     if request.expected_head_sha != pr.head.sha {
         return stale_sha(&request.expected_head_sha, &pr.head.sha);
     }
+    if let Some(response) = self_approval_forbidden(&pr, &account.login) {
+        return response;
+    }
     match state.github.core().create_review(
         &repo.owner,
         &repo.name,
         pr.number,
-        "local-reviewer",
+        &account.login,
         CreateReviewRequest {
             body: request.body_markdown,
             event: ReviewState::Approved,
@@ -528,6 +541,28 @@ fn resolve_pr(
         .get_pull_request(&repo.owner, &repo.name, number)
         .ok()?;
     Some((repo, pr))
+}
+
+fn self_approval_forbidden(pr: &PullRequest, reviewer: &str) -> Option<AxumResponse> {
+    if pr.author != reviewer {
+        return None;
+    }
+    Some(repair_error(
+        StatusCode::FORBIDDEN,
+        "pull_self_approval_forbidden",
+        "approve pull request",
+        "pull request authors cannot approve their own changes",
+        &[
+            "request approval from an authenticated reviewer distinct from the pull request author",
+            "retry with the same expected head after the independent reviewer signs in",
+        ],
+        PROOF_LANE,
+        Some(json!({
+            "pull_number": pr.number,
+            "author": pr.author,
+            "reviewer": reviewer,
+        })),
+    ))
 }
 
 fn state_matches(pr: &PullRequest, filter: Option<&str>) -> bool {
