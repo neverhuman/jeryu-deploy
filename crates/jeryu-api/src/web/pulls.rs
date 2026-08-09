@@ -281,10 +281,10 @@ pub(super) async fn review(
         .filter_map(comment_input)
         .collect();
     let event = review_state(request.verdict);
-    if event == ReviewState::Approved {
-        if let Some(response) = self_approval_forbidden(&pr, &account.login) {
-            return response;
-        }
+    if event == ReviewState::Approved
+        && let Some(response) = self_approval_forbidden(&pr, &account.login)
+    {
+        return response;
     }
     let review = CreateReviewRequest {
         body: request.body_markdown,
