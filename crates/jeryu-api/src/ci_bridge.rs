@@ -679,39 +679,40 @@ fn record_authoritative_jankurai_score(
         return;
     }
 
-    // Throwaway worktree of the head (same idiom as maybe_bump_main_version); never
-    // touches the live bare.
+    // Automatically removed standalone clone of the head; it is never registered
+    // as a Git worktree and never touches the live bare.
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let worktree = std::env::temp_dir().join(format!(
+    let sandbox = std::env::temp_dir().join(format!(
         "jeryu-jankurai-{owner}-{repo}-{}-{suffix}-{}",
         std::process::id(),
         update.new_oid
     ));
-    let _ = std::fs::remove_dir_all(&worktree);
+    let _ = std::fs::remove_dir_all(&sandbox);
     let bare_str = bare.to_string_lossy().to_string();
-    let worktree_str = worktree.to_string_lossy().to_string();
+    let sandbox_str = sandbox.to_string_lossy().to_string();
     if !run_git_status(
         git_bin,
         None,
         &[
             "clone",
             "--quiet",
-            "--no-hardlinks",
+            "--no-local",
+            "--no-checkout",
             &bare_str,
-            &worktree_str,
+            &sandbox_str,
         ],
     ) {
         return;
     }
     if !run_git_status(
         git_bin,
-        Some(&worktree),
+        Some(&sandbox),
         &["checkout", "--quiet", "--detach", &update.new_oid],
     ) {
-        let _ = std::fs::remove_dir_all(&worktree);
+        let _ = std::fs::remove_dir_all(&sandbox);
         return;
     }
 
@@ -732,21 +733,21 @@ fn record_authoritative_jankurai_score(
     };
 
     // Forced scoring for unconfigured repos (Part D): if the head carries no policy
-    // of its own, drop the jeryu-managed default into the THROWAWAY worktree (never
+    // of its own, drop the jeryu-managed default into the throwaway sandbox (never
     // tracked, never committed — untracked files do not enter the diff set) so the
     // repo still gets a real floor and a real verdict.
-    if !worktree.join("agent/audit-policy.toml").exists() {
-        let _ = std::fs::create_dir_all(worktree.join("agent"));
+    if !sandbox.join("agent/audit-policy.toml").exists() {
+        let _ = std::fs::create_dir_all(sandbox.join("agent"));
         let _ = std::fs::write(
-            worktree.join("agent/audit-policy.toml"),
+            sandbox.join("agent/audit-policy.toml"),
             DEFAULT_AUDIT_POLICY_TOML,
         );
     }
-    let skip_proof = !worktree.join("agent/owner-map.json").exists();
+    let skip_proof = !sandbox.join("agent/owner-map.json").exists();
 
     // Run the pinned auditor. --advisory-only: always write the JSON and exit 0; we
     // derive the strict verdict from the JSON ourselves.
-    let out_json = worktree.join("target/jankurai/diff/diff-score.json");
+    let out_json = sandbox.join("target/jankurai/diff/diff-score.json");
     if let Some(parent) = out_json.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -754,7 +755,7 @@ fn record_authoritative_jankurai_score(
     let exit_code = match jankurai_bin() {
         Ok(jankurai) => {
             let mut command = Command::new(&jankurai);
-            command.arg("diff-audit").arg(&worktree_str);
+            command.arg("diff-audit").arg(&sandbox_str);
             if let Some(base) = &base {
                 command.arg("--base-ref").arg(base);
             }
@@ -855,7 +856,7 @@ fn record_authoritative_jankurai_score(
         },
     );
 
-    let _ = std::fs::remove_dir_all(&worktree);
+    let _ = std::fs::remove_dir_all(&sandbox);
 }
 
 /// Execute a compiled job's `run` steps in the sandboxed runner and map the
