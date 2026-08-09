@@ -188,7 +188,7 @@ expect_zero "jankurai is the pinned 1.6.11" \
 expect_zero "jankurai is a single-link physical file" \
   sh -c '[ -f /opt/rust/cargo/bin/jankurai ] && [ ! -L /opt/rust/cargo/bin/jankurai ] && [ "$(realpath -e /opt/rust/cargo/bin/jankurai)" = /opt/rust/cargo/bin/jankurai ] && [ "$(stat -c %h /opt/rust/cargo/bin/jankurai)" = 1 ]'
 expect_zero "jankurai has the governed digest" \
-  sh -c '[ "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '\''{print $1}'\'')" = 96d99e6e7d8dc9cf23df1081edd1f975231456592f81d9405385219a2c7298aa ]'
+  sh -c '[ "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '\''{print $1}'\'')" = 9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c ]'
 expect_zero "jankurai resolves to the pinned path (no shadowing)" \
   sh -c '[ "$(command -v jankurai)" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \
@@ -196,7 +196,7 @@ expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \
 expect_zero "JERYU_GOVERNED_JANKURAI_BIN points at the pinned path" \
   sh -c '[ "$JERYU_GOVERNED_JANKURAI_BIN" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_RECEIPT points at the baked content-addressed receipt" \
-  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/9f53ae8691dd4b97ba68645f010059f95c96701bfb1a8be8a9a1da69f7ef1218.json" ]'
+  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/a81e08ab2513965f19ed910315ecd39581f21ce9f5c1cff6fa849bd5b535b52a.json" ]'
 expect_zero "governed Jankurai verifier passes against the baked receipt" \
   bash /opt/jeryu/governance/ensure-jankurai.sh
 

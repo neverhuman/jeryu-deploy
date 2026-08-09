@@ -396,24 +396,24 @@ const GOVERNED_JANKURAI_PATH: &str = "/home/ubuntu/.jeryu/bin/jankurai";
 const GOVERNED_JANKURAI_RECEIPT_DIR: &str = "/home/ubuntu/.jeryu/receipts/jankurai/sha256";
 const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
 const GOVERNED_JANKURAI_SHA256: &str =
-    "96d99e6e7d8dc9cf23df1081edd1f975231456592f81d9405385219a2c7298aa";
+    "9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c";
 const GOVERNED_JANKURAI_SOURCE_REPO: &str = "http://127.0.0.1:8787/git/jeryu/jankurai.git";
 const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.6.11-deadlang-precision-split.3";
-const GOVERNED_JANKURAI_SOURCE_REV: &str = "4dfbdfa3585f1928d5f996d7b5e14608dff14a03";
-const GOVERNED_JANKURAI_SOURCE_TREE: &str = "7e5d501aa6f0ee6ced9a48c6288a9943d0b9573c";
+const GOVERNED_JANKURAI_SOURCE_REV: &str = "b88562fdb124aa86dedd70ab972e7d0d87e58be1";
+const GOVERNED_JANKURAI_SOURCE_TREE: &str = "611229e54938c0e8808896e369fd54d095d258f7";
 const GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256: &str =
-    "1aa3d178dec0fbb8d0657dd465ea6fda830ffc4ec1f65560b7b7d1682fd87e69";
+    "903a231eca8f6a1f050953b603d5a278a1606abcdf47434eb1b45262d74068aa";
 const GOVERNED_JANKURAI_CARGO_LOCK_SHA256: &str =
     "b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a";
 const GOVERNED_JANKURAI_RUSTC_VERSION: &str = "rustc 1.95.0 (59807616e 2026-04-14)";
 const GOVERNED_JANKURAI_CARGO_VERSION: &str = "cargo 1.95.0 (f2d3ce0bd 2026-03-21)";
 const GOVERNED_JANKURAI_TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
-const GOVERNED_JANKURAI_BUILD_MODE: &str = "cargo-install-locked-offline-path-v1";
+const GOVERNED_JANKURAI_BUILD_MODE: &str = "oci-vendor-locked-offline-workspace-member-v2";
 const GOVERNED_JANKURAI_MANIFEST_REPO: &str = "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git";
-const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "aac9336ac369f4d3046a1e0acc9d98c48ce164d1";
-const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "7049feda28cfd95c8657f562b92e8246ceb1cc26";
+const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "5dcc43b9efa9fdab258aa1cb1405002ae3988d7e";
+const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "327625dd5a628c7e40bce7f35c135d37184e68f4";
 const GOVERNED_JANKURAI_MANIFEST_SHA256: &str =
-    "7aaac7f1b8c1543eba5215ec7cd2bf35e0c2411339ed9af1d1a6ace68d2807d8";
+    "be001dc52c66da5669167f3e429d882184931baa3d7a0e53b605c17425872b5a";
 
 /// Verify a physical auditor file before every authoritative score. An explicit
 /// path supports the offline sandbox image, but it never relaxes identity and
