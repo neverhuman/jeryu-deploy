@@ -409,6 +409,8 @@ const GOVERNED_JANKURAI_RUSTC_VERSION: &str = "rustc 1.95.0 (59807616e 2026-04-1
 const GOVERNED_JANKURAI_CARGO_VERSION: &str = "cargo 1.95.0 (f2d3ce0bd 2026-03-21)";
 const GOVERNED_JANKURAI_TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 const GOVERNED_JANKURAI_BUILD_MODE: &str = "oci-vendor-locked-offline-workspace-member-v2";
+const GOVERNED_JANKURAI_INSTALLATION_RECEIPT_JSON: &str =
+    include_str!("../../../images/agent-sandbox/jankurai-installation-receipt.json");
 const GOVERNED_JANKURAI_MANIFEST_REPO: &str = "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git";
 const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "5dcc43b9efa9fdab258aa1cb1405002ae3988d7e";
 const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "327625dd5a628c7e40bce7f35c135d37184e68f4";
@@ -463,6 +465,22 @@ fn verify_jankurai_identity(
     Ok(path.to_path_buf())
 }
 
+fn require_exact_object_keys(
+    value: &serde_json::Value,
+    label: &str,
+    expected: &[&str],
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("governed jankurai receipt authority mismatch: {label}"))?;
+    if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+        return Err(format!(
+            "governed jankurai receipt authority mismatch: {label} keys"
+        ));
+    }
+    Ok(())
+}
+
 fn verify_jankurai_receipt(
     receipt_path: &Path,
     binary_path: &Path,
@@ -504,8 +522,102 @@ fn verify_jankurai_receipt(
     }
     let document: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("governed jankurai receipt JSON failed: {error}"))?;
+    let top_level_keys: &[&str] = if document.get("timestamp").is_some() {
+        &[
+            "binary",
+            "build",
+            "conclusion",
+            "governance",
+            "installation",
+            "operator",
+            "run_id",
+            "schema",
+            "source",
+            "test_mode",
+            "timestamp",
+        ]
+    } else {
+        &[
+            "binary",
+            "build",
+            "conclusion",
+            "governance",
+            "installation",
+            "operator",
+            "run_id",
+            "schema",
+            "source",
+            "test_mode",
+        ]
+    };
+    require_exact_object_keys(&document, "/", top_level_keys)?;
+    require_exact_object_keys(
+        document
+            .pointer("/source")
+            .unwrap_or(&serde_json::Value::Null),
+        "/source",
+        &[
+            "archive_sha256",
+            "cargo_lock_sha256",
+            "commit",
+            "remote",
+            "tag",
+            "tree",
+            "verification",
+        ],
+    )?;
+    require_exact_object_keys(
+        document
+            .pointer("/governance")
+            .unwrap_or(&serde_json::Value::Null),
+        "/governance",
+        &[
+            "manifest_commit",
+            "manifest_repo",
+            "manifest_sha256",
+            "manifest_tree",
+            "protected_main",
+            "protection_policy",
+            "status",
+        ],
+    )?;
+    require_exact_object_keys(
+        document
+            .pointer("/binary")
+            .unwrap_or(&serde_json::Value::Null),
+        "/binary",
+        &["sha256", "version_output"],
+    )?;
+    for pointer in ["/operator", "/run_id"] {
+        if document
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(format!(
+                "governed jankurai receipt authority mismatch: {pointer}"
+            ));
+        }
+    }
+    if document.get("timestamp").is_some()
+        && document
+            .pointer("/timestamp")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err("governed jankurai receipt authority mismatch: /timestamp".to_string());
+    }
+    let governed_receipt: serde_json::Value =
+        serde_json::from_str(GOVERNED_JANKURAI_INSTALLATION_RECEIPT_JSON)
+            .map_err(|error| format!("governed jankurai build authority JSON failed: {error}"))?;
+    let governed_build = governed_receipt
+        .pointer("/build")
+        .ok_or_else(|| "governed jankurai build authority is missing /build".to_string())?;
+    if document.pointer("/build") != Some(governed_build) {
+        return Err("governed jankurai receipt authority mismatch: /build".to_string());
+    }
     let expected_strings = [
-        ("/schema", "jeryu.jankurai-installation/v1"),
+        ("/schema", "jeryu.jankurai-installation/v2"),
         ("/source/remote", GOVERNED_JANKURAI_SOURCE_REPO),
         ("/source/tag", GOVERNED_JANKURAI_SOURCE_TAG),
         ("/source/commit", GOVERNED_JANKURAI_SOURCE_REV),
@@ -523,10 +635,6 @@ fn verify_jankurai_receipt(
         ("/build/cargo", GOVERNED_JANKURAI_CARGO_VERSION),
         ("/build/target_triple", GOVERNED_JANKURAI_TARGET_TRIPLE),
         ("/build/mode", GOVERNED_JANKURAI_BUILD_MODE),
-        (
-            "/build/network_scope",
-            "local-forge-source-plus-offline-cargo",
-        ),
         ("/build/no_proxy", "127.0.0.1,localhost,::1"),
         ("/governance/status", "governed"),
         ("/governance/manifest_repo", GOVERNED_JANKURAI_MANIFEST_REPO),
@@ -561,7 +669,6 @@ fn verify_jankurai_receipt(
     }
     let expected_true = [
         "/build/cargo_net_offline",
-        "/build/dedicated_cargo_home",
         "/build/git_global_config_disabled",
         "/build/git_system_config_disabled",
         "/governance/protected_main",

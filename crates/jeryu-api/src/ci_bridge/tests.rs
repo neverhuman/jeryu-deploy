@@ -66,26 +66,14 @@ fn governed_jankurai_identity_rejects_version_digest_and_physical_substitution()
 }
 
 fn governed_receipt(binary: &Path, binary_sha: &str) -> serde_json::Value {
+    let governed: serde_json::Value =
+        serde_json::from_str(GOVERNED_JANKURAI_INSTALLATION_RECEIPT_JSON).unwrap();
     serde_json::json!({
         "binary": {
             "sha256": binary_sha,
             "version_output": "jankurai 1.6.11"
         },
-        "build": {
-            "cargo": GOVERNED_JANKURAI_CARGO_VERSION,
-            "cargo_net_offline": true,
-            "dedicated_cargo_home": true,
-            "git_global_config_disabled": true,
-            "git_http_follow_redirects": false,
-            "git_system_config_disabled": true,
-            "git_terminal_prompt": false,
-            "jankurai_update_check": false,
-            "mode": GOVERNED_JANKURAI_BUILD_MODE,
-            "network_scope": "local-forge-source-plus-offline-cargo",
-            "no_proxy": "127.0.0.1,localhost,::1",
-            "rustc": GOVERNED_JANKURAI_RUSTC_VERSION,
-            "target_triple": GOVERNED_JANKURAI_TARGET_TRIPLE
-        },
+        "build": governed.pointer("/build").unwrap().clone(),
         "conclusion": "success",
         "governance": {
             "manifest_commit": GOVERNED_JANKURAI_MANIFEST_COMMIT,
@@ -100,7 +88,9 @@ fn governed_receipt(binary: &Path, binary_sha: &str) -> serde_json::Value {
             "atomic": true,
             "path": binary
         },
-        "schema": "jeryu.jankurai-installation/v1",
+        "operator": "jeryu-verifier-test",
+        "run_id": "jeryu-verifier-test-run",
+        "schema": "jeryu.jankurai-installation/v2",
         "source": {
             "archive_sha256": GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256,
             "cargo_lock_sha256": GOVERNED_JANKURAI_CARGO_LOCK_SHA256,
@@ -152,6 +142,137 @@ fn governed_jankurai_authority_requires_complete_content_addressed_receipt() {
     fs::write(&tampered, b"{}").unwrap();
     assert!(
         verify_jankurai_authority(&binary, &[tampered], "jankurai 1.6.11", &binary_sha,).is_err()
+    );
+
+    let mut wrong_schema = valid_document.clone();
+    wrong_schema["schema"] = serde_json::json!("jeryu.jankurai-installation/v1");
+    let wrong_schema_path = write_content_addressed_receipt(temp.path(), &wrong_schema);
+    assert!(
+        verify_jankurai_authority(
+            &binary,
+            &[wrong_schema_path],
+            "jankurai 1.6.11",
+            &binary_sha,
+        )
+        .is_err()
+    );
+
+    let build_fields = valid_document["build"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for field in &build_fields {
+        let mut wrong = valid_document.clone();
+        wrong["build"][field.as_str()] = serde_json::json!("wrong-authority");
+        let wrong_path = write_content_addressed_receipt(temp.path(), &wrong);
+        assert!(
+            verify_jankurai_authority(&binary, &[wrong_path], "jankurai 1.6.11", &binary_sha,)
+                .is_err(),
+            "build-field mutation was accepted: {field}"
+        );
+
+        let mut missing = valid_document.clone();
+        missing["build"].as_object_mut().unwrap().remove(field);
+        let missing_path = write_content_addressed_receipt(temp.path(), &missing);
+        assert!(
+            verify_jankurai_authority(&binary, &[missing_path], "jankurai 1.6.11", &binary_sha,)
+                .is_err(),
+            "missing build field was accepted: {field}"
+        );
+    }
+
+    let mut unexpected_build_field = valid_document.clone();
+    unexpected_build_field["build"]["unexpected_authority"] = serde_json::json!(true);
+    let unexpected_build_path =
+        write_content_addressed_receipt(temp.path(), &unexpected_build_field);
+    assert!(
+        verify_jankurai_authority(
+            &binary,
+            &[unexpected_build_path],
+            "jankurai 1.6.11",
+            &binary_sha,
+        )
+        .is_err()
+    );
+
+    let mut installed_document = valid_document.clone();
+    installed_document["timestamp"] = serde_json::json!("2026-08-12T00:00:00Z");
+    installed_document["installation"]["previous_binary_sha256"] =
+        serde_json::json!("0".repeat(64));
+    installed_document["installation"]["rollback_artifact"] =
+        serde_json::json!("/tmp/jankurai-rollback");
+    installed_document["installation"]["lock"] = serde_json::json!({
+        "exclusive": true,
+        "held_through_receipt": true,
+        "identity": "1:2:3:4:600:1",
+        "path": "/tmp/jankurai-install.lock"
+    });
+    let installed_path = write_content_addressed_receipt(temp.path(), &installed_document);
+    assert!(
+        verify_jankurai_authority(&binary, &[installed_path], "jankurai 1.6.11", &binary_sha,)
+            .is_ok()
+    );
+
+    for (pointer, field) in [
+        ("", "unexpected_authority"),
+        ("/source", "unexpected_authority"),
+        ("/governance", "unexpected_authority"),
+        ("/binary", "unexpected_authority"),
+    ] {
+        let mut unexpected = valid_document.clone();
+        unexpected
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(field.to_string(), serde_json::json!(true));
+        let unexpected_path = write_content_addressed_receipt(temp.path(), &unexpected);
+        assert!(
+            verify_jankurai_authority(&binary, &[unexpected_path], "jankurai 1.6.11", &binary_sha,)
+                .is_err(),
+            "unexpected authority field was accepted: {pointer}/{field}"
+        );
+    }
+
+    let mut missing_operator = valid_document.clone();
+    missing_operator.as_object_mut().unwrap().remove("operator");
+    let missing_operator_path = write_content_addressed_receipt(temp.path(), &missing_operator);
+    assert!(
+        verify_jankurai_authority(
+            &binary,
+            &[missing_operator_path],
+            "jankurai 1.6.11",
+            &binary_sha,
+        )
+        .is_err()
+    );
+
+    let mut wrong_run_id = valid_document.clone();
+    wrong_run_id["run_id"] = serde_json::json!(42);
+    let wrong_run_id_path = write_content_addressed_receipt(temp.path(), &wrong_run_id);
+    assert!(
+        verify_jankurai_authority(
+            &binary,
+            &[wrong_run_id_path],
+            "jankurai 1.6.11",
+            &binary_sha,
+        )
+        .is_err()
+    );
+
+    let mut empty_timestamp = installed_document;
+    empty_timestamp["timestamp"] = serde_json::json!("");
+    let empty_timestamp_path = write_content_addressed_receipt(temp.path(), &empty_timestamp);
+    assert!(
+        verify_jankurai_authority(
+            &binary,
+            &[empty_timestamp_path],
+            "jankurai 1.6.11",
+            &binary_sha,
+        )
+        .is_err()
     );
 
     for pointer in [
