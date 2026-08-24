@@ -816,6 +816,9 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
     let mcp_state = Arc::new(jeryu_mcp::McpHttpState::new(Arc::new(
         mcp_backend::WebMcpBackend::new(state.clone()),
     )));
+    let mcp_router = jeryu_mcp::mcp_router(mcp_state)
+        .layer(from_fn(steer_headers))
+        .layer(from_fn_with_state(state.clone(), auth::gate));
     AxumRouter::new()
         .route("/health", get(health))
         // Steering surface: advertises the faster jeryu/MCP path so external
@@ -1058,7 +1061,7 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
         .layer(from_fn(steer_headers))
         .layer(from_fn_with_state(state.clone(), auth::gate))
         .with_state(state)
-        .merge(jeryu_mcp::mcp_router(mcp_state))
+        .merge(mcp_router)
 }
 
 async fn health() -> Json<Value> {

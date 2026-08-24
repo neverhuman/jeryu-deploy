@@ -600,7 +600,10 @@ pub(super) fn forbidden(message: &str) -> AxumResponse {
 }
 
 fn auth_applies(path: &str) -> bool {
-    path.starts_with("/api/v1/") && !matches!(path, "/api/v1/auth/signup" | "/api/v1/auth/login")
+    path == "/mcp"
+        || path.starts_with("/mcp/")
+        || (path.starts_with("/api/v1/")
+            && !matches!(path, "/api/v1/auth/signup" | "/api/v1/auth/login"))
 }
 
 fn password_change_allowed_path(path: &str) -> bool {

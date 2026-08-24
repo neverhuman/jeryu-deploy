@@ -41,11 +41,13 @@ pub(super) async fn graphql(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
-    if let Err(response) = github_account_from_headers(&state, peer.as_ref(), &headers) {
-        return *response;
-    }
+    let account = match github_account_from_headers(&state, peer.as_ref(), &headers) {
+        Ok(account) => account,
+        Err(response) => return *response,
+    };
     let body = std::str::from_utf8(&body).unwrap_or_default();
-    github_response(state.github.handle(Method::Post, "/graphql", body))
+    let body = bind_authenticated_actor(body, &account.login);
+    github_response(state.github.handle(Method::Post, "/graphql", &body))
 }
 
 /// Accept-aware `/repos` entrypoint that serves the SPA shell to browser
@@ -143,7 +145,19 @@ async fn github_forward_request(
         });
     }
     let body = std::str::from_utf8(&body).unwrap_or_default();
-    github_response(state.github.handle(method, &path_and_query, body))
+    let body = bind_authenticated_actor(body, &account.login);
+    github_response(state.github.handle(method, &path_and_query, &body))
+}
+
+/// Replaces any caller-supplied actor with the authenticated principal before
+/// the compatibility router records authorship. Invalid or non-object JSON is
+/// left untouched so the route's normal request validation reports the error.
+fn bind_authenticated_actor(body: &str, login: &str) -> String {
+    let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(body) else {
+        return body.to_string();
+    };
+    object.insert("actor".to_string(), Value::String(login.to_string()));
+    Value::Object(object).to_string()
 }
 
 fn accepts_json(headers: &HeaderMap) -> bool {

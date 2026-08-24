@@ -3783,6 +3783,57 @@ async fn github_rest_repo_edge_requires_auth_and_filters_grants() {
 }
 
 #[tokio::test]
+async fn github_rest_binds_mutation_actor_to_authenticated_principal() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let token = core
+        .create_personal_access_token("alice", "test", None)
+        .unwrap()
+        .secret;
+
+    let response = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    )
+    .oneshot(
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/repos/alice/jeryu/issues")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "title": "principal binding",
+                    "actor": "mallory"
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = response_json(response).await;
+    assert_eq!(body["user"]["login"], "alice");
+}
+
+#[tokio::test]
 async fn source_browser_rejects_unsafe_paths_before_storage_lookup() {
     let core = ForgeCore::new();
     core.create_repository(
@@ -4763,6 +4814,44 @@ async fn advertised_mcp_endpoint_is_mounted() {
     .await
     .unwrap();
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn mcp_endpoint_requires_configured_authentication() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let token = core
+        .create_personal_access_token("alice", "test", None)
+        .unwrap()
+        .secret;
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    let unauthenticated = app
+        .clone()
+        .oneshot(Request::builder().uri("/mcp").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let authenticated = app
+        .oneshot(
+            Request::builder()
+                .uri("/mcp")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authenticated.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
 /// The live `/api/v1/ecosystem` route returns the camelCase tool-graph with
