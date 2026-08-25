@@ -13,6 +13,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use jeryu_api::web::{WebServerConfig, serve};
 use sha2::Digest;
 
@@ -102,6 +104,20 @@ fn write_incompressible_file(path: &Path, len: usize) {
 
 /// Git http config that aborts a stalled transfer instead of hanging.
 const GIT_HTTP_GUARD: &[&str] = &["-c", "http.lowSpeedLimit=100", "-c", "http.lowSpeedTime=20"];
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn pkt_line(payload: &[u8]) -> Vec<u8> {
+    let length = payload.len() + 4;
+    assert!(length <= 0xffff);
+    let mut encoded = format!("{length:04x}").into_bytes();
+    encoded.extend_from_slice(payload);
+    encoded
+}
 
 async fn wait_until_listening(addr: SocketAddr, server: &mut tokio::task::JoinHandle<()>) {
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -302,6 +318,108 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
     assert!(
         !main.status.success(),
         "refs/heads/main must not be created by a rejected direct push"
+    );
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s4_git_pack_rpc_routes_decode_gzip_before_git() {
+    let base = std::env::temp_dir().join(format!("jeryu-s4-gzip-rpc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let data_dir = base.join("data");
+    let git_root = base.join("git");
+    let spa_dir = base.join("spa");
+    std::fs::create_dir_all(&spa_dir).unwrap();
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let config = WebServerConfig {
+        bind: addr,
+        spa_dir,
+        data_dir,
+        git_storage_root: git_root,
+        split_manifests: Vec::new(),
+        auth_required: false,
+        trust_local_dev: true,
+        secure_cookies: false,
+    };
+    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr, &mut server).await;
+
+    let client = reqwest::Client::new();
+    let create = client
+        .post(format!("http://{addr}/repos"))
+        .json(&serde_json::json!({ "name": "gzip-rpc" }))
+        .send()
+        .await
+        .expect("POST /repos");
+    assert_eq!(create.status().as_u16(), 201);
+
+    // Protocol v2 permits repeated ref-prefix arguments. This is a valid
+    // request larger than Git's request-compression threshold, matching the
+    // complete-ref mirror failure that exposed the adapter bug.
+    let mut upload_request = pkt_line(b"command=ls-refs\n");
+    upload_request.extend_from_slice(b"0001");
+    upload_request.extend_from_slice(&pkt_line(b"peel\n"));
+    upload_request.extend_from_slice(&pkt_line(b"symrefs\n"));
+    for index in 0..64 {
+        upload_request.extend_from_slice(&pkt_line(
+            format!("ref-prefix refs/heads/fixture-{index:03}\n").as_bytes(),
+        ));
+    }
+    upload_request.extend_from_slice(b"0000");
+    assert!(upload_request.len() > 1_024);
+
+    let upload = client
+        .post(format!(
+            "http://{addr}/git/jeryu/gzip-rpc.git/git-upload-pack"
+        ))
+        .header(reqwest::header::CONTENT_ENCODING, "gzip")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-git-upload-pack-request",
+        )
+        .header("git-protocol", "version=2")
+        .body(gzip(&upload_request))
+        .send()
+        .await
+        .expect("gzip upload-pack POST");
+    assert_eq!(upload.status().as_u16(), 200);
+    assert_eq!(
+        upload
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/x-git-upload-pack-result")
+    );
+
+    // A flush-only receive-pack request is valid and side-effect free. Keeping
+    // this second route-level assertion prevents either handler from silently
+    // dropping the shared decoder call.
+    let receive = client
+        .post(format!(
+            "http://{addr}/git/jeryu/gzip-rpc.git/git-receive-pack"
+        ))
+        .header(reqwest::header::CONTENT_ENCODING, "x-gzip")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-git-receive-pack-request",
+        )
+        .body(gzip(b"0000"))
+        .send()
+        .await
+        .expect("gzip receive-pack POST");
+    assert_eq!(receive.status().as_u16(), 200);
+    assert_eq!(
+        receive
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/x-git-receive-pack-result")
     );
 
     server.abort();

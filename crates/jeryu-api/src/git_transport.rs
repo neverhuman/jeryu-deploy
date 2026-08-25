@@ -6,15 +6,17 @@
 //! to keep `web.rs` focused on the REST/WS edge.
 
 use std::collections::HashMap;
+use std::io::{Cursor, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::body::{Body, Bytes};
+use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query as AxumQuery, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response as AxumResponse};
+use flate2::bufread::GzDecoder;
 use futures_util::StreamExt;
 use jeryu_gitd::lfs::{LfsStore, normalize_oid};
 use jeryu_gitd::smart_http::{
@@ -26,11 +28,34 @@ use tokio::io::AsyncWriteExt;
 
 use crate::web::WebState;
 
+// Preserve the adapter's existing unbounded identity-body behavior. Only
+// compressed RPCs need new limits: bound both their wire bytes and expansion so
+// a small authenticated request cannot become an unbounded decompression bomb.
+const MAX_GIT_UPLOAD_PACK_ENCODED_BYTES: usize = 4 * 1024 * 1024;
+const MAX_GIT_UPLOAD_PACK_DECODED_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GIT_RECEIVE_PACK_ENCODED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_GIT_RECEIVE_PACK_DECODED_BYTES: usize = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitRpcContentEncoding {
+    Identity,
+    Gzip,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitRpcBodyError {
+    UnsupportedEncoding,
+    MalformedGzip,
+    TooLarge,
+    DecodeTaskFailed,
+}
+
 fn forwarded_git_headers(headers: &HeaderMap) -> HashMap<String, String> {
     let mut forwarded = HashMap::new();
     for name in [
         header::HOST,
         header::AUTHORIZATION,
+        HeaderName::from_static("git-protocol"),
         HeaderName::from_static("x-forwarded-proto"),
     ] {
         if let Some(value) = headers.get(&name).and_then(|value| value.to_str().ok()) {
@@ -38,6 +63,100 @@ fn forwarded_git_headers(headers: &HeaderMap) -> HashMap<String, String> {
         }
     }
     forwarded
+}
+
+fn git_rpc_content_encoding(headers: &HeaderMap) -> Result<GitRpcContentEncoding, GitRpcBodyError> {
+    let values = headers
+        .get_all(header::CONTENT_ENCODING)
+        .iter()
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Ok(GitRpcContentEncoding::Identity);
+    }
+    if values.len() != 1 {
+        return Err(GitRpcBodyError::UnsupportedEncoding);
+    }
+    let value = values[0]
+        .to_str()
+        .map_err(|_| GitRpcBodyError::UnsupportedEncoding)?
+        .trim();
+    if value.eq_ignore_ascii_case("identity") {
+        Ok(GitRpcContentEncoding::Identity)
+    } else if value.eq_ignore_ascii_case("gzip") || value.eq_ignore_ascii_case("x-gzip") {
+        Ok(GitRpcContentEncoding::Gzip)
+    } else {
+        // This also rejects empty, comma-separated, and stacked encodings.
+        Err(GitRpcBodyError::UnsupportedEncoding)
+    }
+}
+
+fn decode_git_rpc_body(
+    encoding: GitRpcContentEncoding,
+    encoded: Bytes,
+    max_decoded_bytes: usize,
+) -> Result<Vec<u8>, GitRpcBodyError> {
+    if encoding == GitRpcContentEncoding::Identity {
+        return Ok(encoded.to_vec());
+    }
+
+    let encoded_len = encoded.len() as u64;
+    let mut decoder = GzDecoder::new(Cursor::new(encoded.as_ref()));
+    let mut decoded = Vec::new();
+    (&mut decoder)
+        .take(max_decoded_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut decoded)
+        .map_err(|_| GitRpcBodyError::MalformedGzip)?;
+    if decoded.len() > max_decoded_bytes {
+        return Err(GitRpcBodyError::TooLarge);
+    }
+    if decoder.into_inner().position() != encoded_len {
+        return Err(GitRpcBodyError::MalformedGzip);
+    }
+    Ok(decoded)
+}
+
+async fn read_git_rpc_body(
+    headers: &HeaderMap,
+    body: Body,
+    max_encoded_bytes: usize,
+    max_decoded_bytes: usize,
+) -> Result<Vec<u8>, GitRpcBodyError> {
+    let encoding = git_rpc_content_encoding(headers)?;
+    if encoding == GitRpcContentEncoding::Identity {
+        return to_bytes(body, usize::MAX)
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|_| GitRpcBodyError::TooLarge);
+    }
+    let encoded = to_bytes(body, max_encoded_bytes)
+        .await
+        .map_err(|_| GitRpcBodyError::TooLarge)?;
+    tokio::task::spawn_blocking(move || decode_git_rpc_body(encoding, encoded, max_decoded_bytes))
+        .await
+        .map_err(|_| GitRpcBodyError::DecodeTaskFailed)?
+}
+
+fn git_rpc_body_error_response(error: GitRpcBodyError) -> AxumResponse {
+    match error {
+        GitRpcBodyError::UnsupportedEncoding => (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported Git RPC Content-Encoding\n",
+        )
+            .into_response(),
+        GitRpcBodyError::MalformedGzip => {
+            (StatusCode::BAD_REQUEST, "malformed gzip Git RPC body\n").into_response()
+        }
+        GitRpcBodyError::TooLarge => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Git RPC body exceeds the configured limit\n",
+        )
+            .into_response(),
+        GitRpcBodyError::DecodeTaskFailed => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Git RPC body decoder failed\n",
+        )
+            .into_response(),
+    }
 }
 
 async fn route_git(
@@ -119,12 +238,23 @@ pub(crate) async fn git_upload_pack(
     State(state): State<Arc<WebState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     AxumPath((owner, repo)): AxumPath<(String, String)>,
-    headers: HeaderMap,
-    body: Bytes,
+    request: axum::extract::Request,
 ) -> AxumResponse {
+    let headers = request.headers().clone();
     if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, false) {
         return *response;
     }
+    let body = match read_git_rpc_body(
+        &headers,
+        request.into_body(),
+        MAX_GIT_UPLOAD_PACK_ENCODED_BYTES,
+        MAX_GIT_UPLOAD_PACK_DECODED_BYTES,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(error) => return git_rpc_body_error_response(error),
+    };
     route_git(
         &state,
         peer,
@@ -132,7 +262,7 @@ pub(crate) async fn git_upload_pack(
         format!("/git/{owner}/{repo}/git-upload-pack"),
         HashMap::new(),
         &headers,
-        body.to_vec(),
+        body,
     )
     .await
 }
@@ -141,12 +271,23 @@ pub(crate) async fn git_receive_pack(
     State(state): State<Arc<WebState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     AxumPath((owner, repo)): AxumPath<(String, String)>,
-    headers: HeaderMap,
-    body: Bytes,
+    request: axum::extract::Request,
 ) -> AxumResponse {
+    let headers = request.headers().clone();
     if let Err(response) = authorize_git_core(&state, peer, &headers, &owner, &repo, true) {
         return *response;
     }
+    let body = match read_git_rpc_body(
+        &headers,
+        request.into_body(),
+        MAX_GIT_RECEIVE_PACK_ENCODED_BYTES,
+        MAX_GIT_RECEIVE_PACK_DECODED_BYTES,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(error) => return git_rpc_body_error_response(error),
+    };
     let manager = (*state.repo_manager).clone();
     let before = snapshot_refs(&manager, &owner, &repo);
     let origin_base_url = origin_base_url(&headers);
@@ -157,7 +298,7 @@ pub(crate) async fn git_receive_pack(
         format!("/git/{owner}/{repo}/git-receive-pack"),
         HashMap::new(),
         &headers,
-        body.to_vec(),
+        body,
     )
     .await;
     // After a successful push, fire the push->CI bridge for any moved branch.
@@ -494,7 +635,21 @@ fn snapshot_refs(manager: &RepoManager, owner: &str, repo: &str) -> Vec<jeryu_gi
 
 #[cfg(test)]
 mod tests {
-    use super::logical_repo_name;
+    use super::{
+        GitRpcBodyError, GitRpcContentEncoding, decode_git_rpc_body, forwarded_git_headers,
+        git_rpc_content_encoding, logical_repo_name, read_git_rpc_body,
+    };
+    use axum::body::{Body, Bytes};
+    use axum::http::{HeaderMap, HeaderValue, header};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
 
     #[test]
     fn logical_repo_name_strips_only_the_transport_suffix() {
@@ -503,6 +658,137 @@ mod tests {
         assert_eq!(
             logical_repo_name("project.git.backup"),
             "project.git.backup"
+        );
+    }
+
+    #[test]
+    fn git_rpc_encoding_is_closed_and_forwards_only_git_protocol() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        headers.insert("git-protocol", HeaderValue::from_static("version=2"));
+        assert_eq!(
+            git_rpc_content_encoding(&headers),
+            Ok(GitRpcContentEncoding::Gzip)
+        );
+        let forwarded = forwarded_git_headers(&headers);
+        assert_eq!(
+            forwarded.get("git-protocol").map(String::as_str),
+            Some("version=2")
+        );
+        assert!(!forwarded.contains_key("content-encoding"));
+
+        headers.insert(
+            header::CONTENT_ENCODING,
+            HeaderValue::from_static("gzip, br"),
+        );
+        assert_eq!(
+            git_rpc_content_encoding(&headers),
+            Err(GitRpcBodyError::UnsupportedEncoding)
+        );
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+        assert_eq!(
+            git_rpc_content_encoding(&headers),
+            Err(GitRpcBodyError::UnsupportedEncoding)
+        );
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("x-gzip"));
+        assert_eq!(
+            git_rpc_content_encoding(&headers),
+            Ok(GitRpcContentEncoding::Gzip)
+        );
+        headers.append(
+            header::CONTENT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+        assert_eq!(
+            git_rpc_content_encoding(&headers),
+            Err(GitRpcBodyError::UnsupportedEncoding)
+        );
+    }
+
+    #[test]
+    fn gzip_git_rpc_body_decodes_exactly_and_rejects_hostile_forms() {
+        let mut request = Vec::new();
+        while request.len() < 2_048 {
+            request.extend_from_slice(b"0032want 0123456789012345678901234567890123456789\n");
+        }
+        let encoded = Bytes::from(gzip(&request));
+        assert_eq!(
+            decode_git_rpc_body(GitRpcContentEncoding::Gzip, encoded.clone(), request.len())
+                .unwrap(),
+            request
+        );
+        assert_eq!(
+            decode_git_rpc_body(
+                GitRpcContentEncoding::Gzip,
+                encoded.clone(),
+                request.len() - 1
+            ),
+            Err(GitRpcBodyError::TooLarge)
+        );
+
+        let mut trailing = encoded.to_vec();
+        trailing.extend_from_slice(b"not-a-second-content-coding");
+        assert_eq!(
+            decode_git_rpc_body(
+                GitRpcContentEncoding::Gzip,
+                Bytes::from(trailing),
+                request.len() + 64,
+            ),
+            Err(GitRpcBodyError::MalformedGzip)
+        );
+        let truncated = encoded.slice(..encoded.len() - 1);
+        assert_eq!(
+            decode_git_rpc_body(GitRpcContentEncoding::Gzip, truncated, request.len()),
+            Err(GitRpcBodyError::MalformedGzip)
+        );
+        assert_eq!(
+            decode_git_rpc_body(
+                GitRpcContentEncoding::Gzip,
+                Bytes::from_static(b"not gzip"),
+                1024,
+            ),
+            Err(GitRpcBodyError::MalformedGzip)
+        );
+    }
+
+    #[tokio::test]
+    async fn git_rpc_reader_preserves_plain_bytes_and_enforces_encoded_limit() {
+        let plain = Bytes::from_static(b"0008done");
+        assert_eq!(
+            read_git_rpc_body(&HeaderMap::new(), Body::from(plain.clone()), 0, 0)
+                .await
+                .unwrap(),
+            plain
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        let decoded = b"12345678";
+        let encoded = gzip(decoded);
+        assert_eq!(
+            read_git_rpc_body(
+                &headers,
+                Body::from(encoded.clone()),
+                encoded.len(),
+                decoded.len(),
+            )
+            .await
+            .unwrap(),
+            decoded
+        );
+        assert_eq!(
+            read_git_rpc_body(
+                &headers,
+                Body::from(encoded.clone()),
+                encoded.len() - 1,
+                decoded.len(),
+            )
+            .await,
+            Err(GitRpcBodyError::TooLarge)
+        );
+        assert_eq!(
+            read_git_rpc_body(&headers, Body::from(encoded), usize::MAX, decoded.len() - 1,).await,
+            Err(GitRpcBodyError::TooLarge)
         );
     }
 }

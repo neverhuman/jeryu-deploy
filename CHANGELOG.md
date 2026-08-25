@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Decode bounded gzip/x-gzip Git smart-HTTP pack RPC requests before invoking
+  Git, reject malformed or stacked encodings, and preserve protocol-v2 headers.
 - Govern every active Jankurai consumer on the local-authority 1.6.11 split.2 tag and
   exact binary digest and installation receipt, with physical-file,
   wrong-authority, hostile-substitution, and PATH-neutralization tests plus
