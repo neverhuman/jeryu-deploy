@@ -28,9 +28,11 @@ use tokio::io::AsyncWriteExt;
 
 use crate::web::WebState;
 
-// Preserve the adapter's existing unbounded identity-body behavior. Only
-// compressed RPCs need new limits: bound both their wire bytes and expansion so
-// a small authenticated request cannot become an unbounded decompression bomb.
+// Bound both wire bytes and logical request bytes. Compressed RPCs get a tighter
+// wire cap so a small authenticated request cannot become a decompression bomb;
+// identity RPCs use the decoded cap because their wire and logical bytes are the
+// same. This keeps equivalent identity and gzip requests on the same payload
+// ceiling without buffering either form without bound.
 const MAX_GIT_UPLOAD_PACK_ENCODED_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GIT_UPLOAD_PACK_DECODED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_GIT_RECEIVE_PACK_ENCODED_BYTES: usize = 64 * 1024 * 1024;
@@ -122,15 +124,16 @@ async fn read_git_rpc_body(
     max_decoded_bytes: usize,
 ) -> Result<Vec<u8>, GitRpcBodyError> {
     let encoding = git_rpc_content_encoding(headers)?;
-    if encoding == GitRpcContentEncoding::Identity {
-        return to_bytes(body, usize::MAX)
-            .await
-            .map(|bytes| bytes.to_vec())
-            .map_err(|_| GitRpcBodyError::TooLarge);
-    }
-    let encoded = to_bytes(body, max_encoded_bytes)
+    let max_wire_bytes = match encoding {
+        GitRpcContentEncoding::Identity => max_decoded_bytes,
+        GitRpcContentEncoding::Gzip => max_encoded_bytes,
+    };
+    let encoded = to_bytes(body, max_wire_bytes)
         .await
         .map_err(|_| GitRpcBodyError::TooLarge)?;
+    if encoding == GitRpcContentEncoding::Identity {
+        return Ok(encoded.to_vec());
+    }
     tokio::task::spawn_blocking(move || decode_git_rpc_body(encoding, encoded, max_decoded_bytes))
         .await
         .map_err(|_| GitRpcBodyError::DecodeTaskFailed)?
@@ -752,13 +755,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn git_rpc_reader_preserves_plain_bytes_and_enforces_encoded_limit() {
+    async fn git_rpc_reader_bounds_identity_and_gzip_bodies() {
         let plain = Bytes::from_static(b"0008done");
         assert_eq!(
-            read_git_rpc_body(&HeaderMap::new(), Body::from(plain.clone()), 0, 0)
+            read_git_rpc_body(&HeaderMap::new(), Body::from(plain.clone()), 0, plain.len(),)
                 .await
                 .unwrap(),
             plain
+        );
+        assert_eq!(
+            read_git_rpc_body(
+                &HeaderMap::new(),
+                Body::from(plain.clone()),
+                usize::MAX,
+                plain.len() - 1,
+            )
+            .await,
+            Err(GitRpcBodyError::TooLarge)
         );
 
         let mut headers = HeaderMap::new();
