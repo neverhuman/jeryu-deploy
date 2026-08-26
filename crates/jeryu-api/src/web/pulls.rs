@@ -17,13 +17,14 @@ use jeryu_core::{
     AccountSummary, CheckConclusion, CheckRun, CheckRunStatus, CommitStatusState,
     CreateReviewRequest, ForgeError, MergeBlocker,
     MergePullRequestRequest as CoreMergePullRequestRequest, PullRequest, ReviewCommentInput,
-    ReviewState, check_conclusion_wire_value,
+    ReviewState, check_conclusion_wire_value, effective_reviews_for_head,
 };
 use jeryu_readmodel::contracts::{
     AgentPosture, AvailableAction, CheckPosture, CreateReviewCommentRequest, EntityHandle,
     MergePassport, MergePassportBlocker, MergePassportStatus, Mergeability, PullRequestDetail,
-    PullRequestState as WebPullRequestState, PullRequestSummary, ReviewComment as WebReviewComment,
-    ReviewPosture, ReviewThread, ReviewVerdict, SubmitReviewRequest,
+    PullRequestReview, PullRequestState as WebPullRequestState, PullRequestSummary,
+    ReviewComment as WebReviewComment, ReviewPosture, ReviewThread, ReviewVerdict,
+    SubmitReviewRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -185,12 +186,13 @@ pub(super) async fn list(
 
 pub(super) async fn detail(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
 ) -> AxumResponse {
     let Some((_, pr)) = resolve_pr(&state, &id, number) else {
         return not_found("load pull request detail", "pull request not found");
     };
-    Json(detail_for_pr(&state, &pr)).into_response()
+    Json(detail_for_pr(&state, &pr, Some(&account.login))).into_response()
 }
 
 pub(super) async fn diff(
@@ -290,6 +292,7 @@ pub(super) async fn review(
         body: request.body_markdown,
         event,
         comments,
+        expected_head_sha: Some(request.expected_head_sha),
     };
     match state.github.core().create_review(
         &repo.owner,
@@ -303,7 +306,9 @@ pub(super) async fn review(
             .core()
             .get_pull_request(&repo.owner, &repo.name, pr.number)
         {
-            Ok(updated) => Json(detail_for_pr(&state, &updated)).into_response(),
+            Ok(updated) => {
+                Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
+            }
             Err(error) => core_error(error, "reload pull request after review"),
         },
         Err(error) => core_error(error, "submit pull request review"),
@@ -360,6 +365,7 @@ pub(super) async fn comment(
             body: None,
             event: ReviewState::Commented,
             comments,
+            expected_head_sha: Some(pr.head.sha.clone()),
         },
     ) {
         Ok(_) => Json(PullRequestThreadList {
@@ -411,6 +417,7 @@ pub(super) async fn approve(
             body: request.body_markdown,
             event: ReviewState::Approved,
             comments: Vec::new(),
+            expected_head_sha: Some(request.expected_head_sha),
         },
     ) {
         Ok(_) => match state
@@ -418,7 +425,9 @@ pub(super) async fn approve(
             .core()
             .get_pull_request(&repo.owner, &repo.name, pr.number)
         {
-            Ok(updated) => Json(detail_for_pr(&state, &updated)).into_response(),
+            Ok(updated) => {
+                Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
+            }
             Err(error) => core_error(error, "reload pull request after approval"),
         },
         Err(error) => core_error(error, "approve pull request"),
@@ -453,7 +462,7 @@ pub(super) async fn merge(
     if request.expected_head_sha != pr.head.sha {
         return stale_sha(&request.expected_head_sha, &pr.head.sha);
     }
-    let current = detail_for_pr(&state, &pr);
+    let current = detail_for_pr(&state, &pr, None);
     if request.expected_passport_hash.as_deref() != current.passport_hash.as_deref() {
         return repair_error(
             StatusCode::CONFLICT,
@@ -524,7 +533,7 @@ pub(super) async fn merge(
         .core()
         .get_pull_request(&repo.owner, &repo.name, pr.number)
     {
-        Ok(updated) => Json(detail_for_pr(&state, &updated)).into_response(),
+        Ok(updated) => Json(detail_for_pr(&state, &updated, None)).into_response(),
         Err(error) => core_error(error, "reload pull request after merge"),
     }
 }
@@ -581,9 +590,13 @@ fn state_matches(pr: &PullRequest, filter: Option<&str>) -> bool {
     }
 }
 
-fn detail_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestDetail {
+fn detail_for_pr(
+    state: &WebState,
+    pr: &PullRequest,
+    authenticated_login: Option<&str>,
+) -> PullRequestDetail {
     let required_contexts = required_contexts(state, pr);
-    detail_for_pr_with_required_contexts(state, pr, &required_contexts)
+    detail_for_pr_with_required_contexts(state, pr, &required_contexts, authenticated_login)
 }
 
 #[cfg(test)]
@@ -593,20 +606,31 @@ pub(super) fn detail_for_pr_with_audit_enforcement(
     audit_enforce_merge: bool,
 ) -> PullRequestDetail {
     let required_contexts = required_contexts_with_enforcement(state, pr, audit_enforce_merge);
-    detail_for_pr_with_required_contexts(state, pr, &required_contexts)
+    detail_for_pr_with_required_contexts(state, pr, &required_contexts, None)
 }
 
 fn detail_for_pr_with_required_contexts(
     state: &WebState,
     pr: &PullRequest,
     required_contexts: &[RequiredContextPosture],
+    authenticated_login: Option<&str>,
 ) -> PullRequestDetail {
-    let summary = summary_with_required_contexts(state, pr, required_contexts);
+    let mut summary = summary_with_required_contexts(state, pr, required_contexts);
     let merge_passport = passport(&summary, pr, required_contexts);
+    let reviews = reviews_for_pr(state, pr);
+    summary.review.user_review_state = authenticated_login.and_then(|login| {
+        reviews
+            .iter()
+            .find(|review| review.effective && review.author == login)
+            .map(|review| review.state.clone())
+    });
     PullRequestDetail {
         passport_hash: summary.passport_hash.clone(),
         summary,
         description: pr.body.clone(),
+        head_tree_sha: commit_tree_sha(state, pr, &pr.head.sha),
+        base_tree_sha: commit_tree_sha(state, pr, &pr.base.sha),
+        reviews,
         merge_passport,
     }
 }
@@ -634,6 +658,7 @@ fn summary_with_required_contexts(
             .iter()
             .all(|context| context.state == RequiredContextState::Passing)
         && review.approvals >= review.required_approvals
+        && review.changes_requested == 0
         && review.unresolved_threads == 0;
     let reason = if mergeable {
         None
@@ -648,6 +673,8 @@ fn summary_with_required_contexts(
             context.name,
             context.state.wire_name()
         ))
+    } else if review.changes_requested > 0 {
+        Some("changes requested on the current head".to_string())
     } else if review.approvals < review.required_approvals {
         Some("required approvals missing".to_string())
     } else if review.unresolved_threads > 0 {
@@ -845,6 +872,13 @@ fn passport_blockers(
         blockers.push(blocker(
             "passport_blocked_approvals",
             "Required approver count not satisfied.",
+            None,
+        ));
+    }
+    if review.changes_requested > 0 {
+        blockers.push(blocker(
+            "passport_blocked_changes_requested",
+            "A reviewer requested changes on the current head.",
             None,
         ));
     }
@@ -1134,18 +1168,85 @@ fn review_posture(state: &WebState, pr: &PullRequest) -> ReviewPosture {
         .get_branch_protection(&pr.owner, &pr.repo, &pr.base.ref_name)
         .map(|rule| u32::try_from(rule.required_approving_review_count).unwrap_or(u32::MAX))
         .unwrap_or(0);
+    let effective = effective_reviews_for_head(&reviews, &pr.head.sha);
     ReviewPosture {
         required_approvals,
-        approvals: reviews
+        approvals: effective
             .iter()
             .filter(|review| review.state == ReviewState::Approved)
             .count() as u32,
-        changes_requested: reviews
+        changes_requested: effective
             .iter()
             .filter(|review| review.state == ReviewState::ChangesRequested)
             .count() as u32,
         unresolved_threads: comments.len() as u32,
         user_review_state: None,
+    }
+}
+
+fn reviews_for_pr(state: &WebState, pr: &PullRequest) -> Vec<PullRequestReview> {
+    let reviews = state
+        .github
+        .core()
+        .list_reviews(&pr.owner, &pr.repo, pr.number)
+        .unwrap_or_default();
+    let effective_ids = effective_reviews_for_head(&reviews, &pr.head.sha)
+        .into_iter()
+        .map(|review| review.id)
+        .collect::<BTreeSet<_>>();
+    reviews
+        .into_iter()
+        .map(|review| {
+            let effective = effective_ids.contains(&review.id);
+            PullRequestReview {
+                id: review.id.to_string(),
+                author: review.author,
+                state: review_state_wire(&review.state).to_string(),
+                body_markdown: review.body,
+                submitted_at: review.submitted_at.to_rfc3339(),
+                stale: review.head_sha.as_deref() != Some(pr.head.sha.as_str()),
+                head_sha: review.head_sha,
+                effective,
+            }
+        })
+        .collect()
+}
+
+fn review_state_wire(state: &ReviewState) -> &'static str {
+    match state {
+        ReviewState::Approved => "APPROVED",
+        ReviewState::ChangesRequested => "CHANGES_REQUESTED",
+        ReviewState::Commented => "COMMENTED",
+        ReviewState::Dismissed => "DISMISSED",
+    }
+}
+
+fn commit_tree_sha(state: &WebState, pr: &PullRequest, commit: &str) -> Option<String> {
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let repo = state.repo_manager.open_parts(&pr.owner, &pr.repo).ok()?;
+    let tree_spec = format!("{commit}^{{tree}}");
+    let output = std::process::Command::new(&state.repo_manager.config().git_bin)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &tree_spec,
+        ])
+        .current_dir(&repo.path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let tree = String::from_utf8(output.stdout).ok()?;
+    let tree = tree.trim();
+    if tree.len() == 40 && tree.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(tree.to_ascii_lowercase())
+    } else {
+        None
     }
 }
 

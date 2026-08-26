@@ -271,6 +271,7 @@ fn gated_merge_moves_main_in_bare_repo() {
                 body: None,
                 event: ReviewState::Approved,
                 comments: vec![],
+                expected_head_sha: Some(fixture.head_oid.clone()),
             },
         )
         .expect("approve");
@@ -405,6 +406,7 @@ fn gated_true_merge_creates_merge_commit_and_moves_main() {
                 body: None,
                 event: ReviewState::Approved,
                 comments: vec![],
+                expected_head_sha: Some(fixture.head_oid.clone()),
             },
         )
         .expect("approve");
@@ -842,6 +844,12 @@ fn mirror_for(dest: Option<&Path>) -> Arc<jeryu_api::github_mirror::GithubMirror
 }
 
 fn approve(router: &GithubRouter, number: u64) {
+    let expected_head_sha = router
+        .core()
+        .get_pull_request("acme", "demo", number)
+        .expect("load PR before approval")
+        .head
+        .sha;
     router
         .core()
         .create_review(
@@ -853,6 +861,7 @@ fn approve(router: &GithubRouter, number: u64) {
                 body: None,
                 event: ReviewState::Approved,
                 comments: vec![],
+                expected_head_sha: Some(expected_head_sha),
             },
         )
         .expect("approve");

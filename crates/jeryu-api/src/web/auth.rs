@@ -10,8 +10,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::{DateTime, Duration, Utc};
 use jeryu_core::{
-    AccountSummary, ForgeError, PersonalAccessTokenSummary, RepoAccessGrant, RepoAccessLevel,
-    UserRole,
+    AccountStatus, AccountSummary, ForgeError, PersonalAccessTokenSummary, RepoAccessGrant,
+    RepoAccessLevel, UserRole,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -273,7 +273,29 @@ pub(super) async fn change_password(
         &request.current_password,
         &request.new_password,
     ) {
-        Ok(updated) => Json(AuthUserResponse::from(updated)).into_response(),
+        Ok(updated) => match state.core.create_session(&updated.login) {
+            Ok(session) => {
+                let csrf_token = session.session.csrf_token.clone();
+                let mut response =
+                    Json(AuthUserResponse::new(updated, Some(csrf_token))).into_response();
+                match cookie_header(&state, &session.token, None) {
+                    Ok(value) => {
+                        response.headers_mut().append(header::SET_COOKIE, value);
+                        response
+                    }
+                    Err(error) => api_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "session_rotation_failed",
+                        &format!("could not publish the rotated session: {error}"),
+                    ),
+                }
+            }
+            Err(error) => api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session_rotation_failed",
+                &format!("could not create the rotated session: {error}"),
+            ),
+        },
         Err(ForgeError::Validation(_)) => api_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -587,7 +609,10 @@ pub(crate) fn trusted_local_account(state: &WebState) -> AccountSummary {
         Ok(account) => account,
         Err(_) => AccountSummary {
             login: "jeryu-admin".to_string(),
+            display_name: "Jeryu Admin".to_string(),
             role: UserRole::Admin,
+            status: AccountStatus::Active,
+            auth_epoch: 0,
             must_change_password: false,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

@@ -13,9 +13,9 @@ use jeryu_codegraph::{
 };
 use jeryu_core::CheckConclusion;
 use jeryu_core::{
-    AccountSummary, CommitStatusState, CreateCheckRunRequest, CreateCommitStatusRequest,
-    CreatePullRequestRequest, CreateRepositoryRequest, CreateReviewRequest, RepoAccessLevel,
-    ReviewState, SetBranchProtectionRequest, UserRole,
+    AccountStatus, AccountSummary, CommitStatusState, CreateCheckRunRequest,
+    CreateCommitStatusRequest, CreatePullRequestRequest, CreateRepositoryRequest,
+    CreateReviewRequest, RepoAccessLevel, ReviewState, SetBranchProtectionRequest, UserRole,
 };
 use jeryu_readmodel::contracts::{RepositoryRole, ServerWsMessage};
 use jeryu_readmodel::{HealthLevel, sample_read_model};
@@ -35,7 +35,10 @@ fn write_file(root: &Path, relative: &str, contents: &str) {
 fn authenticated_account(login: &str) -> Extension<AccountSummary> {
     Extension(AccountSummary {
         login: login.to_string(),
+        display_name: login.to_string(),
         role: UserRole::User,
+        status: AccountStatus::Active,
+        auth_epoch: 0,
         must_change_password: false,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -589,6 +592,7 @@ async fn pulls_routes_return_live_pr_detail_diff_checks_and_threads() {
                 line: Some(12),
                 body: "check this".to_string(),
             }],
+            expected_head_sha: Some("head-a".to_string()),
         },
     )
     .unwrap();
@@ -610,12 +614,22 @@ async fn pulls_routes_return_live_pr_detail_diff_checks_and_threads() {
     let detail = response_json(
         super::pulls::detail(
             State(state.clone()),
+            authenticated_account("alice"),
             AxumPath((repo.id.to_string(), pr.number)),
         )
         .await,
     )
     .await;
     assert_eq!(detail["summary"]["head_sha"], "head-a");
+    assert_eq!(detail["head_tree_sha"], serde_json::Value::Null);
+    assert_eq!(detail["base_tree_sha"], serde_json::Value::Null);
+    assert_eq!(detail["reviews"][0]["head_sha"], "head-a");
+    assert_eq!(detail["reviews"][0]["effective"], true);
+    assert_eq!(detail["reviews"][0]["stale"], false);
+    assert_eq!(
+        detail["summary"]["review"]["user_review_state"],
+        "COMMENTED"
+    );
     assert!(
         detail["passport_hash"]
             .as_str()
@@ -662,6 +676,141 @@ async fn pulls_routes_return_live_pr_detail_diff_checks_and_threads() {
         threads["threads"][0]["comments"][0]["body_markdown"],
         "check this"
     );
+}
+
+#[tokio::test]
+async fn pull_detail_marks_review_history_stale_and_uses_latest_current_head_verdict() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "review-heads".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "review-heads",
+        "main",
+        SetBranchProtectionRequest {
+            required_approving_review_count: 1,
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    let head_a = "a".repeat(40);
+    let head_b = "b".repeat(40);
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "review-heads",
+            "alice",
+            CreatePullRequestRequest {
+                title: "head-bound review readback".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(head_a.clone()),
+                base_sha: Some("c".repeat(40)),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    core.create_review(
+        "alice",
+        "review-heads",
+        pr.number,
+        "bob",
+        CreateReviewRequest {
+            body: Some("approved old head".to_string()),
+            event: ReviewState::Approved,
+            comments: Vec::new(),
+            expected_head_sha: Some(head_a.clone()),
+        },
+    )
+    .unwrap();
+    core.refresh_pull_request_heads_for_ref("alice", "review-heads", "feature", &head_b)
+        .unwrap();
+    let state = Arc::new(WebState::new(core.clone()));
+    let path = || AxumPath((repo.id.to_string(), pr.number));
+
+    let moved = response_json(
+        super::pulls::detail(State(state.clone()), authenticated_account("bob"), path()).await,
+    )
+    .await;
+    assert_eq!(moved["summary"]["review"]["approvals"], 0);
+    assert_eq!(
+        moved["summary"]["review"]["user_review_state"],
+        serde_json::Value::Null
+    );
+    assert_eq!(moved["reviews"][0]["head_sha"], head_a);
+    assert_eq!(moved["reviews"][0]["effective"], false);
+    assert_eq!(moved["reviews"][0]["stale"], true);
+
+    core.create_review(
+        "alice",
+        "review-heads",
+        pr.number,
+        "bob",
+        CreateReviewRequest {
+            body: Some("fix the current head".to_string()),
+            event: ReviewState::ChangesRequested,
+            comments: Vec::new(),
+            expected_head_sha: Some(head_b.clone()),
+        },
+    )
+    .unwrap();
+    let requested = response_json(
+        super::pulls::detail(State(state.clone()), authenticated_account("bob"), path()).await,
+    )
+    .await;
+    assert_eq!(requested["summary"]["review"]["changes_requested"], 1);
+    assert_eq!(
+        requested["summary"]["review"]["user_review_state"],
+        "CHANGES_REQUESTED"
+    );
+    assert!(
+        requested["merge_passport"]["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|blocker| blocker["code"] == "passport_blocked_changes_requested")
+    );
+
+    core.create_review(
+        "alice",
+        "review-heads",
+        pr.number,
+        "bob",
+        CreateReviewRequest {
+            body: Some("current head repaired".to_string()),
+            event: ReviewState::Approved,
+            comments: Vec::new(),
+            expected_head_sha: Some(head_b.clone()),
+        },
+    )
+    .unwrap();
+    let approved = response_json(
+        super::pulls::detail(State(state), authenticated_account("bob"), path()).await,
+    )
+    .await;
+    assert_eq!(approved["summary"]["review"]["approvals"], 1);
+    assert_eq!(approved["summary"]["review"]["changes_requested"], 0);
+    assert_eq!(
+        approved["summary"]["review"]["user_review_state"],
+        "APPROVED"
+    );
+    assert_eq!(approved["reviews"].as_array().unwrap().len(), 3);
+    assert_eq!(approved["reviews"][1]["state"], "CHANGES_REQUESTED");
+    assert_eq!(approved["reviews"][1]["effective"], false);
+    assert_eq!(approved["reviews"][1]["stale"], false);
+    assert_eq!(approved["reviews"][2]["state"], "APPROVED");
+    assert_eq!(approved["reviews"][2]["effective"], true);
+    assert_eq!(approved["reviews"][2]["stale"], false);
+    assert_eq!(approved["merge_passport"]["status"], "pass");
 }
 
 #[tokio::test]
@@ -724,8 +873,12 @@ async fn pulls_mutations_return_typed_repair_errors() {
         assert!(missing_repo_body.get(key).is_some(), "missing {key}");
     }
 
-    let missing_pr =
-        super::pulls::detail(State(state.clone()), AxumPath((repo.id.to_string(), 404))).await;
+    let missing_pr = super::pulls::detail(
+        State(state.clone()),
+        authenticated_account("bob"),
+        AxumPath((repo.id.to_string(), 404)),
+    )
+    .await;
     assert_eq!(missing_pr.status(), StatusCode::NOT_FOUND);
     assert_eq!(response_json(missing_pr).await["code"], "not_found");
 
@@ -757,6 +910,7 @@ async fn pulls_mutations_return_typed_repair_errors() {
     let detail = response_json(
         super::pulls::detail(
             State(state.clone()),
+            authenticated_account("bob"),
             AxumPath((repo.id.to_string(), pr.number)),
         )
         .await,
@@ -845,6 +999,7 @@ async fn passport_for_required_check(
             body: None,
             event: ReviewState::Approved,
             comments: Vec::new(),
+            expected_head_sha: Some("required-context-head".to_string()),
         },
     )
     .unwrap();
@@ -865,7 +1020,12 @@ async fn passport_for_required_check(
     }
     let state = Arc::new(WebState::new(core));
     response_json(
-        super::pulls::detail(State(state), AxumPath((repo.id.to_string(), pr.number))).await,
+        super::pulls::detail(
+            State(state),
+            authenticated_account("bob"),
+            AxumPath((repo.id.to_string(), pr.number)),
+        )
+        .await,
     )
     .await
 }
@@ -1286,11 +1446,23 @@ async fn pulls_mutations_allow_record_only_autonomy_advisory() {
     assert_eq!(reviews.len(), 1);
     assert_eq!(reviews[0].author, "bob");
 
-    let detail = response_json(super::pulls::detail(State(state.clone()), path()).await).await;
+    let detail = response_json(
+        super::pulls::detail(State(state.clone()), authenticated_account("bob"), path()).await,
+    )
+    .await;
     assert_eq!(detail["summary"]["checks"]["total"], 2);
     assert_eq!(detail["summary"]["checks"]["failing"], 1);
     assert_eq!(detail["merge_passport"]["status"], "pass");
     assert_eq!(detail["merge_passport"]["blockers"], serde_json::json!([]));
+    let head_tree = detail["head_tree_sha"]
+        .as_str()
+        .expect("real head commit must expose its tree");
+    let base_tree = detail["base_tree_sha"]
+        .as_str()
+        .expect("real base commit must expose its tree");
+    assert_eq!(head_tree.len(), 40);
+    assert_eq!(base_tree.len(), 40);
+    assert_ne!(head_tree, base_tree);
     let passport_hash = detail["passport_hash"].as_str().unwrap();
 
     state
@@ -1309,8 +1481,10 @@ async fn pulls_mutations_allow_record_only_autonomy_advisory() {
             },
         )
         .unwrap();
-    let advisory_refresh =
-        response_json(super::pulls::detail(State(state.clone()), path()).await).await;
+    let advisory_refresh = response_json(
+        super::pulls::detail(State(state.clone()), authenticated_account("bob"), path()).await,
+    )
+    .await;
     assert_eq!(advisory_refresh["merge_passport"]["status"], "pass");
     assert_eq!(advisory_refresh["passport_hash"], passport_hash);
 
@@ -1406,6 +1580,7 @@ async fn web_pull_merge_advances_real_bare_main_ref() {
             body: None,
             event: ReviewState::Approved,
             comments: Vec::new(),
+            expected_head_sha: Some(head_sha.clone()),
         },
     )
     .unwrap();
@@ -1414,7 +1589,10 @@ async fn web_pull_merge_advances_real_bare_main_ref() {
         storage.path().to_path_buf(),
     ));
     let path = || AxumPath((repo.id.to_string(), pr.number));
-    let detail = response_json(super::pulls::detail(State(state.clone()), path()).await).await;
+    let detail = response_json(
+        super::pulls::detail(State(state.clone()), authenticated_account("bob"), path()).await,
+    )
+    .await;
     assert_eq!(detail["merge_passport"]["status"], "pass");
     let passport_hash = detail["passport_hash"].as_str().unwrap();
 
@@ -1554,6 +1732,7 @@ async fn web_pull_passport_uses_latest_run_per_check_name_within_current_head() 
             body: None,
             event: ReviewState::Approved,
             comments: Vec::new(),
+            expected_head_sha: Some(head_sha.clone()),
         },
     )
     .unwrap();
@@ -1573,7 +1752,12 @@ async fn web_pull_passport_uses_latest_run_per_check_name_within_current_head() 
     );
     let state = Arc::new(WebState::new(core));
     let detail = response_json(
-        super::pulls::detail(State(state), AxumPath((repo.id.to_string(), pr.number))).await,
+        super::pulls::detail(
+            State(state),
+            authenticated_account("bob"),
+            AxumPath((repo.id.to_string(), pr.number)),
+        )
+        .await,
     )
     .await;
 
@@ -3469,16 +3653,42 @@ async fn forced_password_change_blocks_other_authenticated_routes_until_changed(
         .await
         .unwrap();
     assert_eq!(changed.status(), StatusCode::OK);
+    let rotated_cookie = changed
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("password change rotates the session cookie")
+        .split(';')
+        .next()
+        .expect("rotated cookie name and value")
+        .to_string();
     let changed_body = response_json(changed).await;
     assert_eq!(changed_body["mustChangePassword"], false);
+    let rotated_csrf = changed_body["csrfToken"]
+        .as_str()
+        .expect("password change returns the rotated CSRF token")
+        .to_string();
+
+    let old_session = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(old_session.status(), StatusCode::UNAUTHORIZED);
 
     let token_created = app
         .oneshot(
             Request::builder()
                 .method(HttpMethod::POST)
                 .uri("/api/v1/auth/tokens")
-                .header(header::COOKIE, &cookie)
-                .header("x-jeryu-csrf", &csrf)
+                .header(header::COOKIE, &rotated_cookie)
+                .header("x-jeryu-csrf", &rotated_csrf)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::json!({ "name": "cli" }).to_string()))
                 .unwrap(),
@@ -5978,7 +6188,10 @@ async fn repo_list_filters_apply_server_side() {
     let state = Arc::new(WebState::new(core));
     let account = Extension(AccountSummary {
         login: "jeryu-admin".to_string(),
+        display_name: "Jeryu Admin".to_string(),
         role: jeryu_core::UserRole::Admin,
+        status: AccountStatus::Active,
+        auth_epoch: 0,
         must_change_password: false,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

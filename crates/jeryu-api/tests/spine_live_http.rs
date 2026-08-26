@@ -612,7 +612,11 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
             ],
         ]
         .concat(),
-        &[("GIT_LFS_SKIP_SMUDGE", "1")],
+        &[
+            ("GIT_LFS_SKIP_SMUDGE", "1"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ],
     );
     let skip = work.join("skip-smudge");
     let pointer = std::fs::read_to_string(skip.join("model.cpkt")).unwrap();
@@ -624,7 +628,14 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
 
     // Host CI runs with GIT_CONFIG_NOSYSTEM=1 and no global LFS filters, so the
     // skip-smudge clone must install local LFS before pull can materialize payloads.
-    run_git(&skip, &["lfs", "install", "--local", "--skip-repo"]);
+    run_git_env(
+        &skip,
+        &["lfs", "install", "--local", "--skip-repo"],
+        &[
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ],
+    );
     assert!(
         !skip.join(".git/hooks/pre-push").exists(),
         "the skip-smudge fixture must not install or execute Git hooks"
