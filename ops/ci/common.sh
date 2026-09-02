@@ -46,8 +46,16 @@ jeryu_jankurai() {
 jeryu_gate() {
   local crate="$1"; shift
   if [ "$crate" = "jeryu-repogate" ]; then
-    cargo run -q --release -p "${crate}" -- "$@"
-    return
+    case "${1:-}" in
+      affected-plan|ci-lanes-check|ci-lanes-list)
+        cargo run -q --release -p jeryu-split-tool -- "$@"
+        return
+        ;;
+      *)
+        printf 'unsupported retired monorepo gate for split repository: %s\n' "${1:-<missing>}" >&2
+        return 2
+        ;;
+    esac
   fi
   cargo run -q --release -p "${crate}" -- "$@"
 }

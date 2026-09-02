@@ -10,6 +10,8 @@
   interrupted or tool-failed audit can recover on the same commit; reject
   incomplete/nonzero tool output, audit a first main ref against an empty tree,
   and prevent candidate policy from lowering the host score floor.
+- Include the security lane in the canonical required-check entrypoint and keep
+  its workflow declaration aligned with the commands the lane actually runs.
 
 ## jeryu-deploy-v5.0.0-split.4
 

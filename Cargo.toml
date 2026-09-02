@@ -24,6 +24,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 hmac = "0.12"
+jeryu-repogate = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.0" }
 parking_lot = "0.12"
 proptest = "1"
 serde = { version = "1", features = ["derive"] }

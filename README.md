@@ -66,6 +66,12 @@ Rust-native split transition checks are available through
 `ops/split/manifest.sh` compatibility entrypoint delegates to that binary and
 does not invoke a Python runtime.
 
+Repository CI wrappers route their lock-bound release-toolkit checks through
+the same local binary with `ci-lanes-check`, `ci-lanes-list`, and
+`affected-plan`; they do not discover or execute source from a Cargo cache or
+sibling checkout. Retired monorepo-only repository gates are rejected rather
+than being applied to this standalone split.
+
 ## Quick Start
 
 Prerequisites are Rust 1.95 and the governed Jankurai binary described in

@@ -35,6 +35,48 @@ command = "bash ops/ci/ci-fast.sh"
 full = true
 
 [[lanes]]
+id = "ci-local-fast"
+workflow = ".github/workflows/ci.yml"
+job = "local"
+command = "bash ops/ci/fast.sh # cargo check"
+full = true
+
+[[lanes]]
+id = "ci-local-check"
+workflow = ".github/workflows/ci.yml"
+job = "local"
+command = "bash ops/ci/check.sh"
+full = true
+
+[[lanes]]
+id = "ci-local-score"
+workflow = ".github/workflows/ci.yml"
+job = "local"
+command = "bash ops/ci/score.sh # jankurai audit repo-score"
+full = true
+
+[[lanes]]
+id = "ci-local-security"
+workflow = ".github/workflows/ci.yml"
+job = "local"
+command = "bash ops/ci/security.sh # gitleaks cargo audit npm audit syft actionlint"
+full = true
+
+[[lanes]]
+id = "ci-local-proof-evidence"
+workflow = ".github/workflows/ci.yml"
+job = "local"
+command = "bash ops/ci/proof_evidence.sh"
+full = true
+
+[[lanes]]
+id = "ci-local-artifact-support"
+workflow = ".github/workflows/ci.yml"
+job = "local"
+command = "bash ops/ci/artifact_support.sh"
+full = true
+
+[[lanes]]
 id = "rust-shards"
 workflow = ".github/workflows/ci-fast.yml"
 job = "rust-test-shards"
@@ -49,10 +91,17 @@ command = "bash ops/ci/jankurai.sh"
 full = true
 
 [[lanes]]
+id = "jankurai-identity-hostiles"
+workflow = ".github/workflows/jankurai.yml"
+job = "jankurai-audit"
+command = "bash ops/ci/test-governed-jankurai.sh"
+full = true
+
+[[lanes]]
 id = "security"
 workflow = ".github/workflows/security.yml"
 job = "security"
-command = "JERYU_SECURITY_MARKERS='scripts/secret-scan.sh cargo audit --deny warnings cargo deny check advisories bans licenses sources npm audit --prefix apps/web --audit-level=high --omit=dev syft grype cosign actionlint zizmor' bash ops/ci/security.sh"
+command = "JERYU_SECURITY_MARKERS='gitleaks detect --pipe --redact --verbose scripts/secret-scan.sh cargo audit --deny warnings cargo deny check advisories bans licenses sources npm audit --prefix apps/web --audit-level=high --omit=dev syft grype cosign actionlint zizmor' bash ops/ci/security.sh"
 full = true
 
 [[lanes]]

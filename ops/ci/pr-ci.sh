@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Comprehensive local PR gate. host-ci runs this to produce the forge `jeryu/ci`
-# check-run, which is THE gate for forge PRs (the GitHub-Actions workflow lanes run
-# on the GitHub mirror's real runners; the forge does not seed them — see
-# crates/jeryu-api/src/ci_bridge.rs). This therefore carries the real equivalent
-# coverage locally: format + clippy (deny warnings) + the FULL workspace test suite
-# + the jankurai audit (>= 85) + the web build/vitest lane for apps/web. The heavier
-# security and browser lanes (syft/grype/cosign/playwright) run on the mirror; invoke
-# them here too once their tooling is provisioned on the runner.
+# Comprehensive local PR gate. Native host CI runs this to produce the required
+# exact-head check, and a trusted hosted runner uses the same entrypoint. It carries
+# format + clippy (deny warnings) + the FULL workspace test suite + the Jankurai
+# audit (>= 85) + the web build/vitest lane for apps/web + the local security lane.
 set -euo pipefail
 
 # BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
@@ -168,4 +164,8 @@ sys.exit(0 if score >= 85 and not caps else 1)
 PY
 restore_cargo_lock_ci_noise
 
-echo "[pr-ci] PASS — fmt + clippy + workspace tests + jankurai all green" >&2
+echo "[pr-ci] security lane"
+bash "${repo_root}/ops/ci/security.sh"
+restore_cargo_lock_ci_noise
+
+echo "[pr-ci] PASS — fmt + clippy + workspace tests + jankurai + security all green" >&2

@@ -57,6 +57,29 @@ enum Command {
         #[arg(long, default_value = "jeryu-split.lock.toml")]
         lock: PathBuf,
     },
+    /// Verify hosted workflows remain thin wrappers around agent/ci-lanes.toml.
+    CiLanesCheck,
+    /// List commands declared by agent/ci-lanes.toml.
+    CiLanesList {
+        /// Emit only lanes that participate in the full workflow union.
+        #[arg(long)]
+        full: bool,
+        /// Emit JSON instead of tab-separated lane/command rows.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build the affected-package plan for a committed change range.
+    AffectedPlan {
+        /// Protected base ref used for the three-dot diff.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// Output path relative to the repository root.
+        #[arg(long, default_value = "target/ci-fast/affected-plan.json")]
+        out: PathBuf,
+        /// Worker count recorded in the plan.
+        #[arg(long, default_value_t = 40)]
+        workers: u32,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -177,7 +200,28 @@ fn run(cli: Cli) -> Result<()> {
         Command::FleetCi { manifest, full } => fleet_ci(&manifest, full),
         Command::VerifyLock { lock } => verify_lock(&lock),
         Command::ProductPipeline { manifest, lock } => product_pipeline(&manifest, &lock),
+        Command::CiLanesCheck => {
+            emit_repo_gate(jeryu_repogate::run_ci_lanes_check(Path::new("."))?)
+        }
+        Command::CiLanesList { full, json } => emit_repo_gate(jeryu_repogate::run_ci_lanes_list(
+            Path::new("."),
+            full,
+            json,
+        )?),
+        Command::AffectedPlan { base, out, workers } => emit_repo_gate(
+            jeryu_repogate::run_affected_plan(Path::new("."), &base, &out, workers)?,
+        ),
     }
+}
+
+fn emit_repo_gate(outcome: jeryu_repogate::GateOutcome) -> Result<()> {
+    for line in outcome.stdout {
+        println!("{line}");
+    }
+    if outcome.exit_code != 0 {
+        bail!("repository gate exited {}", outcome.exit_code);
+    }
+    Ok(())
 }
 
 fn read_toml(path: &Path) -> Result<Value> {

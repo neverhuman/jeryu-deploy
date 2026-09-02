@@ -14,7 +14,7 @@ log() { printf '[workflow-lint] %s\n' "$*"; }
 jeryu_gate() {
   local crate="$1"; shift
   if [ "$crate" = "jeryu-repogate" ]; then
-    cargo run -q --release -p "${crate}" -- "$@"
+    cargo run -q --release -p jeryu-split-tool -- "$@"
     return
   fi
   local bin="target/release/${crate}"
