@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jeryu_ci_compiler::{CiKind, CompileContext, Compiler};
@@ -28,6 +28,7 @@ use sha2::{Digest, Sha256};
 
 /// All-zero oid: a ref delete, which carries no commit to build.
 const ZERO_OID: &str = "0000000000000000000000000000000000000000";
+const HOST_JANKURAI_MINIMUM_SCORE: u32 = 85;
 
 /// A branch ref whose tip a push moved to a new commit.
 pub(crate) struct RefUpdate {
@@ -81,10 +82,10 @@ pub(crate) fn on_push(
         if let Some(branch) = update.ref_name.strip_prefix("refs/heads/") {
             let _ = core.refresh_pull_request_heads_for_ref(owner, repo, branch, &update.new_oid);
         }
-        // THE GUARANTEE: compute and record the authoritative jankurai diff-score
-        // for this head, and publish `jankurai/proof` from it. on_push is the only
-        // funnel every head SHA passes through (push transport, merge, and seeded
-        // PR-head exports all route here), so no head can exist unscored.
+        // Compute the host-authoritative jankurai diff-score for every changed
+        // branch head and publish `jankurai/proof` from that result. Push
+        // transport, merge, and seeded PR-head exports all route here; failures
+        // stay visibly red or unproven rather than becoming synthetic success.
         record_authoritative_jankurai_score(core, &git_bin, &resolved.path, owner, repo, update);
         // Accumulate this head's recorded check-runs so the autonomy bridge can
         // run the evidence-gate judge over the live CI state once they all land.
@@ -316,6 +317,20 @@ fn run_git_stdout(git_bin: &str, cwd: Option<&Path>, args: &[&str]) -> Option<St
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn write_empty_tree(git_bin: &str, repo: &Path) -> Option<String> {
+    let output = Command::new(git_bin)
+        .args(["hash-object", "-t", "tree", "-w", "--stdin"])
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let oid = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!oid.is_empty()).then_some(oid)
 }
 
 fn advance_main_with_cas(
@@ -755,8 +770,9 @@ fn jankurai_bin() -> Result<PathBuf, String> {
 
 /// THE GUARANTEE (Layer 2). Compute the authoritative jankurai diff-score for a
 /// pushed head on the HOST — which has the real trunk and the forge DB, neither of
-/// which the `--network none` agent cell can reach — record it (the only writer of
-/// a `JankuraiScore`), and publish the `jankurai/proof` check-run derived from it.
+/// which the `--network none` agent cell can reach — record it through the
+/// automatic host path, and publish the `jankurai/proof` check-run derived from
+/// it. The separate external ingest route is admin-only maintenance authority.
 ///
 /// Diff-only against the host-computed merge-base (fast, `changed_fast`). Strict:
 /// the proof passes only when score ≥ floor AND no hard findings AND no NEW caps.
@@ -770,21 +786,39 @@ fn record_authoritative_jankurai_score(
     repo: &str,
     update: &RefUpdate,
 ) {
+    record_authoritative_jankurai_score_with(
+        core,
+        git_bin,
+        bare,
+        owner,
+        repo,
+        update,
+        jankurai_bin,
+    );
+}
+
+fn record_authoritative_jankurai_score_with<F>(
+    core: &ForgeCore,
+    git_bin: &str,
+    bare: &Path,
+    owner: &str,
+    repo: &str,
+    update: &RefUpdate,
+    resolve_jankurai: F,
+) where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
     if update.new_oid == ZERO_OID {
         return; // ref delete: nothing to score
     }
     let Some(branch) = update.ref_name.strip_prefix("refs/heads/") else {
         return; // only branch heads are scored
     };
-    // Idempotent per (repo, head sha): a re-push or seed of the same commit keeps
-    // the existing record + check-run (mirrors record_jankurai_score's upsert).
-    if core
-        .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
-        .map(|scores| !scores.is_empty())
-        .unwrap_or(false)
-    {
-        return;
-    }
+    // Never use a stored score as proof that this host performed the audit. An
+    // administrative backfill, an interrupted earlier attempt, or legacy state
+    // may already have written this SHA. Recompute first; Core's
+    // (branch, commit_sha) upsert keeps the durable score bounded, and the
+    // newly completed check becomes the exact-head authority.
 
     // Automatically removed standalone clone of the head; it is never registered
     // as a Git worktree and never touches the live bare.
@@ -812,6 +846,7 @@ fn record_authoritative_jankurai_score(
             &sandbox_str,
         ],
     ) {
+        let _ = std::fs::remove_dir_all(&sandbox);
         return;
     }
     if !run_git_status(
@@ -824,11 +859,13 @@ fn record_authoritative_jankurai_score(
     }
 
     // Merge-base against the REAL trunk (the bare has refs/heads/main; the cell
-    // never could). Keeps the audit diff-only. For a main advance the previous tip
-    // is the base; if main is absent (first branch ever) base resolution yields
-    // None and diff-audit degrades to an empty, trivially-passing score.
-    let base = if branch == "main" && update.old_oid != ZERO_OID {
-        Some(update.old_oid.clone())
+    // never could). For the first main ref or an orphaned branch, materialize the
+    // empty tree in this disposable clone so every file is audited. Using the new
+    // head itself as the first-main base would produce an empty false-green diff.
+    let base = if branch == "main" {
+        (update.old_oid != ZERO_OID)
+            .then(|| update.old_oid.clone())
+            .or_else(|| write_empty_tree(git_bin, &sandbox))
     } else {
         run_git_stdout(
             git_bin,
@@ -837,6 +874,7 @@ fn record_authoritative_jankurai_score(
         )
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .or_else(|| write_empty_tree(git_bin, &sandbox))
     };
 
     // Forced scoring for unconfigured repos (Part D): if the head carries no policy
@@ -859,13 +897,14 @@ fn record_authoritative_jankurai_score(
         let _ = std::fs::create_dir_all(parent);
     }
     let out_json_str = out_json.to_string_lossy().to_string();
-    let exit_code = match jankurai_bin() {
-        Ok(jankurai) => {
+    let exit_code = match (base.as_deref(), resolve_jankurai()) {
+        (Some(base), Ok(jankurai)) => {
             let mut command = Command::new(&jankurai);
-            command.arg("diff-audit").arg(&sandbox_str);
-            if let Some(base) = &base {
-                command.arg("--base-ref").arg(base);
-            }
+            command
+                .arg("diff-audit")
+                .arg(&sandbox_str)
+                .arg("--base-ref")
+                .arg(base);
             command
                 .arg("--json")
                 .arg(&out_json_str)
@@ -880,8 +919,12 @@ fn record_authoritative_jankurai_score(
                 .map(i64::from)
                 .unwrap_or(-1)
         }
-        Err(error) => {
+        (Some(_), Err(error)) => {
             eprintln!("authoritative Jankurai identity rejected: {error}");
+            -1
+        }
+        (None, _) => {
+            eprintln!("authoritative Jankurai base resolution failed");
             -1
         }
     };
@@ -890,62 +933,13 @@ fn record_authoritative_jankurai_score(
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
 
-    let report_u64 = |report: &serde_json::Value, key: &str| -> Option<u64> {
-        report.get(key).and_then(serde_json::Value::as_u64)
-    };
-    let decision_u64 = |report: &serde_json::Value, key: &str| -> Option<u64> {
-        report
-            .get("decision")
-            .and_then(|d| d.get(key))
-            .and_then(serde_json::Value::as_u64)
-    };
+    let (request, pass) = jankurai_score_request(branch, &update.new_oid, report, exit_code);
 
-    let (request, pass) = match &report {
-        Some(report) => {
-            let caps: Vec<String> = report
-                .get("caps_applied")
-                .and_then(serde_json::Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|c| c.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let score = report_u64(report, "score");
-            let hard = decision_u64(report, "hard_findings");
-            // Strict gate: score ≥ floor AND no hard findings AND no NEW caps.
-            let floor = decision_u64(report, "minimum_score").unwrap_or(85);
-            let pass = score.unwrap_or(0) >= floor && hard.unwrap_or(0) == 0 && caps.is_empty();
-            (
-                RecordJankuraiScoreRequest {
-                    branch: branch.to_string(),
-                    commit_sha: update.new_oid.clone(),
-                    score: score.map(|v| v as u32),
-                    hard_findings: hard.map(|v| v as u32),
-                    decision: "scored".to_string(),
-                    caps_applied: caps,
-                    report: Some(report.clone()),
-                    tool_exit: None,
-                },
-                pass,
-            )
-        }
-        None => (
-            RecordJankuraiScoreRequest {
-                branch: branch.to_string(),
-                commit_sha: update.new_oid.clone(),
-                score: None,
-                hard_findings: None,
-                decision: "tool-failed".to_string(),
-                caps_applied: Vec::new(),
-                report: None,
-                tool_exit: Some(exit_code),
-            },
-            false,
-        ),
-    };
-
-    let _ = core.record_jankurai_score(owner, repo, request);
+    if let Err(error) = core.record_jankurai_score(owner, repo, request) {
+        eprintln!("authoritative Jankurai score persistence failed: {error}");
+        let _ = std::fs::remove_dir_all(&sandbox);
+        return;
+    }
     let conclusion = if pass {
         CheckConclusion::Success
     } else {
@@ -964,6 +958,66 @@ fn record_authoritative_jankurai_score(
     );
 
     let _ = std::fs::remove_dir_all(&sandbox);
+}
+
+fn jankurai_score_request(
+    branch: &str,
+    commit_sha: &str,
+    report: Option<serde_json::Value>,
+    exit_code: i64,
+) -> (RecordJankuraiScoreRequest, bool) {
+    let parsed = report.as_ref().and_then(|report| {
+        if exit_code != 0 {
+            return None;
+        }
+        let score = u32::try_from(report.get("score")?.as_u64()?).ok()?;
+        let decision = report.get("decision")?;
+        let hard_findings = u32::try_from(decision.get("hard_findings")?.as_u64()?).ok()?;
+        let minimum_score = u32::try_from(decision.get("minimum_score")?.as_u64()?).ok()?;
+        if score > 100 || minimum_score > 100 {
+            return None;
+        }
+        let caps_applied = report
+            .get("caps_applied")?
+            .as_array()?
+            .iter()
+            .map(|cap| cap.as_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()?;
+        Some((score, hard_findings, minimum_score, caps_applied))
+    });
+
+    match parsed {
+        Some((score, hard_findings, minimum_score, caps_applied)) => {
+            let effective_floor = minimum_score.max(HOST_JANKURAI_MINIMUM_SCORE);
+            let pass = score >= effective_floor && hard_findings == 0 && caps_applied.is_empty();
+            (
+                RecordJankuraiScoreRequest {
+                    branch: branch.to_string(),
+                    commit_sha: commit_sha.to_string(),
+                    score: Some(score),
+                    hard_findings: Some(hard_findings),
+                    decision: "scored".to_string(),
+                    caps_applied,
+                    report,
+                    tool_exit: None,
+                },
+                pass,
+            )
+        }
+        None => (
+            RecordJankuraiScoreRequest {
+                branch: branch.to_string(),
+                commit_sha: commit_sha.to_string(),
+                score: None,
+                hard_findings: None,
+                decision: "tool-failed".to_string(),
+                caps_applied: Vec::new(),
+                report,
+                tool_exit: Some(exit_code),
+            },
+            false,
+        ),
+    }
 }
 
 /// Execute a compiled job's `run` steps in the sandboxed runner and map the

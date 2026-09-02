@@ -1,4 +1,5 @@
 use super::*;
+use jeryu_core::CreateRepositoryRequest;
 use jeryu_gitd::refs::GitRef;
 use std::fs;
 
@@ -357,6 +358,198 @@ fn ref_update(ref_name: &str, previous_oid: &str, new_oid: &str) -> RefUpdate {
         old_oid: previous_oid.to_owned(),
         new_oid: new_oid.to_owned(),
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn push_audit_replaces_a_preexisting_tool_failure_at_the_same_head() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let tool = tempfile::tempdir().unwrap();
+    let (_, head) = init_version_repo(work.path());
+    clone_bare(work.path(), bare.path());
+
+    let auditor = tool.path().join("jankurai");
+    let script = format!(
+        r#"#!/bin/sh
+set -eu
+output=
+base=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json)
+      output=$2
+      shift 2
+      ;;
+    --base-ref)
+      base=$2
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+test -n "$output"
+test -n "$base"
+test "$base" != "{}"
+mkdir -p "$(dirname "$output")"
+printf '%s\n' '{{"score":92,"caps_applied":[],"decision":{{"hard_findings":0,"minimum_score":85}}}}' > "$output"
+"#,
+        head
+    );
+    fs::write(&auditor, script).unwrap();
+    fs::set_permissions(&auditor, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "demo".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.record_jankurai_score(
+        "jeryu",
+        "demo",
+        RecordJankuraiScoreRequest {
+            branch: "main".to_string(),
+            commit_sha: head.clone(),
+            decision: "tool-failed".to_string(),
+            tool_exit: Some(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "jeryu",
+        "demo",
+        CreateCheckRunRequest {
+            name: "jankurai/proof".to_string(),
+            head_sha: head.clone(),
+            status: Some(CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::Failure),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    record_authoritative_jankurai_score_with(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "demo",
+        &ref_update("refs/heads/main", ZERO_OID, &head),
+        || Ok(auditor),
+    );
+
+    let scores = core
+        .list_jankurai_scores("jeryu", "demo", Some("main"), Some(&head))
+        .unwrap();
+    assert_eq!(scores.len(), 1, "same-head recovery must remain an upsert");
+    assert_eq!(scores[0].decision, "scored");
+    assert_eq!(scores[0].score, Some(92));
+    assert_eq!(scores[0].hard_findings, 0);
+    assert!(scores[0].caps_applied.is_empty());
+
+    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    assert!(
+        checks.check_runs.iter().any(|check| {
+            check.name == "jankurai/proof"
+                && check.status == CheckRunStatus::Completed
+                && check.conclusion == Some(CheckConclusion::Success)
+        }),
+        "the recomputed score must publish a succeeding exact-head proof"
+    );
+    let latest = checks
+        .check_runs
+        .iter()
+        .max_by_key(|check| check.completed_at.unwrap_or(check.started_at))
+        .unwrap();
+    assert_eq!(latest.name, "jankurai/proof");
+    assert_eq!(latest.conclusion, Some(CheckConclusion::Success));
+}
+
+#[test]
+fn malformed_or_nonzero_jankurai_reports_are_never_green() {
+    let valid = serde_json::json!({
+        "score": 92,
+        "caps_applied": [],
+        "decision": {"hard_findings": 0, "minimum_score": 85}
+    });
+    let (request, pass) = jankurai_score_request("main", "abc", Some(valid.clone()), 0);
+    assert!(pass);
+    assert_eq!(request.decision, "scored");
+
+    let hostile_reports = [
+        (valid, 9),
+        (
+            serde_json::json!({
+                "score": 92,
+                "caps_applied": [],
+                "decision": {"minimum_score": 85}
+            }),
+            0,
+        ),
+        (
+            serde_json::json!({
+                "score": 101,
+                "caps_applied": [],
+                "decision": {"hard_findings": 0, "minimum_score": 85}
+            }),
+            0,
+        ),
+        (
+            serde_json::json!({
+                "score": 92,
+                "caps_applied": [7],
+                "decision": {"hard_findings": 0, "minimum_score": 85}
+            }),
+            0,
+        ),
+    ];
+    for (report, exit_code) in hostile_reports {
+        let (request, pass) = jankurai_score_request("main", "abc", Some(report), exit_code);
+        assert!(!pass);
+        assert_eq!(request.decision, "tool-failed");
+        assert_eq!(request.score, None);
+    }
+
+    let (request, pass) = jankurai_score_request(
+        "main",
+        "abc",
+        Some(serde_json::json!({
+            "score": 80,
+            "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 85}
+        })),
+        0,
+    );
+    assert!(!pass);
+    assert_eq!(
+        request.decision, "scored",
+        "a valid red audit is not a tool error"
+    );
+    assert_eq!(request.score, Some(80));
+
+    let (request, pass) = jankurai_score_request(
+        "main",
+        "abc",
+        Some(serde_json::json!({
+            "score": 80,
+            "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 0}
+        })),
+        0,
+    );
+    assert!(!pass, "candidate policy cannot lower the host score floor");
+    assert_eq!(request.decision, "scored");
 }
 
 #[test]

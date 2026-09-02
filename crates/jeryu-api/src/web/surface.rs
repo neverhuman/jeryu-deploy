@@ -279,6 +279,22 @@ fn authorize_github_repo_request(
         (Method::Post, ["repos"]) if account.role != UserRole::Admin => Some(github_forbidden(
             "repository creation requires admin access",
         )),
+        (Method::Post, ["repos", _, _, "check-runs"])
+        | (Method::Post, ["repos", _, _, "statuses", _])
+            if !super::auth::can_publish_external_ci_evidence(account) =>
+        {
+            Some(github_forbidden(
+                "CI evidence publication requires global-admin access",
+            ))
+        }
+        (Method::Put, ["repos", owner, repo, "branches", _, "protection"])
+            if account.role != UserRole::Admin
+                && !state.core.user_can_admin_repo(&account.login, owner, repo) =>
+        {
+            Some(github_forbidden(
+                "branch-protection changes require repository-admin access",
+            ))
+        }
         (_, ["repos", owner, repo, ..]) => {
             let allowed = match method {
                 Method::Get => {

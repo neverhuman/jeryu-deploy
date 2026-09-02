@@ -45,6 +45,19 @@ fn authenticated_account(login: &str) -> Extension<AccountSummary> {
     })
 }
 
+fn authenticated_admin_account(login: &str) -> Extension<AccountSummary> {
+    Extension(AccountSummary {
+        login: login.to_string(),
+        display_name: login.to_string(),
+        role: UserRole::Admin,
+        status: AccountStatus::Active,
+        auth_epoch: 0,
+        must_change_password: false,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    })
+}
+
 /// Seed a repo + open PR + one failing check, build `WebState`, and assert
 /// the model served by `/api/v1/bootstrap.tui` (i.e. `state.tui`) reflects the
 /// seeded load: a populated `RepoActivity` with `failed_jobs == 1`, a non-empty
@@ -4044,6 +4057,158 @@ async fn github_rest_binds_mutation_actor_to_authenticated_principal() {
 }
 
 #[tokio::test]
+async fn github_rest_reserves_ci_evidence_and_protection_controls() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("writer", "writer-password", UserRole::User)
+        .unwrap();
+    core.create_account("repo-admin", "repo-admin-password", UserRole::User)
+        .unwrap();
+    core.grant_repo_access(
+        "jeryu-admin",
+        "writer",
+        "alice",
+        "jeryu",
+        RepoAccessLevel::Write,
+    )
+    .unwrap();
+    core.grant_repo_access(
+        "jeryu-admin",
+        "repo-admin",
+        "alice",
+        "jeryu",
+        RepoAccessLevel::Admin,
+    )
+    .unwrap();
+    let writer_token = core
+        .create_personal_access_token("writer", "test", None)
+        .unwrap()
+        .secret;
+    let admin_token = core
+        .create_personal_access_token("jeryu-admin", "test", None)
+        .unwrap()
+        .secret;
+    let repo_admin_token = core
+        .create_personal_access_token("repo-admin", "test", None)
+        .unwrap()
+        .secret;
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    let check_body = serde_json::json!({
+        "name": "jeryu-deploy/required",
+        "head_sha": "deadbeef",
+        "status": "completed",
+        "conclusion": "success"
+    })
+    .to_string();
+    let status_body = serde_json::json!({
+        "state": "success",
+        "context": "jeryu-deploy/required"
+    })
+    .to_string();
+    let protection_body = serde_json::json!({
+        "required_status_checks": ["jeryu-deploy/required"],
+        "required_approving_review_count": 1,
+        "enforce_admins": true,
+        "required_linear_history": true,
+        "allow_force_pushes": false,
+        "allow_deletions": false
+    })
+    .to_string();
+
+    for prefix in ["", "/api/v3"] {
+        for (method, path, body) in [
+            (
+                HttpMethod::POST,
+                "/repos/alice/jeryu/check-runs",
+                check_body.as_str(),
+            ),
+            (
+                HttpMethod::POST,
+                "/repos/alice/jeryu/statuses/deadbeef",
+                status_body.as_str(),
+            ),
+            (
+                HttpMethod::PUT,
+                "/repos/alice/jeryu/branches/main/protection",
+                protection_body.as_str(),
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(format!("{prefix}{path}"))
+                        .header(header::AUTHORIZATION, format!("Bearer {writer_token}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "repo writers must not mutate protected evidence controls through {prefix}{path}"
+            );
+        }
+    }
+
+    for (path, body) in [
+        ("/repos/alice/jeryu/check-runs", check_body),
+        ("/repos/alice/jeryu/statuses/deadbeef", status_body),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(HttpMethod::POST)
+                    .uri(path)
+                    .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    let protection = app
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::PUT)
+                .uri("/repos/alice/jeryu/branches/main/protection")
+                .header(header::AUTHORIZATION, format!("Bearer {repo_admin_token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(protection_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(protection.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn source_browser_rejects_unsafe_paths_before_storage_lookup() {
     let core = ForgeCore::new();
     core.create_repository(
@@ -6072,9 +6237,31 @@ async fn jankurai_scores_ingest_and_surface_on_the_repo_summary() {
     let state = Arc::new(WebState::new(core));
     let id = repo.id.to_string();
 
+    let denied = repo_jankurai_scores_ingest(
+        State(state.clone()),
+        authenticated_account("writer"),
+        AxumPath(id.clone()),
+        axum::body::Bytes::from_static(
+            br#"{"branch":"main","commit_sha":"abc","score":100,"hard_findings":0,"decision":"scored","caps_applied":[]}"#,
+        ),
+    )
+    .await
+    .into_response();
+    assert_eq!(denied.status(), axum::http::StatusCode::FORBIDDEN);
+    assert!(
+        state
+            .github
+            .core()
+            .list_jankurai_scores("jeryu", "jeryu", None, None)
+            .unwrap()
+            .is_empty(),
+        "a denied writer submission must not create score state"
+    );
+
     // Ingest: a scored run on main.
     let created = repo_jankurai_scores_ingest(
         State(state.clone()),
+        authenticated_admin_account("jeryu-admin"),
         AxumPath(id.clone()),
         axum::body::Bytes::from_static(
             br#"{"branch":"main","commit_sha":"abc","score":92,"hard_findings":0,"decision":"scored","caps_applied":[]}"#,
@@ -6123,6 +6310,7 @@ async fn jankurai_scores_ingest_and_surface_on_the_repo_summary() {
     // Tool-failed ingest: null score + decision surfaces, badge score stays None.
     let failed = repo_jankurai_scores_ingest(
         State(state.clone()),
+        authenticated_admin_account("jeryu-admin"),
         AxumPath(id.clone()),
         axum::body::Bytes::from_static(
             br#"{"branch":"main","commit_sha":"zzz","score":null,"decision":"tool-failed","tool_exit":2}"#,
@@ -6138,6 +6326,7 @@ async fn jankurai_scores_ingest_and_surface_on_the_repo_summary() {
     // Garbage and unknown repos are rejected cleanly.
     let bad = repo_jankurai_scores_ingest(
         State(state.clone()),
+        authenticated_admin_account("jeryu-admin"),
         AxumPath(id),
         axum::body::Bytes::from_static(br#"{"branch":"main"}"#),
     )
@@ -6146,6 +6335,7 @@ async fn jankurai_scores_ingest_and_surface_on_the_repo_summary() {
     assert_eq!(bad.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     let missing = repo_jankurai_scores_ingest(
         State(state),
+        authenticated_admin_account("jeryu-admin"),
         AxumPath("jeryu/missing".to_string()),
         axum::body::Bytes::from_static(
             br#"{"branch":"main","commit_sha":"a","decision":"scored"}"#,

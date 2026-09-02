@@ -41,6 +41,14 @@ physical link, and no caller-provided receipt or test-authority override.
 Unavailable or inconsistent authority fails the lane and never falls back to
 an ambient binary.
 
+Externally submitted check-runs, commit statuses, and Jankurai score records
+are global-admin maintenance operations. Repository write access alone never
+grants evidence-publishing authority. Native runners use runner-only APIs and
+the server publishes their exact-head checks internally; runner credentials do
+not receive the GitHub-compatible check-minting surface. Branch-protection
+changes independently require repository-admin or global-admin authority, so a
+writer cannot remove the control that consumes those checks.
+
 The committed Cargo release graph is sibling-free. Internal packages declare
 immutable Git tags, and its only patches are Git-to-Git unifiers that map
 historical Core/proof and Rustjet consumers to reviewed local-forge Core

@@ -620,6 +620,13 @@ pub(crate) fn trusted_local_account(state: &WebState) -> AccountSummary {
     }
 }
 
+/// External CI-evidence maintenance is an administrative boundary. Native
+/// runners report through runner-only APIs; the server publishes their checks
+/// internally instead of handing a repository writer a check-minting route.
+pub(crate) fn can_publish_external_ci_evidence(account: &AccountSummary) -> bool {
+    account.role == UserRole::Admin
+}
+
 pub(super) fn forbidden(message: &str) -> AxumResponse {
     api_error(StatusCode::FORBIDDEN, "permission_denied", message)
 }

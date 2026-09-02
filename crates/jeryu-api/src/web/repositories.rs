@@ -313,13 +313,22 @@ pub(super) async fn fleet_tool_adoption(
     .into_response()
 }
 
-/// POST /api/v1/repos/:id/jankurai-scores — ingest one audit outcome from a
-/// CI lane or the backfill sweep. Idempotent per (branch, commit_sha).
+/// POST /api/v1/repos/:id/jankurai-scores — global-admin maintenance ingest for
+/// a server-side CI lane or backfill sweep. Idempotent per (branch, commit_sha).
+/// Ordinary repository writers cannot mint audit evidence.
 pub(super) async fn repo_jankurai_scores_ingest(
     State(state): State<std::sync::Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath(id): AxumPath<String>,
     body: Bytes,
 ) -> AxumResponse {
+    if !super::auth::can_publish_external_ci_evidence(&account) {
+        return api_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "permission_denied",
+            "jankurai score publication requires global-admin access",
+        );
+    }
     let Some(repo) = find_repo(&state, &id) else {
         return api_error(
             axum::http::StatusCode::NOT_FOUND,

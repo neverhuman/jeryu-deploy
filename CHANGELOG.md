@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Reserve external check-run, commit-status, and Jankurai score publication for
+  global-admin maintenance while native runner results remain server-published.
+- Require repository-admin authority for branch-protection changes instead of
+  allowing any repository writer to weaken the evidence gate.
+- Recompute push-time Jankurai evidence before adopting stored state so an
+  interrupted or tool-failed audit can recover on the same commit; reject
+  incomplete/nonzero tool output, audit a first main ref against an empty tree,
+  and prevent candidate policy from lowering the host score floor.
+
 ## jeryu-deploy-v5.0.0-split.4
 
 - Bind pull-request reviews and merge protection to the exact current head via
