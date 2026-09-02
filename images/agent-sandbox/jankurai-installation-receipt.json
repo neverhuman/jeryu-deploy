@@ -38,10 +38,10 @@
   },
   "conclusion": "success",
   "governance": {
-    "manifest_commit": "5dcc43b9efa9fdab258aa1cb1405002ae3988d7e",
+    "manifest_commit": "e8218f9f39bf38277646f31daf2f2ee56e9a7eff",
     "manifest_repo": "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git",
     "manifest_sha256": "be001dc52c66da5669167f3e429d882184931baa3d7a0e53b605c17425872b5a",
-    "manifest_tree": "327625dd5a628c7e40bce7f35c135d37184e68f4",
+    "manifest_tree": "dae370c78d9e71123bf239ef06add4ee4d04e34e",
     "protected_main": true,
     "protection_policy": "immutable-main-v1",
     "status": "governed"
