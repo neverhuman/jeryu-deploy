@@ -22,6 +22,7 @@
 set -euo pipefail
 
 # lib.sh -> common.sh -> ci-env.sh: pulls in ci_log plus JERYU_CI_* env defaults.
+# shellcheck source=ops/ci/lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 jeryu_positive_int() {
@@ -151,7 +152,7 @@ main() {
 
   ci_log "shard ${i}/${n} -> nextest --partition ${partition} (test-threads=${jobs})"
 
-  cargo nextest run \
+  cargo nextest run --locked \
     --profile "${JERYU_CI_PROFILE_NEXTEST:-ci}" \
     --workspace \
     --partition "${partition}" \

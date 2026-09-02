@@ -24,7 +24,6 @@ git fetch --depth 128 origin main:refs/remotes/origin/main''',
   "bash ops/ci/ensure-jankurai.sh",
   "bash ops/ci/security-tools.sh",
   'curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}"/bin',
-  "npx playwright install chromium",
 ]
 
 [[lanes]]
@@ -59,14 +58,14 @@ full = true
 id = "ci-local-security"
 workflow = ".github/workflows/ci.yml"
 job = "local"
-command = "bash ops/ci/security.sh # gitleaks cargo audit npm audit syft actionlint"
+command = "bash ops/ci/security.sh # gitleaks actionlint env-file locked-cargo-metadata"
 full = true
 
 [[lanes]]
 id = "ci-local-proof-evidence"
 workflow = ".github/workflows/ci.yml"
 job = "local"
-command = "bash ops/ci/proof_evidence.sh"
+command = "bash ops/ci/proof-evidence.sh"
 full = true
 
 [[lanes]]
@@ -98,10 +97,42 @@ command = "bash ops/ci/test-governed-jankurai.sh"
 full = true
 
 [[lanes]]
+id = "security-gitleaks"
+workflow = ".github/workflows/security.yml"
+job = "security"
+command = "gitleaks detect --source . --log-opts=-1 --redact --verbose"
+full = true
+
+[[lanes]]
 id = "security"
 workflow = ".github/workflows/security.yml"
 job = "security"
-command = "JERYU_SECURITY_MARKERS='gitleaks detect --pipe --redact --verbose scripts/secret-scan.sh cargo audit --deny warnings cargo deny check advisories bans licenses sources npm audit --prefix apps/web --audit-level=high --omit=dev syft grype cosign actionlint zizmor' bash ops/ci/security.sh"
+command = "bash ops/ci/security.sh"
+full = true
+
+[[lanes]]
+id = "security-dependency-sources"
+workflow = ".github/workflows/security.yml"
+job = "security"
+command = "bash ops/ci/dependency-sources.sh"
+full = true
+
+[[lanes]]
+id = "security-dependency-audit"
+workflow = ".github/workflows/security.yml"
+job = "security"
+command = '''set -o pipefail
+source ops/ci/hosted-git-env.sh
+mkdir -p target/security
+cargo audit --deny warnings --json > target/security/cargo-audit.json
+cargo deny check advisories bans licenses sources 2>&1 | tee target/security/cargo-deny.log'''
+full = true
+
+[[lanes]]
+id = "security-sbom-provenance"
+workflow = ".github/workflows/security.yml"
+job = "security"
+command = "bash ops/ci/sbom-provenance.sh"
 full = true
 
 [[lanes]]
@@ -110,6 +141,13 @@ workflow = ".github/workflows/proof-evidence.yml"
 job = "tool-adoption-evidence"
 command = "bash ops/ci/proof-evidence.sh"
 full = true
+
+[[lanes]]
+id = "proof-evidence-coverage"
+workflow = ".github/workflows/proof-evidence.yml"
+job = "tool-adoption-evidence"
+command = "bash ops/ci/coverage.sh"
+full = false
 
 [[lanes]]
 id = "release"
@@ -123,11 +161,4 @@ id = "web"
 workflow = ".github/workflows/web.yml"
 job = "web"
 command = "bash ops/ci/web.sh"
-full = false
-
-[[lanes]]
-id = "ux-qa"
-workflow = ".github/workflows/web.yml"
-job = "web"
-command = "npm run ux-qa"
 full = false

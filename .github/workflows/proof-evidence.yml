@@ -1,8 +1,10 @@
 name: proof-evidence
 
-# Jankurai tool-adoption CI lane: runs the local evidence lane and uploads the
-# catalog artifact paths. The exact catalog command strings also live in
-# ops/ci/proof-evidence.sh so thin workflow parity and adoption evidence agree.
+# Jankurai tool-adoption CI lane: runs the standalone evidence lane and uploads
+# only artifacts its two explicit steps genuinely produce. Coverage and
+# mutation evidence are owned and produced by ops/ci/coverage.sh; web-source and
+# migration tools do not apply to this repository's immutable web bundle and
+# documentation-only DB boundary.
 #
 # The job is THIN: the real command sequence lives in ops/ci/proof-evidence.sh
 # so CI and local runs share a single source of truth (local/CI parity).
@@ -74,8 +76,11 @@ jobs:
       - name: Tool-adoption evidence lane (local/CI parity)
         run: bash ops/ci/proof-evidence.sh
 
-      # Upload every wired tool's artifact_paths. `if: always()` so evidence is
-      # captured even when the ratchet score gate fails.
+      - name: Coverage and mutation evidence lane
+        run: bash ops/ci/coverage.sh
+
+      # Capture partial real evidence on failure without manufacturing absent
+      # artifacts. A wholly empty artifact set is itself an upload failure.
       - name: Upload tool-adoption evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -95,11 +100,13 @@ jobs:
             target/jankurai/copy-code.json
             target/jankurai/copy-code.md
             target/jankurai/language-bad-behavior.log
+            target/jankurai/proof-plan.json
+            target/jankurai/proof-plan.md
             target/jankurai/rust/witness-graph.json
-            target/jankurai/ux-qa.json
-            target/jankurai/migration-report.json
-            target/jankurai/vibe-coverage.json
-            target/jankurai/vibe-coverage.md
+            target/jankurai/rust/compile-packets.json
             target/jankurai/coverage/coverage-audit.json
             target/jankurai/coverage/coverage-audit.md
+            target/llvm-cov/lcov.info
+            target/mutants/mutants.out/outcomes.json
+            target/security/evidence.json
           if-no-files-found: error

@@ -7,4 +7,4 @@ cd "${ROOT}"
 BIN="${1:-target/release/jeryu}"
 
 export JERYU_BOOTSTRAP_ADMIN_PASSWORD="${JERYU_BOOTSTRAP_ADMIN_PASSWORD:-release-smoke-admin-password-123}"
-cargo run -q -p jeryu-cli --bin jeryu-release-smoke -- "${BIN}"
+cargo run --locked -q -p jeryu-cli --bin jeryu-release-smoke -- "${BIN}"

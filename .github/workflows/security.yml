@@ -1,18 +1,9 @@
 name: security-and-supply-chain
 
-# Security and supply-chain posture lane.
-#
-# Every job below runs a real, locally-reproducible command (mirrored by
-# tools/security-lane.sh and ops/ci/*.sh) — no cosmetic name-dropping.
-#
-# Tool coverage:
-#   * cargo deny  — advisories, bans, licenses, sources (cargo audit alongside)
-#   * syft / grype / cosign / SLSA provenance — SBOM generation, vuln scan, signing
-#   * actionlint / zizmor — GitHub Actions workflow linting
-#   * jankurai audit — agent-readiness audit gate
-#
-# Supply-chain installs pin an exact version and verify a sha256 checksum before
-# executing the downloaded binary; no remote code is piped straight into a shell.
+# Standalone security and supply-chain lane. Each step calls the same checked-in
+# wrapper used locally: source scanning, dependency policy, then unsigned
+# non-release SBOM/vulnerability/provenance evidence. Release signing remains in
+# the separately authorized tag lane and is not claimed here.
 
 on:
   push:
@@ -80,5 +71,33 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal
       - name: Install open security tools
         run: bash ops/ci/security-tools.sh
-      - name: Security and supply-chain lane
-        run: JERYU_SECURITY_MARKERS='gitleaks detect --pipe --redact --verbose scripts/secret-scan.sh cargo audit --deny warnings cargo deny check advisories bans licenses sources npm audit --prefix apps/web --audit-level=high --omit=dev syft grype cosign actionlint zizmor' bash ops/ci/security.sh
+      - name: Direct pinned gitleaks scan
+        # Scan the candidate commit, not immutable repository history. The next
+        # step separately scans tracked and untracked files in the current tree.
+        run: gitleaks detect --source . --log-opts=-1 --redact --verbose
+      - name: Source-security receipt lane
+        run: bash ops/ci/security.sh
+      - name: Hosted dependency-source lane
+        run: bash ops/ci/dependency-sources.sh
+      - name: Cargo dependency policy lane
+        run: |
+          set -o pipefail
+          source ops/ci/hosted-git-env.sh
+          mkdir -p target/security
+          cargo audit --deny warnings --json > target/security/cargo-audit.json
+          cargo deny check advisories bans licenses sources 2>&1 | tee target/security/cargo-deny.log
+      - name: SBOM and provenance lane
+        run: bash ops/ci/sbom-provenance.sh
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-and-supply-chain-evidence
+          path: |
+            target/security/evidence.json
+            target/security/dependency-sources.json
+            target/security/cargo-audit.json
+            target/security/cargo-deny.log
+            target/jankurai/security/evidence.json
+            target/jankurai/security/sbom/
+          if-no-files-found: error

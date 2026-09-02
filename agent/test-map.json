@@ -1,9 +1,9 @@
 {
   "tests": {
     ".cargo/": {
-      "command": "just check",
-      "lane": "check",
-      "purpose": "verify cargo configuration is parseable and local"
+      "command": "bash ops/ci/dependency-sources.sh && just check",
+      "lane": "security",
+      "purpose": "verify immutable Cargo identities transport only through exact hosted mappings"
     },
     ".config/": {
       "command": "just check",
@@ -16,9 +16,9 @@
       "purpose": "verify workspace metadata remains parseable"
     },
     ".github/": {
-      "command": "just check",
-      "lane": "check",
-      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+      "command": "bash ops/ci/workflow-lint.sh && just check",
+      "lane": "ci",
+      "purpose": "verify hosted workflows match the standalone lane manifest"
     },
     ".gitignore": {
       "command": "just check",
@@ -46,9 +46,9 @@
       "purpose": "verify release notes stay routed through the score lane"
     },
     "Cargo.lock": {
-      "command": "just check",
-      "lane": "check",
-      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+      "command": "bash ops/ci/dependency-sources.sh && just check",
+      "lane": "security",
+      "purpose": "verify every immutable Cargo identity resolves through the exact hosted transport policy"
     },
     "Cargo.toml": {
       "command": "just check",
@@ -80,6 +80,16 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
+    "agent/ci-lanes.toml": {
+      "command": "bash ops/ci/workflow-lint.sh && just check",
+      "lane": "ci",
+      "purpose": "verify the standalone lane manifest matches every hosted workflow command"
+    },
+    "apps/": {
+      "command": "just check",
+      "lane": "check",
+      "purpose": "verify application sources remain build-addressable"
+    },
     "ci-fast-push.sh": {
       "command": "just check",
       "lane": "check",
@@ -100,6 +110,11 @@
       "lane": "check",
       "purpose": "prove every generated Jankurai consumer, receipt, and release-broker verifier shares one closed governed identity"
     },
+    "crates/jeryu-api/tests/hosted_dependency_transport.rs": {
+      "command": "bash ops/ci/dependency-sources.sh",
+      "lane": "security",
+      "purpose": "reject missing, extra, or misrouted Cargo Git source mappings"
+    },
     "crates/jeryu-api/": {
       "command": "just check",
       "lane": "check",
@@ -111,14 +126,14 @@
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
     "crates/jeryu-split-tool/": {
-      "command": "cargo test --locked --offline -p jeryu-split-tool && just check",
-      "lane": "check",
-      "purpose": "verify Rust-native split transition behavior and failure propagation"
+      "command": "cargo test --locked --offline -p jeryu-split-tool && bash ops/ci/workflow-lint.sh && just check",
+      "lane": "ci",
+      "purpose": "verify Rust-native split transition behavior, workflow parity, and failure propagation"
     },
     "deny.toml": {
-      "command": "just security",
+      "command": "bash ops/ci/dependency-sources.sh && just security",
       "lane": "security",
-      "purpose": "verify security policy metadata remains parseable"
+      "purpose": "verify the explicit Git-source allowlist remains exact and default-deny"
     },
     "docs/": {
       "command": "just check",
@@ -136,7 +151,7 @@
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
     "ops/": {
-      "command": "just fast && just check && just score",
+      "command": "bash ops/ci/workflow-lint.sh && just fast && just check && just score",
       "lane": "ci",
       "purpose": "verify local ops guidance and CI wrappers stay reproducible"
     },
@@ -166,14 +181,19 @@
       "purpose": "verify local Rust toolchain metadata remains pinned"
     },
     "scripts/": {
-      "command": "just check",
-      "lane": "check",
-      "purpose": "verify jeryu-deploy owned source remains build-addressable"
+      "command": "bash ops/ci/workflow-lint.sh && just check",
+      "lane": "ci",
+      "purpose": "verify standalone CI scripts remain syntax-valid and workflow-aligned"
     },
     "tests/": {
       "command": "just check",
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
+    },
+    "tools/": {
+      "command": "bash ops/ci/workflow-lint.sh && bash tools/security-lane.sh",
+      "lane": "security",
+      "purpose": "verify canonical tool entrypoints remain mapped to real standalone implementations"
     },
     "agent/tool-adoption.toml": {
       "command": "just score",

@@ -17,28 +17,28 @@ cd "${ROOT}" || {
 source "${ROOT}/ops/ci/common.sh"
 
 echo "[${GATE_NAME}] cargo test -p jeryu-runnerd --jobs ${JERYU_CI_JOBS} workcell"
-if ! cargo test -p jeryu-runnerd --jobs "${JERYU_CI_JOBS}" workcell; then
+if ! cargo test --locked -p jeryu-runnerd --jobs "${JERYU_CI_JOBS}" workcell; then
   echo "GATE ${GATE_NAME}: FAIL (jeryu-runnerd workcell tests did not pass)"
   exit 1
 fi
 
 echo "[${GATE_NAME}] cargo test -p jeryu-readmodel --jobs ${JERYU_CI_JOBS} workcells"
-if ! cargo test -p jeryu-readmodel --jobs "${JERYU_CI_JOBS}" workcells; then
+if ! cargo test --locked -p jeryu-readmodel --jobs "${JERYU_CI_JOBS}" workcells; then
   echo "GATE ${GATE_NAME}: FAIL (jeryu-readmodel workcells tests did not pass)"
   exit 1
 fi
 
 echo "[${GATE_NAME}] cargo test -p jeryu-api --features web --jobs ${JERYU_CI_JOBS}"
-if ! cargo test -p jeryu-api --features web --jobs "${JERYU_CI_JOBS}"; then
+if ! cargo test --locked -p jeryu-api --features web --jobs "${JERYU_CI_JOBS}"; then
   echo "GATE ${GATE_NAME}: FAIL (jeryu-api web tests did not pass)"
   exit 1
 fi
 
-echo "[${GATE_NAME}] cd apps/web && npm ci && npm run typecheck"
-if ! (cd apps/web && npm ci --include=dev --workspaces=false 2>/dev/null && npm run typecheck); then
-  echo "GATE ${GATE_NAME}: FAIL (web typecheck did not pass)"
+echo "[${GATE_NAME}] bash ops/ci/web.sh"
+if ! bash ops/ci/web.sh; then
+  echo "GATE ${GATE_NAME}: FAIL (vendored web bundle integration did not pass)"
   exit 1
 fi
 
-echo "GATE ${GATE_NAME}: PASS (runnerd workcell tests; read-model workcells tests; api web tests; web typecheck)"
+echo "GATE ${GATE_NAME}: PASS (runnerd workcells; read-model projection; API integration; vendored web bundle)"
 exit 0

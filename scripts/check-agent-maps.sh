@@ -1,32 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-required_roots=(.github agent bins config configs crates docs examples fixtures ops policies scripts tests)
-required_exact_paths=(.github/ agent/ci-lanes.toml crates/jeryu-repogate/)
-parity_sensitive_paths=(.github/ agent/ci-lanes.toml crates/jeryu-repogate/ ops/ scripts/)
+required_exact_paths=(.github/ agent/ci-lanes.toml crates/jeryu-split-tool/)
+parity_sensitive_paths=(.github/ agent/ci-lanes.toml crates/jeryu-split-tool/ ops/ scripts/ tools/)
 
 for map in agent/owner-map.json agent/test-map.json; do
   jq -e . "$map" >/dev/null
 done
 
-for root in "${required_roots[@]}"; do
-  jq -e --arg root "$root" '
+while IFS= read -r -d '' path; do
+  jq -e --arg path "$path" '
     .owners
-    | keys
-    | any((rtrimstr("/") | split("/")[0]) == $root)
+    | to_entries
+    | any(.key as $key
+        | ($path == $key)
+          or (($key | endswith("/")) and ($path | startswith($key))))
   ' agent/owner-map.json >/dev/null || {
-    echo "missing owner root: $root" >&2
+    echo "missing owner coverage for tracked path: $path" >&2
     exit 1
   }
-  jq -e --arg root "$root" '
+  jq -e --arg path "$path" '
     .tests
-    | keys
-    | any((rtrimstr("/") | split("/")[0]) == $root)
+    | to_entries
+    | any(.key as $key
+        | ($path == $key)
+          or (($key | endswith("/")) and ($path | startswith($key))))
   ' agent/test-map.json >/dev/null || {
-    echo "missing test root: $root" >&2
+    echo "missing test coverage for tracked path: $path" >&2
     exit 1
   }
-done
+done < <(git ls-files -z)
 
 for path in "${required_exact_paths[@]}"; do
   jq -e --arg path "$path" '.owners | has($path)' agent/owner-map.json >/dev/null || {
@@ -41,9 +44,9 @@ done
 
 for path in "${parity_sensitive_paths[@]}"; do
   jq -e --arg path "$path" '
-    .tests[$path].command | contains("jeryu-repogate -- ci-lanes-check")
+    .tests[$path].command | contains("ops/ci/workflow-lint.sh")
   ' agent/test-map.json >/dev/null || {
-    echo "missing ci-lanes-check in test-map command for $path" >&2
+    echo "missing workflow parity gate in test-map command for $path" >&2
     exit 1
   }
 done

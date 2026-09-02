@@ -21,7 +21,11 @@ jobs:
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
         with:
           persist-credentials: false
-      # cache: Cargo and npm dependency caches are provided by the runner image when available.
+      - name: Verify governed Jankurai
+        run: bash ops/ci/ensure-jankurai.sh
+      - name: Install open security tools
+        run: bash ops/ci/security-tools.sh
+      # Cargo dependency caches are supplied by the governed runner when available.
       - name: Fast lane
         run: bash ops/ci/fast.sh # cargo check
       - name: Check lane
@@ -29,9 +33,9 @@ jobs:
       - name: Score lane
         run: bash ops/ci/score.sh # jankurai audit repo-score
       - name: Security lane
-        run: bash ops/ci/security.sh # gitleaks cargo audit npm audit syft actionlint
+        run: bash ops/ci/security.sh # gitleaks actionlint env-file locked-cargo-metadata
       - name: Proof evidence lane
-        run: bash ops/ci/proof_evidence.sh
+        run: bash ops/ci/proof-evidence.sh
       - name: Artifact support
         run: bash ops/ci/artifact_support.sh
       - name: Upload audit artifacts
@@ -42,25 +46,6 @@ jobs:
           path: |
             .jankurai/
             target/jankurai/
-            target/jankurai/coverage/coverage-audit.md
-            target/jankurai/coverage/coverage-audit.json
-            target/jankurai/vibe-coverage.md
-            target/jankurai/vibe-coverage.json
-            target/jankurai/migration-report.json
-            target/jankurai/ux-qa.json
-            target/jankurai/rust/witness-graph.json
-            target/jankurai/language-bad-behavior.log
-            target/jankurai/copy-code.md
-            target/jankurai/copy-code.json
-            target/jankurai/proofmark/proof-receipt.json
-            target/jankurai/proofmark/proofmark-receipt.json
-            target/jankurai/proofbind/obligations.json
-            target/jankurai/proofbind/surface-witness.json
-            target/jankurai/security/evidence.json
-            target/jankurai/repair-queue.jsonl
-            target/jankurai/repo-score.md
-            target/jankurai/repo-score.json
-            .jankurai/repo-score.md
-            .jankurai/repo-score.json
+            target/security/evidence.json
             target/artifact-support/
-          if-no-files-found: ignore
+          if-no-files-found: error

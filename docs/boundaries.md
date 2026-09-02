@@ -6,6 +6,11 @@ The machine-readable boundary manifest is `agent/boundaries.toml`. It names the
 domain, adapter, web, queue, data-truth, and agent-tool seams that local audits
 must check before a cross-boundary change is merged.
 
+Only `jeryu-api`, `jeryu-cli`, and `jeryu-split-tool` have source in this
+checkout. The component ownership below is family-wide: nonlocal components
+arrive through immutable Git release pins and must be changed and source-tested
+in their owning repositories. Deploy tests only its typed integration points.
+
 - `jeryu-core` owns domain objects, branch protection, checks, webhooks, and
   repairable domain errors.
 - `jeryu-domain` exposes the canonical domain repair route for agents and audit
@@ -51,8 +56,10 @@ writer cannot remove the control that consumes those checks.
 
 The committed Cargo release graph is sibling-free. Internal packages declare
 immutable Git tags, and its only patches are Git-to-Git unifiers that map
-historical Core/proof and Rustjet consumers to reviewed local-forge Core
-split.3 and Intelligence split.1 tags. Local development may supply
+historical Core/proof and Rustjet consumers to reviewed Core
+split.5 and Intelligence split.1 tags. The preserved source spellings are
+transported through exact checked-in mappings to the hosted Jeryu forge; Cargo
+Deny rejects every source outside that closed set. Local development may supply
 command-scoped path overrides, but they are never committed or used by release
 CI. The
 `release_dependencies_are_immutable_git_sources_without_sibling_paths`

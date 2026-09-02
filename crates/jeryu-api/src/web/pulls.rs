@@ -509,7 +509,7 @@ pub(super) async fn merge(
         Err(error) => {
             return repair_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "merge_request_serialize_failed",
+                "pull_request_serialize_failed",
                 "merge pull request",
                 &format!("could not serialize merge request: {error}"),
                 &["retry the merge after refreshing the PR detail"],

@@ -6,7 +6,7 @@
 #
 # PASS requires BOTH:
 #   (1) cargo test -p jeryu-api --test github_api  passes (the REST shape).
-#   (2) the domain source (crates/jeryu-core/src + crates/jeryu-api/src):
+#   (2) Deploy's owned domain source (`crates/jeryu-api/src`):
 #         - contains GitHub vocabulary (positive evidence), AND
 #         - contains NO retired domain identifiers, AND
 #         - contains NO legacy-CI / legacy-provider tokens.
@@ -22,12 +22,12 @@ ROOT="$(cd "${HERE}/../../.." && pwd)"
 cd "${ROOT}" || { echo "GATE ${GATE_NAME}: FAIL (cannot cd to repo root)"; exit 1; }
 source "${ROOT}/ops/ci/common.sh"
 
-SRC_DIRS="crates/jeryu-core/src crates/jeryu-api/src"
+SRC_DIRS="crates/jeryu-api/src"
 fail=0
 
 # (1) GitHub REST-shape test.
 echo "[${GATE_NAME}] (1/2) cargo test -p jeryu-api --test github_api"
-if ! cargo test -p jeryu-api --test github_api --jobs "${JERYU_CI_JOBS}"; then
+if ! cargo test --locked -p jeryu-api --test github_api --jobs "${JERYU_CI_JOBS}"; then
   echo "[${GATE_NAME}]   FAIL: github_api REST-shape test did not pass"
   fail=1
 fi

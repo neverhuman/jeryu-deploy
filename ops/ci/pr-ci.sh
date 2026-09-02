@@ -2,7 +2,7 @@
 # Comprehensive local PR gate. Native host CI runs this to produce the required
 # exact-head check, and a trusted hosted runner uses the same entrypoint. It carries
 # format + clippy (deny warnings) + the FULL workspace test suite + the Jankurai
-# audit (>= 85) + the web build/vitest lane for apps/web + the local security lane.
+# audit (>= 85) + immutable web-bundle validation + the local security lane.
 set -euo pipefail
 
 # BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
@@ -61,11 +61,15 @@ else
   JOBS=8
 fi
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$JOBS}"
+TEST_THREADS="${JERYU_CI_TEST_THREADS:-8}"
 
-restore_cargo_lock_ci_noise() {
-  if ! git diff --quiet -- Cargo.lock; then
-    echo "[pr-ci] restoring Cargo.lock after cargo metadata normalization" >&2
-    git checkout -- Cargo.lock
+cargo_lock_before="$(git hash-object Cargo.lock)"
+assert_cargo_lock_unchanged() {
+  local cargo_lock_after
+  cargo_lock_after="$(git hash-object Cargo.lock)"
+  if [ "${cargo_lock_after}" != "${cargo_lock_before}" ]; then
+    echo "[pr-ci] Cargo.lock changed during validation; refusing to discard it" >&2
+    return 1
   fi
 }
 
@@ -73,15 +77,15 @@ echo "[pr-ci] (jobs=$JOBS) cargo fmt --all --check" >&2
 cargo fmt --all --check
 
 echo "[pr-ci] cargo clippy --workspace --all-targets -- -D warnings" >&2
-cargo clippy --workspace --all-targets --jobs "$JOBS" -- -D warnings
+cargo clippy --locked --workspace --all-targets --jobs "$JOBS" -- -D warnings
 
 # The kernel-sandbox-runtime integration tests spawn REAL sandboxes (user/mount/pid
 # namespaces + cgroup-v2 + landlock/seccomp). They require an UNMANAGED cgroup
 # environment and fail under host-ci's systemd-managed poll cgroup
 # (cgroup_create EEXIST / clone EOPNOTSUPP). They run on the dedicated GitHub-mirror
-# runners (full caps). Exclude exactly those here; the other 1600+ tests still run.
+# runners (full caps). Exclude exactly those here; the remaining workspace tests run.
 echo "[pr-ci] cargo test (excl. jeryu-sandbox-linux + agentbridge sandbox-runtime tests)" >&2
-# --test-threads honors the governed worker count too: libtest defaults to
+# --test-threads uses the separately governed process cap: libtest defaults to
 # ncpu, and an oversubscribed host starves the live agent-stream tests'
 # 30s polling deadlines (await_tty) into false failures. The web::sessions
 # live-stream proofs (create_session_*: spawn a real native/docker-seam PTY and
@@ -89,8 +93,8 @@ echo "[pr-ci] cargo test (excl. jeryu-sandbox-linux + agentbridge sandbox-runtim
 # the sandboxed process does not stream its marker inside the 30s window and the
 # proof flakes. They run green on the dedicated GitHub-mirror runners (full caps,
 # unloaded); skip them here exactly like the agent-stream/sandbox live tests.
-cargo test --workspace --exclude jeryu-sandbox-linux --jobs "$JOBS" --no-fail-fast -- \
-  --test-threads "$JOBS" \
+cargo test --locked --workspace --exclude jeryu-sandbox-linux --jobs "$JOBS" --no-fail-fast -- \
+  --test-threads "$TEST_THREADS" \
   --skip same_write_path_succeeds_inside_and_is_blocked_outside \
   --skip unsandboxed_control_can_write_outside_proving_landlock_is_the_blocker \
   --skip budget_kill_is_live_and_truncates \
@@ -109,63 +113,21 @@ cargo test --workspace --exclude jeryu-sandbox-linux --jobs "$JOBS" --no-fail-fa
   --skip create_session_docker_runtime_streams_live_and_carries_hardened_flags \
   --skip create_session_native_runtime_uses_native_path
 
-# The cargo lanes leave the React web app (apps/web) and its ux-qa harness uncovered,
-# so a missing dep or a typecheck break ships to main while `npm run build` is red. When
-# a PR touches apps/web/ or ux-qa/, build it (tsc + vite) and run the vitest suite. The
-# repo is an npm workspace rooted here, so deps install from the repo root (npm install
-# inside apps/web errors EUSAGE). Non-web PRs skip the lane so they stay fast.
-web_base=""
-for ref in main origin/main; do
-  if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
-    web_base="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
-    [ -n "$web_base" ] && break
-  fi
-done
+echo "[pr-ci] immutable web-bundle integration" >&2
+bash "${repo_root}/ops/ci/web.sh"
 
-if [ -z "$web_base" ]; then
-  echo "[pr-ci] web lane: no base ref, skipping" >&2
-elif ! git diff --name-only "$web_base" | grep -qE '^(apps/web|ux-qa)/'; then
-  echo "[pr-ci] web lane: no apps/web or ux-qa changes, skipping" >&2
-elif ! command -v npm >/dev/null 2>&1; then
-  echo "[pr-ci] web lane: npm not found on this runner, SKIP" >&2
-elif [ ! -f "$repo_root/package.json" ]; then
-  # apps/web here is the VENDORED pre-built dist from jeryu-web (no buildable
-  # source, no package.json) — it was built and vitest-tested in jeryu-web's
-  # own required gate before being staged (scripts/stage-web-dist.sh).
-  echo "[pr-ci] web lane: vendored dist only (no package.json), skipping" >&2
-else
-  echo "[pr-ci] web lane: build+vitest (apps/web touched)" >&2
-  (
-    cd "$repo_root"
-    npm install --no-audit --no-fund
-    cd apps/web
-    npm run build
-    npm run test -- --run
-  )
-  # npm install at the workspace root writes an untracked package-lock.json (and can
-  # touch the tracked workspace locks). Remove/restore them so the jankurai audit below
-  # does not flag the build artifact as an unrouted path and fail the gate.
-  rm -f "$repo_root/package-lock.json"
-  git -C "$repo_root" checkout -- apps/web/package-lock.json ux-qa/package-lock.json 2>/dev/null || true
-  echo "[pr-ci] web lane: build+vitest green" >&2
-fi
-
-restore_cargo_lock_ci_noise
+assert_cargo_lock_unchanged
 echo "[pr-ci] jankurai audit (>= 85)" >&2
 run_governed_jankurai audit . --full --mode advisory --policy agent/audit-policy.toml \
   --json .jankurai/repo-score.json --md .jankurai/repo-score.md
-python3 - <<'PY'
-import json, sys
-d = json.load(open(".jankurai/repo-score.json"))
-score = d.get("score", 0)
-caps = d.get("caps_applied", [])
-print(f"[pr-ci] jankurai score={score} caps={caps}", file=sys.stderr)
-sys.exit(0 if score >= 85 and not caps else 1)
-PY
-restore_cargo_lock_ci_noise
+score="$(jq -r '.score // 0' .jankurai/repo-score.json)"
+caps="$(jq -c '.caps_applied // []' .jankurai/repo-score.json)"
+echo "[pr-ci] jankurai score=${score} caps=${caps}" >&2
+jq -e '(.score // 0) >= 85 and ((.caps_applied // []) | length == 0)' \
+  .jankurai/repo-score.json >/dev/null
 
 echo "[pr-ci] security lane"
 bash "${repo_root}/ops/ci/security.sh"
-restore_cargo_lock_ci_noise
+assert_cargo_lock_unchanged
 
-echo "[pr-ci] PASS — fmt + clippy + workspace tests + jankurai + security all green" >&2
+echo "[pr-ci] PASS — fmt + clippy + workspace tests + web bundle + jankurai + security all green" >&2

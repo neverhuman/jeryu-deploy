@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GATE: foundation
-# Engineering-spec phase: cross-cutting baseline (fmt / check / clippy / test /
-# zero-evidence guard / docs / release receipt / repo score).
+# Engineering-spec phase: cross-cutting baseline (fmt / check / Clippy / test /
+# proof evidence / workflow parity / release-receipt contract / score / security).
 # Delegates to the canonical ops/ci/full.sh so this gate stays in lock-step
 # with the project's existing definition of "green".
 set -uo pipefail

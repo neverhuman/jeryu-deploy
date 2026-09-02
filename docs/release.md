@@ -1,7 +1,8 @@
 # Release Control Surface
 
-Jeryu releases are local-first and evidence-backed. A release candidate cannot
-be signed from hosted CI state alone.
+Jeryu releases are evidence-backed and repository-authoritative on
+`git.neverhuman.org`. A hosted result alone is insufficient for signing: the
+release receipt must also bind the reproducible gate and artifact evidence.
 This is the canonical release process doc for version source, changelog,
 release commands, integrity/provenance evidence, and rollback guidance.
 The step-by-step operator process lives in `docs/release-process.md`.
@@ -52,9 +53,15 @@ physical link, and rejects caller receipt or test-authority overrides. Ordinary
 and image lanes remain content-addressed-receipt bound.
 
 The former 1.6.10 score is preserved byte-identically under
-`agent/baselines/historical/` as audit history. The active ratchet remains
-fail-closed until a fresh 1.6.11 baseline is generated on protected `main` and
-independently reviewed; candidate-branch output cannot become its own baseline.
+`agent/baselines/historical/` as audit history. The active report and provenance
+under `agent/baselines/` were generated from exact hosted protected `main` with
+the governed 1.6.11 binary. The proof lane verifies their checksum, source
+commit/tree, tool identity, fingerprints, score, hard findings, and caps before
+using them. A topic must bind its exact protected base; a protected-main replay
+accepts that report only as a strict ancestor so the receipt is not
+self-referential. Those
+bytes become accepted only through detached exact-head review and protected
+merge; candidate output can never replace its own baseline.
 
 ## Version Source
 
@@ -106,13 +113,12 @@ not trigger another version bump.
 - `just audit`
 - `bash ops/ci/proof-evidence.sh`
 - `bash ops/ci/test-governed-jankurai.sh`
-- `cargo test -p jeryu-runnerd workcell --jobs 40` when the workcell control plane, tar safety, or CI repair snapshot helpers change.
-- `cargo test -p jeryu-readmodel -p jeryu-tui --jobs 40` when the workcells,
-  agent-runs, codegraph/oracle dashboard, or TUI projection contract changes.
-- `cargo test -p jeryu-readmodel --jobs 40 && cd apps/web && npm run typecheck` when the generated web bootstrap contract changes.
-- `cd apps/web && npm run ux-qa` when the SPA's rendered surface changes; the
-  Playwright HTML report it checks is suppressed by the rtk command wrapper, so
-  produce it with `rtk proxy npx playwright test` first.
+- `bash ops/ci/web.sh` for the tracked immutable web bundle and API-serving
+  integration. Source build, typecheck, unit, Playwright, and rendered UX gates
+  belong to `jeryu-web` and must be green before its bundle is staged here.
+- `bash ops/ci/gates/workcells.sh` when the workcell integration or staged web
+  bootstrap changes.
+- `bash ops/ci/gates/runner-sandbox.sh` when Deploy's runner integration changes.
 - `cargo test -p jeryu-api --features web --jobs 40` when compatibility routes
   or guided repair bodies change.
 - `cargo test -p jeryu-api --features web --jobs 40 r5_jail_loop` when the
@@ -128,47 +134,25 @@ not trigger another version bump.
   when workcell export gating, `jeryu-codegraph`, or the export PR changed-file
   derivation changes. The release receipt must include the typed denial evidence
   proving an out-of-slice diff creates no pull request.
-- `bash ops/ci/codegraph-oracle.sh` when the codegraph schema, MCP catalog,
-  oracle impact-pack contract, or `/api/v1/repos/{id}/codegraph/query` facade
-  changes.
-- `cargo test -p jeryu-api --features web --jobs 40 control_plane`,
-  `cargo test -p jeryu-mcp --jobs 40`,
-  `cargo test -p jeryu-cli --jobs 40`, and
-  `npm --workspace @jeryu/web run typecheck && npm --workspace @jeryu/web run test`
-  when the JMCP control-plane REST, MCP, CLI, or `/intelligence` web surface
-  changes.
+- `cargo test -p jeryu-api --features web --jobs 40 codegraph` when the
+  Deploy-owned codegraph REST facade changes. Codegraph/MCP source changes and
+  their source gates belong in their standalone repositories.
+- `cargo test -p jeryu-api --features web --jobs 40 control_plane` and
+  `cargo test -p jeryu-cli --jobs 40` when Deploy's JMCP REST/CLI integrations
+  change; use `bash ops/ci/web.sh` for the staged `/intelligence` bundle.
 - `cargo clippy -p jeryu-api --features web --all-targets --jobs 40 -- -D warnings`
   when public API response contracts, `/api/v1/ecosystem`, or
   `/api/v1/ci/runs/{id}/evidence` change. Evidence digest or canonicalization
   changes must attach the route test transcript, clippy transcript, and
   Jankurai audit score to the release receipt.
-- `cargo test -p jeryu-signrail --test release_witness`,
-  `cargo test -p jeryu-signrail --jobs 40 verify_release`, and
-  `cargo clippy -p jeryu-signrail --all-targets -- -D warnings` when release
-  signing, release verification, artifact provenance, witness, or stage-receipt
-  behavior changes.
-- `cargo test -p jeryu-wsversion --jobs 40`,
-  `cargo run -q -p jeryu-wsversion -- inherit-guard`, and
-  `cargo run -q -p jeryu-wsversion -- decide --range origin/main..HEAD --json`
-  when workspace versioning, changelog roll-forward, or release version source
-  behavior changes.
-- `cargo run -p jeryu-sandbox-linux --example jail_demo` and
-  `cargo test -p jeryu-runnerd jailgun` when the workcell cell jail (the
-  `jeryu-sandbox-linux` launch path) or the jailgun tar validators change.
-- `cargo test -p jeryu-agentbridge` and `cargo test -p jeryu-egress` when the
-  in-cell agent driver or the allowlist egress proxy changes.
-  Workcell- and jailed-agent-authored changes flow through these same release
-  gates and CI evidence with no privileged path; see `docs/workcell.md`.
-- `cargo test -p jeryu-sandbox-linux` (escape_suite + cgroup_confinement +
-  secret_paths_denied + memory_oom_kill) when the sandbox cgroup/Landlock
-  enforcement or `ops/security/jeryu-runnerd.service` delegation unit changes —
-  agent jobs must stay fail-closed on resource caps and the jail must keep
-  denying secret/other-repo reads.
-- `bash ops/ci/coverage.sh` when workcell crate tests change: it enforces the
-  per-crate src-coverage ratchet (`ops/ci/coverage-baseline.json`) over
-  `jeryu-api`, `jeryu-egress`, and `jeryu-codegraph`. Coverage may not drop below
-  the recorded floor; raise it deliberately with
-  `JERYU_COVERAGE_UPDATE_BASELINE=1` and commit the updated baseline.
+- Signing, versioning, sandbox, agentbridge, egress, and runner source changes
+  must run their owning repositories' required gates. Deploy additionally runs
+  the immutable-dependency integration gates in `scripts/ci-phases.sh`.
+- `bash ops/ci/coverage.sh` when owned Rust source or tests change. It measures
+  all three owned crates, ratchets `jeryu-api` through
+  `ops/ci/coverage-baseline.tsv`, mutates `jeryu-split-tool`, and rejects hard
+  Jankurai findings. Baseline updates after the documented split reset are
+  upward-only.
 
 ### Public Portal Auth Hardening
 
@@ -187,13 +171,11 @@ behavior changes, the release receipt must include:
 - token/session evidence: cookie-auth unsafe API requests require
   `X-Jeryu-CSRF`; bearer/PAT clients are exempt; new PATs default to a 90-day
   expiry and cannot exceed 365 days.
-- route proof: `cargo test -p jeryu-core --jobs 40 auth`,
-  `cargo test -p jeryu-api --features web --jobs 40 auth`,
-  `cargo test -p jeryu-api --features web --jobs 40 github`, and
-  `npm --workspace @jeryu/web run typecheck && npm --workspace @jeryu/web run test`.
-- rendered proof for the split browser and auth gate:
-  `npm --workspace @jeryu/web run test:e2e` plus
-  `npm --workspace @jeryu/web run ux-qa` when the browser surface changes.
+- route proof: `cargo test -p jeryu-api --features web --jobs 40 auth` and
+  `cargo test -p jeryu-api --features web --jobs 40 github`; Core source tests
+  run in `jeryu-core`.
+- `bash ops/ci/web.sh` for the staged split-browser bundle, plus source-level
+  browser/auth gates in `jeryu-web` before restaging that bundle.
 
 ## Release Receipt
 
@@ -299,10 +281,20 @@ verification, populated changed-file evidence, and head-pinned merge tests.
 
 ## Integrity And Provenance
 
-The security lane writes SBOM, vulnerability scan, provenance, and signing
-artifacts under `target/jankurai/security/sbom`. Final release receipts require
-the SPDX SBOM checksum, CycloneDX checksum, provenance checksum, and cosign
-transcript checksum.
+The source-security lane writes its exact command receipt under
+`target/security/` and Jankurai's strict wrapper receipt under
+`target/jankurai/security/`. The separate release-only
+`ops/ci/sbom-provenance.sh` lane writes SBOM, vulnerability-scan, provenance,
+and signing artifacts under `target/jankurai/security/sbom`. Final release
+receipts require the SPDX SBOM checksum, CycloneDX checksum, provenance
+checksum, and cosign transcript checksum.
+`target/security/dependency-sources.json` separately binds the Cargo lock,
+deny policy, hosted transport overlay, active Git-config hash, and immutable
+hosted support-ref policy. The default overlay excludes ambient Git config and
+binds the dedicated hosted credential-helper hash.
+Historical source URLs stay in the lock for identity compatibility, but a
+fresh Cargo fetch must contact only `git.neverhuman.org`; every locked tag
+target must also remain advertised at its exact preservation ref.
 
 ## Rollback
 

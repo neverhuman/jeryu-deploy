@@ -40,6 +40,7 @@ standalone Deploy proof.
 - `ci-fast-push.sh`
 - `ops/**`
 - `scripts/**`
+- `tools/**`
 - `tests/**`
 - `examples/**`
 - `config/**`
@@ -56,6 +57,9 @@ standalone Deploy proof.
 
 - `just fast`
 - `just check`
+- `just check-api`
+- `just test-api`
+- `just cache-status`
 - `just score`
 - `just security`
 - `just artifact-support`
@@ -71,6 +75,10 @@ the same local binary with `ci-lanes-check`, `ci-lanes-list`, and
 `affected-plan`; they do not discover or execute source from a Cargo cache or
 sibling checkout. Retired monorepo-only repository gates are rejected rather
 than being applied to this standalone split.
+
+`bash ops/ci/full.sh` and `bash ci-fast-push.sh --full --no-push` retain the
+complete workspace test matrix while composing only repository-owned proof,
+workflow-parity, release-receipt-contract, score, security, and doctor gates.
 
 ## Quick Start
 
@@ -89,8 +97,25 @@ requesting protected review. Test ownership and narrower reruns are mapped in
 
 ## Status
 
-Protected local Jeryu checks are release authority. This successor is not a
-release: its 1.6.11 score is candidate evidence, and the active ratchet remains
-closed until protected-main evidence receives detached review. Current lane
-artifacts are written under `.jankurai/` and `target/jankurai/`; neither is a
-source-of-truth badge or permission to publish.
+The protected repository on `git.neverhuman.org` is source and ref authority;
+local checks are developer evidence, not permission to merge. Until the hosted
+runner posts the protected required context, a topic remains unmergeable even
+when its push-time Jankurai proof is green. This successor is not a release.
+Its ratchet baseline was generated from exact hosted protected `main` with the
+governed 1.6.11 binary; the baseline and every candidate result still require
+detached exact-head review before protected merge. Current lane artifacts are
+written under `.jankurai/` and `target/jankurai/`; neither is a source-of-truth
+badge or permission to publish.
+
+Historical Cargo source spellings remain unchanged to preserve crate identity.
+`.cargo/hosted-gitconfig` maps only the exact dependency repositories to their
+hosted Jeryu URLs and uses the dedicated hosted credential helper without
+including ambient user configuration. It also carries the one exact host-scoped
+smart-HTTP setting required by the currently deployed server. CI sources
+`ops/ci/hosted-git-env.sh` before Cargo (Cargo's
+own fetch does not consume its `[env]` table). Because the hosted backend
+rejects Cargo's tag-only exact-object fetch, `.cargo/hosted-pin-refs.tsv` also
+binds every immutable tag target to an advertised hosted preservation ref; the
+refs contain no bytes beyond their existing release tags. Finally,
+`bash ops/ci/dependency-sources.sh` rejects an unlisted source, mutable pin,
+missing mapping/ref, or non-hosted effective destination.

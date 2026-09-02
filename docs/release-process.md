@@ -1,8 +1,8 @@
 # Release Process Doc
 
 This release process doc is the step-by-step operator surface for Jeryu
-releases. Releases are local-first. Hosted CI may confirm the same lanes, but it
-does not replace local release proof.
+releases. The commands are reproducible locally, while the protected hosted
+exact-head required check is merge authority.
 
 ## Required Local Gates
 
@@ -18,47 +18,38 @@ Run these from the canonical repository root before creating a release receipt:
 - `bash ops/deploy/test-atomicsoul-release.sh` when production deploy helpers
   or this atomicsoul process changes.
 - `bash ops/ci/proof-evidence.sh`
-- `cargo test -p jeryu-wsversion --jobs 40`,
-  `cargo run -q -p jeryu-wsversion -- inherit-guard`, and
-  `cargo run -q -p jeryu-wsversion -- decide --range origin/main..HEAD --json`
-  when the workspace version source, changelog roll-forward, or release bump
-  policy changes.
-- `cargo test -p jeryu-runnerd workcell --jobs 40` when the workcell control plane, tar safety, or frozen CI repair helpers change.
-- `cargo test -p jeryu-readmodel -p jeryu-tui --jobs 40` when the workcells,
-  agent-runs, codegraph/oracle dashboard, or TUI projection contract changes.
-- `cargo test -p jeryu-readmodel --jobs 40 && cd web && npm run typecheck` when bootstrap feature flags or generated web contracts change.
+- `bash ops/ci/web.sh` for the immutable staged web bundle.
+- `bash ops/ci/gates/workcells.sh` and
+  `bash ops/ci/gates/runner-sandbox.sh` when those Deploy integrations change.
 - `cargo test -p jeryu-api --features web --jobs 40`
 - `cargo test -p jeryu-api --features web --jobs 40 agent_runs` when the high-level agent-run route or PTY controls change.
 - `cargo test -p jeryu-api --features web --jobs 40 r5_jail_loop` when the jailed workcell edit, namespaced branch export, PR creation, or CI evidence flow changes.
 - `cargo clippy -p jeryu-api --features web --all-targets --jobs 40 -- -D warnings`
   when public API routes or repair bodies change.
-- `bash ops/ci/codegraph-oracle.sh` when the schema-v3 codegraph oracle API or
-  MCP contract changes.
-- `cargo test -p jeryu-api --features web --jobs 40 control_plane`,
-  `cargo test -p jeryu-mcp --jobs 40`,
-  `cargo test -p jeryu-cli --jobs 40`,
-  `npm --workspace @jeryu/web run typecheck`, and
-  `npm --workspace @jeryu/web run test` when the JMCP control-plane REST, MCP,
-  CLI, or web Intelligence surface changes.
-- `cargo test -p jeryu-signrail --jobs 40 verify_release` when SignRail release
-  verification changes.
+- `cargo test -p jeryu-api --features web --jobs 40 codegraph` and
+  `cargo test -p jeryu-api --features web --jobs 40 control_plane` for those
+  Deploy-owned facades, plus `cargo test -p jeryu-cli --jobs 40` for CLI dispatch.
 - `just security`
 - `just audit`
+
+This checkout owns only `jeryu-api`, `jeryu-cli`, and `jeryu-split-tool` source.
+Changes to versioning, SignRail, runner, read-model, MCP, codegraph, sandbox,
+agentbridge, egress, or web source must land through that component's protected
+standalone repository before Deploy updates its immutable pin or staged bundle.
 
 Full mode runs `ops/ci/verify-jeryu-env.sh --build-local --release-guard`.
 Stop or quarantine retired-provider runners, `~/.jeryu`, old
 `/home/ubuntu/jeryu`, local `:2224`, and monitored retired listeners before
 recording release evidence.
 
-## Local Merge Authority
+## Merge Authority
 
 Open the release or consolidation PR with `ci-fast-push.sh`. The push path
 records `target/ci-fast/publish.json` with the branch, base, PR URL, PR number,
-and commit that the final receipt must name. Local Jeryu mergeability plus the
-gates above are the release authority; hosted GitHub Actions are mirror evidence
-only. Direct wire pushes to `main` are not a supported release path; Jeryu
-advances `main` only through the gated PR merge path or declared internal
-post-merge automation, using server-side compare-and-swap ref updates.
+and commit that the final receipt must name. Protected hosted branch rules and
+the exact-head required result are merge authority; local gate transcripts are
+reproducible evidence. Direct wire pushes to `main` are not a supported release
+path.
 
 ## Receipt Contents
 

@@ -3,6 +3,23 @@ use jeryu_core::CreateRepositoryRequest;
 use jeryu_gitd::refs::GitRef;
 use std::fs;
 
+#[cfg(unix)]
+fn write_test_jankurai(path: &Path) {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    file.write_all(b"#!/usr/bin/env bash\nprintf 'jankurai 1.6.11\\n'\n")
+        .unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
@@ -43,15 +60,15 @@ fn write(root: &Path, rel: &str, body: &str) {
 #[cfg(unix)]
 #[test]
 fn governed_jankurai_identity_rejects_version_digest_and_physical_substitution() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::symlink;
 
     let temp = tempfile::tempdir().unwrap();
     let good = temp.path().join("jankurai-good");
-    fs::write(&good, "#!/usr/bin/env bash\nprintf 'jankurai 1.6.11\\n'\n").unwrap();
-    fs::set_permissions(&good, fs::Permissions::from_mode(0o755)).unwrap();
+    write_test_jankurai(&good);
     let good_sha = hex::encode(Sha256::digest(fs::read(&good).unwrap()));
 
-    assert!(verify_jankurai_identity(&good, "jankurai 1.6.11", &good_sha).is_ok());
+    let good_result = verify_jankurai_identity(&good, "jankurai 1.6.11", &good_sha);
+    assert!(good_result.is_ok(), "{good_result:?}");
     assert!(verify_jankurai_identity(&good, "jankurai 1.6.10", &good_sha).is_err());
     assert!(verify_jankurai_identity(&good, "jankurai 1.6.11", &"0".repeat(64)).is_err());
 
@@ -116,16 +133,9 @@ fn write_content_addressed_receipt(root: &Path, document: &serde_json::Value) ->
 #[cfg(unix)]
 #[test]
 fn governed_jankurai_authority_requires_complete_content_addressed_receipt() {
-    use std::os::unix::fs::PermissionsExt;
-
     let temp = tempfile::tempdir().unwrap();
     let binary = temp.path().join("jankurai");
-    fs::write(
-        &binary,
-        "#!/usr/bin/env bash\nprintf 'jankurai 1.6.11\\n'\n",
-    )
-    .unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    write_test_jankurai(&binary);
     let binary_sha = hex::encode(Sha256::digest(fs::read(&binary).unwrap()));
 
     let valid_document = governed_receipt(&binary, &binary_sha);

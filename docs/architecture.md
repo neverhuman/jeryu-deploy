@@ -2,14 +2,12 @@
 
 Jeryu is a local GitHub-compatible forge implemented as Rust workspace crates and local operational scripts. Compatibility means matching observable API and workflow behavior where that is useful for users and agents; it does not mean copying GitHub source, bundling GitHub assets, or requiring a hosted GitHub dependency.
 
-Core boundaries:
-- `crates/jeryu-core` and `crates/jeryu-api` own forge domain and API behavior.
-- `crates/jeryu-gitd` owns repository storage and Git protocol behavior.
-- `crates/jeryu-ci-*`, `crates/jeryu-runner-*`, and `crates/jeryu-runnerd` own CI IR, scheduling, and execution.
-- `crates/jeryu-cache*` owns cache/CAS policy and poisoning resistance.
-- `crates/jeryu-proof` and `crates/jeryu-agentbridge` own proof routing and bounded agent mutation.
-- `crates/jeryu-codegraph` owns hosted code-oracle indexing and impact packs
-  for resolved repo refs; see `docs/codegraph-oracle.md`.
+This checkout owns source only for `crates/jeryu-api`, `crates/jeryu-cli`, and
+`crates/jeryu-split-tool`. Core, Git storage, CI, runner, cache, proof, agent,
+codegraph, and signing packages are immutable Git dependencies owned by their
+standalone repositories. Deploy may exercise their public contracts through
+its API/CLI graph, but it must not present their source gates as local source.
+See `docs/codegraph-oracle.md` for the composed codegraph contract.
 
 The shared workcell control plane is part of the runner/CI stack, not a separate subsystem. `jeryu-runnerd` owns warm-pool claims, epoch-fenced release/heartbeat handling, startup rebase enforcement, and quarantine-first tar validation on top of the existing runner fabric.
 
@@ -21,7 +19,9 @@ tool-build clusters are authoritative, while GitHub mirror data is optional
 read-only evidence that must degrade as `missing`, `stale`, `queued`, `failed`,
 or `unknown` rather than becoming an implicit green signal.
 
-Operational truth is local-first. The canonical validation surfaces are `Justfile`, `ops/ci/*.sh`, `ops/ci/gates/*.sh`, and `agent/test-map.json`.
+The canonical reproducible validation surfaces are `Justfile`, `ops/ci/*.sh`,
+`ops/ci/gates/*.sh`, and `agent/test-map.json`; protected hosted refs and the
+exact-head required context are merge authority.
 
 ## Standalone Delivery Authority
 

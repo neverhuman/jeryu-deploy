@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install/verify the open-source tools used by the local and hosted security
-# lane. This script is intentionally runnable locally; hosted workflows only
-# call this wrapper before `ops/ci/security.sh`.
+# lane. This script is intentionally runnable locally. It verifies the pinned
+# gitleaks binary supplied by the governed runner image and installs or verifies
+# the remaining pinned tools; a missing gitleaks binary is a hard failure.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -16,6 +17,7 @@ SYFT_VERSION="${SYFT_VERSION:-1.40.0}"
 GRYPE_VERSION="${GRYPE_VERSION:-0.99.0}"
 COSIGN_VERSION="${COSIGN_VERSION:-2.4.3}"
 ACTIONLINT_VERSION="${ACTIONLINT_VERSION:-1.7.8}"
+GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.21.2}"
 
 # Pinned release checksums for linux/amd64 artifacts.
 SYFT_SHA256="${SYFT_SHA256:-f551cd16da3a5456f5245bb8045b98594263a678a9d2a07b462a05be0357b795}"
@@ -75,6 +77,12 @@ install_cargo_bin() {
 install_cargo_bin cargo-deny cargo-deny "${CARGO_DENY_VERSION}" "cargo-deny ${CARGO_DENY_VERSION}"
 install_cargo_bin cargo-audit cargo-audit "${CARGO_AUDIT_VERSION}" "cargo-audit.*${CARGO_AUDIT_VERSION}"
 install_cargo_bin zizmor zizmor "${ZIZMOR_VERSION}" "zizmor ${ZIZMOR_VERSION}"
+
+if ! have_version gitleaks "(^|[[:space:]])${GITLEAKS_VERSION//./\\.}$"; then
+  echo "[security-tools] FATAL: governed runner must provide gitleaks ${GITLEAKS_VERSION}" >&2
+  exit 1
+fi
+log "gitleaks ok"
 
 if ! have_version syft "Version:[[:space:]]+${SYFT_VERSION}|syft ${SYFT_VERSION}"; then
   log "installing syft ${SYFT_VERSION}"

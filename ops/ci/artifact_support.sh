@@ -42,7 +42,7 @@ mkdir -p "${EVIDENCE_DIR}" "${BUNDLE_DIR}" "${SIGNRAIL_DIR}"
 rm -rf "${EVIDENCE_DIR:?}/"*
 
 COMMIT="$(git rev-parse HEAD)"
-TREE="$(git rev-parse HEAD^{tree})"
+TREE="$(git rev-parse 'HEAD^{tree}')"
 REPO="${GITHUB_REPOSITORY:-neverhuman/jeryu-deploy}"
 VERSION="${JERYU_RELEASE_TAG:-${GITHUB_REF_NAME:-${COMMIT}}}"
 ROLLBACK_TARGET="${SIGNRAIL_ROLLBACK_TARGET:-${JERYU_RELEASE_ROLLBACK_TAG:-}}"
@@ -53,7 +53,7 @@ TOOLCHAIN_TEXT="$(rustc -Vv 2>/dev/null || printf 'rustc not found')"
 TOOLCHAIN_SHA="$(sha_text "${TOOLCHAIN_TEXT}")"
 RUNNER_POLICY_SHA="$(sha_file policies/seccomp/release-hermetic.policy)"
 
-cargo run -q -p jeryu-cli --bin jeryu-artifact-support -- \
+cargo run --locked -q -p jeryu-cli --bin jeryu-artifact-support -- \
   evidence \
   --evidence-dir "${EVIDENCE_DIR}" \
   --binary "${BINARY}" \
@@ -96,7 +96,7 @@ fi
 
 rm -rf "${SIGNRAIL_DIR:?}/"*
 mkdir -p "${SIGNRAIL_DIR}"
-cargo run --manifest-path "${SIGNRAIL_MANIFEST}" -q -p jeryu-signrail -- \
+cargo run --manifest-path "${SIGNRAIL_MANIFEST}" --locked -q -p jeryu-signrail -- \
   sign-release \
   --artifact "${BUNDLE}" \
   --repo "${REPO}" \
@@ -113,12 +113,12 @@ cargo run --manifest-path "${SIGNRAIL_MANIFEST}" -q -p jeryu-signrail -- \
   --cargo-lock-digest "sha256:${CARGO_LOCK_SHA}" \
   > "${SIGNRAIL_DIR}/summary.json"
 
-cargo run -q -p jeryu-cli --bin jeryu-artifact-support -- \
+cargo run --locked -q -p jeryu-cli --bin jeryu-artifact-support -- \
   pubkey \
   --summary "${SIGNRAIL_DIR}/summary.json" \
   --out "${SIGNRAIL_DIR}/pubkey.hex"
 
-cargo run --manifest-path "${SIGNRAIL_MANIFEST}" -q -p jeryu-signrail -- \
+cargo run --manifest-path "${SIGNRAIL_MANIFEST}" --locked -q -p jeryu-signrail -- \
   verify-release \
   --release "${SIGNRAIL_DIR}/release.json" \
   --stage prod \

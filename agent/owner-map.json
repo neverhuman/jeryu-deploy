@@ -16,6 +16,8 @@
     "README.md": "docs",
     "VERSION": "release",
     "agent/": "jeryu-deploy",
+    "agent/ci-lanes.toml": "jeryu-deploy",
+    "apps/": "jeryu-deploy",
     "ci-fast-push.sh": "jeryu-deploy",
     "config/": "jeryu-deploy",
     "configs/": "jeryu-deploy",
@@ -34,6 +36,7 @@
     "rust-toolchain.toml": "workspace",
     "scripts/": "jeryu-deploy",
     "tests/": "jeryu-deploy",
+    "tools/": "ops",
     "agent/tool-adoption.toml": "agent",
     "db/": "jeryu-deploy",
     "jeryu-split.lock.toml": "jeryu-deploy"

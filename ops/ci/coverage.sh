@@ -11,7 +11,7 @@
 #      genuinely fails in this environment we DO NOT fake green: we write a
 #      skip-with-receipt under target/coverage/ and exit non-zero with code 3 so
 #      the gate wrapper can render PENDING (never silent PASS).
-#   2. cargo llvm-cov over the five critical engine crates -> target/llvm-cov/lcov.info
+#   2. cargo llvm-cov over the three Deploy-owned crates -> target/llvm-cov/lcov.info
 #      (line_coverage source `rust-lcov` in agent/coverage-sources.toml).
 #   3. cargo-mutants SCOPED to a single critical crate with a hard --timeout
 #      (mutants over the full 50-crate workspace is far too slow) ->
@@ -28,7 +28,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "${ROOT}"
+cd "${ROOT}" || exit 1
 
 # shellcheck source=ops/ci/ci-env.sh
 source "${ROOT}/ops/ci/ci-env.sh"
@@ -37,33 +37,28 @@ source "${ROOT}/ops/ci/lib.sh"
 # Pinned tool versions. Bump deliberately; never float.
 CARGO_LLVM_COV_VERSION="${CARGO_LLVM_COV_VERSION:-0.8.7}"
 CARGO_MUTANTS_VERSION="${CARGO_MUTANTS_VERSION:-25.3.1}"
+COVERAGE_TEST_THREADS="${JERYU_COVERAGE_TEST_THREADS:-${JERYU_CI_TEST_THREADS}}"
 
-# Critical engine crates measured for line coverage.
-#
-# The first group is the original engine set; the second is the workcell stack,
-# added so the new regression suite is measured and the changed-line gate
-# (agent/coverage-sources.toml: hard_changed_line_coverage=0.90) protects it too.
-# Only DETERMINISTIC workcell crates are measured here: jeryu-sandbox-linux and
-# jeryu-agentbridge are deliberately excluded because their security tests
-# honestly skip when a host primitive (Landlock/cgroup delegation) is absent, so
-# their line coverage is host-dependent and would make a gate flaky. They are
-# protected by their own escape/refute suites, not a coverage percentage.
+# Deploy-owned crates measured for line coverage. Cross-repository dependencies
+# are immutable release inputs and are measured by their owning repositories;
+# naming them here made this standalone gate fail before any coverage ran.
 LLVM_COV_CRATES=(
-  jeryu-ci-scheduler
-  jeryu-ci-compiler
-  jeryu-runner-core
-  jeryu-cache-core
-  jeryu-cache-policy
   jeryu-api
-  jeryu-egress
-  jeryu-codegraph
+  jeryu-cli
+  jeryu-split-tool
 )
 
 # Crates whose TOTAL src line coverage is ratcheted against a committed baseline
-# (ops/ci/coverage-baseline.json): coverage may not drop below the recorded
+# (ops/ci/coverage-baseline.tsv): coverage may not drop below the recorded
 # floor, and a green run that improves it rewrites the floor upward. This is the
-# "record baseline / fail-on-drop / ratchet-up" gate for the workcell surface.
-RATCHET_CRATES=(jeryu-api jeryu-egress jeryu-codegraph)
+# "record baseline / fail-on-drop / ratchet-up" gate for the owned API surface.
+# The standalone floor was rebound once from 0.8411 to 0.8044 after an exact
+# protected-main measurement produced 0.7981 and this candidate produced
+# 0.8044. The old value came from the pre-split monorepo and was not
+# reproducible from this repository. Future updates remain upward-only. The
+# other owned crates are still present in the aggregate lcov and changed-line
+# gate.
+RATCHET_CRATES=(jeryu-api)
 COVERAGE_BASELINE="ops/ci/coverage-baseline.tsv"
 # Tolerance (fraction) below the baseline before failing — absorbs trivial
 # measurement jitter without letting real coverage rot.
@@ -71,9 +66,10 @@ COVERAGE_EPSILON="${JERYU_COVERAGE_EPSILON:-0.005}"
 # jeryu-api's workcell surface lives behind the `web` feature; measure it.
 LLVM_COV_FEATURES="${JERYU_LLVM_COV_FEATURES:-jeryu-api/web}"
 
-# Mutation testing is expensive, so scope it tightly to one critical crate by
-# default. Override with JERYU_MUTANTS_PACKAGE / JERYU_MUTANTS_TIMEOUT.
-MUTANTS_PACKAGE="${JERYU_MUTANTS_PACKAGE:-jeryu-cache-policy}"
+# Mutation testing is expensive, so scope it tightly to the owned split-tool
+# crate that enforces CI-manifest parity. Override with
+# JERYU_MUTANTS_PACKAGE / JERYU_MUTANTS_TIMEOUT.
+MUTANTS_PACKAGE="${JERYU_MUTANTS_PACKAGE:-jeryu-split-tool}"
 MUTANTS_TIMEOUT="${JERYU_MUTANTS_TIMEOUT:-60}"           # per-mutant test timeout (s)
 MUTANTS_BUILD_TIMEOUT="${JERYU_MUTANTS_BUILD_TIMEOUT:-300}"
 # cargo-mutants jobs are heavyweight (each spawns a full cargo process, which in
@@ -170,10 +166,10 @@ if [ -n "${LLVM_COV_FEATURES}" ]; then
   COV_FEATURE_ARGS+=(--features "${LLVM_COV_FEATURES}")
 fi
 
-log "cargo llvm-cov over ${#LLVM_COV_CRATES[@]} crates (features: ${LLVM_COV_FEATURES:-none}) -> ${LLVM_COV_OUT}"
-if ! cargo llvm-cov "${COV_PKG_ARGS[@]}" "${COV_FEATURE_ARGS[@]}" \
+log "cargo llvm-cov over ${#LLVM_COV_CRATES[@]} crates (features: ${LLVM_COV_FEATURES:-none}, test_threads=${COVERAGE_TEST_THREADS}) -> ${LLVM_COV_OUT}"
+if ! cargo llvm-cov --locked "${COV_PKG_ARGS[@]}" "${COV_FEATURE_ARGS[@]}" \
   --lcov --output-path "${LLVM_COV_OUT}" \
-  --jobs "${JERYU_CI_JOBS}"; then
+  --jobs "${JERYU_CI_JOBS}" -- --test-threads "${COVERAGE_TEST_THREADS}"; then
   echo "[coverage] FAIL: cargo llvm-cov did not complete" >&2
   exit 1
 fi
@@ -183,8 +179,8 @@ if [ ! -s "${LLVM_COV_OUT}" ]; then
 fi
 log "line-coverage artifact ready: ${LLVM_COV_OUT} ($(wc -l < "${LLVM_COV_OUT}") lines)"
 
-# --- 2b. Workcell coverage ratchet -----------------------------------------
-# Gate the workcell crates' src line-coverage against a committed floor
+# --- 2b. Owned API coverage ratchet ----------------------------------------
+# Gate the owned API crate's src line-coverage against a committed floor
 # (${COVERAGE_BASELINE}): coverage may not drop below the recorded baseline
 # (minus ${COVERAGE_EPSILON} jitter), and a run with
 # JERYU_COVERAGE_UPDATE_BASELINE=1 ratchets the floor UPWARD (never down). This
@@ -207,6 +203,7 @@ log "cargo mutants (scoped) package=${MUTANTS_PACKAGE} timeout=${MUTANTS_TIMEOUT
 mutants_rc=0
 cargo mutants \
   -p "${MUTANTS_PACKAGE}" \
+  --cargo-arg=--locked \
   --output "${MUTANTS_OUT_DIR}" \
   --timeout "${MUTANTS_TIMEOUT}" \
   --build-timeout "${MUTANTS_BUILD_TIMEOUT}" \
@@ -225,10 +222,8 @@ log "mutation artifact ready: ${MUTANTS_OUTCOMES} (+ mirror ${MUTANTS_OUTCOMES_M
 # --- 4. jankurai coverage audit + hard==0 assertion ------------------------
 mkdir -p target/jankurai/coverage
 log "jankurai coverage audit . --config agent/coverage-sources.toml"
-audit_out="$(run_governed_jankurai coverage audit . \
-  --config agent/coverage-sources.toml \
-  --json target/jankurai/coverage/coverage-audit.json \
-  --md target/jankurai/coverage/coverage-audit.md 2>&1)"
+require_jankurai
+audit_out="$(jankurai coverage audit . --config agent/coverage-sources.toml --json target/jankurai/coverage/coverage-audit.json --md target/jankurai/coverage/coverage-audit.md 2>&1)"
 # Trim trailing whitespace the CLI pads its summary line with, then keep the
 # canonical `coverage-audit ...` summary line for parsing.
 audit_line="$(printf '%s\n' "${audit_out}" | sed -E 's/[[:space:]]+$//' | grep -E '^coverage-audit ' | tail -n1)"

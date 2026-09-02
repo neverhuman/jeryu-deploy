@@ -30,10 +30,10 @@ export JERYU_JANKURAI_BUILD_COMMAND="cargo install --locked --offline --path /op
 export JERYU_JANKURAI_BUILD_CONTEXT_SHA256="889d19f86fc390b0f0cf0bd6ecb4d451c51a2d6fb328e5520e4310e7ee5dedd6"
 # END GENERATED JANKURAI PIN
 
+# shellcheck source=ops/ci/ci-env.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-env.sh"
+# shellcheck source=ops/ci/lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-
-JERYU_CI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 jeryu_jankurai() {
   run_governed_jankurai "$@"
@@ -48,7 +48,7 @@ jeryu_gate() {
   if [ "$crate" = "jeryu-repogate" ]; then
     case "${1:-}" in
       affected-plan|ci-lanes-check|ci-lanes-list)
-        cargo run -q --release -p jeryu-split-tool -- "$@"
+        cargo run --locked -q --release -p jeryu-split-tool -- "$@"
         return
         ;;
       *)
@@ -57,7 +57,7 @@ jeryu_gate() {
         ;;
     esac
   fi
-  cargo run -q --release -p "${crate}" -- "$@"
+  cargo run --locked -q --release -p "${crate}" -- "$@"
 }
 
 # jeryu_raw_policy <output-path>

@@ -6,8 +6,17 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   exit 2
 fi
 
+# shellcheck source=ops/ci/hosted-git-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hosted-git-env.sh"
+
 export JERYU_CI_JOBS="${JERYU_CI_JOBS:-40}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${JERYU_CI_JOBS}}"
+# Compiler parallelism and test-process parallelism are separate pressure
+# domains. Several integration tests spawn real Git servers and child
+# processes; bounding libtest avoids transient fork/exec failures without
+# reducing build throughput.
+export JERYU_CI_TEST_THREADS="${JERYU_CI_TEST_THREADS:-8}"
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-${JERYU_CI_TEST_THREADS}}"
 export CARGO_NET_RETRY="${CARGO_NET_RETRY:-10}"
 # The workcell-export CI-seeding unit tests assert a deterministic check-run
 # conclusion; they exercise the seeding/recording flow, not real in-process job
@@ -46,6 +55,7 @@ jeryu_ci_profile_summary() {
   echo "ci profile: ${JERYU_CI_PROFILE}"
   echo "workers: ${JERYU_CI_JOBS}"
   echo "cargo build jobs: ${CARGO_BUILD_JOBS}"
+  echo "test threads: ${JERYU_CI_TEST_THREADS}"
   echo "runner executor: ${JERYU_RUNNER_EXECUTOR}"
   echo "runner class: ${JERYU_RUNNER_CLASS}"
   echo "docker required: ${JERYU_CI_DOCKER}"

@@ -9,11 +9,11 @@ mkdir -p target/jankurai
 DB="target/jankurai/codegraph-tool-build.sqlite"
 rm -f "${DB}"
 
-cargo test -p jeryu-codegraph --jobs "${JERYU_CI_JOBS}" tool_build
-cargo test -p jeryu-mcp --test mcp_conformance --jobs "${JERYU_CI_JOBS}"
-cargo test -p jeryu-api --features web --jobs "${JERYU_CI_JOBS}" tool_build
+cargo test --locked -p jeryu-codegraph --jobs "${JERYU_CI_JOBS}" tool_build
+cargo test --locked -p jeryu-mcp --test mcp_conformance --jobs "${JERYU_CI_JOBS}"
+cargo test --locked -p jeryu-api --features web --jobs "${JERYU_CI_JOBS}" tool_build
 
-cargo run -q -p jeryu-codegraph -- tool-build scan \
+cargo run --locked -q -p jeryu-codegraph -- tool-build scan \
   --root . \
   --db "${DB}" \
   --repo-id local/jeryu \
@@ -21,7 +21,7 @@ cargo run -q -p jeryu-codegraph -- tool-build scan \
   --top 10 \
   --json > target/jankurai/codegraph-tool-build-scan.json
 
-cargo run -q -p jeryu-codegraph -- tool-build clusters \
+cargo run --locked -q -p jeryu-codegraph -- tool-build clusters \
   --db "${DB}" \
   --repo-id local/jeryu \
   --top 10 \

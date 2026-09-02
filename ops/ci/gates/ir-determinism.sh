@@ -11,7 +11,7 @@ cd "${ROOT}" || { echo "GATE ${GATE_NAME}: FAIL (cannot cd to repo root)"; exit 
 source "${ROOT}/ops/ci/common.sh"
 
 echo "[${GATE_NAME}] cargo test -p jeryu-ci-ir"
-if cargo test -p jeryu-ci-ir --jobs "${JERYU_CI_JOBS}"; then
+if cargo test --locked -p jeryu-ci-ir --jobs "${JERYU_CI_JOBS}"; then
   echo "GATE ${GATE_NAME}: PASS"
   exit 0
 else

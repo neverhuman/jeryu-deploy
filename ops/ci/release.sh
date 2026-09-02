@@ -9,6 +9,7 @@ set -euo pipefail
 export JERYU_CI_USE_SCCACHE=0
 unset RUSTC_WRAPPER SCCACHE_DIR SCCACHE_CACHE_SIZE
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=ops/ci/common.sh
 source "${HERE}/common.sh"
 unset RUSTC_WRAPPER SCCACHE_DIR SCCACHE_CACHE_SIZE
 ROOT="$(cd "${HERE}/../.." && pwd)"
@@ -36,12 +37,12 @@ git verify-commit --raw HEAD >/dev/null 2>&1 \
   || die "missing PR publication metadata: ${PUBLICATION_FILE}; run bash ci-fast-push.sh --full from a PR branch before tagging"
 
 # --- 1. validate + build the release binary --------------------------------
-cargo test --workspace --jobs "${JERYU_CI_JOBS}"
+cargo test --locked --workspace --jobs "${JERYU_CI_JOBS}"
 BIN="${JERYU_RELEASE_BINARY:-target/release/jeryu}"
 if [ -n "${JERYU_RELEASE_BINARY:-}" ]; then
   log "using prebuilt release binary ${BIN}"
 else
-  cargo build --release -p jeryu-cli --bin jeryu --jobs "${JERYU_CI_JOBS}"
+  cargo build --locked --release -p jeryu-cli --bin jeryu --jobs "${JERYU_CI_JOBS}"
 fi
 [ -x "${BIN}" ] || { echo "[release] FATAL: ${BIN} not built" >&2; exit 1; }
 log "built $(${BIN} --version 2>/dev/null || echo jeryu)"
@@ -66,7 +67,9 @@ fi
 rm -rf "${BUNDLE}"; mkdir -p "${BUNDLE}"
 cp "${BIN}" "${BUNDLE}/jeryu"
 for f in sbom.spdx.json sbom.cdx.json provenance.json cosign.txt grype-scan.json; do
-  [ -f "${SBOM_DIR}/${f}" ] && cp "${SBOM_DIR}/${f}" "${BUNDLE}/" || true
+  if [ -f "${SBOM_DIR}/${f}" ]; then
+    cp "${SBOM_DIR}/${f}" "${BUNDLE}/"
+  fi
 done
 cp "${ARTIFACT_SUPPORT_BUNDLE_SRC}" "${ARTIFACT_SUPPORT_BUNDLE_DST}"
 rm -rf "${ARTIFACT_SUPPORT_SIGNRAIL_DST}"

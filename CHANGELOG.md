@@ -12,6 +12,34 @@
   and prevent candidate policy from lowering the host score floor.
 - Include the security lane in the canonical required-check entrypoint and keep
   its workflow declaration aligned with the commands the lane actually runs.
+- Repair the standalone full and affected CI paths so they use repository-owned
+  proof, workflow, release-receipt, score, and security gates instead of absent
+  monorepo packages, and validate owner/test coverage from the tracked tree.
+- Make all ten phase gates exercise only real owned integrations or resolvable
+  immutable dependencies, validate the vendored web bundle without npm source,
+  and stop the PR gate from silently restoring a changed `Cargo.lock`.
+- Rebind the API coverage floor once from unreproducible pre-split `0.8411` to
+  `0.8044`: exact hosted protected main measured `0.7981`, while this candidate
+  improves it to `0.8044`; all later baseline updates remain upward-only.
+- Bound coverage-test concurrency independently from compiler concurrency so
+  process-heavy identity and live-route tests do not fail under host pressure.
+- Apply the same eight-process default to aggregate CI tests and fsync the
+  executable identity fixture before launch, closing a reproduced Linux
+  `ETXTBSY` race without weakening the identity verifier.
+- Replace duplicate proof scripts and their swallowed failures, candidate
+  self-baseline, and synthesized UX/migration/vibe/coverage outputs with one
+  strict standalone lane backed by a provenance-bound hosted-main baseline;
+  make source-security receipts name only commands that actually ran.
+- Supply Jankurai's canonical `tools/security-lane.sh` entrypoint as a governed
+  delegate to the real standalone security implementation, with explicit owner
+  and test-map coverage.
+- Add locked, package-scoped API check/test commands and an explicit sccache
+  status probe for fast deterministic developer feedback, and make every
+  canonical Rust CI/build entrypoint refuse dependency-lock drift.
+- Patch the locked `anyhow` and `h2` advisories, keep Cargo Deny default-deny,
+  and route every historical Cargo Git identity through exact
+  `git.neverhuman.org` mappings and immutable hosted support refs with
+  fresh-cache and hostile regression proof.
 
 ## jeryu-deploy-v5.0.0-split.4
 

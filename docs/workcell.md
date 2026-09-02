@@ -10,6 +10,10 @@ proxy. When its work is ready it leaves the cell only as a **pull request**.
 This is the foundation of the workcell north-star: *all* code editing happens
 server-side inside the jail, and the only egress for the result is a reviewed PR.
 
+This is a family-wide design document. Deploy owns the `jeryu-api` integration;
+runner, sandbox, agentbridge, and egress source paths named below live in their
+protected standalone repositories and arrive here through immutable pins.
+
 ## Security model — native, unprivileged jail
 
 The cell jail is the production `jeryu-sandbox-linux` launch path. It needs **no

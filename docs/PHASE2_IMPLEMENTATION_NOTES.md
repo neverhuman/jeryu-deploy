@@ -1,4 +1,9 @@
-# Phase 9 Implementation Notes
+# Historical Phase 9 Implementation Notes
+
+This file describes the pre-split seed and is not a current workspace map. The
+current Deploy checkout owns `jeryu-api`, `jeryu-cli`, and `jeryu-split-tool`;
+the family components named below now live in protected standalone repos and
+enter through immutable release pins.
 
 This package implements the Phase 9 scope from the supplied Jeryu engineering spec:
 
@@ -11,7 +16,8 @@ This package implements the Phase 9 scope from the supplied Jeryu engineering sp
 - webhooks and durable delivery outbox
 - GitHub-compatible REST subset
 
-The repository is organized as a Rust workspace with product truth in `crates/jeryu-core` and the REST edge in `crates/jeryu-api`.
+The original fused repository put product truth in `crates/jeryu-core` and the
+REST edge in `crates/jeryu-api`. Only the latter source remains in this split.
 
 ## What is intentionally deferred
 
@@ -19,7 +25,8 @@ The uploaded spec defines later phases for CI compiler, scheduler, native runner
 
 ## Local validation
 
-This environment did not provide the `cargo` executable, so the package could not be compiled here. The code is arranged to be validated with:
+The historical import environment did not provide `cargo`. Current validation
+is executable with:
 
 ```bash
 just fast

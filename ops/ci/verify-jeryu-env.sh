@@ -63,6 +63,9 @@ check_retired_processes() {
   retired_runner="${retired_provider}-runner"
   retired_opt="/opt/${retired_provider}/"
   local raw_hits hits line pid
+  # Process arguments are required here; pgrep cannot provide the inspected
+  # lines used by the diagnostic and repository-binary exemption below.
+  # shellcheck disable=SC2009
   raw_hits="$(
     ps -eo pid=,comm=,args= |
       grep -E "${retired_runner}|${retired_opt}|/home/ubuntu/\.jeryu/bin/|/home/ubuntu/jeryu_OLD_DO_NOT_USE/target/|/home/ubuntu/jeryu_rust/" |
@@ -117,9 +120,9 @@ check_retired_listeners() {
 
   local ports=(2224 8787 8929 18787 18788 19800)
   local failed=0
-  local line state recv send local_addr peer process port pid
+  local line _state _recv _send local_addr _peer _process port pid
   while IFS= read -r line; do
-    read -r state recv send local_addr peer process <<<"${line}"
+    read -r _state _recv _send local_addr _peer _process <<<"${line}"
     for port in "${ports[@]}"; do
       case "${local_addr}" in
         *":${port}")
@@ -203,7 +206,7 @@ if path_jeryu="$(command -v jeryu 2>/dev/null)"; then
 fi
 
 if [ "${build_local}" = "1" ]; then
-  cargo build -q -p jeryu-cli --bin jeryu --jobs "${JERYU_CI_JOBS:-40}"
+  cargo build --locked -q -p jeryu-cli --bin jeryu --jobs "${JERYU_CI_JOBS:-40}"
 fi
 
 repo_bin=""

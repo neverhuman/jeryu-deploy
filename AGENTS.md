@@ -16,6 +16,8 @@ Canonical agent-readable detail is routed through `docs/architecture.md`,
 `docs/audit-rubric.md`. Deploy's release proof is its mapped standalone lanes;
 the monorepo-only `jeryu-mapcheck docs` marker check is not a Deploy gate.
 
-Cross-repo Rust dependencies are pinned Git dependencies using
-`*-v4.0.0-split.0` tags. Only `jeryu-deploy` may use local sibling path patches
-for split-family development.
+Cross-repo Rust dependencies are pinned to the exact immutable v5 tags and
+commits recorded in `Cargo.lock`. Historical source spellings remain part of
+Cargo package identity, but CI must transport them through the exact
+`git.neverhuman.org` mappings in `.cargo/hosted-gitconfig`; committed or
+release-CI sibling path patches are not permitted.

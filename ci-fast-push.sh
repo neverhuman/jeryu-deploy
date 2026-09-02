@@ -6,8 +6,7 @@
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || { echo "not in a git repo"; exit 1; }
-source "$(pwd)/ops/ci/ci-env.sh"
-source "$(pwd)/ops/ci/lib.sh"
+source "$(pwd)/ops/ci/common.sh"
 
 JOBS="${JERYU_CI_JOBS:-40}"
 RUST_TEST_MODE="${JERYU_CI_RUST_TEST_MODE:-inline}"
@@ -19,6 +18,7 @@ PR_DRAFT="${JERYU_CI_PR_DRAFT:-1}"
 PR_BASE="${JERYU_CI_PR_BASE:-main}"
 PR_TITLE="${JERYU_CI_PR_TITLE:-}"
 BASE_REF="${JERYU_CI_BASE_REF:-origin/main}"
+HOSTED_ORIGIN="https://git.neverhuman.org/git/jeryu/jeryu-deploy.git"
 PUBLISH_FILE="${JERYU_CI_PUBLISH_FILE:-target/ci-fast/publish.json}"
 PLAN="target/ci-fast/affected-plan.json"
 CHANGED_LIST="target/ci-fast/changed.lst"
@@ -51,6 +51,19 @@ run_step() {
   fi
 }
 
+validate_hosted_origin() {
+  local -a fetch_urls=() push_urls=()
+  mapfile -t fetch_urls < <(git config --get-all remote.origin.url 2>/dev/null || true)
+  mapfile -t push_urls < <(git config --get-all remote.origin.pushurl 2>/dev/null || true)
+  if [ "${#fetch_urls[@]}" -ne 1 ] || [ "${fetch_urls[0]:-}" != "${HOSTED_ORIGIN}" ] ||
+     { [ "${#push_urls[@]}" -ne 0 ] &&
+       { [ "${#push_urls[@]}" -ne 1 ] || [ "${push_urls[0]}" != "${HOSTED_ORIGIN}" ]; }; }; then
+    printf 'origin must have one exact hosted fetch URL and no alternate push destination: expected=%s fetch=%s push=%s\n' \
+      "${HOSTED_ORIGIN}" "${fetch_urls[*]:-missing}" "${push_urls[*]:-inherits-fetch}" >&2
+    return 1
+  fi
+}
+
 write_publish_metadata() {
   local mode="$1" branch="$2" base="$3" pr_url="${4:-}" pr_number="${5:-}" direct_escape="${6:-false}"
   local commit; commit="$(git rev-parse HEAD)"
@@ -69,15 +82,6 @@ write_publish_metadata() {
     > "$PUBLISH_FILE"
   echo "publication metadata: $PUBLISH_FILE"
 }
-jeryu_gate() {
-  local crate="$1"; shift
-  if [ "$crate" = "jeryu-repogate" ]; then
-    cargo run -q --release -p "${crate}" -- "$@"
-    return
-  fi
-  cargo run -q --release -p "${crate}" -- "$@"
-}
-
 has_lane() {
   jq -e --arg lane "$1" '.lanes | index($lane) != null' "$PLAN" >/dev/null
 }
@@ -89,9 +93,10 @@ is_full_ci() {
 
 run_tests() {
   if command -v cargo-nextest >/dev/null 2>&1; then
-    cargo nextest run "$@" --test-threads "$JOBS" --no-fail-fast
+    cargo nextest run --locked "$@" --test-threads "$JERYU_CI_TEST_THREADS" --no-fail-fast
   else
-    cargo test "$@" --jobs "$JOBS" -- --test-threads="$JOBS"
+    cargo test --locked "$@" --jobs "$JOBS" -- \
+      --test-threads="$JERYU_CI_TEST_THREADS"
   fi
 }
 
@@ -166,6 +171,8 @@ fail_untracked_for_remote_parity() {
 }
 
 github_clean_profile_proof() {
+  # The single-quoted program is intentionally expanded by the child shell.
+  # shellcheck disable=SC2016
   env -u RUSTC_WRAPPER -u SCCACHE_DIR -u SCCACHE_CACHE_SIZE \
     -u JERYU_RUNNER_CLASS \
     JERYU_CI_PROFILE=github JERYU_CI_USE_SCCACHE=0 bash -lc '
@@ -213,13 +220,13 @@ open_or_report_pr() {
     echo "gh is required to open the default PR path; install/authenticate gh or rerun with --no-pr after pushing." >&2
     return 1
   fi
-  if ! gh auth status >/dev/null 2>&1; then
-    echo "gh is not authenticated; run gh auth login or rerun with --no-pr after pushing." >&2
+  if ! GH_HOST=git.neverhuman.org gh auth status --hostname git.neverhuman.org >/dev/null 2>&1; then
+    echo "gh is not authenticated to git.neverhuman.org; authenticate that host or rerun with --no-pr after pushing." >&2
     return 1
   fi
 
   local existing_json existing_url existing_number
-  existing_json="$(gh pr view "$branch" --json number,url --jq '{number:.number,url:.url}' 2>/dev/null || true)"
+  existing_json="$(GH_HOST=git.neverhuman.org gh pr view "$branch" --json number,url --jq '{number:.number,url:.url}' 2>/dev/null || true)"
   if [ -n "$existing_json" ]; then
     existing_url="$(jq -r '.url // ""' <<<"$existing_json")"
     existing_number="$(jq -r '(.number // "") | tostring' <<<"$existing_json")"
@@ -238,11 +245,11 @@ open_or_report_pr() {
     args+=(--fill)
   fi
   local created_output pr_json pr_url pr_number
-  if ! created_output="$(gh pr create "${args[@]}")"; then
+  if ! created_output="$(GH_HOST=git.neverhuman.org gh pr create "${args[@]}")"; then
     return 1
   fi
   printf '%s\n' "$created_output"
-  pr_json="$(gh pr view "$branch" --json number,url --jq '{number:.number,url:.url}' 2>/dev/null || true)"
+  pr_json="$(GH_HOST=git.neverhuman.org gh pr view "$branch" --json number,url --jq '{number:.number,url:.url}' 2>/dev/null || true)"
   pr_url="$(jq -r '.url // ""' <<<"${pr_json:-{}}")"
   pr_number="$(jq -r '(.number // "") | tostring' <<<"${pr_json:-{}}")"
   if [ -z "$pr_url" ]; then
@@ -257,6 +264,7 @@ open_or_report_pr() {
 }
 
 run_step "ci profile" jeryu_ci_profile_summary
+run_step "hosted origin authority" validate_hosted_origin
 run_step "rust test mode" validate_rust_test_mode
 env_args=(--build-local)
 if [ "$FORCE_FULL" = "1" ]; then
@@ -280,14 +288,16 @@ if is_full_ci; then
     run_step "security toolchain" bash ops/ci/security-tools.sh
   fi
   run_step "clippy workspace" \
-    cargo clippy --workspace --all-targets --all-features --jobs "$JOBS" -- -D warnings
+    cargo clippy --locked --workspace --all-targets --all-features --jobs "$JOBS" -- -D warnings
   if rust_tests_sharded; then
     record_sharded_rust_tests "tests workspace"
   else
     run_step "tests workspace" run_tests --workspace
   fi
-  run_step "zero-evidence" jeryu_gate jeryu-evidence .
-  run_step "docs-markers" jeryu_gate jeryu-mapcheck docs
+  run_step "proof evidence" bash ops/ci/proof_evidence.sh
+  run_step "workflow parity" bash ops/ci/workflow-lint.sh
+  run_step "agent map coverage" bash scripts/check-agent-maps.sh
+  run_step "release receipt contract" bash scripts/test-emit-release-receipt.sh
   run_step "phase-gates" bash scripts/ci-phases.sh
   if [ "$FORCE_FULL" = "1" ]; then
     run_manifest_full_lanes
@@ -300,9 +310,9 @@ else
       package_flags+=("-p" "$package")
     done
     run_step "check affected Rust packages" \
-      cargo check "${package_flags[@]}" --all-targets --all-features --jobs "$JOBS"
+      cargo check --locked "${package_flags[@]}" --all-targets --all-features --jobs "$JOBS"
     run_step "clippy affected Rust packages" \
-      cargo clippy "${package_flags[@]}" --all-targets --all-features --jobs "$JOBS" -- -D warnings
+      cargo clippy --locked "${package_flags[@]}" --all-targets --all-features --jobs "$JOBS" -- -D warnings
     if rust_tests_sharded; then
       record_sharded_rust_tests "tests affected Rust packages"
     else
@@ -313,19 +323,16 @@ else
   fi
 
   if has_lane api; then
-    run_step "api web feature" cargo test -p jeryu-api --features web --jobs "$JOBS"
+    run_step "api web feature" cargo test --locked -p jeryu-api --features web --jobs "$JOBS"
   fi
   if has_lane tui; then
     run_step "tui captures" cargo test -p jeryu-tui --jobs "$JOBS"
   fi
   if has_lane web; then
-    run_step "web typecheck" bash -lc 'cd apps/web && npm run typecheck'
-    run_step "web test" bash -lc 'cd apps/web && npm run test'
-    run_step "web build" bash -lc 'cd apps/web && npm run build'
+    run_step "immutable web bundle" bash ops/ci/web.sh
   fi
   if has_lane db; then
-    run_step "db migration analysis" \
-      run_pinned_jankurai migrate . --analyze --out target/jankurai/migration-report.json
+    run_step "documentation-only db boundary" bash ops/ci/check.sh
   fi
 fi
 

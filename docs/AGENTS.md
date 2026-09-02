@@ -19,12 +19,14 @@ Owns:
   feedback suppression, and MCP/API/CLI proof commands.
 
 Forbidden:
-- Hosted-provider or retired review-request terminology.
+- External hosted-provider authority (including GitHub) or retired
+  review-request terminology; the protected `git.neverhuman.org` repository is
+  the canonical source and ref authority.
 - Aspirational release claims without executable gate evidence.
 - Generated artifact edits outside `agent/generated-zones.toml`.
 
 Proof lane:
-- `cargo run -q -p jeryu-mapcheck -- docs`
+- `just check` plus `bash ops/ci/workflow-lint.sh`
 - `cargo test -p jeryu-api --features web --jobs 40 workcell_run_agent`
   when workcell run-agent route docs change.
 - `cargo test -p jeryu-api --features web --jobs 40 agent_runs`
