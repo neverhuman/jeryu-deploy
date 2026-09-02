@@ -11,10 +11,10 @@ check:
 
 # Narrow deterministic loop for Deploy's owned API surface.
 check-api:
-  source ops/ci/hosted-git-env.sh; cargo check --locked -p jeryu-api --features web --all-targets --jobs {{jobs}}
+  source ops/ci/hosted-git-env.sh; cargo check -p jeryu-api --locked --features web --all-targets --jobs {{jobs}}
 
 test-api:
-  source ops/ci/hosted-git-env.sh; cargo test --locked -p jeryu-api --features web --jobs {{jobs}} -- --test-threads {{test_threads}}
+  source ops/ci/hosted-git-env.sh; cargo test -p jeryu-api --locked --features web --jobs {{jobs}} -- --test-threads {{test_threads}}
 
 cache-status:
   sccache --show-stats
