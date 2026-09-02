@@ -13,6 +13,7 @@ mod permissions;
 mod pulls;
 mod repo_admin;
 mod repositories;
+mod request_id;
 mod sessions;
 mod surface;
 mod tool_build;
@@ -92,180 +93,9 @@ pub struct WebServerConfig {
     pub secure_cookies: bool,
 }
 
-#[derive(Clone, Debug)]
-struct SplitCatalog {
-    /// Keyed by lowercase slug. Both GitHub slugs (`neverhuman/jeryu`) and
-    /// local forge slugs (`jeryu/jeryu`) are indexed because repos are
-    /// registered locally under the forge owner.
-    entries: BTreeMap<String, SplitCatalogEntry>,
-}
+mod catalog;
 
-#[derive(Clone, Debug)]
-struct SplitCatalogEntry {
-    family: String,
-    role: RepositoryRole,
-}
-
-#[derive(Debug, Deserialize)]
-struct SplitManifest {
-    repo_family: Option<String>,
-    repo: Option<Vec<SplitManifestRepo>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SplitManifestRepo {
-    name: Option<String>,
-    github_slug: Option<String>,
-    jeryu_slug: Option<String>,
-    profile: Option<String>,
-}
-
-/// Role for a split-family repo. The tool control plane and its discovery arm
-/// ride the same scripts/docs `public-portal` build profile as the real portal,
-/// so role can't be read from the profile alone: the `-tool` / `-tool-finder`
-/// names disambiguate (and generalize across families, e.g. `jekko-tool`).
-fn role_for(name: Option<&str>, profile: Option<&str>) -> RepositoryRole {
-    match name {
-        Some(n) if n.ends_with("-tool-finder") => RepositoryRole::SplitMember,
-        Some(n) if n.ends_with("-tool") => RepositoryRole::ToolControlPlane,
-        _ if profile == Some("public-portal") => RepositoryRole::PublicPortal,
-        _ => RepositoryRole::SplitMember,
-    }
-}
-
-/// The canonical repo name: the manifest `name` if present, else the last
-/// segment of a slug (so role classification works even without an explicit
-/// name field).
-fn repo_canonical_name(repo: &SplitManifestRepo) -> Option<String> {
-    if let Some(name) = repo.name.as_ref().filter(|n| !n.trim().is_empty()) {
-        return Some(name.clone());
-    }
-    repo.jeryu_slug
-        .as_ref()
-        .or(repo.github_slug.as_ref())
-        .and_then(|slug| slug.rsplit('/').next())
-        .map(str::to_string)
-}
-
-/// Resolve `jeryu-tool/tools-registry.toml` from the split manifest, which lives
-/// at the split root. `None` when no manifest is wired, so the golden-box
-/// endpoint reports an empty registry.
-fn resolve_tool_registry_path(manifests: &[PathBuf]) -> Option<PathBuf> {
-    let manifest = manifests.first()?;
-    let split_root = manifest
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    Some(split_root.join("jeryu-tool").join("tools-registry.toml"))
-}
-
-impl SplitCatalog {
-    fn load(manifests: &[PathBuf]) -> Self {
-        if manifests.is_empty() {
-            return Self::builtin();
-        }
-        let mut catalog = Self::empty();
-        for manifest in manifests {
-            if let Some(loaded) = Self::from_manifest(manifest) {
-                catalog.entries.extend(loaded.entries);
-            }
-        }
-        if catalog.entries.is_empty() {
-            Self::builtin()
-        } else {
-            catalog
-        }
-    }
-
-    fn empty() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-        }
-    }
-
-    fn builtin() -> Self {
-        let family = "jeryu-split".to_string();
-        let mut catalog = Self::empty();
-        for slug in ["neverhuman/jeryu", "jeryu/jeryu"] {
-            catalog.insert(slug, &family, RepositoryRole::PublicPortal);
-        }
-        for slug in ["neverhuman/jeryu-tool", "jeryu/jeryu-tool"] {
-            catalog.insert(slug, &family, RepositoryRole::ToolControlPlane);
-        }
-        for slug in [
-            "neverhuman/jeryu-core",
-            "neverhuman/jeryu-ci-runner",
-            "neverhuman/jeryu-cache",
-            "neverhuman/jeryu-intelligence",
-            "neverhuman/jeryu-web",
-            "neverhuman/jeryu-release-ops",
-            "neverhuman/jeryu-deploy",
-            "neverhuman/jeryu-tool-finder",
-            "jeryu/jeryu-core",
-            "jeryu/jeryu-ci-runner",
-            "jeryu/jeryu-cache",
-            "jeryu/jeryu-intelligence",
-            "jeryu/jeryu-web",
-            "jeryu/jeryu-release-ops",
-            "jeryu/jeryu-deploy",
-            "jeryu/jeryu-tool-finder",
-        ] {
-            catalog.insert(slug, &family, RepositoryRole::SplitMember);
-        }
-        catalog
-    }
-
-    fn from_manifest(path: &Path) -> Option<Self> {
-        let text = std::fs::read_to_string(path).ok()?;
-        let manifest: SplitManifest = toml::from_str(&text).ok()?;
-        let family = manifest
-            .repo_family
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "jeryu-split".to_string());
-        let mut catalog = Self::empty();
-        for repo in manifest.repo.unwrap_or_default() {
-            // Compute role before the slugs move github_slug/jeryu_slug out.
-            let role = role_for(
-                repo_canonical_name(&repo).as_deref(),
-                repo.profile.as_deref(),
-            );
-            let slugs: Vec<String> = [repo.github_slug, repo.jeryu_slug]
-                .into_iter()
-                .flatten()
-                .map(|slug| slug.to_ascii_lowercase())
-                .collect();
-            if slugs.is_empty() {
-                continue;
-            }
-            for slug in slugs {
-                catalog.insert(&slug, &family, role.clone());
-            }
-        }
-        Some(catalog)
-    }
-
-    fn insert(&mut self, slug: &str, family: &str, role: RepositoryRole) {
-        self.entries.insert(
-            slug.to_ascii_lowercase(),
-            SplitCatalogEntry {
-                family: family.to_string(),
-                role,
-            },
-        );
-    }
-
-    fn classify(&self, owner: &str, name: &str) -> Option<(String, RepositoryRole)> {
-        let slug = format!(
-            "{}/{}",
-            owner.to_ascii_lowercase(),
-            name.to_ascii_lowercase()
-        );
-        self.entries
-            .get(&slug)
-            .map(|entry| (entry.family.clone(), entry.role.clone()))
-    }
-}
+use catalog::{SplitCatalog, resolve_tool_registry_path};
 
 #[derive(Clone)]
 pub(crate) struct WebState {
@@ -657,157 +487,11 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
-struct BootstrapCredential {
-    login: String,
-    role: String,
-    password: String,
-}
+mod bootstrap;
 
-#[derive(Debug, Serialize)]
-struct BootstrapCredentialFile {
-    generated_at: String,
-    credentials: Vec<BootstrapCredential>,
-}
-
-fn bootstrap_public_accounts(
-    state: &WebState,
-    data_dir: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let admin_password = match std::env::var(BOOTSTRAP_ADMIN_PASSWORD_ENV) {
-        Ok(password) => Some(password),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(error) => return Err(Box::new(error)),
-    };
-    bootstrap_public_accounts_with_admin_password(state, data_dir, admin_password.as_deref())
-}
-
-fn bootstrap_public_accounts_with_admin_password(
-    state: &WebState,
-    data_dir: &Path,
-    admin_password: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut credentials = Vec::new();
-    if let Some(password) = admin_password {
-        create_or_reset_bootstrap_admin(state, password)?;
-    }
-    if admin_password.is_none() && state.core.get_account(BOOTSTRAP_ADMIN_LOGIN).is_err() {
-        let password = state.core.generate_one_time_password()?;
-        state
-            .core
-            .create_temporary_account(BOOTSTRAP_ADMIN_LOGIN, &password, UserRole::Admin)?;
-        credentials.push(BootstrapCredential {
-            login: BOOTSTRAP_ADMIN_LOGIN.to_string(),
-            role: bootstrap_role_name(&UserRole::Admin).to_string(),
-            password,
-        });
-    }
-
-    for (login, role) in [("jordanh", UserRole::User), ("jepsont", UserRole::User)] {
-        if state.core.get_account(login).is_ok() {
-            continue;
-        }
-        let password = state.core.generate_one_time_password()?;
-        state
-            .core
-            .create_temporary_account(login, &password, role.clone())?;
-        credentials.push(BootstrapCredential {
-            login: login.to_string(),
-            role: bootstrap_role_name(&role).to_string(),
-            password,
-        });
-    }
-
-    for repo in state.core.list_repositories(Some("jeryu")) {
-        let split = state
-            .split_catalog
-            .classify(&repo.owner, &repo.name)
-            .map(|(family, _)| family == "jeryu-split")
-            .unwrap_or(false)
-            || repo.family.as_deref() == Some("jeryu-split");
-        if split {
-            state.core.grant_repo_access(
-                "bootstrap",
-                BOOTSTRAP_ADMIN_LOGIN,
-                &repo.owner,
-                &repo.name,
-                jeryu_core::RepoAccessLevel::Admin,
-            )?;
-        }
-    }
-
-    if credentials.is_empty() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(data_dir)?;
-    let receipt = BootstrapCredentialFile {
-        generated_at: chrono_like_now(),
-        credentials,
-    };
-    let path = next_bootstrap_receipt_path(data_dir);
-    let json = serde_json::to_vec_pretty(&receipt)?;
-    let mut file = secure_create(&path)?;
-    file.write_all(&json)?;
-    file.write_all(b"\n")?;
-    Ok(())
-}
-
-fn create_or_reset_bootstrap_admin(
-    state: &WebState,
-    password: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match state.core.get_account(BOOTSTRAP_ADMIN_LOGIN) {
-        Ok(account) => {
-            if account.role != UserRole::Admin {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("{BOOTSTRAP_ADMIN_LOGIN} exists without admin role"),
-                )));
-            }
-            state
-                .core
-                .reset_account_password(BOOTSTRAP_ADMIN_LOGIN, password)?;
-            state
-                .core
-                .force_password_change(BOOTSTRAP_ADMIN_LOGIN, false)?;
-        }
-        Err(_) => {
-            state
-                .core
-                .create_account(BOOTSTRAP_ADMIN_LOGIN, password, UserRole::Admin)?;
-        }
-    }
-    Ok(())
-}
-
-fn bootstrap_role_name(role: &UserRole) -> &'static str {
-    match role {
-        UserRole::Admin => "admin",
-        UserRole::User => "user",
-    }
-}
-
-fn next_bootstrap_receipt_path(data_dir: &Path) -> PathBuf {
-    let primary = data_dir.join("bootstrap-credentials.json");
-    if !primary.exists() {
-        return primary;
-    }
-    data_dir.join(format!(
-        "bootstrap-credentials-{}.json",
-        jeryu_runner_core::receipt::now_ms()
-    ))
-}
-
-fn secure_create(path: &Path) -> std::io::Result<std::fs::File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)
-}
+use bootstrap::bootstrap_public_accounts;
+#[cfg(test)]
+use bootstrap::bootstrap_public_accounts_with_admin_password;
 
 fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
     let mut state = state;
@@ -818,7 +502,8 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
     )));
     let mcp_router = jeryu_mcp::mcp_router(mcp_state)
         .layer(from_fn(steer_headers))
-        .layer(from_fn_with_state(state.clone(), auth::gate));
+        .layer(from_fn_with_state(state.clone(), auth::gate))
+        .layer(from_fn(request_id::propagate));
     AxumRouter::new()
         .route("/health", get(health))
         // Steering surface: advertises the faster jeryu/MCP path so external
@@ -1060,6 +745,7 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
         // headers (and a per-route MCP tool hint for gh/automation UAs).
         .layer(from_fn(steer_headers))
         .layer(from_fn_with_state(state.clone(), auth::gate))
+        .layer(from_fn(request_id::propagate))
         .with_state(state)
         .merge(mcp_router)
 }

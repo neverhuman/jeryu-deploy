@@ -46,13 +46,20 @@ Primary lanes:
   `target/jankurai/readme-publish-receipt.json`. Use `--dry-run --verify` to
   validate the block render without mutating the worktree.
 - `just fast`: deterministic fast lane for agent iteration.
+- `just agent-runs`: narrow REST/MCP/session/TTY regression loop for changes
+  under `crates/jeryu-api/src/web/agent_runs/`.
+- `just request-id`: focused hostile-input and correlation-header checks for
+  the shared HTTP/MCP request-id middleware.
 - `just ci`: per-phase gate aggregator with explicit PASS, FAIL, and PENDING states.
 - `just full`: workspace foundation gate with fmt, check, tests, Clippy,
   repository proof evidence, workflow parity, release-receipt contract, score,
   security, and doctor checks.
-- `just security`: Deploy-owned secret, workflow, environment-file, and Cargo
-  metadata checks. Dependency and cache implementation gates remain in their
-  owning repositories.
+- `just security`: Deploy-owned secret, workflow, environment-file, and locked
+  Cargo metadata checks through the canonical `tools/security-lane.sh`.
+- `just security-network`: the same lane with Cargo audit/deny, hosted Git
+  dependency-source verification, and npm critical-advisory checks enabled.
+  Comprehensive and pull-request validation require this network profile;
+  cache implementation gates remain in their owning repository.
 - `just audit`: Jankurai audit plus dependency-audit integration when the tool is installed.
 - `cargo test -p jeryu-signrail --test release_witness`,
   `cargo test -p jeryu-signrail --jobs 40 verify_release`, and

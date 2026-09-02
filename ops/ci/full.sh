@@ -13,6 +13,6 @@ bash ops/ci/workflow-lint.sh
 bash scripts/check-agent-maps.sh
 bash scripts/test-emit-release-receipt.sh
 bash ops/ci/score.sh
-bash ops/ci/security.sh
+JERYU_SECURITY_NETWORK=1 bash ops/ci/security.sh
 bash ops/ci/dependency-sources.sh
 ./scripts/ci-doctor.sh

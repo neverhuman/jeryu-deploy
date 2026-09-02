@@ -16,6 +16,14 @@ check-api:
 test-api:
   source ops/ci/hosted-git-env.sh; cargo test -p jeryu-api --locked --features web --jobs {{jobs}} -- --test-threads {{test_threads}}
 
+# Focused agent-run REST/MCP/session/TTY control-surface regression loop.
+agent-runs:
+  source ops/ci/hosted-git-env.sh; cargo test -p jeryu-api --locked --features web --jobs {{jobs}} agent_runs -- --test-threads {{test_threads}}
+
+# Focused correlation-header boundary tests for the HTTP and MCP edges.
+request-id:
+  source ops/ci/hosted-git-env.sh; cargo test -p jeryu-api --locked --features web --lib web::request_id::tests --jobs {{jobs}} -- --test-threads {{test_threads}}
+
 cache-status:
   sccache --show-stats
 
@@ -23,7 +31,10 @@ score:
   ./ops/ci/score.sh # jankurai audit repo-score
 
 security:
-  ./ops/ci/security.sh # gitleaks actionlint env-file locked-cargo-metadata
+  ./tools/security-lane.sh # gitleaks actionlint env-file locked-cargo-metadata
+
+security-network:
+  JERYU_SECURITY_NETWORK=1 ./tools/security-lane.sh # cargo-audit cargo-deny hosted-dependency-sources npm-audit
 
 audit:
   ./ops/ci/audit.sh # canonical Jankurai proof plus cargo-audit/cargo-deny

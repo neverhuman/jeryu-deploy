@@ -5,6 +5,10 @@ Jeryu domain errors expose an `AgentRepairHint` with five required fields:
 Agents should route failures from this typed surface instead of scraping display
 strings.
 
+Every HTTP and MCP response carries a bounded `x-request-id`. Include that value
+with the typed error fields when correlating a failure; caller-supplied IDs must
+use only ASCII letters, digits, `-`, `_`, `.`, or `:` and be at most 128 bytes.
+
 ## Not Found
 
 The requested repository, pull request, queue entry, receipt, or other domain

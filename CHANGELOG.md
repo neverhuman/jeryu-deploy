@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Decompose the agent-run web control surface into handler, bounded-store,
+  frozen-diff export, and focused TTY regression modules; preserve the existing
+  route and wire behavior behind a new narrow `just agent-runs` proof command.
+- Split the remaining oversized API and split-tool sources at their existing
+  catalog, bootstrap, session-runtime, Git-source, pull-posture, installed-audit,
+  and test boundaries without changing their public paths or wire contracts.
+- Propagate a bounded `x-request-id` across both HTTP and MCP responses, replacing
+  hostile or oversized caller values and covering the boundary with focused tests.
+- Make `tools/security-lane.sh` the canonical executable security authority,
+  keep the historical ops path as a compatibility delegate, and require full
+  Cargo/npm dependency audits from the comprehensive and PR validation lanes.
 - Reserve external check-run, commit-status, and Jankurai score publication for
   global-admin maintenance while native runner results remain server-published.
 - Require repository-admin authority for branch-protection changes instead of

@@ -127,7 +127,7 @@ jq -e '(.score // 0) >= 85 and ((.caps_applied // []) | length == 0)' \
   .jankurai/repo-score.json >/dev/null
 
 echo "[pr-ci] security lane"
-bash "${repo_root}/ops/ci/security.sh"
+JERYU_SECURITY_NETWORK=1 bash "${repo_root}/ops/ci/security.sh"
 assert_cargo_lock_unchanged
 
 echo "[pr-ci] PASS — fmt + clippy + workspace tests + web bundle + jankurai + security all green" >&2

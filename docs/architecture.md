@@ -11,6 +11,20 @@ See `docs/codegraph-oracle.md` for the composed codegraph contract.
 
 The shared workcell control plane is part of the runner/CI stack, not a separate subsystem. `jeryu-runnerd` owns warm-pool claims, epoch-fenced release/heartbeat handling, startup rebase enforcement, and quarantine-first tar validation on top of the existing runner fabric.
 
+Deploy's agent-run edge keeps one wire-type and routing authority in
+`web/agent_runs.rs`. Child modules isolate HTTP/MCP/driver orchestration,
+bounded run and raw-TTY state, and frozen-diff pull-request export. They expose
+only the same `web`-scoped surface as the former single file; persistence,
+runner authority, and serialized contracts remain owned by their existing
+components.
+
+The API keeps the same module and route authority while isolating split-family
+catalog loading, bootstrap credential custody, session runtime preparation,
+repository source reads, pull-request merge posture, and installed Jankurai
+verification in child modules. The HTTP and MCP edges both apply one bounded
+`x-request-id` middleware: portable caller IDs round-trip, while empty, hostile,
+or oversized values are replaced before handlers observe them.
+
 The R5 proof lane lives in `crates/jeryu-api` and closes the loop from claim to reviewed pull request: rebase, jailed edit, namespaced branch export, PR creation, and CI evidence verification. The export request carries the changed-file list so the pull request preserves branch ownership and reviewer-visible edit scope.
 
 JMCP/control-plane intelligence is an API/read-model boundary over local truth:
@@ -22,6 +36,11 @@ or `unknown` rather than becoming an implicit green signal.
 The canonical reproducible validation surfaces are `Justfile`, `ops/ci/*.sh`,
 `ops/ci/gates/*.sh`, and `agent/test-map.json`; protected hosted refs and the
 exact-head required context are merge authority.
+
+`tools/security-lane.sh` owns the security implementation. Compatibility
+callers may enter through `ops/ci/security.sh`, but that file delegates without
+reimplementing checks; the comprehensive and pull-request gates enable network
+dependency audits explicitly.
 
 ## Standalone Delivery Authority
 

@@ -59,9 +59,12 @@ standalone Deploy proof.
 - `just check`
 - `just check-api`
 - `just test-api`
+- `just agent-runs`
+- `just request-id`
 - `just cache-status`
 - `just score`
 - `just security`
+- `just security-network`
 - `just artifact-support`
 
 Rust-native split transition checks are available through
