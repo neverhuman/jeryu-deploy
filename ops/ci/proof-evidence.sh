@@ -165,39 +165,83 @@ jankurai audit . --mode advisory --json target/jankurai/raw-repo-score.json \
   --full \
   --no-score-history
 
-mapfile -t proof_changed < <(
+mapfile -d '' -t proof_changed < <(
   {
-    git diff --name-only --diff-filter=ACMR "${BASE_REF}...HEAD"
-    git diff --name-only --diff-filter=ACMR --cached
-    git diff --name-only --diff-filter=ACMR
-    git ls-files --others --exclude-standard
-  } | sed '/^[[:space:]]*$/d' | sort -u
+    git diff --no-ext-diff --name-only -z --diff-filter=ACDMRT "${BASE_REF}...HEAD"
+    git diff --no-ext-diff --name-only -z --diff-filter=ACDMRT --cached
+    git diff --no-ext-diff --name-only -z --diff-filter=ACDMRT
+    git ls-files -z --others --exclude-standard
+  } | LC_ALL=C sort -zu
 )
+proof_uses_protected_diff=true
 if [[ "${#proof_changed[@]}" -eq 0 ]]; then
   proof_changed=(agent/tool-adoption.toml)
+  proof_uses_protected_diff=false
 fi
-proof_args=(--changed-from "${BASE_REF}")
+
+# Jankurai 1.6.11 proofbind classifies a path by reading its current bytes. Its
+# --changed-from resolver includes deleted paths and then fails with ENOENT.
+# Keep deletions in the authoritative proof plan below, but give proofbind only
+# the extant subset. The assertions after each producer make both scopes exact;
+# a deleted path therefore cannot disappear from the overall proof silently.
+proofbind_changed=()
+for changed_path in "${proof_changed[@]}"; do
+  if [[ -e "${changed_path}" || -L "${changed_path}" ]]; then
+    proofbind_changed+=("${changed_path}")
+  fi
+done
+if [[ "${#proofbind_changed[@]}" -eq 0 ]]; then
+  printf 'proofbind cannot safely classify a delete-only change with Jankurai 1.6.11\n' >&2
+  exit 1
+fi
+
+assert_changed_paths() {
+  local artifact="$1"
+  local producer="$2"
+  local expected_json
+  shift 2
+  expected_json="$(printf '%s\0' "$@" | jq -Rs 'split("\u0000") | map(select(length > 0)) | sort | unique')"
+  if ! jq -e --argjson expected "${expected_json}" \
+    '(.changed_paths | sort | unique) == $expected' "${artifact}" >/dev/null; then
+    printf '%s changed-path scope diverged from the authenticated Git inventory: %s\n' \
+      "${producer}" "${artifact}" >&2
+    return 1
+  fi
+}
+
+proof_args=()
+if [[ "${proof_uses_protected_diff}" == "true" ]]; then
+  proof_args+=(--changed-from "${BASE_REF}")
+fi
 for changed_path in "${proof_changed[@]}"; do
   proof_args+=(--changed "${changed_path}")
+done
+proofbind_args=()
+for changed_path in "${proofbind_changed[@]}"; do
+  proofbind_args+=(--changed "${changed_path}")
 done
 
 jankurai proof "${proof_args[@]}" \
   --out target/jankurai/proof-plan.json \
   --md target/jankurai/proof-plan.md \
   .
-jankurai proofbind map . "${proof_args[@]}" \
+assert_changed_paths target/jankurai/proof-plan.json "proof plan" "${proof_changed[@]}"
+jankurai proofbind map . "${proofbind_args[@]}" \
   --mode advisory \
   --out target/jankurai/proofbind/surface-witness.json \
   --obligations-out target/jankurai/proofbind/obligations.json \
   --md target/jankurai/proofbind/proofbind.md
-jankurai proofbind verify . --changed-from origin/main \
-  "${proof_args[@]:2}" \
+assert_changed_paths target/jankurai/proofbind/surface-witness.json \
+  "proofbind map" "${proofbind_changed[@]}"
+jankurai proofbind verify . "${proofbind_args[@]}" \
   --mode advisory \
   --out target/jankurai/proofbind/surface-witness.json \
   --obligations-out target/jankurai/proofbind/obligations.json \
   --md target/jankurai/proofbind/proofbind.md
+assert_changed_paths target/jankurai/proofbind/surface-witness.json \
+  "proofbind verify" "${proofbind_changed[@]}"
 jankurai proofmark rust . --obligations target/jankurai/proofbind/obligations.json \
-  "${proof_args[@]}" --mode advisory \
+  "${proofbind_args[@]}" --mode advisory \
   --out target/jankurai/proofmark/proofmark-receipt.json \
   --proof-receipt target/jankurai/proofmark/proof-receipt.json \
   --md target/jankurai/proofmark/proofmark.md

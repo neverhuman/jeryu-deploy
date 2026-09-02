@@ -23,9 +23,12 @@
   improves it to `0.8044`; all later baseline updates remain upward-only.
 - Bound coverage-test concurrency independently from compiler concurrency so
   process-heavy identity and live-route tests do not fail under host pressure.
-- Apply the same eight-process default to aggregate CI tests and fsync the
-  executable identity fixture before launch, closing a reproduced Linux
-  `ETXTBSY` race without weakening the identity verifier.
+- Apply the same eight-process default to aggregate CI tests and stabilize the
+  fsynced executable test fixture with a bounded Linux `ETXTBSY` readiness
+  check without retrying or weakening the production identity verifier.
+- Keep deleted files in the protected-base proof plan while passing only the
+  exact extant changed-path subset to Jankurai 1.6.11 proofbind, and assert both
+  scopes so stale evidence removal cannot be mistaken for a missing input.
 - Replace duplicate proof scripts and their swallowed failures, candidate
   self-baseline, and synthesized UX/migration/vibe/coverage outputs with one
   strict standalone lane backed by a provenance-bound hosted-main baseline;

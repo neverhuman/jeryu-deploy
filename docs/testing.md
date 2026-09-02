@@ -112,7 +112,12 @@ regressing — each test asserts a discriminating signal, not a tautology):
   proofmark, copy-code, and Rust witness artifacts. The underscore and
   `jankurai.sh` spellings only delegate to it. It does not invent UX,
   migration, vibe, or coverage artifacts; the immutable bundle and dedicated
-  coverage lane own the applicable proofs.
+  coverage lane own the applicable proofs. Its protected-base proof plan binds
+  additions, modifications, renames, type changes, and deletions. Installed
+  Jankurai 1.6.11 proofbind receives only the exact extant subset because it
+  cannot classify deleted bytes; both generated path sets are checked against
+  independently sorted Git inventories, and a delete-only proofbind scope
+  fails closed.
 
 ## Codegraph Oracle
 

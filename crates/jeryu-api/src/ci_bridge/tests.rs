@@ -18,6 +18,28 @@ fn write_test_jankurai(path: &Path) {
     file.sync_all().unwrap();
     drop(file);
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // llvm-cov can race an immediately created executable on Linux and return
+    // ETXTBSY even after the writer has closed. Stabilize only this disposable
+    // fixture; production identity verification deliberately remains a single
+    // fail-closed hash-and-execute attempt.
+    for attempt in 0..25 {
+        match Command::new(path).arg("--version").output() {
+            Ok(output) => {
+                assert!(output.status.success());
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    "jankurai 1.6.11"
+                );
+                return;
+            }
+            Err(error) if error.raw_os_error() == Some(26) && attempt < 24 => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("test jankurai fixture did not become executable: {error}"),
+        }
+    }
+    unreachable!("bounded fixture readiness loop must return or panic");
 }
 
 fn git(root: &Path, args: &[&str]) {
