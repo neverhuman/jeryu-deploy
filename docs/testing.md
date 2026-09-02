@@ -198,14 +198,16 @@ merge authority; local executions are developer evidence and may not replace
 that hosted result.
 
 - `ops/ci/verify-jeryu-env.sh --build-local` builds the repo-local `jeryu`
-  binary, accepts the canonical GitHub remote or the loopback local Jeryu
-  remote on `127.0.0.1:8787`, and ensures CI does not select the retired
+  binary, requires the exact `git.neverhuman.org` fetch origin with no alternate
+  push destination, and ensures CI does not select the installed predecessor
   `~/.jeryu/bin/jeryu` binary.
 - `ops/ci/verify-jeryu-env.sh --build-local --release-guard` is wired into
-  full release validation and fails while retired-provider runners, stale
-  `~/.jeryu` binaries, old `/home/ubuntu/jeryu`, local `:2224`, or other
-  monitored listeners are still active. A local `~/.jeryu/bin/jeryu-api`
-  process is accepted only when it matches the repo-built API binary.
+  full release validation and fails while retired-provider runners, old
+  `/home/ubuntu/jeryu` source roots, local `:2224`, or other retired
+  experimental listeners are still active. The accepted predecessor runtime
+  may remain live during candidate validation; every test command selects the
+  freshly built repository binary, and the dependency-source gate separately
+  proves that Cargo contacts only the hosted Git authority.
   Additional source-root retired-CI sweeps run only when
   `JERYU_CI_SOURCE_ROOTS` is set.
 - `ops/ci/ensure-jankurai.sh` is the single local/hosted bootstrap for pinned

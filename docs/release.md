@@ -209,18 +209,18 @@ signed-commit provenance and fails closed unless the candidate is safe to tag:
   bundle file except `release-receipt.json` and `SHA256SUMS` itself; the
   receipt records the checksum manifest digest.
 
-Release receipts must include current local-native and GitHub-clean full-mode
-transcripts rather than historical score claims. The GitHub-clean proof command
+Release receipts must include current local-native and hosted-clean full-mode
+transcripts rather than historical score claims. The hosted-clean proof command
 is
 `JERYU_CI_PROFILE=github JERYU_CI_USE_SCCACHE=0 bash ci-fast-push.sh --full --no-push`.
 Full mode runs `ops/ci/verify-jeryu-env.sh --build-local --release-guard` and
-accepts either the canonical GitHub remote or the loopback local Jeryu remote on
-`127.0.0.1:8787`. It rejects retired-provider runners, stale `~/.jeryu`
-binaries, old `/home/ubuntu/jeryu`, and local `:2224` listener/remotes so
-release evidence cannot be produced against the retired system. The local API
-install under `~/.jeryu/bin/jeryu-api` is accepted only when it byte-matches the
-repo-built API binary. Retired-CI sweeps of additional source roots run only
-when `JERYU_CI_SOURCE_ROOTS` is set.
+requires the exact `git.neverhuman.org` origin with no alternate push
+destination. It rejects retired-provider runners, old `/home/ubuntu/jeryu`
+source roots, and local `:2224` or other retired experimental listeners. The
+accepted predecessor runtime may remain live while the candidate is validated:
+tests select the freshly built repository binary, and the separate dependency
+gate proves Cargo contacts only hosted Git. Retired-CI sweeps of additional
+source roots run only when `JERYU_CI_SOURCE_ROOTS` is set.
 
 ## Release Process
 

@@ -40,6 +40,9 @@
   and route every historical Cargo Git identity through exact
   `git.neverhuman.org` mappings and immutable hosted support refs with
   fresh-cache and hostile regression proof.
+- Require CI verification and publication to use the one exact hosted origin
+  with no alternate push URL, while allowing the accepted predecessor runtime
+  to stay live during candidate tests that select freshly built binaries.
 
 ## jeryu-deploy-v5.0.0-split.4
 

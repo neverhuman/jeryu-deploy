@@ -184,9 +184,9 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
     let overlay_path = root.join(".cargo/hosted-gitconfig");
     let overlay = fs::read_to_string(&overlay_path).expect("read hosted Git overlay");
     assert!(!overlay.contains("[include]"));
-    assert!(overlay.contains(
-        "helper = /home/ubuntu/.config/jeryu/bin/git-credential-neverhuman-org"
-    ));
+    assert!(
+        overlay.contains("helper = /home/ubuntu/.config/jeryu/bin/git-credential-neverhuman-org")
+    );
     assert!(overlay.contains("[http \"https://git.neverhuman.org\"]\n\tpostBuffer = 1"));
     let expected_mappings = EXPECTED_MAPPINGS
         .into_iter()

@@ -38,9 +38,11 @@ agentbridge, egress, or web source must land through that component's protected
 standalone repository before Deploy updates its immutable pin or staged bundle.
 
 Full mode runs `ops/ci/verify-jeryu-env.sh --build-local --release-guard`.
-Stop or quarantine retired-provider runners, `~/.jeryu`, old
-`/home/ubuntu/jeryu`, local `:2224`, and monitored retired listeners before
-recording release evidence.
+It requires the exact hosted origin and rejects retired-provider runners, old
+`/home/ubuntu/jeryu` source roots, local `:2224`, and monitored experimental
+listeners. The accepted predecessor runtime may remain live; tests use the
+fresh repository binary and dependency-source evidence proves hosted-only Git
+transport.
 
 ## Merge Authority
 

@@ -16,7 +16,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "${ROOT}"
 
 if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
-  expected="${JERYU_CANONICAL_ROOT:-/home/ubuntu/jeryu-split/jeryu-deploy}"
+  expected="${JERYU_CANONICAL_ROOT:-/home/ubuntu/jain-split/jeryu-split/jeryu-deploy}"
   if [ -d "${expected}" ]; then
     actual_real="$(realpath "${ROOT}")"
     expected_real="$(realpath "${expected}")"
@@ -30,17 +30,19 @@ if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
   esac
 fi
 
-remote="$(git remote get-url origin 2>/dev/null || true)"
-case "${remote}" in
-  ""|git@github.com:neverhuman/jeryu-deploy.git|https://github.com/neverhuman/jeryu-deploy|https://github.com/neverhuman/jeryu-deploy.git)
-    ;;
-  http://127.0.0.1:8787/git/jeryu/jeryu-deploy.git|http://localhost:8787/git/jeryu/jeryu-deploy.git)
-    ;;
-  *)
-    echo "noncanonical origin remote: ${remote}" >&2
-    exit 1
-    ;;
-esac
+hosted_origin="https://git.neverhuman.org/git/jeryu/jeryu-deploy.git"
+mapfile -t origin_urls < <(git config --get-all remote.origin.url 2>/dev/null || true)
+mapfile -t origin_push_urls < <(git config --get-all remote.origin.pushurl 2>/dev/null || true)
+if [ "${#origin_urls[@]}" -ne 1 ] || [ "${origin_urls[0]:-}" != "${hosted_origin}" ] ||
+   { [ "${#origin_push_urls[@]}" -ne 0 ] &&
+     { [ "${#origin_push_urls[@]}" -ne 1 ] ||
+       [ "${origin_push_urls[0]}" != "${hosted_origin}" ]; }; }; then
+  printf 'noncanonical origin remote: expected=%s fetch=%s push=%s\n' \
+    "${hosted_origin}" "${origin_urls[*]:-missing}" \
+    "${origin_push_urls[*]:-inherits-fetch}" >&2
+  exit 1
+fi
+remote="${hosted_origin}"
 
 decode_hex() {
   if command -v xxd >/dev/null 2>&1; then
@@ -68,7 +70,7 @@ check_retired_processes() {
   # shellcheck disable=SC2009
   raw_hits="$(
     ps -eo pid=,comm=,args= |
-      grep -E "${retired_runner}|${retired_opt}|/home/ubuntu/\.jeryu/bin/|/home/ubuntu/jeryu_OLD_DO_NOT_USE/target/|/home/ubuntu/jeryu_rust/" |
+      grep -E "${retired_runner}|${retired_opt}|/home/ubuntu/jeryu_OLD_DO_NOT_USE/target/|/home/ubuntu/jeryu_rust/" |
       grep -v 'grep -E' || true
   )"
   hits=""
@@ -118,7 +120,12 @@ check_retired_listeners() {
   [ "${JERYU_CI_ALLOW_RETIRED_LISTENERS:-0}" = "1" ] && return 0
   command -v ss >/dev/null 2>&1 || return 0
 
-  local ports=(2224 8787 8929 18787 18788 19800)
+  # The installed predecessor Jeryu service may continue to listen on 8787
+  # while this repository builds and tests a candidate. Source authority is
+  # independently pinned to the exact hosted origin above, and Cargo transport
+  # is governed by dependency-sources.sh. These are the genuinely retired
+  # provider and experimental listener ports.
+  local ports=(2224 8929 18787 18788 19800)
   local failed=0
   local line _state _recv _send local_addr _peer _process port pid
   while IFS= read -r line; do

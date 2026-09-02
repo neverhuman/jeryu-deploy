@@ -6,6 +6,8 @@
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || { echo "not in a git repo"; exit 1; }
+# shellcheck source=ops/ci/common.sh
+# shellcheck disable=SC1091
 source "$(pwd)/ops/ci/common.sh"
 
 JOBS="${JERYU_CI_JOBS:-40}"
@@ -165,7 +167,7 @@ fail_untracked_for_remote_parity() {
     return 0
   fi
 
-  echo "untracked files are present; stage or commit them before ci-fast-push can provide GitHub-parity proof:" >&2
+  echo "untracked files are present; stage or commit them before ci-fast-push can provide hosted parity proof:" >&2
   sed 's/^/  /' "$UNTRACKED_LIST" >&2
   return 1
 }
