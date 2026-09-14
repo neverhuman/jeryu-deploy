@@ -50,3 +50,7 @@ profile:
 build-release:
   ./scripts/stage-web-dist.sh
   source ops/ci/hosted-git-env.sh; cargo build --locked --release -p jeryu-cli --jobs {{jobs}}
+
+# Entry point for the protected jeryu-deploy/required check: the existing lane, unchanged.
+required:
+  bash ops/ci/pr-ci.sh
