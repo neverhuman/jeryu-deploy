@@ -627,6 +627,27 @@ pub(crate) fn can_publish_external_ci_evidence(account: &AccountSummary) -> bool
     account.role == UserRole::Admin
 }
 
+/// Accounts that may post commit statuses and check runs: global admins, plus the dedicated gate
+/// identities named in JERYU_CI_PUBLISHERS (comma-separated, default `gatebot`). Gate runners
+/// post required contexts without holding admin, so a runner token cannot merge, administer
+/// repositories or ingest audit scores (those stay admin-only).
+pub(crate) fn can_publish_gate_statuses(account: &AccountSummary) -> bool {
+    static PUBLISHERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let publishers = PUBLISHERS.get_or_init(|| {
+        publisher_list(&std::env::var("JERYU_CI_PUBLISHERS").unwrap_or_else(|_| "gatebot".into()))
+    });
+    account.role == UserRole::Admin || publishers.iter().any(|login| login == &account.login)
+}
+
+fn publisher_list(configured: &str) -> Vec<String> {
+    configured
+        .split(',')
+        .map(str::trim)
+        .filter(|login| !login.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub(super) fn forbidden(message: &str) -> AxumResponse {
     api_error(StatusCode::FORBIDDEN, "permission_denied", message)
 }
@@ -825,3 +846,17 @@ fn expired_cookie_header(
 
 #[allow(dead_code)]
 fn _grant_wire(_grant: &RepoAccessGrant) {}
+
+#[cfg(test)]
+mod gate_status_publisher_tests {
+    use super::publisher_list;
+
+    #[test]
+    fn publisher_list_trims_and_drops_empty_entries() {
+        assert_eq!(
+            publisher_list(" gatebot , ci-bot,,"),
+            vec!["gatebot", "ci-bot"]
+        );
+        assert!(publisher_list("").is_empty());
+    }
+}

@@ -6705,3 +6705,110 @@ async fn runner_heartbeats_are_reporter_only_and_reach_the_fleet() {
         "veox/jain-web"
     );
 }
+
+#[tokio::test]
+async fn gate_identity_publishes_statuses_without_admin_but_cannot_protect() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
+        .unwrap();
+    // JERYU_CI_PUBLISHERS is unset in tests, so the default gate identity applies.
+    core.create_account("gatebot", "gatebot-password", UserRole::User)
+        .unwrap();
+    core.grant_repo_access(
+        "jeryu-admin",
+        "gatebot",
+        "alice",
+        "jeryu",
+        RepoAccessLevel::Write,
+    )
+    .unwrap();
+    let gatebot_token = core
+        .create_personal_access_token("gatebot", "test", None)
+        .unwrap()
+        .secret;
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let request = |method: HttpMethod, path: String, body: String| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {gatebot_token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+
+    for prefix in ["", "/api/v3"] {
+        let status = app
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                format!("{prefix}/repos/alice/jeryu/statuses/deadbeef"),
+                serde_json::json!({"state": "pending", "context": "jeryu/required"}).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(
+            status.status(),
+            StatusCode::FORBIDDEN,
+            "gatebot must be able to post statuses through {prefix}"
+        );
+        assert!(
+            status.status().is_success(),
+            "status post: {}",
+            status.status()
+        );
+
+        let check = app
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                format!("{prefix}/repos/alice/jeryu/check-runs"),
+                serde_json::json!({
+                    "name": "pr-gate-runner",
+                    "head_sha": "deadbeef",
+                    "status": "completed",
+                    "conclusion": "success"
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            check.status().is_success(),
+            "check-run post: {}",
+            check.status()
+        );
+
+        let protection = app
+            .clone()
+            .oneshot(request(
+                HttpMethod::PUT,
+                format!("{prefix}/repos/alice/jeryu/branches/main/protection"),
+                serde_json::json!({"required_status_checks": []}).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            protection.status(),
+            StatusCode::FORBIDDEN,
+            "a gate identity must not change branch protection through {prefix}"
+        );
+    }
+}

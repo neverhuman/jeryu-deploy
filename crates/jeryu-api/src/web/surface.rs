@@ -281,10 +281,10 @@ fn authorize_github_repo_request(
         )),
         (Method::Post, ["repos", _, _, "check-runs"])
         | (Method::Post, ["repos", _, _, "statuses", _])
-            if !super::auth::can_publish_external_ci_evidence(account) =>
+            if !super::auth::can_publish_gate_statuses(account) =>
         {
             Some(github_forbidden(
-                "CI evidence publication requires global-admin access",
+                "CI evidence publication requires global-admin access or a JERYU_CI_PUBLISHERS identity",
             ))
         }
         (Method::Put, ["repos", owner, repo, "branches", _, "protection"])
