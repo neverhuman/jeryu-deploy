@@ -57,11 +57,7 @@ fn forwarded_git_headers(headers: &HeaderMap) -> HashMap<String, String> {
     for name in [
         header::HOST,
         header::AUTHORIZATION,
-        // Git-Protocol is deliberately NOT forwarded: forwarding it negotiates protocol v2, and
-        // hosted clients still carry http.postBuffer=1 (a workaround for the gzip body bug fixed
-        // in this file), which makes Git abort v2 stateless-connect with "The entire rpc->buf
-        // should be larger than LARGE_PACKET_MAX". Production was rolled back for exactly that on
-        // 2026-09-17. Re-enable only after that client setting is gone everywhere.
+        HeaderName::from_static("git-protocol"),
         HeaderName::from_static("x-forwarded-proto"),
     ] {
         if let Some(value) = headers.get(&name).and_then(|value| value.to_str().ok()) {
@@ -669,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn git_rpc_encoding_is_closed_and_does_not_forward_git_protocol() {
+    fn git_rpc_encoding_is_closed_and_forwards_only_git_protocol() {
         let mut headers = HeaderMap::new();
         headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
         headers.insert("git-protocol", HeaderValue::from_static("version=2"));
@@ -678,9 +674,9 @@ mod tests {
             Ok(GitRpcContentEncoding::Gzip)
         );
         let forwarded = forwarded_git_headers(&headers);
-        assert!(
-            !forwarded.contains_key("git-protocol"),
-            "forwarding Git-Protocol negotiates v2, which hosted postBuffer=1 clients cannot use"
+        assert_eq!(
+            forwarded.get("git-protocol").map(String::as_str),
+            Some("version=2")
         );
         assert!(!forwarded.contains_key("content-encoding"));
 

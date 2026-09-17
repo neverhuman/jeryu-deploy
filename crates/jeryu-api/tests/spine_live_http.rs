@@ -111,6 +111,14 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
+fn pkt_line(payload: &[u8]) -> Vec<u8> {
+    let length = payload.len() + 4;
+    assert!(length <= 0xffff);
+    let mut encoded = format!("{length:04x}").into_bytes();
+    encoded.extend_from_slice(payload);
+    encoded
+}
+
 async fn wait_until_listening(addr: SocketAddr, server: &mut tokio::task::JoinHandle<()>) {
     let deadline = Instant::now() + Duration::from_secs(20);
     let client = reqwest::Client::builder()
@@ -351,11 +359,21 @@ async fn s4_git_pack_rpc_routes_decode_gzip_before_git() {
         .expect("POST /repos");
     assert_eq!(create.status().as_u16(), 201);
 
-    // The forge keeps Git on protocol v0 (Git-Protocol is not forwarded; see git_transport.rs),
-    // so the upload-pack route is exercised with a valid v0 stateless request: a gzip-encoded
-    // flush, which Git answers without side effects. What this guards is that the route decodes
-    // the gzip body before Git sees it; the decoder limits are covered by unit tests.
-    let upload_request = b"0000".to_vec();
+    // Protocol v2 permits repeated ref-prefix arguments. This is a valid
+    // request larger than Git's request-compression threshold, matching the
+    // complete-ref mirror failure that exposed the adapter bug.
+    let mut upload_request = pkt_line(b"command=ls-refs\n");
+    upload_request.extend_from_slice(b"0001");
+    upload_request.extend_from_slice(&pkt_line(b"peel\n"));
+    upload_request.extend_from_slice(&pkt_line(b"symrefs\n"));
+    for index in 0..64 {
+        upload_request.extend_from_slice(&pkt_line(
+            format!("ref-prefix refs/heads/fixture-{index:03}\n").as_bytes(),
+        ));
+    }
+    upload_request.extend_from_slice(b"0000");
+    assert!(upload_request.len() > 1_024);
+
     let upload = client
         .post(format!(
             "http://{addr}/git/jeryu/gzip-rpc.git/git-upload-pack"
@@ -365,6 +383,7 @@ async fn s4_git_pack_rpc_routes_decode_gzip_before_git() {
             reqwest::header::CONTENT_TYPE,
             "application/x-git-upload-pack-request",
         )
+        .header("git-protocol", "version=2")
         .body(gzip(&upload_request))
         .send()
         .await
@@ -628,6 +647,122 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
     run_git(&skip, &["checkout", "HEAD~1"]);
     run_git(&skip, &["lfs", "pull"]);
     assert_eq!(std::fs::read(skip.join("model.cpkt")).unwrap(), v1);
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A real Git client must negotiate protocol v2 over smart HTTP and complete ls-remote and clone.
+/// Forwarding Git-Protocol is what enables v2; the 2026-09-17 production outage showed that the
+/// handcrafted RPC tests above do not prove a real client works, so this drives the git binary
+/// and asserts from its packet trace that the server actually answered in version 2.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s4_real_git_client_negotiates_protocol_v2_over_http() {
+    if !git_available() {
+        eprintln!("[s4-v2] git not available; skipping");
+        return;
+    }
+    let base = std::env::temp_dir().join(format!("jeryu-s4-git-v2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let data_dir = base.join("data");
+    let git_root = base.join("git");
+    let spa_dir = base.join("spa");
+    let work = base.join("work");
+    std::fs::create_dir_all(&spa_dir).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+    let config = WebServerConfig {
+        bind: addr,
+        spa_dir,
+        data_dir,
+        git_storage_root: git_root.clone(),
+        split_manifests: Vec::new(),
+        auth_required: false,
+        trust_local_dev: true,
+        secure_cookies: false,
+    };
+    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr, &mut server).await;
+
+    let create = reqwest::Client::new()
+        .post(format!("http://{addr}/repos"))
+        .json(&serde_json::json!({ "name": "v2-demo" }))
+        .send()
+        .await
+        .expect("POST /repos");
+    assert_eq!(create.status().as_u16(), 201);
+
+    // Seed history straight into the bare repository: the transport under test is the read path.
+    let bare = git_root.join("jeryu").join("v2-demo.git");
+    let seed = work.join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    run_git(&seed, &["init", "-q", "-b", "main"]);
+    run_git(
+        &seed,
+        &[
+            "-c",
+            "user.name=Tester",
+            "-c",
+            "user.email=tester@jeryu.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "seed",
+        ],
+    );
+    run_git(
+        &seed,
+        &[
+            "--git-dir",
+            bare.to_str().unwrap(),
+            "fetch",
+            "-q",
+            seed.to_str().unwrap(),
+            "+main:refs/heads/main",
+        ],
+    );
+
+    let url = format!("http://{addr}/git/jeryu/v2-demo.git");
+    let trace = work.join("packet-trace");
+    let ls_remote = Command::new("git")
+        .args(GIT_HTTP_GUARD)
+        .args(["-c", "protocol.version=2", "ls-remote", url.as_str()])
+        .env("GIT_TRACE_PACKET", &trace)
+        .current_dir(&work)
+        .output()
+        .expect("git ls-remote");
+    assert!(
+        ls_remote.status.success(),
+        "git ls-remote over v2 failed: {}",
+        String::from_utf8_lossy(&ls_remote.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ls_remote.stdout).contains("refs/heads/main"));
+    let packets = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert!(
+        packets.contains("< version 2"),
+        "server did not answer in protocol v2; packet trace:\n{packets}"
+    );
+
+    run_git(
+        &work,
+        &[
+            GIT_HTTP_GUARD,
+            &[
+                "-c",
+                "protocol.version=2",
+                "clone",
+                "-q",
+                url.as_str(),
+                "clone",
+            ],
+        ]
+        .concat(),
+    );
+    assert!(work.join("clone/.git").is_dir());
 
     server.abort();
     let _ = std::fs::remove_dir_all(&base);
