@@ -13,6 +13,7 @@
 //! edge already depends on.
 
 mod checks;
+mod gate_runners;
 mod graph;
 mod handlers;
 mod mcp;
@@ -30,6 +31,7 @@ const MIRROR_DOCS: &str = "docs/agent-native-standard.md";
 const ARTIFACT_DOCS: &str = "docs/release.md#release-receipt";
 
 pub(super) use checks::*;
+pub(super) use gate_runners::*;
 pub(super) use graph::*;
 pub(super) use handlers::*;
 pub(super) use mcp::*;

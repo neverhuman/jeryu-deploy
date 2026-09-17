@@ -1859,7 +1859,7 @@ async fn control_plane_status_priorities_and_absence_states_are_live() {
     let runners = super::control_plane::runners(State(state.clone())).await.0;
     assert_eq!(
         runners.local.state,
-        super::control_plane::EvidenceState::Fresh
+        super::control_plane::EvidenceState::Unknown
     );
     assert_eq!(
         runners.mirror.state,
@@ -6636,4 +6636,72 @@ pub fn alpha(input: &str) -> Result<String, String> {
     )
     .await;
     assert_eq!(missing["code"], "tool_finder_cluster_not_found");
+}
+
+#[tokio::test]
+async fn runner_heartbeats_are_reporter_only_and_reach_the_fleet() {
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("gatebot", "gatebot-password", UserRole::User)
+        .unwrap();
+    core.create_account("mallory", "mallory-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "test", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, gatebot, mallory) = (token("alice"), token("gatebot"), token("mallory"));
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let heartbeat = serde_json::json!({
+        "runnerId": "xbabe2/slot0",
+        "host": "xbabe2",
+        "slot": 0,
+        "current": {
+            "repo": "veox/jain-web", "pr": 13,
+            "sha": "abc30d78ca5eadc15694dd1434d9f8f99c44a0d3",
+            "recipe": "just required", "startedAt": "2026-09-17T03:04:00Z"
+        }
+    });
+    let post = |token: &str| {
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/api/v1/runners/heartbeat")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(heartbeat.to_string()))
+            .unwrap()
+    };
+
+    let refused = router.clone().oneshot(post(&mallory)).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    let accepted = router.clone().oneshot(post(&gatebot)).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(response_json(accepted).await["runnerId"], "xbabe2/slot0");
+
+    let fleet = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/control-plane/runners")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fleet.status(), StatusCode::OK);
+    let body = response_json(fleet).await;
+    assert_eq!(body["local"]["state"], "fresh");
+    assert_eq!(body["local"]["nodeDetails"][0]["runnerId"], "xbabe2/slot0");
+    assert_eq!(
+        body["local"]["nodeDetails"][0]["activeTasks"][0]["repo"],
+        "veox/jain-web"
+    );
 }

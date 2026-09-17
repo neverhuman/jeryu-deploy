@@ -219,6 +219,21 @@ pub(crate) struct RunnerNodeSummary {
     pub active_task_count: u32,
     pub last_updated: Option<String>,
     pub active_tasks: Vec<RunnerTaskSummary>,
+    /// The last gate this runner finished, for runners that report one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<RunnerLastActivity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunnerLastActivity {
+    pub repo: String,
+    pub pr: u64,
+    pub sha: String,
+    pub recipe: String,
+    pub conclusion: String,
+    pub seconds: u64,
+    pub finished_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

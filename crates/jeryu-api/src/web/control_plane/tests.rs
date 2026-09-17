@@ -109,13 +109,67 @@ fn repo_graph_contains_ci_runner_and_mirror_clusters() {
     );
 }
 
+fn report(state: &Arc<WebState>, runner_id: &str, gating: bool, at: chrono::DateTime<Utc>) {
+    let beat: GateRunnerHeartbeat = serde_json::from_value(json!({
+        "runnerId": runner_id,
+        "host": "xbabe2",
+        "slot": 0,
+        "current": if gating { json!({
+            "repo": "veox/jain-web", "pr": 13,
+            "sha": "abc30d78ca5eadc15694dd1434d9f8f99c44a0d3",
+            "recipe": "just required", "startedAt": at.to_rfc3339()
+        }) } else { serde_json::Value::Null },
+        "last": {
+            "repo": "veox/jain-deploy", "pr": 31, "sha": "3926cbd7",
+            "recipe": "just required", "conclusion": "success",
+            "seconds": 46, "finishedAt": at.to_rfc3339()
+        }
+    }))
+    .unwrap();
+    state.gate_runners.record(beat, "gatebot", at).unwrap();
+}
+
 #[test]
-fn runner_fabric_reports_local_capacity() {
+fn runner_fabric_is_unknown_until_a_runner_reports() {
     let state = seeded_state();
     let runners = runner_fabric(&state);
-    assert_eq!(runners.local.state, EvidenceState::Fresh);
-    assert!(runners.local.total_slots >= runners.local.active_slots);
+    assert_eq!(runners.local.state, EvidenceState::Unknown);
+    assert_eq!(runners.local.total_slots, 0);
+    assert!(runners.local.node_details.is_empty());
     assert_eq!(runners.mirror.state, EvidenceState::Missing);
+}
+
+#[test]
+fn runner_fabric_reports_live_gate_runners() {
+    let state = seeded_state();
+    let now = Utc::now();
+    report(&state, "xbabe2/slot0", true, now);
+    report(&state, "xbabe2/slot1", false, now);
+    report(
+        &state,
+        "xbabe2/slot2",
+        false,
+        now - chrono::Duration::seconds(600),
+    );
+
+    let runners = runner_fabric_at(&state, now);
+    assert_eq!(runners.local.state, EvidenceState::Fresh);
+    assert_eq!(runners.local.nodes, 1);
+    assert_eq!(runners.local.online_runners, 2);
+    assert_eq!(runners.local.offline_runners, 1);
+    assert_eq!(runners.local.busy_runners, 1);
+    assert_eq!(runners.local.idle_runners, 1);
+    assert_eq!(runners.local.active_slots, 2);
+    assert_eq!(runners.local.total_slots, 3);
+
+    let slot0 = &runners.local.node_details[0];
+    assert_eq!(slot0.runner_id, "xbabe2/slot0");
+    assert_eq!(slot0.state, "active");
+    assert_eq!(slot0.active_tasks[0].repo.as_deref(), Some("veox/jain-web"));
+    assert_eq!(slot0.last_activity.as_ref().unwrap().conclusion, "success");
+    let slot2 = &runners.local.node_details[2];
+    assert_eq!(slot2.state, "offline");
+    assert!(slot2.active_tasks.is_empty());
 }
 
 #[test]
@@ -151,6 +205,9 @@ fn mcp_facade_returns_limited_graph_jobs_and_blockers() {
     assert_eq!(remote["state"], "missing");
     let artifacts = mcp_artifacts_latest(&state);
     assert_eq!(artifacts["absenceIsSuccess"], false);
+    let runners = mcp_runner_fabric_status(&state);
+    assert_eq!(runners["local"]["state"], "unknown");
+    report(&state, "xbabe2/slot0", false, Utc::now());
     let runners = mcp_runner_fabric_status(&state);
     assert_eq!(runners["local"]["state"], "fresh");
 
@@ -204,8 +261,6 @@ fn helper_branches_normalize_tty_time_and_check_states() {
     assert_eq!(task_label("/"), "/");
     assert!(rfc3339_from_ms(0).starts_with("1970-01-01T00:00:00"));
     assert_eq!(rfc3339_from_ms(u64::MAX), u64::MAX.to_string());
-    assert_eq!(normalize_node_state(""), "unknown");
-    assert_eq!(normalize_node_state("ready"), "ready");
 
     let checks = vec![
         CheckRun {

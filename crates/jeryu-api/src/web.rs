@@ -109,6 +109,8 @@ pub(crate) struct WebState {
     pub(crate) workcells: Arc<Mutex<WorkcellManager>>,
     /// Live high-level agent-run registry and control channels.
     pub(crate) agent_runs: agent_runs::AgentRunStore,
+    /// Live PR gate runners, fed by `POST /api/v1/runners/heartbeat`.
+    pub(crate) gate_runners: control_plane::GateRunnerStore,
     /// Auxiliary codegraph SQLite store for read-only oracle queries.
     pub(crate) codegraph_store: CodeGraphStore,
     /// Shared git-daemon repository manager backing the smart-HTTP transport.
@@ -215,6 +217,7 @@ impl WebState {
             ws: WsHub::new(),
             workcells: Arc::new(Mutex::new(WorkcellManager::new())),
             agent_runs: agent_runs::AgentRunStore::new(),
+            gate_runners: control_plane::GateRunnerStore::from_env(),
             codegraph_store,
             repo_manager,
             core: core_handle,
@@ -672,6 +675,10 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
             get(control_plane::artifacts_latest),
         )
         .route("/api/v1/control-plane/runners", get(control_plane::runners))
+        .route(
+            "/api/v1/runners/heartbeat",
+            post(control_plane::runner_heartbeat),
+        )
         .route(
             "/api/v1/repos/:id/readme",
             get(repo_readme).put(repo_readme_update),

@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use std::collections::BTreeSet;
 
 use crate::web::WebState;
 use crate::web::agent_runs::{AgentRunSourceSnapshot, AgentRunState, AgentRunStatusResponse};
@@ -10,44 +11,61 @@ use crate::web::workcells_support::manager;
 
 use super::*;
 
+/// The runner fabric as the forge actually knows it: gate runners that have
+/// reported a heartbeat, plus workcell leases and their running agent runs.
+/// Nothing is invented; with no reporting runner the fabric is `unknown`.
 pub(crate) fn runner_fabric(state: &Arc<WebState>) -> RunnerFabricResponse {
-    let fleet = jeryu_runnerd::RunnerFleet::deterministic_fixture();
-    runner_fabric_from_parts(state, fleet.snapshot(), fleet.health())
+    runner_fabric_at(state, Utc::now())
 }
 
-fn runner_fabric_from_parts(
-    state: &Arc<WebState>,
-    fleet: jeryu_runnerd::RunnerFleetSnapshot,
-    node_health: Vec<jeryu_runnerd::FleetNodeHealth>,
-) -> RunnerFabricResponse {
+pub(crate) fn runner_fabric_at(state: &Arc<WebState>, now: DateTime<Utc>) -> RunnerFabricResponse {
     let workcells = manager(state).workcells();
     let agent_runs = state.agent_runs.list();
-    let node_details = build_runner_nodes(node_health, &workcells, &agent_runs);
+    let seed = gate_runner_nodes(&state.gate_runners.snapshot(), now);
+    let node_details = build_runner_nodes(seed, &workcells, &agent_runs);
     let last_updated = node_details
         .iter()
         .filter_map(|node| node.last_updated.as_ref())
         .max()
         .cloned();
-    let utilization = if fleet.active_slots == 0 {
+    let online: Vec<&RunnerNodeSummary> = node_details
+        .iter()
+        .filter(|node| node.state != "offline")
+        .collect();
+    let online_runners = count(online.len());
+    let offline_runners = count(node_details.len()) - online_runners;
+    let busy_runners = count(
+        online
+            .iter()
+            .filter(|node| node.in_flight > 0 || node.active_task_count > 0)
+            .count(),
+    );
+    let active_slots: u32 = online.iter().map(|node| node.capacity).sum();
+    let total_slots: u32 = node_details.iter().map(|node| node.capacity).sum();
+    let hosts: BTreeSet<&str> = node_details
+        .iter()
+        .map(|node| node.runner_id.split('/').next().unwrap_or(&node.runner_id))
+        .collect();
+    let utilization = if active_slots == 0 {
         0.0
     } else {
-        f64::from(fleet.busy_runners) / f64::from(fleet.active_slots)
+        f64::from(busy_runners) / f64::from(active_slots)
     };
     RunnerFabricResponse {
         schema_version: "jeryu.runner_fabric/v1".to_string(),
         local: RunnerLocalFabric {
-            state: if node_details.is_empty() {
+            state: if online_runners == 0 {
                 EvidenceState::Unknown
             } else {
                 EvidenceState::Fresh
             },
-            nodes: fleet.nodes,
-            online_runners: fleet.online_runners,
-            offline_runners: fleet.stuck_runners,
-            busy_runners: fleet.busy_runners,
-            idle_runners: fleet.idle_runners,
-            total_slots: fleet.total_slots,
-            active_slots: fleet.active_slots,
+            nodes: count(hosts.len()),
+            online_runners,
+            offline_runners,
+            busy_runners,
+            idle_runners: online_runners - busy_runners,
+            total_slots,
+            active_slots,
             utilization,
             last_updated,
             node_details,
@@ -61,31 +79,82 @@ fn runner_fabric_from_parts(
     }
 }
 
+fn count(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// One node per reporting gate runner slot. A slot silent for longer than
+/// [`RUNNER_OFFLINE_AFTER_SECS`] is shown offline, with no running task.
+pub(crate) fn gate_runner_nodes(
+    records: &[GateRunnerRecord],
+    now: DateTime<Utc>,
+) -> Vec<RunnerNodeSummary> {
+    records
+        .iter()
+        .map(|record| {
+            let beat = &record.heartbeat;
+            let online = is_online(record, now);
+            let received = record.received_at.to_rfc3339();
+            let mut labels = vec![beat.host.clone(), format!("slot {}", beat.slot)];
+            for label in &beat.labels {
+                if !labels.contains(label) {
+                    labels.push(label.clone());
+                }
+            }
+            let active_tasks: Vec<RunnerTaskSummary> = beat
+                .current
+                .iter()
+                .filter(|_| online)
+                .map(|task| RunnerTaskSummary {
+                    task_id: format!("{}@{}", beat.runner_id, task.sha),
+                    job_id: format!("{}#{}", task.repo, task.pr),
+                    agent_run_id: None,
+                    workcell_id: None,
+                    repo: Some(task.repo.clone()),
+                    label: format!("{}#{}", task.repo, task.pr),
+                    program: task.recipe.clone(),
+                    state: "running".to_string(),
+                    started_at: Some(task.started_at.to_rfc3339()),
+                    updated_at: Some(received.clone()),
+                    tty_preview: RunnerTtyPreview {
+                        state: EvidenceState::Missing,
+                        lines: Vec::new(),
+                    },
+                })
+                .collect();
+            RunnerNodeSummary {
+                runner_id: beat.runner_id.clone(),
+                source: "pr-gate-runner".to_string(),
+                state: if online { "active" } else { "offline" }.to_string(),
+                capacity: 1,
+                in_flight: count(active_tasks.len()),
+                labels,
+                classes: vec!["pr-gate".to_string()],
+                active_task_count: count(active_tasks.len()),
+                last_updated: Some(received),
+                active_tasks,
+                last_activity: beat.last.as_ref().map(|last| RunnerLastActivity {
+                    repo: last.repo.clone(),
+                    pr: last.pr,
+                    sha: last.sha.clone(),
+                    recipe: last.recipe.clone(),
+                    conclusion: last.conclusion.clone(),
+                    seconds: last.seconds,
+                    finished_at: last.finished_at.to_rfc3339(),
+                }),
+            }
+        })
+        .collect()
+}
+
 fn build_runner_nodes(
-    node_health: Vec<jeryu_runnerd::FleetNodeHealth>,
+    seed: Vec<RunnerNodeSummary>,
     workcells: &[jeryu_runnerd::WorkcellLease],
     agent_runs: &[AgentRunStatusResponse],
 ) -> Vec<RunnerNodeSummary> {
-    let mut nodes: BTreeMap<String, RunnerNodeSummary> = node_health
+    let mut nodes: BTreeMap<String, RunnerNodeSummary> = seed
         .into_iter()
-        .map(|node| {
-            let state = normalize_node_state(&node.state);
-            (
-                node.runner_id.clone(),
-                RunnerNodeSummary {
-                    runner_id: node.runner_id,
-                    source: node.source,
-                    state,
-                    capacity: node.capacity,
-                    in_flight: node.in_flight,
-                    labels: node.labels,
-                    classes: node.classes,
-                    active_task_count: 0,
-                    last_updated: None,
-                    active_tasks: Vec::new(),
-                },
-            )
-        })
+        .map(|node| (node.runner_id.clone(), node))
         .collect();
 
     for lease in workcells {
@@ -105,6 +174,7 @@ fn build_runner_nodes(
                 active_task_count: 0,
                 last_updated: None,
                 active_tasks: Vec::new(),
+                last_activity: None,
             });
     }
 
@@ -138,6 +208,7 @@ fn build_runner_nodes(
                 active_task_count: 0,
                 last_updated: None,
                 active_tasks: Vec::new(),
+                last_activity: None,
             });
         node.active_tasks.push(task);
     }
@@ -238,12 +309,4 @@ pub(crate) fn rfc3339_from_ms(ms: u64) -> String {
     DateTime::<Utc>::from_timestamp_millis(i64::try_from(ms).unwrap_or(i64::MAX))
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_else(|| ms.to_string())
-}
-
-pub(crate) fn normalize_node_state(state: &str) -> String {
-    if state.is_empty() {
-        "unknown".to_string()
-    } else {
-        state.to_string()
-    }
 }
