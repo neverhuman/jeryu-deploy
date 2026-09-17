@@ -65,10 +65,17 @@ expect_rejected same-version-wrong-digest "${TEST_ROOT}/same-version-substitute"
 # the governed binary directory, then proves the resulting resolution and receipt.
 mkdir "${TEST_ROOT}/hostile-path"
 cp -- "${TEST_ROOT}/same-version-substitute" "${TEST_ROOT}/hostile-path/jankurai"
-before="$(PATH="${TEST_ROOT}/hostile-path:${PATH}" command -v jankurai)"
+# Resolve in a child shell: this script sourced lib.sh above, so its own `command -v`
+# would name the governed wrapper function rather than the hostile PATH entry.
+before="$(PATH="${TEST_ROOT}/hostile-path:${PATH}" bash -c 'command -v jankurai')"
 [[ "${before}" == "${TEST_ROOT}/hostile-path/jankurai" ]]
+# After verification, `jankurai` is lib.sh's wrapper, which executes only the verified
+# governed binary: the wrapper resolves, reports the pinned version, and is bound to GOVERNED.
 after="$(JERYU_GOVERNED_JANKURAI_BIN="${GOVERNED}" PATH="${TEST_ROOT}/hostile-path:${PATH}" \
-  bash -c 'set -euo pipefail; source "$1/ops/ci/lib.sh"; require_jankurai; command -v jankurai' \
+  bash -c 'set -euo pipefail; source "$1/ops/ci/lib.sh"; require_jankurai
+    [[ "$(command -v jankurai)" == jankurai ]]
+    [[ "$(jankurai --version)" == "${JERYU_JANKURAI_VERSION}" ]]
+    printf "%s\n" "${JERYU_GOVERNED_JANKURAI_BIN}"' \
   _ "${ROOT}")"
 [[ "${after}" == "${GOVERNED}" ]]
 
