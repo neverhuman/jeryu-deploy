@@ -479,7 +479,24 @@ mod tests {
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&script, permissions).expect("chmod script");
-        script
+        // Under a loaded parallel test run, a sibling test that forks while this file is still
+        // open for writing keeps a writable descriptor until its exec, so executing the new
+        // script can fail with ETXTBSY and the agent run ends "failed" before it starts (the same
+        // race ci_bridge/tests.rs stabilizes). Wait, bounded, until the fixture is executable.
+        for attempt in 0..50 {
+            match std::process::Command::new(&script)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                Ok(_) => return script,
+                Err(error) if error.raw_os_error() == Some(26) && attempt < 49 => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("test script did not become executable: {error}"),
+            }
+        }
+        unreachable!("bounded fixture readiness loop must return or panic")
     }
 
     fn write_file(root: &Path, relative: &str, contents: &str) {
@@ -585,7 +602,12 @@ mod tests {
             .find(|response| response.data.as_ref().unwrap()["state"] != "running")
             .expect("terminal agent status");
         assert!(status.success, "{status:?}");
-        assert_eq!(status.data.as_ref().unwrap()["state"], "succeeded");
+        assert_eq!(
+            status.data.as_ref().unwrap()["state"],
+            "succeeded",
+            "agent run did not succeed: {:#}",
+            status.data.as_ref().unwrap()
+        );
 
         let events = (0..100)
             .map(|_| {
