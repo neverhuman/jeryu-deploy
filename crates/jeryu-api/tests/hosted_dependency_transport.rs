@@ -187,7 +187,10 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
     assert!(
         overlay.contains("helper = /home/ubuntu/.config/jeryu/bin/git-credential-neverhuman-org")
     );
-    assert!(overlay.contains("[http \"https://git.neverhuman.org\"]\n\tpostBuffer = 1"));
+    assert!(
+        !overlay.to_ascii_lowercase().contains("postbuffer"),
+        "http.postBuffer breaks Git protocol v2 against the hosted forge"
+    );
     let expected_mappings = EXPECTED_MAPPINGS
         .into_iter()
         .map(|(source, target)| (source.to_owned(), target.to_owned()))

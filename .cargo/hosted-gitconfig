@@ -8,12 +8,6 @@
 [credential "https://git.neverhuman.org"]
 	helper = /home/ubuntu/.config/jeryu/bin/git-credential-neverhuman-org
 
-# The current hosted smart-HTTP service rejects Git's compressed upload-pack
-# request body. This host-scoped setting preserves the working uncompressed
-# transport until the server-side fix is deployed.
-[http "https://git.neverhuman.org"]
-	postBuffer = 1
-
 [url "https://git.neverhuman.org/git/jeryu/jeryu-ci-runner.git"]
 	insteadOf = https://github.com/neverhuman/jeryu-ci-runner.git
 

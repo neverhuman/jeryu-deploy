@@ -78,8 +78,11 @@ if [[ "$(config_file "${overlay}" --get-all credential.helper)" != '' ]] ||
   printf 'hosted Git overlay credential-helper policy differs from the exact default\n' >&2
   exit 1
 fi
-if [[ "$(config_file "${overlay}" --get http.https://git.neverhuman.org.postbuffer)" != 1 ]]; then
-  printf 'hosted Git overlay is missing the exact smart-HTTP compatibility setting\n' >&2
+# http.postBuffer=1 was a workaround for compressed upload-pack bodies, which the hosted forge
+# now decodes. With Git protocol v2 it makes every client abort (rpc->buf smaller than
+# LARGE_PACKET_MAX), so it must not come back.
+if [[ -n "$(config_file "${overlay}" --get http.https://git.neverhuman.org.postbuffer)" ]]; then
+  printf 'hosted Git overlay must not set http.postBuffer for git.neverhuman.org\n' >&2
   exit 1
 fi
 if [[ ! -f "${credential_helper}" || -L "${credential_helper}" ||
