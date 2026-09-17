@@ -242,7 +242,7 @@ pub(crate) fn collect_pull_requests(
                 state_evidence,
                 source_links: vec![SourceLink {
                     label: format!("{}#{}", repo.full_name, pr.number),
-                    url: format!("/{}/pull/{}", repo.full_name, pr.number),
+                    url: format!("/repos/jeryu/{}/pulls/{}", repo.full_name, pr.number),
                 }],
             });
         }

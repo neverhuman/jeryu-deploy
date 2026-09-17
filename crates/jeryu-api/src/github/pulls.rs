@@ -703,6 +703,12 @@ fn merge_message(number: u64, req: &MergePullRequestRequest) -> String {
     message
 }
 
+/// Web UI route for a pull request: `/repos/<host>/<owner>/<repo>/pulls/<n>`.
+/// Every forge repository is served under the `jeryu` host segment.
+pub(crate) fn pull_request_web_path(owner: &str, repo: &str, number: u64) -> String {
+    format!("/repos/jeryu/{owner}/{repo}/pulls/{number}")
+}
+
 pub(super) fn pull_request_json(pr: &PullRequest) -> Value {
     json!({
         "id": pr.id,
@@ -721,7 +727,7 @@ pub(super) fn pull_request_json(pr: &PullRequest) -> Value {
         "merged_at": pr.merged_at,
         "merge_commit_sha": pr.merge_commit_sha,
         "source_repository": pr.source_repository,
-        "html_url": format!("/{}/{}/pull/{}", pr.owner, pr.repo, pr.number),
+        "html_url": pull_request_web_path(&pr.owner, &pr.repo, pr.number),
         "url": format!("/repos/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number),
         "created_at": pr.created_at,
         "updated_at": pr.updated_at,

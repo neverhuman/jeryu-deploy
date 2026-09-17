@@ -23,7 +23,7 @@ mod commit_status;
 mod graphql;
 mod hooks;
 mod issues;
-mod pulls;
+pub(crate) mod pulls;
 mod releases;
 mod repos;
 mod support;

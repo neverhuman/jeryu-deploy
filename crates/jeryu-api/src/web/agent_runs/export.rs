@@ -157,6 +157,6 @@ pub(super) fn export_workcell_agent_run(
         branch,
         target_branch,
         pull_request_number: pr.number,
-        url: format!("/{}/{}/pull/{}", pr.owner, pr.repo, pr.number),
+        url: crate::github::pulls::pull_request_web_path(&pr.owner, &pr.repo, pr.number),
     })
 }

@@ -202,27 +202,7 @@ pub(super) async fn diff(
     let Some((_, pr)) = resolve_pr(&state, &id, number) else {
         return not_found("load pull request diff", "pull request not found");
     };
-    let files = pr
-        .changed_files
-        .iter()
-        .map(|path| PullRequestDiffFile {
-            path: path.clone(),
-            old_path: None,
-            status: "modified",
-            additions: 0,
-            deletions: 0,
-            risk: None,
-            is_binary: false,
-            hunks: Vec::new(),
-        })
-        .collect();
-    Json(PullRequestDiff {
-        head_sha: pr.head.sha,
-        base_sha: pr.base.sha,
-        files,
-        truncated: false,
-    })
-    .into_response()
+    Json(diff::pull_request_diff(&state, &pr)).into_response()
 }
 
 pub(super) async fn checks(
@@ -756,6 +736,7 @@ fn summary_with_required_contexts(
     }
 }
 
+mod diff;
 mod posture;
 
 #[cfg(test)]
