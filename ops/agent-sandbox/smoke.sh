@@ -196,7 +196,7 @@ expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \
 expect_zero "JERYU_GOVERNED_JANKURAI_BIN points at the pinned path" \
   sh -c '[ "$JERYU_GOVERNED_JANKURAI_BIN" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_RECEIPT points at the baked content-addressed receipt" \
-  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/5e936e6c062cc6c4ef697e96b0fd1fd136ede04802667b191ac3059ac37b1d16.json" ]'
+  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/c6fe2c3108650d638855386b1d335ac1b9bb2d3a21964e35a5f5a9a8b87dc932.json" ]'
 expect_zero "governed Jankurai verifier passes against the baked receipt" \
   bash /opt/jeryu/governance/ensure-jankurai.sh
 
