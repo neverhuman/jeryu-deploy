@@ -4,15 +4,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const EXPECTED_LOCK_SOURCES: [&str; 6] = [
+    "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git",
     "http://127.0.0.1:8787/git/jeryu/jeryu-core.git",
     "http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git",
-    "https://github.com/neverhuman/jeryu-ci-runner.git",
     "https://github.com/neverhuman/jeryu-intelligence.git",
     "https://github.com/neverhuman/jeryu-jira.git",
     "https://github.com/neverhuman/jeryu-release-ops.git",
 ];
 
-const EXPECTED_MAPPINGS: [(&str, &str); 7] = [
+const EXPECTED_MAPPINGS: [(&str, &str); 8] = [
     (
         "http://127.0.0.1:8787/git/jeryu/jeryu-core.git",
         "https://git.neverhuman.org/git/jeryu/jeryu-core.git",
@@ -28,6 +28,10 @@ const EXPECTED_MAPPINGS: [(&str, &str); 7] = [
     (
         "https://github.com/neverhuman/jeryu-intelligence.git",
         "https://git.neverhuman.org/git/jeryu/jeryu-intelligence.git",
+    ),
+    (
+        "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git",
+        "https://git.neverhuman.org/git/jeryu/jeryu-ci-runner.git",
     ),
     (
         "https://github.com/neverhuman/jeryu-ci-runner.git",
@@ -46,9 +50,9 @@ const EXPECTED_MAPPINGS: [(&str, &str); 7] = [
 const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     (
         "jeryu-ci-runner",
-        "jeryu-ci-runner-v5.0.0-split.0",
-        "8bd66f1d2d71621996de8af260611f36da849fb8",
-        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.0",
+        "jeryu-ci-runner-v5.0.0-split.2",
+        "e7ee53b6ebc84b525dfef5760323594de3c31f4c",
+        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.2",
     ),
     (
         "jeryu-core",
@@ -288,13 +292,13 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
     assert_ne!(parse_mappings(&extra), expected_mappings);
 
     let missing_pin = pin_policy.replacen(
-        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.0|8bd66f1d2d71621996de8af260611f36da849fb8|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.0\n",
+        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.2|e7ee53b6ebc84b525dfef5760323594de3c31f4c|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.2\n",
         "",
         1,
     );
     assert_ne!(parse_pins(&missing_pin), expected_pins);
     let wrong_pin = pin_policy.replacen(
-        "8bd66f1d2d71621996de8af260611f36da849fb8",
+        "e7ee53b6ebc84b525dfef5760323594de3c31f4c",
         "0000000000000000000000000000000000000000",
         1,
     );

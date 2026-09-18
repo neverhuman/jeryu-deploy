@@ -34,7 +34,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
   "http://127.0.0.1:8787/git/jeryu/jeryu-core.git",
   "http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git",
-  "https://github.com/neverhuman/jeryu-ci-runner.git",
+  "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git",
   "https://github.com/neverhuman/jeryu-intelligence.git",
   "https://github.com/neverhuman/jeryu-jira.git",
   "https://github.com/neverhuman/jeryu-release-ops.git",

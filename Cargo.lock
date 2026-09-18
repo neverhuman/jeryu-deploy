@@ -1084,7 +1084,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jeryu-agent-stream"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -1094,7 +1094,7 @@ dependencies = [
 [[package]]
 name = "jeryu-agentbridge"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-ci-scheduler",
  "jeryu-core",
@@ -1167,7 +1167,7 @@ source = "git+https://github.com/neverhuman/jeryu-release-ops.git?tag=jeryu-rele
 [[package]]
 name = "jeryu-ci-compiler"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-ci-ir",
 ]
@@ -1175,12 +1175,12 @@ dependencies = [
 [[package]]
 name = "jeryu-ci-ir"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 
 [[package]]
 name = "jeryu-ci-scheduler"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-core",
@@ -1325,12 +1325,12 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-core"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 
 [[package]]
 name = "jeryu-runner-microvm"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-runner-core",
 ]
@@ -1338,7 +1338,7 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-native"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-runner-core",
  "jeryu-sandbox-linux",
@@ -1347,7 +1347,7 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-oci"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-runner-core",
 ]
@@ -1355,15 +1355,19 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-protocol"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
+ "hex",
  "jeryu-ci-ir",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "jeryu-runner-registry"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-runner-protocol",
@@ -1374,7 +1378,7 @@ dependencies = [
 [[package]]
 name = "jeryu-runnerd"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-runner-core",
@@ -1394,13 +1398,14 @@ source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git?tag=jeryu-i
 [[package]]
 name = "jeryu-sandbox-linux"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.0#8bd66f1d2d71621996de8af260611f36da849fb8"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.2#e7ee53b6ebc84b525dfef5760323594de3c31f4c"
 dependencies = [
  "jeryu-runner-core",
  "landlock",
  "libc",
  "nix",
  "seccompiler",
+ "sha2",
 ]
 
 [[package]]

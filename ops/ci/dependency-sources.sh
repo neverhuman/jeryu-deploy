@@ -29,6 +29,7 @@ expected_pairs=(
   'https://github.com/neverhuman/jeryu-core.git|https://git.neverhuman.org/git/jeryu/jeryu-core.git'
   'http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git|https://git.neverhuman.org/git/jeryu/jeryu-intelligence.git'
   'https://github.com/neverhuman/jeryu-intelligence.git|https://git.neverhuman.org/git/jeryu/jeryu-intelligence.git'
+  'http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git|https://git.neverhuman.org/git/jeryu/jeryu-ci-runner.git'
   'https://github.com/neverhuman/jeryu-ci-runner.git|https://git.neverhuman.org/git/jeryu/jeryu-ci-runner.git'
   'https://github.com/neverhuman/jeryu-jira.git|https://git.neverhuman.org/git/jeryu/jeryu-jira.git'
   'https://github.com/neverhuman/jeryu-release-ops.git|https://git.neverhuman.org/git/jeryu/jeryu-release-ops.git'
@@ -137,9 +138,9 @@ for pair in "${expected_pairs[@]}"; do
 done
 
 expected_lock_sources=(
+  'http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git'
   'http://127.0.0.1:8787/git/jeryu/jeryu-core.git'
   'http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git'
-  'https://github.com/neverhuman/jeryu-ci-runner.git'
   'https://github.com/neverhuman/jeryu-intelligence.git'
   'https://github.com/neverhuman/jeryu-jira.git'
   'https://github.com/neverhuman/jeryu-release-ops.git'

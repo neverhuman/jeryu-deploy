@@ -142,9 +142,56 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("release graph must declare its Core source unifier");
     assert_eq!(
         patches.len(),
-        2,
-        "release graph may patch only the historical Core and Intelligence sources"
+        3,
+        "release graph may patch only the historical Core, Intelligence and CI Runner sources"
     );
+
+    // jeryu-api and the historical Intelligence release both name the GitHub
+    // runner source at split.0; the unifier moves every runner package to the
+    // reviewed local-forge split.2 tag (the cgroup capability-probe fix), so the
+    // graph has exactly one runner identity.
+    let runner_patches = patches
+        .get("https://github.com/neverhuman/jeryu-ci-runner.git")
+        .and_then(toml::Value::as_table)
+        .expect("historical CI Runner source patch must be a table");
+    let runner_packages = [
+        "jeryu-agent-stream",
+        "jeryu-agentbridge",
+        "jeryu-ci-compiler",
+        "jeryu-ci-ir",
+        "jeryu-ci-scheduler",
+        "jeryu-runner-core",
+        "jeryu-runner-microvm",
+        "jeryu-runner-native",
+        "jeryu-runner-oci",
+        "jeryu-runner-protocol",
+        "jeryu-runner-registry",
+        "jeryu-runnerd",
+        "jeryu-sandbox-linux",
+    ];
+    assert_eq!(
+        runner_patches.keys().map(String::as_str).collect::<Vec<_>>(),
+        runner_packages,
+        "CI Runner unifier must list exactly the runner packages in the graph"
+    );
+    for package in runner_packages {
+        let source = runner_patches
+            .get(package)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("{package} CI Runner unifier must be a table"));
+        assert_eq!(
+            source.get("git").and_then(toml::Value::as_str),
+            Some("http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git")
+        );
+        assert_eq!(
+            source.get("tag").and_then(toml::Value::as_str),
+            Some("jeryu-ci-runner-v5.0.0-split.2")
+        );
+        assert!(
+            source.get("path").is_none(),
+            "{package} must not resolve from a sibling path"
+        );
+    }
 
     let core_patches = patches
         .get("https://github.com/neverhuman/jeryu-core.git")
