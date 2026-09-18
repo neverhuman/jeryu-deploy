@@ -20,6 +20,7 @@ mod sessions;
 mod surface;
 mod tool_build;
 mod tool_finder;
+mod tool_proposals;
 mod tool_registry;
 mod tool_status_messages;
 mod work;
@@ -674,6 +675,10 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
         .route(
             "/api/v1/tool-finder/propose/:cluster_id",
             post(tool_finder::propose),
+        )
+        .route(
+            "/api/v1/tool-finder/proposals/:tool_id/decision",
+            post(tool_proposals::decide),
         )
         .route("/api/v1/control-plane/status", get(control_plane::status))
         .route(
