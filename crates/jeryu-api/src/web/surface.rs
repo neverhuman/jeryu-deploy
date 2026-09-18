@@ -287,6 +287,16 @@ fn authorize_github_repo_request(
                 "CI evidence publication requires global-admin access or a JERYU_CI_PUBLISHERS identity",
             ))
         }
+        (Method::Post, ["repos", _, _, "deployments"])
+        | (Method::Post, ["repos", _, _, "deployments", _, "statuses"])
+            if account.role != UserRole::Admin =>
+        {
+            // A deployment record is a claim about what an environment runs; the
+            // release views and rollback decisions read it as fact.
+            Some(github_forbidden(
+                "recording deployments requires global-admin access",
+            ))
+        }
         (Method::Put, ["repos", owner, repo, "branches", _, "protection"])
             if account.role != UserRole::Admin
                 && !state.core.user_can_admin_repo(&account.login, owner, repo) =>

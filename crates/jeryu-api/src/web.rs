@@ -974,3 +974,6 @@ mod agent_runs_tests;
 
 #[cfg(test)]
 mod workcell_surface_tests;
+
+#[cfg(test)]
+mod deployment_surface_tests;

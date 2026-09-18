@@ -20,6 +20,7 @@ mod actions;
 mod branch_protection;
 mod check_runs;
 mod commit_status;
+mod deployments;
 mod graphql;
 mod hooks;
 mod issues;
@@ -174,9 +175,8 @@ impl GithubRouter {
         // leaking into segment matching.
         let (route_path, query) = path.split_once('?').unwrap_or((path, ""));
         let page = Pagination::from_query(query);
-        let pull_state = PullStateSelector::from_query(query);
         let segments: Vec<&str> = route_path.trim_matches('/').split('/').collect();
-        self.route(method, &segments, body, route_path, page, pull_state)
+        self.route(method, &segments, body, route_path, page, query)
             .unwrap_or_else(not_found)
     }
 
@@ -204,7 +204,7 @@ impl GithubRouter {
         body: &str,
         path: &str,
         page: Pagination,
-        pull_state: PullStateSelector,
+        query: &str,
     ) -> std::result::Result<Response, u16> {
         use Method::{Get, Patch, Post, Put};
         match (method, segments) {
@@ -243,9 +243,13 @@ impl GithubRouter {
             (Get, ["repos", owner, repo]) => Ok(self.get_repo(owner, repo)),
 
             // Pull requests --------------------------------------------------
-            (Get, ["repos", owner, repo, "pulls"]) => {
-                Ok(self.list_pulls(owner, repo, path, page, pull_state))
-            }
+            (Get, ["repos", owner, repo, "pulls"]) => Ok(self.list_pulls(
+                owner,
+                repo,
+                path,
+                page,
+                PullStateSelector::from_query(query),
+            )),
             (Post, ["repos", owner, repo, "pulls"]) => Ok(self.create_pull(owner, repo, body)),
             (Get, ["repos", owner, repo, "pulls", number]) => {
                 Ok(self.get_pull(owner, repo, number))
@@ -300,6 +304,26 @@ impl GithubRouter {
             }
             (Put, ["repos", owner, repo, "branches", branch, "protection"]) => {
                 Ok(self.set_protection(owner, repo, branch, body))
+            }
+
+            // Deployments ----------------------------------------------------
+            (Get, ["repos", owner, repo, "deployments"]) => {
+                Ok(self.list_deployments(owner, repo, path, page, query))
+            }
+            (Post, ["repos", owner, repo, "deployments"]) => {
+                Ok(self.create_deployment(owner, repo, body))
+            }
+            (Get, ["repos", owner, repo, "deployments", id]) => {
+                Ok(self.get_deployment(owner, repo, id))
+            }
+            (Get, ["repos", owner, repo, "deployments", id, "statuses"]) => {
+                Ok(self.list_deployment_statuses(owner, repo, id, path, page))
+            }
+            (Post, ["repos", owner, repo, "deployments", id, "statuses"]) => {
+                Ok(self.create_deployment_status(owner, repo, id, body))
+            }
+            (Get, ["repos", owner, repo, "environments"]) => {
+                Ok(self.list_environments(owner, repo))
             }
 
             // Releases -------------------------------------------------------
