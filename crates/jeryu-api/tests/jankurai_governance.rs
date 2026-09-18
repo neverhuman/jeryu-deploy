@@ -7,11 +7,11 @@ const REV: &str = "b88562fdb124aa86dedd70ab972e7d0d87e58be1";
 const TREE: &str = "611229e54938c0e8808896e369fd54d095d258f7";
 const ARCHIVE_SHA256: &str = "903a231eca8f6a1f050953b603d5a278a1606abcdf47434eb1b45262d74068aa";
 const BINARY_SHA256: &str = "9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c";
-const MANIFEST_COMMIT: &str = "ae471a7ba09c22b4261a21da66ea70e499c945d2";
-const MANIFEST_TREE: &str = "b40b0f89278327fe106bd7c632e060859165778e";
+const MANIFEST_COMMIT: &str = "188fd2844bf722f52bba643cf74c3c4f24a219ad";
+const MANIFEST_TREE: &str = "5ece10f6852c45a76986bad23f3857e41cc1b647";
 const MANIFEST_SHA256: &str = "a0ebad202c00d79dd0c4e4dd7f3b5af60fc8aa76b2577150e10992b41755a1fa";
 const IMAGE_RECEIPT_SHA256: &str =
-    "80aa116f656ebf2a68036a1aacfe4fa7a1356935b6a6e79b5b7f4b4e18e760a8";
+    "3a006f4af5f2ef2c8a19af945fb42932e2d552918c687f818904b8262c35cb17";
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
