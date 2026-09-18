@@ -221,7 +221,7 @@ import sys
 
 report = json.load(open(sys.argv[1]))
 decision = report.get("decision") or {}
-print(json.dumps({
+record = {
     "branch": sys.argv[2],
     "commit_sha": sys.argv[3],
     "score": report.get("score"),
@@ -229,7 +229,16 @@ print(json.dumps({
     "decision": "scored",
     "caps_applied": report.get("caps_applied") or [],
     "report": report,
-}))
+}
+body = json.dumps(record)
+# The forge rejects oversized ingest bodies (413). A repository with tens of
+# thousands of findings still gets its score; the full report stays in the local
+# log and is simply not embedded (`report` is optional in the ingest schema).
+if len(body.encode()) > 1_500_000:
+    record["report"] = None
+    body = json.dumps(record)
+    print("report omitted from ingest: too large to embed", file=sys.stderr)
+print(body)
 PY
   )"; then
     outcome="scored"
