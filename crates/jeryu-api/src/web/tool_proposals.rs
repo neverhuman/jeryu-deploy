@@ -98,8 +98,7 @@ pub(super) async fn decide(
             &["start the server with --split-manifest so jeryu-tool's registry resolves"],
         );
     };
-    let applied = match apply_decision(registry_path, &tool_id, request.decision, &account.login)
-    {
+    let applied = match apply_decision(registry_path, &tool_id, request.decision, &account.login) {
         Ok(applied) => applied,
         Err(DecisionError::RegistryUnavailable(reason)) => {
             return decision_error(
@@ -161,9 +160,9 @@ fn apply_decision(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let text = std::fs::read_to_string(registry_path)
         .map_err(|error| DecisionError::RegistryUnavailable(error.to_string()))?;
-    let mut doc: DocumentMut = text
-        .parse()
-        .map_err(|error: toml_edit::TomlError| DecisionError::RegistryUnavailable(error.to_string()))?;
+    let mut doc: DocumentMut = text.parse().map_err(|error: toml_edit::TomlError| {
+        DecisionError::RegistryUnavailable(error.to_string())
+    })?;
     let tools = doc
         .get_mut("tool")
         .and_then(|item| item.as_array_of_tables_mut())
@@ -186,7 +185,13 @@ fn apply_decision(
         Decision::Approve => {
             table["status"] = value(STATUS_BUILDING);
             Applied {
-                receipt: receipt(tool_id, "approve", Some(STATUS_BUILDING), Vec::new(), decided_by),
+                receipt: receipt(
+                    tool_id,
+                    "approve",
+                    Some(STATUS_BUILDING),
+                    Vec::new(),
+                    decided_by,
+                ),
                 rejected_cluster: None,
             }
         }

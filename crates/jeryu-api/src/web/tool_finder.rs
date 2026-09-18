@@ -487,7 +487,7 @@ pub(super) fn dashboard_payload(
 }
 
 /// The persisted scan's `created_at` (unix millis), read from the cluster rows.
-fn scan_created_at(state: &WebState) -> Option<String> {
+pub(super) fn scan_created_at(state: &WebState) -> Option<String> {
     state
         .codegraph_store
         .tool_build_scanned_at(SYSTEM_REPO_ID)

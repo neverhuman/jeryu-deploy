@@ -20,6 +20,7 @@ mod sessions;
 mod surface;
 mod tool_build;
 mod tool_finder;
+mod tool_finder_schedule;
 mod tool_proposals;
 mod tool_registry;
 mod tool_status_messages;
@@ -484,8 +485,10 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
         config.secure_cookies,
     );
     bootstrap_public_accounts(&state, &config.data_dir)?;
-    merge_queue::spawn_worker(Arc::new(state.clone()), std::time::Duration::from_secs(10));
-    let app = app(state, &config.spa_dir);
+    let state = shared_state(state, &config.spa_dir);
+    tool_finder_schedule::spawn(state.clone());
+    merge_queue::spawn_worker(state.clone(), std::time::Duration::from_secs(10));
+    let app = router(state);
     let listener = TcpListener::bind(config.bind).await?;
     // ConnectInfo gives the git handlers the peer address so the gitd auth layer
     // can apply its loopback-permissive policy.
@@ -503,10 +506,17 @@ use bootstrap::bootstrap_public_accounts;
 #[cfg(test)]
 use bootstrap::bootstrap_public_accounts_with_admin_password;
 
+#[cfg(test)]
 fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
-    let mut state = state;
+    router(shared_state(state, spa_dir))
+}
+
+fn shared_state(mut state: WebState, spa_dir: &Path) -> Arc<WebState> {
     state.spa_dir = spa_dir.to_path_buf();
-    let state = Arc::new(state);
+    Arc::new(state)
+}
+
+fn router(state: Arc<WebState>) -> AxumRouter {
     let mcp_state = Arc::new(jeryu_mcp::McpHttpState::new(Arc::new(
         mcp_backend::WebMcpBackend::new(state.clone()),
     )));
