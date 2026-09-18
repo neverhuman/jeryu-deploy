@@ -49,13 +49,24 @@ authorizes its clean replay**. That holds only when:
 - the replay applies with no conflict, commit by commit (`git replay`/cherry-pick,
   never `-X ours/theirs`);
 - the diff of the queue sha against its base equals the diff of the PR head
-  against its merge-base, path by path and hunk by hunk;
+  against its merge-base: the same set of paths with the same status (added,
+  modified, deleted, renamed, including rename targets), then the same hunks per
+  path. A replay that drops, adds or renames a file is refused even if every
+  remaining hunk matches;
 - no new `changes_requested` review exists on the PR head.
 
-The queue records the pair `(pr_head_sha, queue_sha)` and the approving reviews
-on the PR, so the landed merge is traceable to what was reviewed. GitHub's merge
-queue makes the same trade. If reviewers want stricter behaviour (re-approval of
-the queue sha), that is a setting per protected branch, off by default.
+The queue records the pair `(pr_head_sha, queue_sha)` and **who** approved: each
+approving review's login and whether it is an automation identity (for example
+`pragent`) or a person. The landed merge is therefore traceable to what was
+reviewed, and by whom. GitHub's merge queue makes the same trade.
+
+A setting per protected branch decides who may enqueue:
+
+| setting | enqueue needs | fits |
+|---|---|---|
+| `approval` (default) | any effective approval, bot or human | low-risk repositories with automated review |
+| `human-approval` | at least one approval from a non-automation identity | repositories where model review alone is not enough protection |
+| `reapprove-queue-sha` | a fresh approval of the queue sha itself | the strictest branches |
 
 ## Runner contract (needs the gate-runner owner's agreement)
 
@@ -83,10 +94,20 @@ the queue sha), that is a setting per protected branch, off by default.
   so a restart resumes the queue.
 - The Releases views can show "queued / building / landing" per PR.
 
-## Open questions for review
+## Failure handling
 
-1. Is carrying approval across a clean replay acceptable for protected `main`,
-   or should the default require re-approval of the queue sha?
-2. Should a failed queue gate dequeue immediately, or retry once to absorb a
-   known flake?
-3. Does the runner prefer polling `GET /api/v1/merge-queue` or a webhook event?
+A failed queue gate is retried **once** on the same queue sha. That absorbs the
+environment flakes seen on 2026-09-18 (jeryu-deploy#18 failed two exact-head
+gates before passing). Both attempts' logs and conclusions are recorded on the
+entry, so a real failure is never hidden behind the retry. A second failure
+dequeues the PR with a comment that links both logs.
+
+## Review record
+
+1. Approval across a clean replay: accepted by the `pr-redteam` owner for a
+   diff-identical replay, since its mechanical holds judge only the diff. That
+   acceptance came with the approver-identity record and the `human-approval`
+   branch setting above, and with path-level equality.
+2. Failed gate: retry once, recording both logs (above).
+3. Transport: polling `GET /api/v1/merge-queue` is enough for `pr-redteam`,
+   which only enqueues. The runner owner's preference is still open.
