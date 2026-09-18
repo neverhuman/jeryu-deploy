@@ -185,6 +185,16 @@ audit_one() {
     record "${name}" "failed: clone failed (see ${log})"
     return 0
   fi
+# The default branch may advance after resolution; audit only the named commit.
+if ! git -C "${tmp}/src" checkout -q --detach "${sha}" >>"${log}" 2>&1; then
+  echo "[backfill] ${OWNER}/${name}: resolved commit unavailable in clone" >&2
+  record "${name}" "failed: resolved commit unavailable after clone"
+  return 0
+fi
+if [ "$(git -C "${tmp}/src" rev-parse HEAD)" != "${sha}" ]; then
+  record "${name}" "failed: checkout does not match resolved commit"
+  return 0
+fi
   if [ ! -e "${tmp}/src/.git/HEAD" ] || [ -z "$(ls -A "${tmp}/src" | grep -v '^\.git$')" ]; then
     echo "[backfill] ${OWNER}/${name}: EMPTY CHECKOUT — refusing to audit nothing" >&2
     record "${name}" "failed: empty checkout for ${branch}"
