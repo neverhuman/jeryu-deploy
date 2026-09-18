@@ -289,12 +289,12 @@ fn authorize_github_repo_request(
         }
         (Method::Post, ["repos", _, _, "deployments"])
         | (Method::Post, ["repos", _, _, "deployments", _, "statuses"])
-            if account.role != UserRole::Admin =>
+            if !super::auth::can_record_deployments(account) =>
         {
             // A deployment record is a claim about what an environment runs; the
             // release views and rollback decisions read it as fact.
             Some(github_forbidden(
-                "recording deployments requires global-admin access",
+                "recording deployments requires global-admin access and a JERYU_DEPLOYERS identity",
             ))
         }
         (Method::Put, ["repos", owner, repo, "branches", _, "protection"])

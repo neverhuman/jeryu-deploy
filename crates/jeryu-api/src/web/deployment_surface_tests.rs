@@ -1,7 +1,10 @@
 //! Who may record and read deployments through the authenticated web edge.
 //!
 //! A deployment record is a claim about what an environment runs, so writing
-//! one needs global admin; reading follows ordinary repository read access. The
+//! one needs global admin AND a `JERYU_DEPLOYERS` identity (default
+//! `alton,alton2`): the automation admins (gatebot, pragent) must not, since
+//! gatebot's token is readable by the code it gates. Reading follows ordinary
+//! repository read access. The
 //! whole `web` module is `#[cfg(feature = "web")]`-gated, so this compiles to
 //! nothing without `--features web`.
 
@@ -15,8 +18,12 @@ const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 struct Forge {
     app: axum::Router,
+    /// `alton2`: admin and a default deployer.
     admin: String,
+    /// `gatebot`: an admin, as in production, but not a deployer.
     writer: String,
+    /// `jeryu-admin`: an admin outside the deployer list.
+    unlisted_admin: String,
     reader: String,
 }
 
@@ -34,12 +41,12 @@ fn forge() -> Forge {
     .unwrap();
     core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
         .unwrap();
-    for (login, level) in [
-        ("gatebot", RepoAccessLevel::Write),
-        ("reader", RepoAccessLevel::Read),
+    for (login, role, level) in [
+        ("alton2", UserRole::Admin, RepoAccessLevel::Write),
+        ("gatebot", UserRole::Admin, RepoAccessLevel::Write),
+        ("reader", UserRole::User, RepoAccessLevel::Read),
     ] {
-        core.create_account(login, "user-password", UserRole::User)
-            .unwrap();
+        core.create_account(login, "user-password", role).unwrap();
         core.grant_repo_access("jeryu-admin", login, "alice", "jeryu", level)
             .unwrap();
     }
@@ -48,7 +55,12 @@ fn forge() -> Forge {
             .unwrap()
             .secret
     };
-    let (admin, writer, reader) = (token("jeryu-admin"), token("gatebot"), token("reader"));
+    let (admin, writer, unlisted_admin, reader) = (
+        token("alton2"),
+        token("gatebot"),
+        token("jeryu-admin"),
+        token("reader"),
+    );
     let app = app(
         WebState::new(core).with_auth(true, false, false),
         std::path::Path::new("/tmp/jeryu-no-spa"),
@@ -57,6 +69,7 @@ fn forge() -> Forge {
         app,
         admin,
         writer,
+        unlisted_admin,
         reader,
     }
 }
@@ -86,19 +99,19 @@ async fn call(
 }
 
 #[tokio::test]
-async fn only_admins_record_deployments_and_the_creator_is_the_caller() {
+async fn only_listed_deployers_record_deployments_and_the_creator_is_the_caller() {
     let forge = forge();
     for prefix in ["", "/api/v3"] {
         let path = format!("{prefix}/repos/alice/jeryu/deployments");
         let deployment = serde_json::json!({"sha": SHA, "environment": "production"});
 
-        for token in [&forge.writer, &forge.reader] {
+        for token in [&forge.writer, &forge.unlisted_admin, &forge.reader] {
             let (status, _) =
                 call(&forge, token, HttpMethod::POST, &path, deployment.clone()).await;
             assert_eq!(
                 status,
                 StatusCode::FORBIDDEN,
-                "a non-admin must not record a deployment through {prefix:?}"
+                "only a listed deployer may record a deployment through {prefix:?}"
             );
         }
 
@@ -112,7 +125,7 @@ async fn only_admins_record_deployments_and_the_creator_is_the_caller() {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
-        assert_eq!(created["creator"]["login"], "jeryu-admin");
+        assert_eq!(created["creator"]["login"], "alton2");
         let id = created["id"].as_u64().unwrap();
 
         let statuses = format!("{path}/{id}/statuses");
@@ -128,12 +141,12 @@ async fn only_admins_record_deployments_and_the_creator_is_the_caller() {
         assert_eq!(
             status,
             StatusCode::FORBIDDEN,
-            "a non-admin must not append a status"
+            "an admin automation identity must not append a status"
         );
         let (status, appended) =
             call(&forge, &forge.admin, HttpMethod::POST, &statuses, success).await;
         assert_eq!(status, StatusCode::CREATED, "{appended}");
-        assert_eq!(appended["creator"]["login"], "jeryu-admin");
+        assert_eq!(appended["creator"]["login"], "alton2");
     }
 }
 

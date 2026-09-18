@@ -639,6 +639,24 @@ pub(crate) fn can_publish_gate_statuses(account: &AccountSummary) -> bool {
     account.role == UserRole::Admin || publishers.iter().any(|login| login == &account.login)
 }
 
+/// Recording a deployment (or appending one of its statuses) is a claim about
+/// what an environment runs, which the release views and rollback decisions
+/// read as fact. Global admin alone is not enough: the automation identities
+/// (gatebot, pragent) are admins, and gatebot's token is readable by the pull
+/// request code it gates. So the caller must be an admin named in
+/// `JERYU_DEPLOYERS` (comma-separated; default `alton,alton2`).
+pub(crate) fn can_record_deployments(account: &AccountSummary) -> bool {
+    static DEPLOYERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let deployers = DEPLOYERS.get_or_init(|| {
+        publisher_list(&std::env::var("JERYU_DEPLOYERS").unwrap_or_else(|_| "alton,alton2".into()))
+    });
+    is_deployer(account, deployers)
+}
+
+fn is_deployer(account: &AccountSummary, deployers: &[String]) -> bool {
+    account.role == UserRole::Admin && deployers.iter().any(|login| login == &account.login)
+}
+
 fn publisher_list(configured: &str) -> Vec<String> {
     configured
         .split(',')
@@ -858,5 +876,38 @@ mod gate_status_publisher_tests {
             vec!["gatebot", "ci-bot"]
         );
         assert!(publisher_list("").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod deployer_tests {
+    use super::{AccountStatus, AccountSummary, UserRole, is_deployer, publisher_list};
+
+    fn account(login: &str, role: UserRole) -> AccountSummary {
+        AccountSummary {
+            login: login.to_string(),
+            display_name: login.to_string(),
+            role,
+            status: AccountStatus::Active,
+            auth_epoch: 0,
+            must_change_password: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn only_listed_admins_record_deployments() {
+        let deployers = publisher_list("alton,alton2");
+        assert!(is_deployer(&account("alton2", UserRole::Admin), &deployers));
+        assert!(
+            !is_deployer(&account("gatebot", UserRole::Admin), &deployers),
+            "an admin automation identity is not a deployer"
+        );
+        assert!(
+            !is_deployer(&account("alton2", UserRole::User), &deployers),
+            "a listed login without admin is not a deployer"
+        );
+        assert!(!is_deployer(&account("alton2", UserRole::Admin), &[]));
     }
 }
