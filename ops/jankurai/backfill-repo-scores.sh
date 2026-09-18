@@ -117,7 +117,7 @@ record() {
 # already_scored <name> <sha>
 #
 # Idempotency probe. Returns 0 ONLY when the ingest endpoint answers with JSON that
-# carries at least one score for this SHA. A non-200, an HTML SPA fallback, or any
+# carries at least one `scored` record for this SHA (tool-failed rows are retried). A non-200, an HTML SPA fallback, or any
 # parse failure all return 1 ("no skip data, proceed") — the endpoint may not exist
 # on this forge build yet.
 already_scored() {
@@ -133,7 +133,8 @@ try:
 except ValueError:
     sys.exit(1)
 scores = doc if isinstance(doc, list) else doc.get("scores") or []
-sys.exit(0 if scores else 1)
+# Only a real score settles a commit; a tool-failed row is retried.
+sys.exit(0 if any(row.get("decision") == "scored" for row in scores) else 1)
 '
 }
 
