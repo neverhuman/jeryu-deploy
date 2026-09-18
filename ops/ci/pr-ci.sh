@@ -38,6 +38,8 @@ cd "${repo_root}"
 source ops/ci/lib.sh
 require_jankurai
 bash "${repo_root}/ops/ci/test-governed-jankurai.sh"
+# The production release scripts (switch/rollback) against a throwaway forge home.
+bash "${repo_root}/scripts/release/test-release-scripts.sh"
 
 # jankurai pin: jeryu-tool/tool-manifest.toml is the family-wide source of truth.
 # When the control-plane repo is reachable (on-host family layout), fail fast if

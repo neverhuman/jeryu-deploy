@@ -12,6 +12,7 @@ bash ops/ci/proof-evidence.sh
 bash ops/ci/workflow-lint.sh
 bash scripts/check-agent-maps.sh
 bash scripts/test-emit-release-receipt.sh
+bash scripts/release/test-release-scripts.sh
 bash ops/ci/score.sh
 JERYU_SECURITY_NETWORK=1 bash ops/ci/security.sh
 bash ops/ci/dependency-sources.sh
