@@ -170,7 +170,10 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         "jeryu-sandbox-linux",
     ];
     assert_eq!(
-        runner_patches.keys().map(String::as_str).collect::<Vec<_>>(),
+        runner_patches
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
         runner_packages,
         "CI Runner unifier must list exactly the runner packages in the graph"
     );
