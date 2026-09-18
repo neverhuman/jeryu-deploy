@@ -17,10 +17,13 @@ pub(crate) fn repo_graph_response(
     let tool_build = tool_build_summary(state);
     let runners = runner_fabric(state);
     let mirror = remote_status();
+    // The graph shows work in flight: merged/closed PRs and their checks
+    // would otherwise swamp it (hundreds of stale red check nodes).
+    let (active_prs, current_checks) = active_view(&pull_requests, &check_runs);
     let mut graph = build_repo_graph(
         &repos,
-        &pull_requests,
-        &check_runs,
+        &active_prs,
+        &current_checks,
         &codegraph,
         &tool_build,
         &runners,

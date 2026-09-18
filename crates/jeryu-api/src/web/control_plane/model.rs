@@ -26,10 +26,13 @@ pub(crate) fn snapshot(state: &Arc<WebState>) -> ControlPlaneSnapshot {
     );
     let agent_runs = state.agent_runs.list_json();
     let repo_graph = repo_graph_response(state, None);
+    // `pull_requests` keeps merged/closed PRs for history views; everything
+    // that claims "what needs attention" is computed from active work only.
+    let (active_prs, current_checks) = active_view(&pull_requests, &check_runs);
     let priorities = priority_insights(PriorityInputs {
         repos: &repos,
-        prs: &pull_requests,
-        checks: &check_runs,
+        prs: &active_prs,
+        checks: &current_checks,
         runners: &runners,
         artifacts: &artifacts,
         mirror: &mirror,
@@ -38,8 +41,8 @@ pub(crate) fn snapshot(state: &Arc<WebState>) -> ControlPlaneSnapshot {
     });
     let summary = summary(
         &repos,
-        &pull_requests,
-        &check_runs,
+        &active_prs,
+        &current_checks,
         priorities.as_slice(),
         &artifacts,
         &runners,
@@ -144,7 +147,7 @@ pub(crate) fn collect_repos(core: &ForgeCore) -> Vec<ControlRepo> {
             let prs = core
                 .list_pull_requests(&repo.owner, &repo.name, None)
                 .unwrap_or_default();
-            let open_pull_requests = prs
+            let open_prs: Vec<_> = prs
                 .iter()
                 .filter(|pr| {
                     matches!(
@@ -160,17 +163,26 @@ pub(crate) fn collect_repos(core: &ForgeCore) -> Vec<ControlRepo> {
                             | PullRequestState::Mergeable
                     )
                 })
-                .count();
-            let draft_pull_requests = prs.iter().filter(|pr| pr.draft).count();
-            let queued_checks = checks
+                .collect();
+            let open_pull_requests = open_prs.len();
+            let draft_pull_requests = open_prs.iter().filter(|pr| pr.draft).count();
+            // Check counts cover open PR heads only; results on merged/closed
+            // heads are history, not work to do.
+            let open_heads: std::collections::HashSet<&str> =
+                open_prs.iter().map(|pr| pr.head.sha.as_str()).collect();
+            let current: Vec<_> = checks
+                .iter()
+                .filter(|check| open_heads.contains(check.head_sha.as_str()))
+                .collect();
+            let queued_checks = current
                 .iter()
                 .filter(|check| check.status == CheckRunStatus::Queued)
                 .count();
-            let running_checks = checks
+            let running_checks = current
                 .iter()
                 .filter(|check| check.status == CheckRunStatus::InProgress)
                 .count();
-            let failing_checks = checks.iter().filter(|check| failing_check(check)).count();
+            let failing_checks = current.iter().filter(|check| failing_check(check)).count();
             let latest_head_sha = checks
                 .iter()
                 .max_by_key(|check| check.completed_at.or(Some(check.started_at)))
@@ -278,6 +290,32 @@ pub(crate) fn collect_check_runs(core: &ForgeCore, repos: &[ControlRepo]) -> Vec
         }
     }
     checks
+}
+
+/// A PR still in flight: anything but merged or closed.
+pub(crate) fn is_active_pr(pr: &ControlPullRequest) -> bool {
+    !matches!(pr.state.as_str(), "merged" | "closed")
+}
+
+/// Active PRs and the check runs on their head commits. Summary counts,
+/// priorities and the repo graph use this so merged/closed history (and the
+/// failed checks left on it) does not read as open work.
+pub(crate) fn active_view(
+    prs: &[ControlPullRequest],
+    checks: &[ControlCheckRun],
+) -> (Vec<ControlPullRequest>, Vec<ControlCheckRun>) {
+    let active: Vec<ControlPullRequest> =
+        prs.iter().filter(|pr| is_active_pr(pr)).cloned().collect();
+    let heads: std::collections::HashSet<(&str, &str)> = active
+        .iter()
+        .map(|pr| (pr.repo.as_str(), pr.head_sha.as_str()))
+        .collect();
+    let current = checks
+        .iter()
+        .filter(|check| heads.contains(&(check.repo.as_str(), check.head_sha.as_str())))
+        .cloned()
+        .collect();
+    (active, current)
 }
 
 fn collect_workflows(checks: &[ControlCheckRun]) -> Vec<ControlWorkflow> {

@@ -37,6 +37,33 @@ fn seeded_state() -> Arc<WebState> {
         },
     )
     .unwrap();
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "failing".to_string(),
+            head: "failing".to_string(),
+            base: "main".to_string(),
+            head_sha: Some("head-failing".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "ci/fast".to_string(),
+            head_sha: "head-failing".to_string(),
+            status: Some(CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    // A failure on a commit no open PR points at (e.g. a merged PR's head):
+    // history, which must not count as open work.
     core.create_check_run(
         "alice",
         "jeryu",
@@ -67,6 +94,87 @@ fn priority_rules_rank_missing_pr_checks_and_failing_ci() {
     assert!(ids.contains(&"ci-failing-checks"));
     assert_eq!(snapshot.priorities[0].rules_version, RULES_VERSION);
     assert!(snapshot.priorities[0].score >= snapshot.priorities[1].score);
+}
+
+#[test]
+fn summary_and_graph_count_only_active_prs_and_their_head_checks() {
+    let state = seeded_state();
+    let snapshot = snapshot(&state);
+    assert_eq!(snapshot.summary.open_pr_count, 2);
+    assert_eq!(
+        snapshot.summary.failing_check_count, 1,
+        "stale other-head failure excluded"
+    );
+    assert_eq!(snapshot.repos[0].failing_checks, 1);
+    // The raw lists still carry history for views that want it.
+    assert_eq!(snapshot.check_runs.len(), 2);
+
+    let graph = repo_graph_response(&state, None);
+    let check_heads: Vec<&str> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "check_run")
+        .filter_map(|node| node.metadata.get("headSha").map(String::as_str))
+        .collect();
+    assert_eq!(check_heads, vec!["head-failing"]);
+}
+
+#[test]
+fn active_view_drops_merged_and_closed_prs_and_their_checks() {
+    let pr = |number: u64, state: &str, head: &str| ControlPullRequest {
+        repo: "alice/jeryu".to_string(),
+        number,
+        title: String::new(),
+        draft: false,
+        state: state.to_string(),
+        head_ref: String::new(),
+        head_sha: head.to_string(),
+        base_ref: "main".to_string(),
+        base_sha: String::new(),
+        mergeable: false,
+        mergeable_state: String::new(),
+        changed_files: Vec::new(),
+        checks: CheckSummary {
+            total: 1,
+            queued: 0,
+            running: 0,
+            failing: 1,
+            successful: 0,
+            missing: false,
+        },
+        state_evidence: EvidenceState::Fresh,
+        source_links: Vec::new(),
+    };
+    let check = |head: &str| ControlCheckRun {
+        id: head.to_string(),
+        repo: "alice/jeryu".to_string(),
+        name: "ci".to_string(),
+        head_sha: head.to_string(),
+        status: "completed".to_string(),
+        conclusion: Some("failure".to_string()),
+        started_at: String::new(),
+        completed_at: None,
+        details_url: None,
+        state: EvidenceState::Failed,
+    };
+    let prs = vec![
+        pr(1, "blockedbychecks", "a"),
+        pr(2, "merged", "b"),
+        pr(3, "closed", "c"),
+    ];
+    let checks = vec![check("a"), check("b"), check("c")];
+    let (active, current) = active_view(&prs, &checks);
+    assert_eq!(
+        active.iter().map(|pr| pr.number).collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert_eq!(
+        current
+            .iter()
+            .map(|c| c.head_sha.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a"]
+    );
 }
 
 #[test]
@@ -213,7 +321,8 @@ fn mcp_facade_returns_limited_graph_jobs_and_blockers() {
 
     let jobs = mcp_ci_run_jobs(&state, &json!({ "ci_run_id": "run-1" }));
     assert_eq!(jobs["ci_run_id"], "run-1");
-    assert_eq!(jobs["jobs"].as_array().unwrap().len(), 1);
+    // Raw job listing keeps every check run (seeded: one per head).
+    assert_eq!(jobs["jobs"].as_array().unwrap().len(), 2);
 
     let bottlenecks = mcp_ci_bottlenecks(&state, &json!({ "repo": "alice/jeryu" }));
     assert_eq!(bottlenecks["repo"], "alice/jeryu");

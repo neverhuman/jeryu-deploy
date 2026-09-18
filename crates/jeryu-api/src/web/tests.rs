@@ -1825,7 +1825,8 @@ async fn control_plane_status_priorities_and_absence_states_are_live() {
     assert_eq!(status.schema_version, "jeryu.control_plane/v1");
     assert_eq!(status.summary.repo_count, 1);
     assert_eq!(status.summary.draft_pr_count, 1);
-    assert_eq!(status.summary.failing_check_count, 1);
+    // The only failure is on a commit no open PR points at: history, not work.
+    assert_eq!(status.summary.failing_check_count, 0);
     assert_eq!(
         serde_json::to_value(&status.summary).unwrap()["mirrorState"],
         "missing"
