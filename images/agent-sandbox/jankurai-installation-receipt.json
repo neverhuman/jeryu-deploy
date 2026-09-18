@@ -38,10 +38,10 @@
   },
   "conclusion": "success",
   "governance": {
-    "manifest_commit": "6be9c4a5345fc80fc69e9560578b539540e7edfd",
-    "manifest_repo": "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git",
-    "manifest_sha256": "be001dc52c66da5669167f3e429d882184931baa3d7a0e53b605c17425872b5a",
-    "manifest_tree": "cacec5c5ee7763289a2a9512cf24ba654f0b76fc",
+    "manifest_commit": "ae471a7ba09c22b4261a21da66ea70e499c945d2",
+    "manifest_repo": "https://git.neverhuman.org/git/jeryu/jeryu-tool.git",
+    "manifest_sha256": "a0ebad202c00d79dd0c4e4dd7f3b5af60fc8aa76b2577150e10992b41755a1fa",
+    "manifest_tree": "b40b0f89278327fe106bd7c632e060859165778e",
     "protected_main": true,
     "protection_policy": "immutable-main-v1",
     "status": "governed"
@@ -57,7 +57,7 @@
     "archive_sha256": "903a231eca8f6a1f050953b603d5a278a1606abcdf47434eb1b45262d74068aa",
     "cargo_lock_sha256": "b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a",
     "commit": "b88562fdb124aa86dedd70ab972e7d0d87e58be1",
-    "remote": "http://127.0.0.1:8787/git/jeryu/jankurai.git",
+    "remote": "https://git.neverhuman.org/git/jeryu/jankurai.git",
     "tag": "v1.6.11-deadlang-precision-split.3",
     "tree": "611229e54938c0e8808896e369fd54d095d258f7",
     "verification": "release-authoritative"

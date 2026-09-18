@@ -272,7 +272,7 @@ const GOVERNED_JANKURAI_RECEIPT_DIR: &str = "/home/ubuntu/.jeryu/receipts/jankur
 const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
 const GOVERNED_JANKURAI_SHA256: &str =
     "9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c";
-const GOVERNED_JANKURAI_SOURCE_REPO: &str = "http://127.0.0.1:8787/git/jeryu/jankurai.git";
+const GOVERNED_JANKURAI_SOURCE_REPO: &str = "https://git.neverhuman.org/git/jeryu/jankurai.git";
 const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.6.11-deadlang-precision-split.3";
 const GOVERNED_JANKURAI_SOURCE_REV: &str = "b88562fdb124aa86dedd70ab972e7d0d87e58be1";
 const GOVERNED_JANKURAI_SOURCE_TREE: &str = "611229e54938c0e8808896e369fd54d095d258f7";
@@ -286,11 +286,11 @@ const GOVERNED_JANKURAI_TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 const GOVERNED_JANKURAI_BUILD_MODE: &str = "oci-vendor-locked-offline-workspace-member-v2";
 const GOVERNED_JANKURAI_INSTALLATION_RECEIPT_JSON: &str =
     include_str!("../../../images/agent-sandbox/jankurai-installation-receipt.json");
-const GOVERNED_JANKURAI_MANIFEST_REPO: &str = "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git";
-const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "6be9c4a5345fc80fc69e9560578b539540e7edfd";
-const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "cacec5c5ee7763289a2a9512cf24ba654f0b76fc";
+const GOVERNED_JANKURAI_MANIFEST_REPO: &str = "https://git.neverhuman.org/git/jeryu/jeryu-tool.git";
+const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "ae471a7ba09c22b4261a21da66ea70e499c945d2";
+const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "b40b0f89278327fe106bd7c632e060859165778e";
 const GOVERNED_JANKURAI_MANIFEST_SHA256: &str =
-    "be001dc52c66da5669167f3e429d882184931baa3d7a0e53b605c17425872b5a";
+    "a0ebad202c00d79dd0c4e4dd7f3b5af60fc8aa76b2577150e10992b41755a1fa";
 
 mod jankurai;
 

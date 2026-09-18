@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hosted-git-env.sh"
 
 # BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
-export JERYU_JANKURAI_SOURCE_REPO="http://127.0.0.1:8787/git/jeryu/jankurai.git"
+export JERYU_JANKURAI_SOURCE_REPO="https://git.neverhuman.org/git/jeryu/jankurai.git"
 export JERYU_JANKURAI_VERSION="jankurai 1.6.11"
 export JERYU_JANKURAI_SHA256="9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c"
 export JERYU_JANKURAI_SOURCE_REV="b88562fdb124aa86dedd70ab972e7d0d87e58be1"
@@ -191,8 +191,13 @@ require_jankurai() {
          "local-forge-source-plus-closed-vendor-network-none" and
        .build.no_proxy == "127.0.0.1,localhost,::1" and
        .governance.status == $governance and
-       .governance.manifest_repo ==
-         "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git" and
+       # Transition: receipts installed before the hosted-forge authority move
+       # name the retired loopback forge; drop that value once every governed
+       # host carries a hosted-authority receipt.
+       (.governance.manifest_repo ==
+          "https://git.neverhuman.org/git/jeryu/jeryu-tool.git" or
+        .governance.manifest_repo ==
+          "http://127.0.0.1:8787/git/jeryu/jeryu-tool.git") and
        (.governance.manifest_commit | test("^[0-9a-f]{40}$")) and
        (.governance.manifest_tree | test("^[0-9a-f]{40}$")) and
        (.governance.manifest_sha256 | test("^[0-9a-f]{64}$")) and

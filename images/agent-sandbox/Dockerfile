@@ -41,7 +41,7 @@ RUN cargo fetch --locked || cargo fetch || true
 # inside the sandbox can never cargo-install it at session time. Bumping the pin means
 # bumping it there first, then rebuilding this image.
 FROM rust:1.95-slim-bookworm AS jankurai-build
-ARG JANKURAI_REPO="http://127.0.0.1:8787/git/jeryu/jankurai.git"
+ARG JANKURAI_REPO="https://git.neverhuman.org/git/jeryu/jankurai.git"
 ARG JANKURAI_TAG="v1.6.11-deadlang-precision-split.3"
 ARG JANKURAI_REV="b88562fdb124aa86dedd70ab972e7d0d87e58be1"
 ARG JANKURAI_VERSION="jankurai 1.6.11"
@@ -128,11 +128,11 @@ ARG JANKURAI_VERSION="jankurai 1.6.11"
 ARG JANKURAI_BINARY_SHA256="9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c"
 COPY --from=jankurai-build /opt/rust/cargo/bin/jankurai /opt/rust/cargo/bin/jankurai
 COPY images/agent-sandbox/jankurai-installation-receipt.json \
-  /opt/jeryu/receipts/jankurai/sha256/c6fe2c3108650d638855386b1d335ac1b9bb2d3a21964e35a5f5a9a8b87dc932.json
+  /opt/jeryu/receipts/jankurai/sha256/80aa116f656ebf2a68036a1aacfe4fa7a1356935b6a6e79b5b7f4b4e18e760a8.json
 COPY ops/ci/ensure-jankurai.sh /opt/jeryu/governance/ensure-jankurai.sh
 ENV JERYU_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
     JERYU_GOVERNED_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
-    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/c6fe2c3108650d638855386b1d335ac1b9bb2d3a21964e35a5f5a9a8b87dc932.json
+    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/80aa116f656ebf2a68036a1aacfe4fa7a1356935b6a6e79b5b7f4b4e18e760a8.json
 RUN test ! -L /opt/rust/cargo/bin/jankurai \
     && test "$(stat -c '%h' /opt/rust/cargo/bin/jankurai)" = "1" \
     && test "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '{print $1}')" = "${JANKURAI_BINARY_SHA256}" \
