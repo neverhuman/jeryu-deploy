@@ -24,6 +24,8 @@
 #   JERYU_API            forge API base                 (default http://127.0.0.1:8787)
 #   JERYU_DATA_DIR       forge data dir                 (default ~/.local/share/jeryu)
 #   JERYU_BACKFILL_JOBS  parallel audits, clamped to 3  (default 2)
+#   JERYU_FORGE_TOKEN_FILE  global-admin PAT file, mode 0600 (required: score
+#                        ingest is global-admin maintenance)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -63,10 +65,22 @@ LOG_DIR="$(mktemp -d -t jankurai-backfill-XXXXXX)"
 OUT_DIR="${LOG_DIR}/outcomes"
 mkdir -p "${OUT_DIR}"
 
+# Score ingest is global-admin maintenance, and repositories may be private, so
+# every API call authenticates. The header goes through a mode-0600 curl config
+# so the credential never appears in argv.
+TOKEN_FILE="${JERYU_FORGE_TOKEN_FILE:-}"
+[ -n "${TOKEN_FILE}" ] || { echo "JERYU_FORGE_TOKEN_FILE is required (global-admin PAT)" >&2; exit 2; }
+[ -f "${TOKEN_FILE}" ] && [ ! -L "${TOKEN_FILE}" ] || { echo "token file must be a regular file" >&2; exit 2; }
+[ "$(stat -c '%a' "${TOKEN_FILE}")" = "600" ] || { echo "token file must be mode 0600" >&2; exit 2; }
+AUTH_CONFIG="${LOG_DIR}/curl-auth.conf"
+( umask 077; printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '\n' < "${TOKEN_FILE}")" > "${AUTH_CONFIG}" )
+trap 'rm -f "${AUTH_CONFIG}"' EXIT
+api_curl() { curl -K "${AUTH_CONFIG}" "$@"; }
+
 # Enumerate the jeryu-owned registry repos (name + default branch). The legacy
 # `local/` owner entries are not canonical and are skipped here.
 listing_json="${LOG_DIR}/repos.json"
-curl -fsS "${API}/api/v1/repos" -o "${listing_json}"
+api_curl -fsS "${API}/api/v1/repos" -o "${listing_json}"
 repos_tsv="${LOG_DIR}/repos.tsv"
 python3 - "${listing_json}" > "${repos_tsv}" <<'PY'
 import json
@@ -95,7 +109,7 @@ record() {
 # on this forge build yet.
 already_scored() {
   local name="$1" sha="$2" body
-  body="$(curl -fsS "${API}/api/v1/repos/jeryu%2F${name}/jankurai-scores?sha=${sha}" 2>/dev/null || true)"
+  body="$(api_curl -fsS "${API}/api/v1/repos/jeryu%2F${name}/jankurai-scores?sha=${sha}" 2>/dev/null || true)"
   [ -n "${body}" ] || return 1
   printf '%s' "${body}" | python3 -c '
 import json
@@ -213,7 +227,7 @@ print(json.dumps({
     outcome="tool-failed (exit ${rc})"
   fi
 
-  if curl -fsS -X POST "${API}/api/v1/repos/jeryu%2F${name}/jankurai-scores" \
+  if api_curl -fsS -X POST "${API}/api/v1/repos/jeryu%2F${name}/jankurai-scores" \
     -H 'content-type: application/json' --data "${payload}" >>"${log}" 2>&1; then
     echo "[backfill] jeryu/${name}: ${outcome} @ ${sha}"
     record "${name}" "${outcome} @ ${sha}"
