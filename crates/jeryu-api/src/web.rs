@@ -57,7 +57,7 @@ use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
 use jeryu_runnerd::{WarmPool, WorkcellManager};
 use repositories::{
-    fleet_tool_adoption, repo_blob, repo_detail, repo_jankurai_scores_ingest,
+    fleet_tool_adoption, repo_blob, repo_compare, repo_detail, repo_jankurai_scores_ingest,
     repo_jankurai_scores_list, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree,
     repo_update, repos,
 };
@@ -634,6 +634,7 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
             get(tool_registry::summary),
         )
         .route("/api/v1/repos/:id/refs", get(repo_refs))
+        .route("/api/v1/repos/:id/compare", get(repo_compare))
         .route("/api/v1/repos/:id/tree", get(repo_tree))
         .route("/api/v1/repos/:id/blob", get(repo_blob))
         .route("/api/v1/repos/:id/raw", get(repo_raw))

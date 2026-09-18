@@ -392,8 +392,10 @@ fn score_ingest_invalid(reason: &str) -> AxumResponse {
     )
 }
 
+mod compare;
 mod source;
 
+pub(super) use compare::repo_compare;
 pub(super) use source::{
     repo_blob, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree,
 };
