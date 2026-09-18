@@ -237,8 +237,10 @@ print(json.dumps({
     outcome="tool-failed (exit ${rc})"
   fi
 
-  if api_curl -fsS -X POST "${API}/api/v1/repos/jeryu%2F${name}/jankurai-scores" \
-    -H 'content-type: application/json' --data "${payload}" >>"${log}" 2>&1; then
+  # The payload carries every finding, so a large report exceeds ARG_MAX as an
+  # argument: send it on stdin.
+  if printf '%s' "${payload}" | api_curl -fsS -X POST "${API}/api/v1/repos/jeryu%2F${name}/jankurai-scores" \
+    -H 'content-type: application/json' --data-binary @- >>"${log}" 2>&1; then
     echo "[backfill] jeryu/${name}: ${outcome} @ ${sha}"
     record "${name}" "${outcome} @ ${sha}"
   else
