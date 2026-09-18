@@ -24,6 +24,7 @@
 #   JERYU_API            forge API base                 (default http://127.0.0.1:8787)
 #   JERYU_DATA_DIR       forge data dir                 (default ~/.local/share/jeryu)
 #   JERYU_BACKFILL_JOBS  parallel audits, clamped to 3  (default 2)
+#   JERYU_BACKFILL_OWNER registry owner to sweep        (default jeryu)
 #   JERYU_FORGE_TOKEN_FILE  global-admin PAT file, mode 0600 (required: score
 #                        ingest is global-admin maintenance)
 set -euo pipefail
@@ -40,6 +41,8 @@ case "${API}" in
 esac
 DATA_DIR="${JERYU_DATA_DIR:-$HOME/.local/share/jeryu}"
 JOBS="${JERYU_BACKFILL_JOBS:-2}"
+OWNER="${JERYU_BACKFILL_OWNER:-jeryu}"
+[[ "${OWNER}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "JERYU_BACKFILL_OWNER must be one registry owner name" >&2; exit 2; }
 # This host has been wedged by unbounded workers before — clamp hard, never trust a
 # requested fan-out.
 if [ "${JOBS}" -gt 3 ]; then
@@ -92,19 +95,19 @@ api_curl() { curl --disable --config "${AUTH_CONFIG}" "$@"; }
 listing_json="${LOG_DIR}/repos.json"
 api_curl -fsS "${API}/api/v1/repos" -o "${listing_json}"
 repos_tsv="${LOG_DIR}/repos.tsv"
-python3 - "${listing_json}" > "${repos_tsv}" <<'PY'
+python3 - "${listing_json}" "${OWNER}" > "${repos_tsv}" <<'PY'
 import json
 import sys
 
 doc = json.load(open(sys.argv[1]))
 for repo in doc["repositories"]:
     rid = repo["id"]
-    if rid["owner"] != "jeryu":
+    if rid["owner"] != sys.argv[2]:
         continue
     print(f'{rid["name"]}\t{repo["default_branch"]}')
 PY
 mapfile -t REPO_LINES < "${repos_tsv}"
-echo "[backfill] ${#REPO_LINES[@]} jeryu-owned repos in the registry (jobs=${JOBS}, logs=${LOG_DIR})"
+echo "[backfill] ${#REPO_LINES[@]} owned repos in the registry (owner=${OWNER}, jobs=${JOBS}, logs=${LOG_DIR})"
 
 record() {
   local name="$1" outcome="$2"
@@ -119,7 +122,7 @@ record() {
 # on this forge build yet.
 already_scored() {
   local name="$1" sha="$2" body
-  body="$(api_curl -fsS "${API}/api/v1/repos/jeryu%2F${name}/jankurai-scores?sha=${sha}" 2>/dev/null || true)"
+  body="$(api_curl -fsS "${API}/api/v1/repos/${OWNER}%2F${name}/jankurai-scores?sha=${sha}" 2>/dev/null || true)"
   [ -n "${body}" ] || return 1
   printf '%s' "${body}" | python3 -c '
 import json
@@ -142,30 +145,30 @@ sys.exit(0 if scores else 1)
 # always removed via the job-local EXIT trap.
 audit_one() {
   local name="$1" branch="$2"
-  local bare="${DATA_DIR}/git/jeryu/${name}.git"
+  local bare="${DATA_DIR}/git/${OWNER}/${name}.git"
   local log="${LOG_DIR}/${name}.log"
 
   if [ ! -d "${bare}" ]; then
-    echo "[backfill] jeryu/${name}: SKIP (no bare repo at ${bare})"
+    echo "[backfill] ${OWNER}/${name}: SKIP (no bare repo at ${bare})"
     record "${name}" "skipped: no bare repo"
     return 0
   fi
 
   local sha
   if ! sha="$(git --git-dir "${bare}" rev-parse "refs/heads/${branch}" 2>>"${log}")"; then
-    echo "[backfill] jeryu/${name}: SKIP (refs/heads/${branch} unresolvable — empty repo?)"
+    echo "[backfill] ${OWNER}/${name}: SKIP (refs/heads/${branch} unresolvable — empty repo?)"
     record "${name}" "skipped: refs/heads/${branch} unresolvable"
     return 0
   fi
 
   if [ "${FORCE}" -ne 1 ] && already_scored "${name}" "${sha}"; then
-    echo "[backfill] jeryu/${name}: SKIP (score already ingested for ${sha})"
+    echo "[backfill] ${OWNER}/${name}: SKIP (score already ingested for ${sha})"
     record "${name}" "skipped: already scored @ ${sha}"
     return 0
   fi
 
   if [ "${DRY_RUN}" -eq 1 ]; then
-    echo "WOULD AUDIT jeryu/${name} @ ${sha}"
+    echo "WOULD AUDIT ${OWNER}/${name} @ ${sha}"
     record "${name}" "would-audit @ ${sha}"
     return 0
   fi
@@ -178,12 +181,12 @@ audit_one() {
   # nonexistent ref, and a default clone then checks out NOTHING — the auditor
   # silently scores an empty tree (uniform bogus low scores).
   if ! git clone -q --branch "${branch}" "file://${bare}" "${tmp}/src" >>"${log}" 2>&1; then
-    echo "[backfill] jeryu/${name}: CLONE FAILED (see ${log})" >&2
+    echo "[backfill] ${OWNER}/${name}: CLONE FAILED (see ${log})" >&2
     record "${name}" "failed: clone failed (see ${log})"
     return 0
   fi
   if [ ! -e "${tmp}/src/.git/HEAD" ] || [ -z "$(ls -A "${tmp}/src" | grep -v '^\.git$')" ]; then
-    echo "[backfill] jeryu/${name}: EMPTY CHECKOUT — refusing to audit nothing" >&2
+    echo "[backfill] ${OWNER}/${name}: EMPTY CHECKOUT — refusing to audit nothing" >&2
     record "${name}" "failed: empty checkout for ${branch}"
     return 0
   fi
@@ -239,12 +242,12 @@ print(json.dumps({
 
   # The payload carries every finding, so a large report exceeds ARG_MAX as an
   # argument: send it on stdin.
-  if printf '%s' "${payload}" | api_curl -fsS -X POST "${API}/api/v1/repos/jeryu%2F${name}/jankurai-scores" \
+  if printf '%s' "${payload}" | api_curl -fsS -X POST "${API}/api/v1/repos/${OWNER}%2F${name}/jankurai-scores" \
     -H 'content-type: application/json' --data-binary @- >>"${log}" 2>&1; then
-    echo "[backfill] jeryu/${name}: ${outcome} @ ${sha}"
+    echo "[backfill] ${OWNER}/${name}: ${outcome} @ ${sha}"
     record "${name}" "${outcome} @ ${sha}"
   else
-    echo "[backfill] jeryu/${name}: POST FAILED (see ${log})" >&2
+    echo "[backfill] ${OWNER}/${name}: POST FAILED (see ${log})" >&2
     record "${name}" "post-failed: ingest POST rejected (see ${log})"
   fi
 }
@@ -266,7 +269,7 @@ failures=0
 for line in "${REPO_LINES[@]}"; do
   name="${line%%$'\t'*}"
   outcome="$(cat "${OUT_DIR}/${name}.outcome" 2>/dev/null || echo "no outcome recorded")"
-  printf '  %-28s %s\n' "jeryu/${name}" "${outcome}"
+  printf '  %-28s %s\n' "${OWNER}/${name}" "${outcome}"
   case "${outcome}" in
     failed*|post-failed*|"no outcome recorded") failures=$((failures + 1)) ;;
   esac
