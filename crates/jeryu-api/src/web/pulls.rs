@@ -579,6 +579,27 @@ fn detail_for_pr(
     detail_for_pr_with_required_contexts(state, pr, &required_contexts, authenticated_login)
 }
 
+/// The merge gate as the merge queue sees it: whether the PR's exact-head
+/// merge passport passes (with the blocker messages when it does not), and the
+/// names of the required contexts, which the queue also requires on the
+/// queued commit before landing it.
+pub(super) fn queue_gate(state: &WebState, pr: &PullRequest) -> (bool, Vec<String>, Vec<String>) {
+    let required = required_contexts(state, pr);
+    let detail = detail_for_pr_with_required_contexts(state, pr, &required, None);
+    let pass = detail.merge_passport.status == MergePassportStatus::Pass;
+    let blockers = detail
+        .merge_passport
+        .blockers
+        .iter()
+        .map(|blocker| blocker.message.clone())
+        .collect();
+    (
+        pass,
+        blockers,
+        required.into_iter().map(|context| context.name).collect(),
+    )
+}
+
 #[cfg(test)]
 pub(super) fn detail_for_pr_with_audit_enforcement(
     state: &WebState,

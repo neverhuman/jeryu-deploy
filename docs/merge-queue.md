@@ -111,3 +111,25 @@ dequeues the PR with a comment that links both logs.
 2. Failed gate: retry once, recording both logs (above).
 3. Transport: polling `GET /api/v1/merge-queue` is enough for `pr-redteam`,
    which only enqueues. The runner owner's preference is still open.
+
+## Implementation note: where queue state lives
+
+The first cut stores queue state in each repository, not in jeryu-core:
+`refs/queue/<base>/<n>` holds the queue commit, and `refs/queue-meta/<base>/<n>`
+points at a JSON blob (PR head, base, approvers, attempts, state). The forge
+keeps an in-memory index rebuilt from these refs on first use, so a restart
+resumes the queue without a core schema change or a core release. Clients
+cannot push either namespace: `git-receive-pack` refuses them with 403.
+
+Entries are advanced by a worker every 10 seconds: a moved PR head dequeues, a
+moved base rebuilds, a failed gate rebuilds once (a fresh commit) and then
+fails, and a green queue commit lands through the same compare-and-swap
+fast-forward as a direct merge. If a repository declares no required
+contexts, the queue commit needs every context reported on it to be green,
+and at least one.
+
+Endpoints: `POST`/`DELETE /api/v1/repos/:id/pulls/:n/queue`,
+`GET /api/v1/repos/:id/merge-queue`, `GET /api/v1/merge-queue?state=building|all|landed|failed|dequeued`.
+
+Moving the store into jeryu-core (for history queries and the PR journey view)
+is a follow-up.

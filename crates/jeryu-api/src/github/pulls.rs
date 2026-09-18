@@ -564,6 +564,112 @@ impl GithubRouter {
         }
     }
 
+    /// Land a merge-queue commit (docs/merge-queue.md): fast-forward
+    /// `refs/heads/<base>` from `expected_base` to `queue_sha`, the gated
+    /// replay of the PR onto that base, and record the PR as merged at it.
+    ///
+    /// Nothing here is queue-specific policy. The PR must still pass the same
+    /// merge gate at its own head (`evaluate_merge_readiness`, re-checked by
+    /// `finalize_merge`); the ref moves only by compare-and-swap from
+    /// `expected_base` and only as a fast-forward; the push bridge and the
+    /// GitHub mirror run exactly as for a direct merge. Returns the new base
+    /// oid, or why it did not land (the queue decides whether to rebuild).
+    #[cfg(feature = "web")]
+    pub(crate) fn land_queued(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        pr_head: &str,
+        queue_sha: &str,
+        expected_base: &str,
+    ) -> std::result::Result<String, LandRefusal> {
+        use jeryu_gitd::refs::RefService;
+
+        let rm = self
+            .repo_manager
+            .as_ref()
+            .ok_or_else(|| LandRefusal::Blocked("no git backend is wired".to_string()))?;
+        let (base_ref, head_ref, head_sha, require_linear_history) = match self
+            .core
+            .evaluate_merge_readiness(owner, repo, number, Some(pr_head))
+        {
+            Ok(MergeReadiness::Ready {
+                base_ref,
+                head_ref,
+                head_sha,
+                require_linear_history,
+                ..
+            }) => (base_ref, head_ref, head_sha, require_linear_history),
+            Ok(MergeReadiness::AlreadyMerged { sha }) => {
+                return Err(LandRefusal::Blocked(format!("already merged at {sha}")));
+            }
+            Err(err) => return Err(LandRefusal::Blocked(err.to_string())),
+        };
+        let resolved = rm
+            .resolve_parts(owner, repo)
+            .map_err(|err| LandRefusal::Blocked(err.to_string()))?;
+        let refs = RefService::new((**rm).clone());
+        let base_name = format!("refs/heads/{base_ref}");
+        let base_oid = refs
+            .resolve_commit(&resolved, &base_name)
+            .map_err(|err| LandRefusal::Blocked(err.to_string()))?
+            .ok_or_else(|| LandRefusal::Blocked(format!("{base_name} does not resolve")))?;
+        if base_oid != expected_base {
+            return Err(LandRefusal::BaseMoved(base_oid));
+        }
+        let req = MergePullRequestRequest {
+            sha: Some(pr_head.to_string()),
+            ..MergePullRequestRequest::default()
+        };
+        let message = merge_message(number, &req);
+        // Always a fast-forward: the queue commit was built on `expected_base`.
+        let outcome = refs
+            .merge_pull(
+                &resolved,
+                "system:merge-queue",
+                &base_name,
+                &base_oid,
+                queue_sha,
+                &message,
+                true,
+            )
+            .map_err(|err| LandRefusal::Blocked(err.to_string()))?;
+        crate::ci_bridge::on_push(
+            &self.core,
+            rm,
+            owner,
+            repo,
+            &[crate::ci_bridge::RefUpdate {
+                ref_name: base_name,
+                old_oid: base_oid,
+                new_oid: outcome.merge_oid.clone(),
+            }],
+            &crate::ci_bridge::default_origin_base_url(),
+        );
+        self.core
+            .finalize_merge(
+                owner,
+                repo,
+                number,
+                outcome.merge_oid.clone(),
+                Some(pr_head),
+            )
+            .map_err(|err| LandRefusal::Blocked(format!("ref moved but finalize failed: {err}")))?;
+        let ready = MergeReady {
+            owner,
+            repo,
+            number,
+            req: &req,
+            base_ref,
+            head_ref,
+            head_sha,
+            require_linear_history,
+        };
+        self.mirror_merged_main(rm, &resolved, &ready, &outcome.merge_oid);
+        Ok(outcome.merge_oid)
+    }
+
     /// Push the merged default branch to its configured GitHub mirror and
     /// record the outcome as the `jeryu/github-mirror` check-run on the merge
     /// sha. Strictly advisory: every failure path is swallowed after being
@@ -645,6 +751,17 @@ impl GithubRouter {
         }
         refs.resolve_commit(repo, &ready.head_sha)
     }
+}
+
+/// Why a merge-queue commit did not land.
+#[cfg(feature = "web")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LandRefusal {
+    /// The base tip is no longer the one the queue commit was built on; the
+    /// queue rebuilds on this new tip.
+    BaseMoved(String),
+    /// The PR no longer passes the merge gate, or git refused the update.
+    Blocked(String),
 }
 
 /// Parameters describing a PR that has already passed the merge gate.

@@ -8,6 +8,8 @@ mod control_plane;
 mod ecosystem;
 mod embedded_web;
 mod markdown;
+mod merge_queue;
+pub(crate) use merge_queue::is_queue_owned_ref;
 mod mcp_backend;
 mod permissions;
 mod pulls;
@@ -32,7 +34,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{DefaultBodyLimit, Extension, Path as AxumPath, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path as AxumPath, Query, Request, State};
 use axum::http::{HeaderName, HeaderValue, Method as HttpMethod, StatusCode, header};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response as AxumResponse};
@@ -111,6 +113,8 @@ pub(crate) struct WebState {
     pub(crate) agent_runs: agent_runs::AgentRunStore,
     /// Live PR gate runners, fed by `POST /api/v1/runners/heartbeat`.
     pub(crate) gate_runners: control_plane::GateRunnerStore,
+    /// Merge queue index; the queue itself lives in `refs/queue*` of each repo.
+    pub(crate) merge_queue: Arc<merge_queue::MergeQueue>,
     /// Auxiliary codegraph SQLite store for read-only oracle queries.
     pub(crate) codegraph_store: CodeGraphStore,
     /// Shared git-daemon repository manager backing the smart-HTTP transport.
@@ -218,6 +222,7 @@ impl WebState {
             workcells: Arc::new(Mutex::new(WorkcellManager::new())),
             agent_runs: agent_runs::AgentRunStore::new(),
             gate_runners: control_plane::GateRunnerStore::from_env(),
+            merge_queue: Arc::default(),
             codegraph_store,
             repo_manager,
             core: core_handle,
@@ -478,6 +483,7 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
         config.secure_cookies,
     );
     bootstrap_public_accounts(&state, &config.data_dir)?;
+    merge_queue::spawn_worker(Arc::new(state.clone()), std::time::Duration::from_secs(10));
     let app = app(state, &config.spa_dir);
     let listener = TcpListener::bind(config.bind).await?;
     // ConnectInfo gives the git handlers the peer address so the gitd auth layer
@@ -624,6 +630,12 @@ fn app(state: WebState, spa_dir: &Path) -> AxumRouter {
             post(pulls::approve),
         )
         .route("/api/v1/repos/:id/pulls/:number/merge", post(pulls::merge))
+        .route(
+            "/api/v1/repos/:id/pulls/:number/queue",
+            post(merge_queue::enqueue).delete(merge_queue::dequeue),
+        )
+        .route("/api/v1/repos/:id/merge-queue", get(merge_queue::list_repo))
+        .route("/api/v1/merge-queue", get(merge_queue::list_all))
         .route(
             "/api/v1/repos/:id/jankurai-scores",
             get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),
@@ -979,3 +991,6 @@ mod workcell_surface_tests;
 
 #[cfg(test)]
 mod deployment_surface_tests;
+
+#[cfg(test)]
+mod merge_queue_tests;

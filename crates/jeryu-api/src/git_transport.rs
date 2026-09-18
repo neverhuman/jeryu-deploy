@@ -291,6 +291,22 @@ pub(crate) async fn git_receive_pack(
         Ok(body) => body,
         Err(error) => return git_rpc_body_error_response(error),
     };
+    // The merge queue owns refs/queue/* and refs/queue-meta/*: a pushed queue
+    // commit would be gated and landed as if the forge had built it.
+    if let Ok(commands) = jeryu_gitd::pack::receive_pack_commands(&body)
+        && let Some(command) = commands
+            .iter()
+            .find(|command| crate::web::is_queue_owned_ref(&command.ref_name))
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "{} is owned by the merge queue and cannot be pushed\n",
+                command.ref_name
+            ),
+        )
+            .into_response();
+    }
     let manager = (*state.repo_manager).clone();
     let before = snapshot_refs(&manager, &owner, &repo);
     let origin_base_url = origin_base_url(&headers);
