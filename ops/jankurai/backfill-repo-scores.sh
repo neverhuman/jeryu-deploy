@@ -32,6 +32,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/ops/ci/common.sh"
 
 API="${JERYU_API:-http://127.0.0.1:8787}"
+API="${API%/}"
+# Bind this maintenance credential to the hosted authority or its local bootstrap.
+case "${API}" in
+  https://git.neverhuman.org|http://127.0.0.1:8787) ;;
+  *) echo "JERYU_API must name the hosted forge or its exact loopback bootstrap" >&2; exit 2 ;;
+esac
 DATA_DIR="${JERYU_DATA_DIR:-$HOME/.local/share/jeryu}"
 JOBS="${JERYU_BACKFILL_JOBS:-2}"
 # This host has been wedged by unbounded workers before — clamp hard, never trust a
@@ -73,9 +79,13 @@ TOKEN_FILE="${JERYU_FORGE_TOKEN_FILE:-}"
 [ -f "${TOKEN_FILE}" ] && [ ! -L "${TOKEN_FILE}" ] || { echo "token file must be a regular file" >&2; exit 2; }
 [ "$(stat -c '%a' "${TOKEN_FILE}")" = "600" ] || { echo "token file must be mode 0600" >&2; exit 2; }
 AUTH_CONFIG="${LOG_DIR}/curl-auth.conf"
-( umask 077; printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '\n' < "${TOKEN_FILE}")" > "${AUTH_CONFIG}" )
+token="$(cat "${TOKEN_FILE}")"
+# A bearer value must be data, never curl configuration syntax.
+[[ "${token}" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || { echo "token file must contain one nonempty bearer value" >&2; exit 2; }
 trap 'rm -f "${AUTH_CONFIG}"' EXIT
-api_curl() { curl -K "${AUTH_CONFIG}" "$@"; }
+( umask 077; printf 'header = "Authorization: Bearer %s"\n' "${token}" > "${AUTH_CONFIG}" )
+unset token
+api_curl() { curl --disable --config "${AUTH_CONFIG}" "$@"; }
 
 # Enumerate the jeryu-owned registry repos (name + default branch). The legacy
 # `local/` owner entries are not canonical and are skipped here.
