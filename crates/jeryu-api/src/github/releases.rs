@@ -79,6 +79,6 @@ fn release_json(repo: &Repository, req: &CreateReleaseRequest) -> Value {
         "body": req.body,
         "draft": req.draft,
         "prerelease": req.prerelease,
-        "html_url": format!("/{}/releases/tag/{}", repo.full_name, req.tag_name),
+        "html_url": super::support::web_url(&format!("/{}/releases/tag/{}", repo.full_name, req.tag_name)),
     })
 }

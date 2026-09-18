@@ -453,9 +453,12 @@ fn issue_json(issue: &Issue) -> Value {
         "comments": issue.comments,
         "pull_request": issue.pull_request.as_ref().map(|marker| json!({
             "url": marker.url,
-            "html_url": marker.html_url,
+            "html_url": super::support::web_url(&marker.html_url),
         })),
-        "html_url": format!("/{}/{}/issues/{}", issue.owner, issue.repo, issue.number),
+        "html_url": super::support::web_url(&format!(
+            "/repos/jeryu/{}/{}/issues/{}",
+            issue.owner, issue.repo, issue.number
+        )),
         "url": format!("/repos/{}/{}/issues/{}", issue.owner, issue.repo, issue.number),
         "created_at": issue.created_at,
         "updated_at": issue.updated_at,

@@ -727,7 +727,7 @@ pub(super) fn pull_request_json(pr: &PullRequest) -> Value {
         "merged_at": pr.merged_at,
         "merge_commit_sha": pr.merge_commit_sha,
         "source_repository": pr.source_repository,
-        "html_url": pull_request_web_path(&pr.owner, &pr.repo, pr.number),
+        "html_url": super::support::web_url(&pull_request_web_path(&pr.owner, &pr.repo, pr.number)),
         "url": format!("/repos/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number),
         "created_at": pr.created_at,
         "updated_at": pr.updated_at,

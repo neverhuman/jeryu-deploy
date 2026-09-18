@@ -11,6 +11,24 @@ use serde_json::{Value, json};
 
 use crate::routes::Response;
 
+/// Public origin of the web UI, e.g. `https://git.neverhuman.org`. The
+/// production unit sets it (ops/deploy/sign-and-push-atomicsoul.sh).
+const PUBLIC_ORIGIN_ENV: &str = "JERYU_PRODUCTION_ORIGIN";
+
+/// `html_url` for a web UI path. GitHub clients expect an absolute URL, so a
+/// rooted path is prefixed with the configured public origin; without one
+/// (local dev, tests) the path is returned unchanged.
+pub(crate) fn web_url(path: &str) -> String {
+    web_url_with_origin(std::env::var(PUBLIC_ORIGIN_ENV).ok().as_deref(), path)
+}
+
+fn web_url_with_origin(origin: Option<&str>, path: &str) -> String {
+    match origin.map(|origin| origin.trim().trim_end_matches('/')) {
+        Some(origin) if !origin.is_empty() && path.starts_with('/') => format!("{origin}{path}"),
+        _ => path.to_string(),
+    }
+}
+
 pub(crate) const MCP_GUIDANCE_TOOLS: &[&str] = &[
     "jeryu.get_system_snapshot",
     "jeryu.get_ci_run_jobs",
@@ -483,4 +501,36 @@ pub(super) fn first_contact_response() -> Response {
             "documentation_url": docs_url(),
         }),
     )
+}
+
+#[cfg(test)]
+mod web_url_tests {
+    use super::web_url_with_origin;
+
+    #[test]
+    fn prefixes_rooted_paths_with_the_public_origin() {
+        assert_eq!(
+            web_url_with_origin(
+                Some("https://git.neverhuman.org/"),
+                "/repos/jeryu/jeryu/jeryu-web/pulls/15"
+            ),
+            "https://git.neverhuman.org/repos/jeryu/jeryu/jeryu-web/pulls/15"
+        );
+    }
+
+    #[test]
+    fn leaves_paths_alone_without_an_origin_or_when_already_absolute() {
+        assert_eq!(
+            web_url_with_origin(None, "/repos/jeryu/a/b"),
+            "/repos/jeryu/a/b"
+        );
+        assert_eq!(
+            web_url_with_origin(Some("  "), "/repos/jeryu/a/b"),
+            "/repos/jeryu/a/b"
+        );
+        assert_eq!(
+            web_url_with_origin(Some("https://x.example"), "https://y.example/p"),
+            "https://y.example/p"
+        );
+    }
 }

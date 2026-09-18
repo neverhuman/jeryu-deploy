@@ -822,7 +822,7 @@ fn actions_runs_are_sourced_from_check_runs() {
     );
     assert_eq!(
         workflow_body["html_url"],
-        "/alice/jeryu/blob/main/.github/workflows/ci-fast.yml"
+        "/repos/jeryu/alice/jeryu/blob/main/.github/workflows/ci-fast.yml"
     );
     assert!(
         workflow_body["badge_url"]

@@ -76,7 +76,7 @@ pub(super) fn repository_json(repo: &Repository) -> Value {
         "default_branch": repo.default_branch,
         "archived": repo.archived,
         "disabled": repo.disabled,
-        "html_url": format!("/{}", repo.full_name),
+        "html_url": super::support::web_url(&format!("/repos/jeryu/{}", repo.full_name)),
         "url": format!("/repos/{}", repo.full_name),
         "created_at": repo.created_at,
         "updated_at": repo.updated_at,
