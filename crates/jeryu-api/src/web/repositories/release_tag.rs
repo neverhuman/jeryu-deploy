@@ -20,9 +20,15 @@ pub(in crate::web) struct ReleaseTagResponse {
     branch: String,
     tag: Option<String>,
     sha: Option<String>,
+    /// The tagged commit's committer date (`%cI`), not the tag's creation
+    /// date: lightweight tags carry no date of their own.
     tagged_at: Option<String>,
 }
 
+/// Read access is enforced before this handler runs: `auth::gate` resolves
+/// `:id` for every `/api/v1/repos/:id/...` path and refuses callers who
+/// cannot read the repository (admins pass), exactly as for `refs`, `tree`
+/// and `compare`. The route tests below pin that down.
 pub(in crate::web) async fn repo_release_tag(
     State(state): State<std::sync::Arc<WebState>>,
     AxumPath(id): AxumPath<String>,
@@ -208,5 +214,135 @@ mod tests {
 
         assert_eq!(call(Some("--output=/x")).await.0, StatusCode::BAD_REQUEST);
         assert_eq!(call(Some("nope")).await.0, StatusCode::NOT_FOUND);
+    }
+
+    /// Through the full router with auth on: a private repo's tag is only
+    /// visible to users who can read it, and a refusal matches `/refs`,
+    /// `/tree` and `/compare` without leaking the tag, sha or date.
+    #[tokio::test]
+    async fn release_tag_route_enforces_repository_read_access() {
+        use crate::web::catalog::SplitCatalog;
+        use axum::body::Body;
+        use axum::http::{Request, header};
+        use jeryu_core::{CreateRepositoryRequest, ForgeCore, RepoAccessLevel, UserRole};
+        use jeryu_gitd::{GitdConfig, RepoId, RepoManager};
+        use tower::ServiceExt;
+
+        let storage = tempfile::tempdir().unwrap();
+        let manager = RepoManager::new(GitdConfig::new(storage.path().to_path_buf()));
+        let bare = manager
+            .create_bare(&RepoId::new("alice", "vault").unwrap())
+            .unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "init.defaultBranch=main"])
+                .args(args)
+                .current_dir(work.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(&["init", "-q"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "feat: one"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+        run(&["tag", "v7.7.7-secret"]);
+        run(&["push", "-q", &bare.path.to_string_lossy(), "main", "--tags"]);
+
+        let core = ForgeCore::new();
+        let repo = core
+            .create_repository(
+                "alice",
+                CreateRepositoryRequest {
+                    name: "vault".to_string(),
+                    private: true,
+                    description: None,
+                    default_branch: Some("main".to_string()),
+                },
+            )
+            .unwrap();
+        core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
+            .unwrap();
+        core.create_account("reader", "reader-password", UserRole::User)
+            .unwrap();
+        core.create_account("outsider", "outsider-password", UserRole::User)
+            .unwrap();
+        core.grant_repo_access(
+            "jeryu-admin",
+            "reader",
+            "alice",
+            "vault",
+            RepoAccessLevel::Read,
+        )
+        .unwrap();
+        let token = |login: &str| {
+            core.create_personal_access_token(login, "test", None)
+                .unwrap()
+                .secret
+        };
+        let (admin, reader, outsider) = (token("jeryu-admin"), token("reader"), token("outsider"));
+        let state = WebState::with_repo_manager(
+            core,
+            std::sync::Arc::new(manager),
+            std::path::PathBuf::from("/tmp/jeryu-no-spa"),
+            std::env::temp_dir(),
+            SplitCatalog::builtin(),
+        )
+        .with_auth(true, false, false);
+        let app = crate::web::app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
+        let get = |path: String, token: String| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, String::from_utf8_lossy(&bytes).to_string())
+            }
+        };
+        let id = repo.id.to_string();
+        let release_tag = format!("/api/v1/repos/{id}/release-tag");
+
+        // Unauthorized: the same refusal as the sibling per-repo routes.
+        let (denied, body) = get(release_tag.clone(), outsider.clone()).await;
+        assert_eq!(denied, StatusCode::FORBIDDEN, "{body}");
+        for leak in ["v7.7.7-secret", sha.as_str(), "tagged_at"] {
+            assert!(!body.contains(leak), "refusal leaked {leak}: {body}");
+        }
+        for sibling in ["refs", "tree", "compare?base=main&head=main"] {
+            let (status, _) = get(format!("/api/v1/repos/{id}/{sibling}"), outsider.clone()).await;
+            assert_eq!(
+                status, denied,
+                "{sibling} and release-tag must refuse alike"
+            );
+        }
+        let (by_name, body) = get(
+            "/api/v1/repos/alice%2Fvault/release-tag".to_string(),
+            outsider,
+        )
+        .await;
+        assert_eq!(by_name, StatusCode::FORBIDDEN, "{body}");
+        assert!(!body.contains("v7.7.7-secret"), "{body}");
+
+        // A granted reader and an admin both see the tag.
+        for caller in [reader, admin] {
+            let (status, body) = get(release_tag.clone(), caller).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["tag"], "v7.7.7-secret");
+            assert_eq!(body["sha"], sha);
+        }
     }
 }
