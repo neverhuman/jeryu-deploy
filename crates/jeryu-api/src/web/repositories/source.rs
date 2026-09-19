@@ -53,6 +53,18 @@ fn git_tree(
     } else {
         format!("{commit}:{path}")
     };
+    // Same for a directory that is not in the commit: 404, not 500.
+    if !path.is_empty() {
+        let kind = git_lookup(state, &bare.path, &["cat-file", "-t", &spec])?
+            .map(|out| String::from_utf8_lossy(&out).trim().to_string());
+        if kind.as_deref() != Some("tree") {
+            return Err(Box::new(api_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "directory not found at this ref",
+            )));
+        }
+    }
     let out = git_output(state, &bare.path, &["ls-tree", "-z", "-l", &spec])?;
     let mut entries = Vec::new();
     for record in out
@@ -179,18 +191,30 @@ fn git_blob_bytes_inner(
         })?;
     let commit = resolve_commit(state, &bare, ref_name)?;
     let spec = format!("{commit}:{path}");
-    let sha = String::from_utf8_lossy(&git_output(
+    // A path that is not in the commit makes `rev-parse` exit non-zero
+    // ("Needed a single revision"). That is the caller naming a file that is
+    // not there, a 404, not a fault of the server: a link to a generated file
+    // that is on disk but never committed answered 500 before.
+    let sha = git_lookup(
         state,
         &bare.path,
-        &["rev-parse", "--verify", &spec],
-    )?)
-    .trim()
-    .to_string();
-    if sha.is_empty() {
-        return Err(Box::new(api_error(
+        &["rev-parse", "--verify", "--quiet", &spec],
+    )?
+    .map(|out| String::from_utf8_lossy(&out).trim().to_string())
+    .filter(|sha| !sha.is_empty())
+    .ok_or_else(|| {
+        Box::new(api_error(
             StatusCode::NOT_FOUND,
             "not_found",
-            "file not found",
+            "file not found at this ref",
+        ))
+    })?;
+    let kind = git_output(state, &bare.path, &["cat-file", "-t", &sha])?;
+    if String::from_utf8_lossy(&kind).trim() != "blob" {
+        return Err(Box::new(api_error(
+            StatusCode::NOT_FOUND,
+            "not_a_file",
+            "the path names a directory, not a file; list it with the tree route",
         )));
     }
     let size = git_object_size(state, &bare.path, &sha)?;
@@ -257,6 +281,21 @@ fn git_output(state: &WebState, cwd: &std::path::Path, args: &[&str]) -> SourceR
         let stderr = String::from_utf8_lossy(&out.stderr);
         Err(Box::new(git_source_response("run git", stderr.trim())))
     }
+}
+
+/// Like [`git_output`] for a lookup that may legitimately find nothing:
+/// `Ok(None)` when git exits non-zero, an error only when git cannot be run.
+fn git_lookup(
+    state: &WebState,
+    cwd: &std::path::Path,
+    args: &[&str],
+) -> SourceResult<Option<Vec<u8>>> {
+    let out = Command::new(&state.repo_manager.config().git_bin)
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| Box::new(git_source_response("run git", &err.to_string())))?;
+    Ok(out.status.success().then_some(out.stdout))
 }
 
 fn git_object_size(state: &WebState, cwd: &std::path::Path, sha: &str) -> SourceResult<u64> {

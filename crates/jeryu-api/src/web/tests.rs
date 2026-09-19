@@ -4260,6 +4260,89 @@ async fn source_browser_rejects_unsafe_paths_before_storage_lookup() {
     }
 }
 
+/// A link to a file that is on disk but was never committed (a generated
+/// `.jankurai/repo-score.md`, live on 2026-09-19) answered 500, because git's
+/// "Needed a single revision" was reported as a server fault. A path that is
+/// not at the ref is a 404, for the blob, the raw and the tree routes; a
+/// directory asked for as a file says so.
+#[tokio::test]
+async fn source_browser_answers_404_for_a_path_that_is_not_at_the_ref() {
+    use crate::web::shift::tests::run_git;
+    let dir = tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(work.join("docs")).unwrap();
+    run_git(&work, &["init", "-q"]);
+    std::fs::write(work.join("docs/guide.md"), "# Guide\n").unwrap();
+    run_git(&work, &["add", "."]);
+    run_git(&work, &["commit", "-q", "-m", "base"]);
+    let owner = dir.path().join("jeryu");
+    std::fs::create_dir_all(&owner).unwrap();
+    run_git(&owner, &["init", "-q", "--bare", "jeryu-core.git"]);
+    run_git(
+        &work,
+        &[
+            "push",
+            "-q",
+            owner.join("jeryu-core.git").to_str().unwrap(),
+            "main",
+        ],
+    );
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu-core".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new_with_git_storage(
+        core,
+        dir.path().to_path_buf(),
+    ));
+    let query = |path: &str, render: Option<&str>| {
+        Query(super::repositories::SourceQuery {
+            path: Some(path.to_string()),
+            render: render.map(str::to_string),
+            ..Default::default()
+        })
+    };
+    let id = || AxumPath("jeryu/jeryu-core".to_string());
+
+    let found = repo_blob(
+        State(state.clone()),
+        id(),
+        query("docs/guide.md", Some("html")),
+    )
+    .await;
+    assert_eq!(found.status(), StatusCode::OK);
+
+    for render in [None, Some("html")] {
+        let missing = repo_blob(
+            State(state.clone()),
+            id(),
+            query(".jankurai/repo-score.md", render),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "render={render:?}");
+        assert_eq!(response_json(missing).await["code"], "not_found");
+    }
+    let raw = repo_raw(State(state.clone()), id(), query("no/such/file.txt", None)).await;
+    assert_eq!(raw.status(), StatusCode::NOT_FOUND);
+    let tree =
+        super::repositories::repo_tree(State(state.clone()), id(), query("no/such/dir", None))
+            .await;
+    assert_eq!(tree.status(), StatusCode::NOT_FOUND);
+
+    let directory = repo_blob(State(state.clone()), id(), query("docs", None)).await;
+    assert_eq!(directory.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_json(directory).await["code"], "not_a_file");
+    let listed = super::repositories::repo_tree(State(state), id(), query("docs", None)).await;
+    assert_eq!(listed.status(), StatusCode::OK);
+}
+
 #[test]
 fn app_router_builds_without_route_conflicts() {
     // Axum panics during construction on overlapping/ambiguous routes, so
