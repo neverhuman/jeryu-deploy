@@ -263,6 +263,12 @@ pub(super) async fn review(
         .filter_map(comment_input)
         .collect();
     let event = review_state(request.verdict);
+    let verdict_name = match event {
+        ReviewState::Approved => "approve",
+        ReviewState::ChangesRequested => "request_changes",
+        _ => "comment",
+    };
+    let review_body = request.body_markdown.clone();
     if event == ReviewState::Approved
         && let Some(response) = self_approval_forbidden(&pr, &account.login)
     {
@@ -287,6 +293,13 @@ pub(super) async fn review(
             .get_pull_request(&repo.owner, &repo.name, pr.number)
         {
             Ok(updated) => {
+                super::pipeline::emit::pull_reviewed(
+                    &state,
+                    &updated,
+                    &account.login,
+                    verdict_name,
+                    review_body.as_deref(),
+                );
                 Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
             }
             Err(error) => core_error(error, "reload pull request after review"),
@@ -406,6 +419,7 @@ pub(super) async fn approve(
             .get_pull_request(&repo.owner, &repo.name, pr.number)
         {
             Ok(updated) => {
+                super::pipeline::emit::pull_approved(&state, &updated, &account.login);
                 Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
             }
             Err(error) => core_error(error, "reload pull request after approval"),
@@ -416,6 +430,7 @@ pub(super) async fn approve(
 
 pub(super) async fn merge(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
     body: Bytes,
 ) -> AxumResponse {
@@ -513,7 +528,10 @@ pub(super) async fn merge(
         .core()
         .get_pull_request(&repo.owner, &repo.name, pr.number)
     {
-        Ok(updated) => Json(detail_for_pr(&state, &updated, None)).into_response(),
+        Ok(updated) => {
+            super::pipeline::emit::pull_merged(&state, &updated, &account.login, "merge");
+            Json(detail_for_pr(&state, &updated, None)).into_response()
+        }
         Err(error) => core_error(error, "reload pull request after merge"),
     }
 }

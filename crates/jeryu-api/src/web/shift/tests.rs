@@ -141,7 +141,7 @@ fn bad_files_are_refused_and_lease_liveness_is_time_based() {
     assert_eq!(slugify("!!!", 48), "todo");
 }
 
-fn run_git(dir: &Path, args: &[&str]) -> String {
+pub(crate) fn run_git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args([
             "-c",
@@ -181,7 +181,7 @@ order = 1
 
 /// A storage root with `jeryu/jeryu-todo.git` (queue branch: family.toml and
 /// two todos) and `jeryu/jeryu-deploy.git` (main plus a nightshift branch).
-fn fixture(root: &Path) {
+pub(crate) fn fixture(root: &Path) {
     let owner = root.join("jeryu");
     std::fs::create_dir_all(&owner).unwrap();
     let work = root.join("work-todo");

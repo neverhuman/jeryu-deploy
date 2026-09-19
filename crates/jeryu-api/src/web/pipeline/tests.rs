@@ -476,3 +476,243 @@ fn stored_events_reach_pipeline_scope_subscribers_only() {
     );
     assert!(other_rx.try_recv().is_err());
 }
+
+/// An admin token and a router over the shift fixture (queue repo with two
+/// todos, `jeryu-deploy` with a nightshift branch).
+fn shift_forge(dir: &Path) -> (axum::Router, String) {
+    crate::web::shift::tests::fixture(dir);
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_repository(
+        "jeryu",
+        jeryu_core::CreateRepositoryRequest {
+            name: "jeryu-deploy".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new_with_git_storage(core, dir.to_path_buf()).with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    (router, admin)
+}
+
+async fn events_of(router: &axum::Router, token: &str, filter: &str) -> Vec<Value> {
+    let page = body_json(
+        router
+            .clone()
+            .oneshot(request(
+                HttpMethod::GET,
+                &format!("/api/v1/events?after_seq=0&{filter}"),
+                token,
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    page["events"].as_array().cloned().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn shift_writes_and_stage_changes_become_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = shift_forge(dir.path());
+    let post = |uri: &str, body: Value| {
+        router
+            .clone()
+            .oneshot(request(HttpMethod::POST, uri, &admin, Some(body)))
+    };
+
+    let filed = post(
+        "/api/v1/shift/todos",
+        json!({"family": "jeryu", "text": "Fix the header", "mode": "now"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(filed.status(), StatusCode::CREATED);
+    let id = body_json(filed).await["id"].as_str().unwrap().to_string();
+    let blocked = post(
+        &format!("/api/v1/shift/todos/jeryu/{id}/action"),
+        json!({"action": "block", "note": "needs a decision"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(blocked.status(), StatusCode::OK);
+
+    let beat = |state: &str, stage: Option<&str>, todo: Option<&str>| {
+        json!({"operator": "alton@xbabe0", "host": "xbabe0", "slot": "w1", "family": "jeryu",
+               "state": state, "stage": stage, "todo_id": todo})
+    };
+    for body in [
+        beat("idle", None, None),                  // first idle beat: no event
+        beat("idle", None, None),                  // unchanged: no event
+        beat("working", Some("agent"), Some(&id)), // idle -> agent
+        beat("working", Some("agent"), Some(&id)), // unchanged: no event
+        beat("working", Some("gate"), Some(&id)),  // agent -> gate
+        beat("idle", None, None),                  // gate -> idle
+    ] {
+        let response = post("/api/v1/shift/heartbeat", body).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let opened = post(
+        "/api/v1/shift/shifts/jeryu/pr",
+        json!({"branch": "nightshift/2026-09-18"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(opened.status(), StatusCode::OK);
+    // Asking again finds the open PR and opens nothing, so emits nothing.
+    post(
+        "/api/v1/shift/shifts/jeryu/pr",
+        json!({"branch": "nightshift/2026-09-18"}),
+    )
+    .await
+    .unwrap();
+
+    let events = events_of(&router, &admin, "family=jeryu").await;
+    let lines: Vec<(&str, &str)> = events
+        .iter()
+        .map(|e| (e["kind"].as_str().unwrap(), e["summary"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            ("todo.filed", "filed: Fix the header"),
+            ("todo.action", "block by alice: Fix the header"),
+            ("worker.stage", &*format!("w1 jeryu: idle -> agent on {id}")),
+            ("worker.stage", &*format!("w1 jeryu: agent -> gate on {id}")),
+            ("worker.stage", &*format!("w1 jeryu: gate -> idle on {id}")),
+            (
+                "shift.pr_opened",
+                "opened jeryu-deploy#1 for shift nightshift/2026-09-18"
+            ),
+        ]
+    );
+    assert_eq!(events[0]["todo_id"], id.as_str());
+    assert_eq!(events[0]["reporter"], "forge");
+    assert_eq!(events[0]["actor"], "alice/web");
+    assert_eq!(events[1]["reason"], "needs a decision");
+    assert_eq!(events[2]["actor"], "alton@xbabe0/w1");
+    assert_eq!(events[5]["repo"], "jeryu/jeryu-deploy");
+    assert_eq!(events[5]["pr"], 1);
+    assert_eq!(events[5]["shift"], "nightshift/2026-09-18");
+}
+
+fn runner_beat(labels: &[&str], current: Option<Value>, last: Option<Value>) -> Value {
+    let reviewer = labels.contains(&"redteam");
+    json!({
+        "runnerId": if reviewer { "xbabe0/pr-redteam" } else { "xbabe2/slot0" },
+        "host": if reviewer { "xbabe0" } else { "xbabe2" },
+        "slot": 0,
+        "labels": labels,
+        "current": current,
+        "last": last,
+    })
+}
+
+#[tokio::test]
+async fn runner_heartbeats_emit_gate_and_review_events_only_on_change() {
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("gatebot", "gatebot-password", UserRole::User)
+        .unwrap();
+    core.create_account("pragent", "pragent-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "t", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, gatebot, pragent) = (token("alice"), token("gatebot"), token("pragent"));
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let sha = "b761244b76371995527bfe7795e98492703553a8";
+    let task = json!({"repo": "jeryu/jeryu-web", "pr": 35, "sha": sha,
+                      "recipe": "ops/ci/pr-ci.sh", "startedAt": "2026-09-19T13:06:00Z"});
+    let result = |conclusion: &str| {
+        json!({"repo": "jeryu/jeryu-web", "pr": 35, "sha": sha, "recipe": "ops/ci/pr-ci.sh",
+               "conclusion": conclusion, "seconds": 114, "finishedAt": "2026-09-19T13:08:14Z"})
+    };
+    let old = json!({"repo": "jeryu/jeryu-web", "pr": 34, "sha": sha, "recipe": "ops/ci/pr-ci.sh",
+                     "conclusion": "success", "seconds": 90, "finishedAt": "2026-09-19T12:00:00Z"});
+    for (who, body) in [
+        // First beat after a forge restart repeats an old result: not news.
+        (&gatebot, runner_beat(&["pr-gate"], None, Some(old.clone()))),
+        (
+            &gatebot,
+            runner_beat(&["pr-gate"], Some(task.clone()), Some(old.clone())),
+        ),
+        (
+            &gatebot,
+            runner_beat(&["pr-gate"], Some(task.clone()), Some(old.clone())),
+        ),
+        (
+            &gatebot,
+            runner_beat(&["pr-gate"], None, Some(result("failure"))),
+        ),
+        (
+            &gatebot,
+            runner_beat(&["pr-gate"], None, Some(result("failure"))),
+        ),
+        (&pragent, runner_beat(&["redteam"], None, None)),
+        (
+            &pragent,
+            runner_beat(&["redteam"], Some(task.clone()), None),
+        ),
+        (
+            &pragent,
+            runner_beat(&["redteam"], None, Some(result("too_large"))),
+        ),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                "/api/v1/runners/heartbeat",
+                who,
+                Some(body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let events = events_of(&router, &admin, "repo=jeryu/jeryu-web").await;
+    let lines: Vec<(&str, &str, bool)> = events
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap(),
+                e["outcome"].as_str().unwrap_or("-"),
+                e["needs_human"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            ("gate.started", "-", false),
+            ("gate.finished", "failure", false),
+            ("review.started", "-", false),
+            ("review.finished", "too_large", true),
+        ]
+    );
+    assert_eq!(events[1]["seconds"], 114);
+    assert_eq!(events[1]["pr"], 35);
+    assert_eq!(events[1]["actor"], "xbabe2/slot0");
+    assert_eq!(
+        events[3]["summary"],
+        "xbabe0/pr-redteam review of jeryu/jeryu-web#35: too_large in 114s"
+    );
+}

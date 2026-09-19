@@ -11,7 +11,7 @@ use super::types::{CreatedPr, ShiftBranch, ShiftPr, ShiftRepo};
 use crate::github::pulls::pull_request_web_path;
 
 /// `(kind, date)` when `branch` is `<prefix>/<date>` for one of the prefixes.
-fn classify(queue: &Queue, branch: &str) -> Option<(&'static str, String)> {
+pub(super) fn classify(queue: &Queue, branch: &str) -> Option<(&'static str, String)> {
     let family = &queue.family;
     for (kind, prefix) in [
         ("bulletshift", &family.bulletshift_prefix),

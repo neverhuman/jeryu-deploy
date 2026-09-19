@@ -208,6 +208,24 @@ impl Fixture {
         )
     }
 
+    /// Pipeline events recorded so far, oldest first, as `(kind, needs_human)`.
+    fn events(&self) -> Vec<(String, bool)> {
+        self.state
+            .events
+            .query(&crate::web::pipeline::EventsQuery {
+                after_seq: Some(0),
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|event| {
+                assert_eq!(event.repo.as_deref(), Some("alice/jeryu"));
+                assert_eq!(event.pr, Some(1));
+                (event.kind, event.needs_human)
+            })
+            .collect()
+    }
+
     fn entry(&self) -> merge_queue::QueueEntry {
         self.state
             .merge_queue
@@ -275,6 +293,15 @@ async fn a_pr_behind_main_is_replayed_gated_and_landed() {
         .get_pull_request("alice", "jeryu", fx.number)
         .unwrap();
     assert!(pr.merged);
+    assert_eq!(
+        fx.events(),
+        [
+            ("queue.enqueued".to_string(), false),
+            ("queue.landed".to_string(), false),
+            ("pr.merged".to_string(), false),
+        ],
+        "a waiting tick emits nothing; landing emits the queue and the merge"
+    );
 }
 
 #[tokio::test]
@@ -293,6 +320,11 @@ async fn a_conflicting_replay_is_refused_and_main_is_untouched() {
     );
     assert_eq!(fx.main(), moved);
     assert!(!fx.has_ref("refs/queue/main/1"));
+    assert_eq!(
+        fx.events(),
+        [("queue.refused".to_string(), true)],
+        "a PR that cannot be replayed needs somebody to rebase it"
+    );
 }
 
 #[tokio::test]
@@ -319,6 +351,14 @@ async fn a_failed_queue_gate_is_retried_once_then_fails() {
     assert_eq!(entry.state, merge_queue::QueueState::Failed);
     assert_eq!(fx.main(), moved);
     assert!(!fx.has_ref("refs/queue/main/1"));
+    assert_eq!(
+        fx.events(),
+        [
+            ("queue.enqueued".to_string(), false),
+            ("queue.building".to_string(), false),
+            ("queue.failed".to_string(), true),
+        ]
+    );
 }
 
 #[tokio::test]

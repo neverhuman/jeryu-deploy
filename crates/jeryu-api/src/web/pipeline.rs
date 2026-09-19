@@ -8,6 +8,7 @@
 //! [`emit`], which never fails the request it rides on.
 
 pub(crate) mod attention;
+pub(crate) mod emit;
 mod store;
 mod types;
 

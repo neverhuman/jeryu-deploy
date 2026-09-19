@@ -121,6 +121,29 @@ impl HeartbeatStore {
         )
     }
 
+    /// The newest stored heartbeat of `heartbeat`'s slot, if it ever reported.
+    pub(crate) fn latest_for_slot(
+        &self,
+        heartbeat: &Heartbeat,
+    ) -> Result<Option<StoredHeartbeat>, String> {
+        Ok(self
+            .select(
+                "SELECT received_ms, operator, host, slot, family, state, todo_id, stage,
+                        lease_until, shift, planned_slots, schedule_json, version
+                   FROM shift_heartbeats
+                  WHERE operator = ?1 AND host = ?2 AND slot = ?3 AND family = ?4
+                  ORDER BY id DESC LIMIT 1",
+                params![
+                    heartbeat.operator,
+                    heartbeat.host,
+                    heartbeat.slot,
+                    heartbeat.family
+                ],
+            )?
+            .into_iter()
+            .next())
+    }
+
     /// Every heartbeat in `[from_ms, to_ms]`, oldest first.
     pub(crate) fn between(&self, from_ms: i64, to_ms: i64) -> Result<Vec<StoredHeartbeat>, String> {
         self.select(

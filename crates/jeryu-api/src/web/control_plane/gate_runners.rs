@@ -150,6 +150,15 @@ impl GateRunnerStore {
         })
     }
 
+    /// The runner's last accepted heartbeat, if it has reported since startup.
+    pub(crate) fn previous(&self, runner_id: &str) -> Option<GateRunnerHeartbeat> {
+        self.runners
+            .lock()
+            .expect("gate runner store lock")
+            .get(runner_id)
+            .map(|record| record.heartbeat.clone())
+    }
+
     pub(crate) fn snapshot(&self) -> Vec<GateRunnerRecord> {
         self.runners
             .lock()

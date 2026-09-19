@@ -12,7 +12,7 @@ mod todo_file;
 mod types;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -27,6 +27,7 @@ use jeryu_core::AccountSummary;
 use serde_json::{Value, json};
 
 use super::WebState;
+use super::pipeline::{self, NewEvent};
 use super::workcells_support::{TypedError, typed_error};
 use heartbeats::{HEALTHY_MS, HeartbeatStore};
 pub(crate) use heartbeats::{migrate as migrate_shift_store, rfc3339_ms};
@@ -340,6 +341,23 @@ pub(crate) async fn file_todos(
     }
     let now = Utc::now();
     let api: Vec<ShiftTodo> = todos.iter().map(|t| t.to_api(now)).collect();
+    for todo in &api {
+        pipeline::emit(
+            &state,
+            NewEvent {
+                actor: Some(format!("{}/web", account.login)),
+                family: Some(todo.family.clone()),
+                todo_id: Some(todo.id.clone()),
+                detail: Some(json!({
+                    "mode": todo.mode,
+                    "priority": todo.priority,
+                    "repos": todo.repos,
+                    "triaged": todo.triaged,
+                })),
+                ..NewEvent::forge("todo.filed", format!("filed: {}", todo.title))
+            },
+        );
+    }
     if request.texts.is_some() {
         (StatusCode::CREATED, Json(FiledTodos { todos: api })).into_response()
     } else {
@@ -436,7 +454,28 @@ pub(crate) async fn todo_action(
         },
     );
     match result {
-        Ok(todo) => Json(todo.to_api(Utc::now())).into_response(),
+        Ok(todo) => {
+            pipeline::emit(
+                &state,
+                NewEvent {
+                    actor: Some(format!("{}/web", account.login)),
+                    family: Some(family.clone()),
+                    todo_id: Some(todo.id.clone()),
+                    outcome: Some(request.action.clone()),
+                    reason: request.note.clone(),
+                    detail: Some(json!({
+                        "action": request.action,
+                        "value": request.value,
+                        "status": todo.status,
+                    })),
+                    ..NewEvent::forge(
+                        "todo.action",
+                        format!("{} by {}: {}", request.action, account.login, todo.title),
+                    )
+                },
+            );
+            Json(todo.to_api(Utc::now())).into_response()
+        }
         Err(WriteError::Rejected(Refused::NotFound)) => shift_error(
             StatusCode::NOT_FOUND,
             "shift_todo_not_found",
@@ -507,6 +546,14 @@ pub(crate) async fn heartbeat(
         Err(reason) => return bad_request(&reason),
     };
     let now = Utc::now();
+    // Read the slot's previous beat first: a change of state, stage or todo
+    // between two beats is a pipeline event; an unchanged beat is not.
+    let previous = state
+        .shift
+        .heartbeats
+        .latest_for_slot(&heartbeat)
+        .ok()
+        .flatten();
     if let Err(err) =
         state
             .shift
@@ -520,11 +567,79 @@ pub(crate) async fn heartbeat(
             "check <data_dir>/shift.sqlite",
         );
     }
+    if let Some(event) = stage_event(previous.as_ref().map(|p| &p.heartbeat), &heartbeat) {
+        pipeline::emit(&state, event);
+    }
     Json(json!({
         "ok": true,
         "server_time": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     }))
     .into_response()
+}
+
+/// What a slot is doing, in one word: its stage while working, else its state.
+fn slot_label(heartbeat: &Heartbeat) -> &str {
+    match (heartbeat.state.as_str(), heartbeat.stage.as_deref()) {
+        ("working", Some(stage)) => stage,
+        (state, _) => state,
+    }
+}
+
+/// The `worker.stage` event for a slot whose state, stage or todo changed
+/// since its previous beat. A slot's first beat is an event only when it is
+/// already doing something: an idle slot appearing is not news.
+pub(crate) fn stage_event(previous: Option<&Heartbeat>, current: &Heartbeat) -> Option<NewEvent> {
+    let unchanged = previous.is_some_and(|p| {
+        p.state == current.state && p.stage == current.stage && p.todo_id == current.todo_id
+    });
+    if unchanged || (previous.is_none() && current.state == "idle") {
+        return None;
+    }
+    let mut summary = format!("{} {}: ", current.slot, current.family);
+    if let Some(previous) = previous {
+        summary.push_str(&format!("{} -> ", slot_label(previous)));
+    }
+    summary.push_str(slot_label(current));
+    let todo = current
+        .todo_id
+        .as_ref()
+        .or_else(|| previous.and_then(|p| p.todo_id.as_ref()));
+    if let Some(todo) = todo {
+        summary.push_str(&format!(" on {todo}"));
+    }
+    Some(NewEvent {
+        actor: Some(format!("{}/{}", current.operator, current.slot)),
+        family: Some(current.family.clone()),
+        todo_id: todo.cloned(),
+        shift: current.shift.clone(),
+        outcome: (current.state == "paused").then(|| "paused".to_string()),
+        detail: Some(json!({
+            "host": current.host,
+            "state": current.state,
+            "stage": current.stage,
+            "previous_state": previous.map(|p| &p.state),
+            "previous_stage": previous.and_then(|p| p.stage.as_ref()),
+        })),
+        ..NewEvent::forge("worker.stage", summary)
+    })
+}
+
+/// The family that works `owner/repo` and, when `branch` is one of that
+/// family's shift branches, the branch: the join keys a pull request event
+/// needs to show up on a todo's trace.
+pub(crate) fn shift_context(
+    state: &WebState,
+    owner: &str,
+    repo: &str,
+    branch: &str,
+) -> (Option<String>, Option<String>) {
+    for queue in discover(&state.repo_manager) {
+        if queue.owner == owner && queue.family.repos.iter().any(|r| r.name == repo) {
+            let shift = shifts::classify(&queue, branch).map(|_| branch.to_string());
+            return (Some(queue.family.name), shift);
+        }
+    }
+    (None, None)
 }
 
 /// `GET /api/v1/shift/workers`: every slot seen in the last 24 hours.
@@ -593,6 +708,7 @@ pub(crate) async fn list_shifts(
 /// `POST /api/v1/shift/shifts/:family/pr`
 pub(crate) async fn open_shift_pr(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath(family): AxumPath<String>,
     body: Bytes,
 ) -> AxumResponse {
@@ -615,7 +731,29 @@ pub(crate) async fn open_shift_pr(
             ),
             "list shift branches with GET /api/v1/shift/shifts",
         ),
-        Ok(prs) => Json(ShiftPrResponse { prs }).into_response(),
+        Ok(prs) => {
+            for pr in prs.iter().filter(|pr| pr.created) {
+                pipeline::emit(
+                    &state,
+                    NewEvent {
+                        actor: Some(format!("{}/web", account.login)),
+                        family: Some(family.clone()),
+                        repo: Some(format!("{}/{}", queue.owner, pr.repo)),
+                        pr: i64::try_from(pr.number).ok(),
+                        shift: Some(request.branch.clone()),
+                        detail: Some(json!({ "url": pr.url })),
+                        ..NewEvent::forge(
+                            "shift.pr_opened",
+                            format!(
+                                "opened {}#{} for shift {}",
+                                pr.repo, pr.number, request.branch
+                            ),
+                        )
+                    },
+                );
+            }
+            Json(ShiftPrResponse { prs }).into_response()
+        }
         Err(reason) => bad_request(&reason),
     }
 }

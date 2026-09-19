@@ -60,11 +60,15 @@ pub(crate) async fn runner_heartbeat(
         )
             .into_response();
     }
+    let previous = state.gate_runners.previous(&heartbeat.runner_id);
     match state
         .gate_runners
-        .record(heartbeat, &account.login, Utc::now())
+        .record(heartbeat.clone(), &account.login, Utc::now())
     {
-        Ok(accepted) => Json(accepted).into_response(),
+        Ok(accepted) => {
+            crate::web::pipeline::emit::runner_heartbeat(&state, previous.as_ref(), &heartbeat);
+            Json(accepted).into_response()
+        }
         Err(reason) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({ "code": "invalid_input", "message": reason })),

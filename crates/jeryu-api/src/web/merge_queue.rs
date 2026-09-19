@@ -181,6 +181,55 @@ fn comment(state: &WebState, owner: &str, repo: &str, number: u64, body: String)
     );
 }
 
+/// One pipeline event per queue transition (`queue.enqueued`, `.building`,
+/// `.landed`, `.failed`, `.dequeued`, `.refused`), keyed to the PR head so it
+/// joins the pull request's other events.
+fn emit_queue(
+    state: &WebState,
+    entry: &QueueEntry,
+    kind: &str,
+    actor: &str,
+    needs_human: bool,
+    summary: String,
+) {
+    let (owner, repo) = entry.repo.split_once('/').unwrap_or(("", &entry.repo));
+    let head_ref = state
+        .core
+        .get_pull_request(owner, repo, entry.number)
+        .map(|pr| pr.head.ref_name)
+        .unwrap_or_default();
+    let (family, shift) = super::shift::shift_context(state, owner, repo, &head_ref);
+    let outcome = match entry.state {
+        QueueState::Building => None,
+        QueueState::Landed => Some("success"),
+        QueueState::Failed => Some("failure"),
+        QueueState::Dequeued => Some("dequeued"),
+    };
+    super::pipeline::emit(
+        state,
+        super::pipeline::NewEvent {
+            actor: Some(actor.to_string()),
+            family,
+            repo: Some(entry.repo.clone()),
+            pr: i64::try_from(entry.number).ok(),
+            sha: Some(entry.pr_head_sha.clone()),
+            shift,
+            outcome: outcome.map(str::to_string),
+            needs_human,
+            reason: entry.reason.clone(),
+            detail: Some(json!({
+                "base": entry.base,
+                "queue_sha": entry.queue_sha,
+                "base_sha": entry.base_sha,
+                "landed_sha": entry.landed_sha,
+                "attempts": entry.attempts.len(),
+                "approvers": entry.approvers.iter().map(|a| a.login.as_str()).collect::<Vec<_>>(),
+            })),
+            ..super::pipeline::NewEvent::forge(kind, summary)
+        },
+    );
+}
+
 fn approvers(state: &WebState, pr: &PullRequest) -> Vec<Approver> {
     let automation = automation_identities();
     let reviews = state
@@ -316,10 +365,32 @@ pub(super) async fn enqueue(
             ReplayFailure::MergeCommits => "queue_merge_commits",
             ReplayFailure::Git(_) => "queue_git_error",
         };
+        // The PR cannot be replayed onto the base: somebody has to rebase it.
+        entry.state = QueueState::Dequeued;
+        entry.reason = Some(failure.to_string());
+        emit_queue(
+            &state,
+            &entry,
+            "queue.refused",
+            &account.login,
+            true,
+            format!(
+                "{}#{} could not join the merge queue ({code})",
+                entry.repo, number
+            ),
+        );
         return api_error(StatusCode::CONFLICT, code, &failure.to_string());
     }
     persist(&state, &repo.owner, &repo.name, &entry);
     index.entries.insert(key, entry.clone());
+    emit_queue(
+        &state,
+        &entry,
+        "queue.enqueued",
+        &account.login,
+        false,
+        format!("{}#{} joined the merge queue", entry.repo, number),
+    );
     entry_response(StatusCode::CREATED, &entry)
 }
 
@@ -348,6 +419,14 @@ pub(super) async fn dequeue(
             entry.state = QueueState::Dequeued;
             entry.reason = Some(format!("dequeued by {}", account.login));
             persist(&state, &repo.owner, &repo.name, entry);
+            emit_queue(
+                &state,
+                entry,
+                "queue.dequeued",
+                &account.login,
+                false,
+                format!("{}#{} left the merge queue", entry.repo, number),
+            );
             StatusCode::NO_CONTENT.into_response()
         }
         _ => api_error(
@@ -504,6 +583,26 @@ fn finish(
     entry.state = to;
     entry.reason = Some(reason.clone());
     persist(state, owner, repo, entry);
+    let (kind, needs_human, verb) = match to {
+        QueueState::Landed => ("queue.landed", false, "landed from the merge queue"),
+        QueueState::Failed => ("queue.failed", true, "failed in the merge queue"),
+        // Leaving the queue for anything but a landed PR strands an approved
+        // PR until somebody re-queues or rebases it.
+        _ => ("queue.dequeued", true, "was dropped from the merge queue"),
+    };
+    emit_queue(
+        state,
+        entry,
+        kind,
+        "merge-queue",
+        needs_human,
+        format!("{}#{} {verb}", entry.repo, entry.number),
+    );
+    if to == QueueState::Landed
+        && let Ok(pr) = state.core.get_pull_request(owner, repo, entry.number)
+    {
+        super::pipeline::emit::pull_merged(state, &pr, "merge-queue", "merge_queue");
+    }
     comment(
         state,
         owner,
@@ -522,6 +621,14 @@ fn advance(state: &WebState, owner: &str, repo: &str, number: u64, entry: &mut Q
         entry.state = QueueState::Dequeued;
         entry.reason = Some("the pull request is no longer open".to_string());
         persist(state, owner, repo, entry);
+        emit_queue(
+            state,
+            entry,
+            "queue.dequeued",
+            "merge-queue",
+            false,
+            format!("{}#{} left the merge queue", entry.repo, entry.number),
+        );
         return;
     }
     if pr.head.sha != entry.pr_head_sha {
@@ -571,6 +678,17 @@ fn advance(state: &WebState, owner: &str, repo: &str, number: u64, entry: &mut Q
                     );
                 } else {
                     persist(state, owner, repo, entry);
+                    emit_queue(
+                        state,
+                        entry,
+                        "queue.building",
+                        "merge-queue",
+                        false,
+                        format!(
+                            "{}#{} rebuilt for a second gate after a red one",
+                            entry.repo, entry.number
+                        ),
+                    );
                 }
             } else {
                 let tried: Vec<&str> = entry
@@ -659,6 +777,17 @@ fn land(state: &WebState, owner: &str, repo: &str, entry: &mut QueueEntry) {
                 );
             } else {
                 persist(state, owner, repo, entry);
+                emit_queue(
+                    state,
+                    entry,
+                    "queue.building",
+                    "merge-queue",
+                    false,
+                    format!(
+                        "{}#{} rebuilt because the base moved",
+                        entry.repo, entry.number
+                    ),
+                );
             }
         }
         Err(crate::github::pulls::LandRefusal::Blocked(reason)) => {

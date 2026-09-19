@@ -146,7 +146,20 @@ async fn github_forward_request(
     }
     let body = std::str::from_utf8(&body).unwrap_or_default();
     let body = bind_authenticated_actor(body, &account.login);
-    github_response(state.github.handle(method, &path_and_query, &body))
+    let response = state.github.handle(method, &path_and_query, &body);
+    let normalized = normalize_github_edge_path(&path_and_query);
+    super::pipeline::emit::github_edge(
+        &state,
+        method != Method::Get,
+        normalized
+            .split_once('?')
+            .map_or(normalized, |(path, _)| path),
+        &account.login,
+        &body,
+        response.status,
+        &response.body,
+    );
+    github_response(response)
 }
 
 /// Replaces any caller-supplied actor with the authenticated principal before

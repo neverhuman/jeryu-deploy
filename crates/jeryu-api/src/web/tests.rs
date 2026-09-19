@@ -940,7 +940,8 @@ async fn pulls_mutations_return_typed_repair_errors() {
             .contains("ci/fast")
     );
     let merge = super::pulls::merge(
-        State(state),
+        State(state.clone()),
+        axum::Extension(super::auth::trusted_local_account(&state)),
         AxumPath((repo.id.to_string(), pr.number)),
         axum::body::Bytes::from(
             serde_json::json!({
@@ -1518,7 +1519,8 @@ async fn pulls_mutations_allow_record_only_autonomy_advisory() {
         )
         .unwrap();
     let merge = super::pulls::merge(
-        State(state),
+        State(state.clone()),
+        axum::Extension(super::auth::trusted_local_account(&state)),
         path(),
         axum::body::Bytes::from(
             serde_json::json!({
@@ -1610,7 +1612,8 @@ async fn web_pull_merge_advances_real_bare_main_ref() {
     let passport_hash = detail["passport_hash"].as_str().unwrap();
 
     let response = super::pulls::merge(
-        State(state),
+        State(state.clone()),
+        axum::Extension(super::auth::trusted_local_account(&state)),
         path(),
         axum::body::Bytes::from(
             serde_json::json!({
@@ -1631,6 +1634,15 @@ async fn web_pull_merge_advances_real_bare_main_ref() {
         head_sha,
         "web merge route must move the real bare main ref"
     );
+    let events = state
+        .events
+        .query(&super::pipeline::EventsQuery::default())
+        .unwrap();
+    assert_eq!(events.len(), 1, "the merge is one pipeline event");
+    assert_eq!(events[0].kind, "pr.merged");
+    assert_eq!(events[0].repo.as_deref(), Some("alice/jeryu"));
+    assert_eq!(events[0].pr, Some(1));
+    assert_eq!(events[0].actor.as_deref(), Some("jeryu-admin"));
 }
 
 #[tokio::test]

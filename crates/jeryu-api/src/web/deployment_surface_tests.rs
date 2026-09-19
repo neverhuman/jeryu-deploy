@@ -148,6 +148,34 @@ async fn only_listed_deployers_record_deployments_and_the_creator_is_the_caller(
         assert_eq!(status, StatusCode::CREATED, "{appended}");
         assert_eq!(appended["creator"]["login"], "alton2");
     }
+
+    // Each accepted write became a pipeline event; the refused ones did not.
+    let (status, page) = call(
+        &forge,
+        &forge.admin,
+        HttpMethod::GET,
+        "/api/v1/events?after_seq=0&kind=deploy.",
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let events = page["events"].as_array().unwrap();
+    let kinds: Vec<&str> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "deploy.created",
+            "deploy.status",
+            "deploy.created",
+            "deploy.status"
+        ]
+    );
+    assert_eq!(events[1]["outcome"], "success");
+    assert_eq!(events[1]["sha"], SHA);
+    assert_eq!(events[1]["repo"], "alice/jeryu");
+    assert_eq!(events[1]["actor"], "alton2");
+    assert_eq!(events[1]["reporter"], "forge");
+    assert_eq!(events[1]["needs_human"], false);
 }
 
 #[tokio::test]
