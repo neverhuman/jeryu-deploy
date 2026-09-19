@@ -9,11 +9,14 @@
 
 pub(crate) mod attention;
 pub(crate) mod emit;
+pub(crate) mod pins;
 mod store;
 mod types;
 
 #[cfg(test)]
 mod attention_tests;
+#[cfg(test)]
+mod pins_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 

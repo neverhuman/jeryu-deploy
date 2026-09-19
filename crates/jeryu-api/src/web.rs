@@ -125,6 +125,8 @@ pub(crate) struct WebState {
     pub(crate) events: pipeline::EventStore,
     /// The attention inbox's last answer (`GET /api/v1/attention`).
     pub(crate) attention: pipeline::attention::AttentionCache,
+    /// What every deploy repo pins (`GET /api/v1/pins`), cached for a minute.
+    pub(crate) pins: pipeline::pins::PinsCache,
     /// Auxiliary codegraph SQLite store for read-only oracle queries.
     pub(crate) codegraph_store: CodeGraphStore,
     /// Shared git-daemon repository manager backing the smart-HTTP transport.
@@ -259,6 +261,7 @@ impl WebState {
             shift,
             events,
             attention: pipeline::attention::AttentionCache::default(),
+            pins: pipeline::pins::PinsCache::default(),
             codegraph_store,
             repo_manager,
             core: core_handle,
@@ -732,6 +735,7 @@ fn router(state: Arc<WebState>) -> AxumRouter {
             get(pipeline::list_events).post(pipeline::post_events),
         )
         .route("/api/v1/attention", get(pipeline::attention::attention))
+        .route("/api/v1/pins", get(pipeline::pins::pins))
         .route("/api/v1/shift/families", get(shift::families))
         .route(
             "/api/v1/shift/todos",

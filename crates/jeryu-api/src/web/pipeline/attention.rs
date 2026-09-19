@@ -26,12 +26,14 @@ use super::super::merge_queue::QueueState;
 use super::super::shift::FamilySnapshot;
 
 mod flow;
+mod pins;
 mod work;
 
 pub(crate) use flow::{
     LatestDeployment, ProductionFacts, PullFacts, pull_items, queue_items, release_items,
     runner_items,
 };
+pub(crate) use pins::pin_items;
 pub(crate) use work::{shift_items, todo_items, worker_items};
 
 pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1";
@@ -243,6 +245,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         &waiting,
         &super::super::shift::worker_rows(state, now),
     ));
+    items.extend(pin_items(&super::pins::snapshot(state).consumers));
     let pulls = open_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
     items.extend(pull_items(&pulls, now));

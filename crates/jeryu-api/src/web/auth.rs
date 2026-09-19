@@ -713,6 +713,7 @@ fn admin_only_request(method: &Method, path: &str) -> bool {
         || (path.starts_with("/api/v1/shift/") && unsafe_method(method))
         || (pipeline_events_path(path) && !unsafe_method(method))
         || attention_path(path)
+        || pins_path(path)
 }
 
 /// Reading the pipeline event log is admin-only: events carry todo titles,
@@ -727,6 +728,12 @@ fn pipeline_events_path(path: &str) -> bool {
 /// repository, so like the event log it is for global admins only.
 fn attention_path(path: &str) -> bool {
     path == "/api/v1/attention" || path == "/api/v1/attention/"
+}
+
+/// Pins name the unreleased commits of every dependency, private ones
+/// included, so like the inbox they are for global admins only.
+fn pins_path(path: &str) -> bool {
+    path == "/api/v1/pins" || path == "/api/v1/pins/"
 }
 
 fn admin_only_path(path: &str) -> bool {
