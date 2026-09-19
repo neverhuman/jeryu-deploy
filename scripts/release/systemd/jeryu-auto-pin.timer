@@ -1,0 +1,10 @@
+[Unit]
+Description=Propose the jeryu-web pin bump every 5 minutes once jeryu-web main is green
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

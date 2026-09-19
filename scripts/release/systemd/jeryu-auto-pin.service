@@ -1,0 +1,9 @@
+[Unit]
+Description=Open the jeryu-web pin bump pull request once jeryu-web main is green (never merges)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# install-auto-pin.sh points this at an installed copy of auto-pin.sh.
+ExecStart=%h/.local/share/jeryu-auto-pin/auto-pin.sh
+TimeoutStartSec=30min
