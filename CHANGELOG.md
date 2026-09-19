@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Attention inbox: `mirror_failing`, one item for the whole forge when GitHub mirror pushes fail (all eight configured mirrors on the hosted forge had never succeeded, and nothing said so).
+
 - API answers an agent can act on: an unmatched path under any `/api/` version is a JSON 404 (v3 paths still fell through to the web app's HTML with a 200); `GET /api/v1/shift/todos` and `/shift/shifts` answer `404 shift_family_not_found` for a family nobody hosts, not an empty list; `GET /api/v1/events?kind=` refuses a filter that is neither a kind nor a dotted prefix with `422 events_invalid_query`.
 
 - Attention inbox accuracy, from the first live walk: reasons open with the

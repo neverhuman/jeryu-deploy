@@ -716,6 +716,47 @@ fn current_check_runs<'a>(
     latest.into_values().collect()
 }
 
+/// Every repository whose newest mirror attempt failed, for the attention
+/// inbox. Repositories that were never mirrored have no attempts and are quiet.
+pub(crate) fn mirror_failures(
+    state: &WebState,
+) -> Vec<crate::web::pipeline::attention::MirrorFailure> {
+    let core = state.github.core();
+    let mut failures = Vec::new();
+    for repo in core.list_repositories(None) {
+        let Ok(runs) = core.list_check_runs(&repo.owner, &repo.name, None) else {
+            continue;
+        };
+        let mut attempts: Vec<&CheckRun> = runs
+            .check_runs
+            .iter()
+            .filter(|check| check.name == GITHUB_MIRROR_CHECK)
+            .collect();
+        attempts.sort_by_key(|check| (check.started_at, check.completed_at));
+        let Some(latest) = attempts.last() else {
+            continue;
+        };
+        if latest.conclusion != Some(CheckConclusion::Failure) {
+            continue;
+        }
+        failures.push(crate::web::pipeline::attention::MirrorFailure {
+            repo: format!("{}/{}", repo.owner, repo.name),
+            failed_at: latest.completed_at.unwrap_or(latest.started_at),
+            last_success_at: attempts
+                .iter()
+                .rev()
+                .find(|check| check.conclusion == Some(CheckConclusion::Success))
+                .map(|check| check.completed_at.unwrap_or(check.started_at)),
+            reason: latest
+                .output
+                .as_ref()
+                .map(|output| output.summary.clone())
+                .unwrap_or_default(),
+        });
+    }
+    failures
+}
+
 /// Offsite mirror posture derived from `jeryu/github-mirror` bookkeeping
 /// runs over the FULL check-run history (not sha-scoped — the newest mirror
 /// attempt is meaningful regardless of which commit it pushed).

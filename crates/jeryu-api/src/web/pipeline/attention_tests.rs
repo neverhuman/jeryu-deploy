@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::attention::{
-    Draft, Item, LatestDeployment, ProductionFacts, PullFacts, Severity, order, pull_items,
-    queue_items, release_items, runner_items, shift_items, todo_items, worker_items,
+    Draft, Item, LatestDeployment, MirrorFailure, ProductionFacts, PullFacts, Severity,
+    mirror_items, order, pull_items, queue_items, release_items, runner_items, shift_items,
+    todo_items, worker_items,
 };
 use super::tests::{body_json, request, shift_forge};
 use super::types::Event;
@@ -800,5 +801,71 @@ fn items_order_by_instant_not_by_timestamp_spelling() {
             "offset-same-second",
             "fraction-later"
         ]
+    );
+}
+
+#[test]
+fn a_failing_mirror_is_one_item_however_many_repositories() {
+    assert!(mirror_items(&[]).is_empty());
+    let failure = |repo: &str, minutes_ago: i64, ever: bool| MirrorFailure {
+        repo: repo.to_string(),
+        failed_at: now() - Duration::minutes(minutes_ago),
+        last_success_at: ever.then(|| now() - Duration::days(30)),
+        reason: format!(
+            "git push https://x-access-token:***@github.com/neverhuman/{repo}.git abc:refs/heads/main \
+             failed: remote: Invalid username or token. Password authentication is not supported."
+        ),
+    };
+    let failures: Vec<MirrorFailure> = [
+        "jeryu/jeryu-web",
+        "jeryu/jeryu-core",
+        "jeryu/jeryu-deploy",
+        "jeryu/jeryu-tool",
+        "jeryu/jeryu-jira",
+        "jeryu/jeryu-cache",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, repo)| failure(repo, 10 + i as i64, false))
+    .collect();
+    let items = mirror_items(&failures);
+    assert_eq!(kinds(&items), ["mirror_failing"]);
+    let item = &items[0];
+    assert_eq!(item.id, "mirror-failing");
+    assert_eq!(item.severity, Severity::Action);
+    assert_eq!(
+        item.title,
+        "The GitHub mirror is failing for 6 repositories"
+    );
+    // The reason leads with what git said, not with the command line.
+    assert!(
+        item.reason
+            .starts_with("git says: remote: Invalid username or token."),
+        "{}",
+        item.reason
+    );
+    assert!(item.reason.contains(
+        "jeryu/jeryu-cache, jeryu/jeryu-core, jeryu/jeryu-deploy, jeryu/jeryu-jira and 2 more"
+    ));
+    assert!(
+        item.reason
+            .contains("No push has ever succeeded from this host.")
+    );
+    assert!(!item.reason.contains("x-access-token"));
+    // The oldest failure dates the item.
+    assert_eq!(item.repo.as_deref(), Some("jeryu/jeryu-cache"));
+
+    let mixed = [
+        failure("jeryu/jeryu-web", 5, true),
+        failure("jeryu/jeryu-core", 9, false),
+    ];
+    let item = &mirror_items(&mixed)[0];
+    assert_eq!(
+        item.title,
+        "The GitHub mirror is failing for 2 repositories"
+    );
+    assert!(
+        item.reason
+            .contains("1 of them have never had a successful push.")
     );
 }
