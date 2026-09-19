@@ -355,29 +355,45 @@ pub(super) fn record_authoritative_jankurai_score(
     owner: &str,
     repo: &str,
     update: &RefUpdate,
+    origin_base_url: &str,
 ) {
     record_authoritative_jankurai_score_with(
         core,
         git_bin,
         bare,
-        owner,
-        repo,
+        &JankuraiRepo {
+            owner,
+            repo,
+            origin_base_url,
+        },
         update,
         jankurai_bin,
     );
+}
+
+/// The forge repository a proof is published on, and the forge origin its
+/// check links back to.
+pub(super) struct JankuraiRepo<'a> {
+    pub(super) owner: &'a str,
+    pub(super) repo: &'a str,
+    pub(super) origin_base_url: &'a str,
 }
 
 pub(super) fn record_authoritative_jankurai_score_with<F>(
     core: &ForgeCore,
     git_bin: &str,
     bare: &Path,
-    owner: &str,
-    repo: &str,
+    target: &JankuraiRepo<'_>,
     update: &RefUpdate,
     resolve_jankurai: F,
 ) where
     F: FnOnce() -> Result<PathBuf, String>,
 {
+    let JankuraiRepo {
+        owner,
+        repo,
+        origin_base_url,
+    } = *target;
     if update.new_oid == ZERO_OID {
         return; // ref delete: nothing to score
     }
@@ -505,6 +521,7 @@ pub(super) fn record_authoritative_jankurai_score_with<F>(
 
     let (request, pass) = jankurai_score_request(branch, &update.new_oid, report, exit_code);
 
+    let output = jankurai_proof_output(&request, pass);
     if let Err(error) = core.record_jankurai_score(owner, repo, request) {
         eprintln!("authoritative Jankurai score persistence failed: {error}");
         let _ = std::fs::remove_dir_all(&sandbox);
@@ -523,11 +540,84 @@ pub(super) fn record_authoritative_jankurai_score_with<F>(
             head_sha: update.new_oid.clone(),
             status: Some(CheckRunStatus::Completed),
             conclusion: Some(conclusion),
-            ..Default::default()
+            details_url: jankurai_score_details_url(core, origin_base_url, owner, repo, update),
+            output: Some(output),
         },
     );
 
     let _ = std::fs::remove_dir_all(&sandbox);
+}
+
+/// Link the proof check at the stored score so a red check explains itself.
+fn jankurai_score_details_url(
+    core: &ForgeCore,
+    origin_base_url: &str,
+    owner: &str,
+    repo: &str,
+    update: &RefUpdate,
+) -> Option<String> {
+    let repository = core.get_repository(owner, repo).ok()?;
+    Some(format!(
+        "{}/api/v1/repos/{}/jankurai-scores?sha={}",
+        origin_base_url.trim_end_matches('/'),
+        repository.id,
+        update.new_oid
+    ))
+}
+
+/// Human-readable verdict for the `jankurai/proof` check: score against the
+/// effective floor, applied caps, and hard findings.
+pub(super) fn jankurai_proof_output(
+    request: &RecordJankuraiScoreRequest,
+    pass: bool,
+) -> CheckRunOutput {
+    let Some(score) = request.score else {
+        let exit = request
+            .tool_exit
+            .map_or_else(|| "unknown".to_string(), |code| code.to_string());
+        return CheckRunOutput {
+            title: format!("jankurai audit produced no score (exit {exit})"),
+            summary: format!(
+                "The authoritative jankurai audit did not produce a valid report \
+                 (decision `{}`, exit {exit}); the proof fails closed.",
+                request.decision
+            ),
+            text: None,
+        };
+    };
+    let floor = request
+        .report
+        .as_ref()
+        .and_then(|report| report.pointer("/decision/minimum_score"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0)
+        .max(HOST_JANKURAI_MINIMUM_SCORE);
+    let hard_findings = request.hard_findings.unwrap_or(0);
+    let title = if pass {
+        format!("score {score} >= floor {floor}")
+    } else if score < floor {
+        format!("score {score} < floor {floor}")
+    } else if hard_findings > 0 {
+        format!("score {score} >= floor {floor}, {hard_findings} hard finding(s)")
+    } else {
+        format!(
+            "score {score} >= floor {floor}, {} cap(s) applied",
+            request.caps_applied.len()
+        )
+    };
+    let caps = if request.caps_applied.is_empty() {
+        "none".to_string()
+    } else {
+        request.caps_applied.join(", ")
+    };
+    CheckRunOutput {
+        title,
+        summary: format!(
+            "- score: {score}\n- floor: {floor}\n- caps applied: {caps}\n- hard findings: {hard_findings}"
+        ),
+        text: None,
+    }
 }
 
 pub(super) fn jankurai_score_request(

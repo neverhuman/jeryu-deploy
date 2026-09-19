@@ -14,7 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jeryu_ci_compiler::{CiKind, CompileContext, Compiler};
 use jeryu_core::{
-    CheckConclusion, CheckRunStatus, CreateCheckRunRequest, ForgeCore, RecordJankuraiScoreRequest,
+    CheckConclusion, CheckRunOutput, CheckRunStatus, CreateCheckRunRequest, ForgeCore,
+    RecordJankuraiScoreRequest,
 };
 use jeryu_gitd::RepoManager;
 use jeryu_gitd::refs::GitRef;
@@ -86,7 +87,15 @@ pub(crate) fn on_push(
         // branch head and publish `jankurai/proof` from that result. Push
         // transport, merge, and seeded PR-head exports all route here; failures
         // stay visibly red or unproven rather than becoming synthetic success.
-        record_authoritative_jankurai_score(core, &git_bin, &resolved.path, owner, repo, update);
+        record_authoritative_jankurai_score(
+            core,
+            &git_bin,
+            &resolved.path,
+            owner,
+            repo,
+            update,
+            origin_base_url,
+        );
         // Accumulate this head's recorded check-runs so the autonomy bridge can
         // run the evidence-gate judge over the live CI state once they all land.
         let mut ci_checks: Vec<(String, Option<CheckConclusion>)> = Vec::new();

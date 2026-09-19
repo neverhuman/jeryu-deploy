@@ -475,8 +475,11 @@ printf '%s\n' '{{"score":92,"caps_applied":[],"decision":{{"hard_findings":0,"mi
         &core,
         "git",
         bare.path(),
-        "jeryu",
-        "demo",
+        &JankuraiRepo {
+            owner: "jeryu",
+            repo: "demo",
+            origin_base_url: "http://forge.test/",
+        },
         &ref_update("refs/heads/main", ZERO_OID, &head),
         || Ok(auditor),
     );
@@ -506,6 +509,126 @@ printf '%s\n' '{{"score":92,"caps_applied":[],"decision":{{"hard_findings":0,"mi
         .unwrap();
     assert_eq!(latest.name, "jankurai/proof");
     assert_eq!(latest.conclusion, Some(CheckConclusion::Success));
+    let repo_id = core.get_repository("jeryu", "demo").unwrap().id;
+    assert_eq!(
+        latest.details_url.as_deref(),
+        Some(
+            format!("http://forge.test/api/v1/repos/{repo_id}/jankurai-scores?sha={head}").as_str()
+        )
+    );
+    let output = latest.output.as_ref().expect("proof check carries output");
+    assert_eq!(output.title, "score 92 >= floor 85");
+    assert!(output.summary.contains("score: 92"), "{}", output.summary);
+    assert!(output.summary.contains("floor: 85"), "{}", output.summary);
+    assert!(
+        output.summary.contains("caps applied: none"),
+        "{}",
+        output.summary
+    );
+    assert!(
+        output.summary.contains("hard findings: 0"),
+        "{}",
+        output.summary
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn failing_push_audit_posts_score_floor_and_caps_on_the_proof_check() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let tool = tempfile::tempdir().unwrap();
+    let (_, head) = init_version_repo(work.path());
+    clone_bare(work.path(), bare.path());
+
+    let auditor = tool.path().join("jankurai");
+    let script = r#"#!/bin/sh
+set -eu
+output=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json)
+      output=$2
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+mkdir -p "$(dirname "$output")"
+printf '%s\n' '{"score":78,"caps_applied":["dead-language"],"decision":{"hard_findings":2,"minimum_score":80}}' > "$output"
+"#;
+    fs::write(&auditor, script).unwrap();
+    fs::set_permissions(&auditor, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let core = ForgeCore::new();
+    let repository = core
+        .create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: "demo".to_string(),
+                private: true,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+
+    record_authoritative_jankurai_score_with(
+        &core,
+        "git",
+        bare.path(),
+        &JankuraiRepo {
+            owner: "jeryu",
+            repo: "demo",
+            origin_base_url: "http://forge.test",
+        },
+        &ref_update("refs/heads/main", ZERO_OID, &head),
+        || Ok(auditor),
+    );
+
+    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let proof = checks
+        .check_runs
+        .iter()
+        .find(|check| check.name == "jankurai/proof")
+        .expect("proof check is posted");
+    assert_eq!(proof.conclusion, Some(CheckConclusion::Failure));
+    assert_eq!(
+        proof.details_url.as_deref(),
+        Some(
+            format!(
+                "http://forge.test/api/v1/repos/{}/jankurai-scores?sha={head}",
+                repository.id
+            )
+            .as_str()
+        )
+    );
+    let output = proof.output.as_ref().expect("proof check carries output");
+    assert_eq!(output.title, "score 78 < floor 85");
+    assert!(output.summary.contains("score: 78"), "{}", output.summary);
+    assert!(output.summary.contains("floor: 85"), "{}", output.summary);
+    assert!(
+        output.summary.contains("caps applied: dead-language"),
+        "{}",
+        output.summary
+    );
+    assert!(
+        output.summary.contains("hard findings: 2"),
+        "{}",
+        output.summary
+    );
+}
+
+#[test]
+fn tool_failures_explain_the_missing_score_on_the_proof_check() {
+    let (request, pass) = jankurai_score_request("main", "abc", None, 3);
+    let output = jankurai_proof_output(&request, pass);
+    assert_eq!(output.title, "jankurai audit produced no score (exit 3)");
+    assert!(output.summary.contains("tool-failed"), "{}", output.summary);
 }
 
 #[test]
