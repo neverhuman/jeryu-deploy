@@ -25,6 +25,14 @@ A value that is not a non-negative integer also disables the scheduler. The
 scheduler only starts when the server was given split manifests
 (`--split-manifest`); without them there is nothing to scan.
 
+The 24-hour default is deliberate: any server with split manifests runs a
+system scan daily unless an operator opts out with `=0`. At startup
+`jeryu serve` logs one line to stderr with the effective setting, e.g.
+
+    tool-finder: scheduled scan every 24h (default; set JERYU_TOOL_FINDER_SCAN_INTERVAL_HOURS=0 to disable)
+    tool-finder: scheduled scan disabled (JERYU_TOOL_FINDER_SCAN_INTERVAL_HOURS=0)
+    tool-finder: scheduled scan disabled (no split manifests configured)
+
 How it decides to scan:
 
 - The loop wakes once an hour (the first check happens right after startup).

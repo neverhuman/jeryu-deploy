@@ -323,6 +323,12 @@ server moves off `127.0.0.1`, the launch checklist is:
 - **Launch / production rollout:** promote only a signed, gate-green commit;
   deploy behind the unified `jeryu serve` listener; canary one node, widen on
   green, and keep the prior signed artifact staged for rollback.
+- **`jeryu serve` environment:** besides the values written by
+  `ops/deploy/make-production-env.sh`, the server reads
+  `JERYU_TOOL_FINDER_SCAN_INTERVAL_HOURS` — unset means a system tool-finder
+  scan every 24 hours whenever split manifests are configured; `=0` disables
+  it. The effective cadence is logged once at startup (see
+  [tool-finder.md](tool-finder.md)).
 - **Atomicsoul handoff:** each production release gets fresh env material and a
   fresh deploy signing key from `ops/deploy/make-production-env.sh`. The
   artifact bundle must be pushed with

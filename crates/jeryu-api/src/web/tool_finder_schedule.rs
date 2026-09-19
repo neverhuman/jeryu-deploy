@@ -21,10 +21,14 @@ const WAKE_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// Spawn the scheduler when a cadence is configured and manifests are wired.
 pub(super) fn spawn(state: Arc<WebState>) {
-    let Some(interval) = interval_from(std::env::var(INTERVAL_ENV).ok().as_deref()) else {
+    let raw = std::env::var(INTERVAL_ENV).ok();
+    let interval = interval_from(raw.as_deref());
+    let has_manifests = !state.split_manifests.is_empty();
+    eprintln!("{}", startup_line(raw.as_deref(), interval, has_manifests));
+    let Some(interval) = interval else {
         return;
     };
-    if state.split_manifests.is_empty() {
+    if !has_manifests {
         return;
     }
     tokio::spawn(async move {
@@ -54,6 +58,24 @@ fn interval_from(raw: Option<&str>) -> Option<Duration> {
         Some(value) => value.parse::<u64>().ok()?,
     };
     (hours > 0).then(|| Duration::from_secs(hours * 60 * 60))
+}
+
+/// The one line logged at startup so the effective cadence is visible.
+fn startup_line(raw: Option<&str>, interval: Option<Duration>, has_manifests: bool) -> String {
+    let source = match raw.map(str::trim) {
+        None | Some("") => "default".to_string(),
+        Some(value) => format!("{INTERVAL_ENV}={value}"),
+    };
+    match (interval, has_manifests) {
+        (None, _) => format!("tool-finder: scheduled scan disabled ({source})"),
+        (Some(_), false) => {
+            "tool-finder: scheduled scan disabled (no split manifests configured)".to_string()
+        }
+        (Some(interval), true) => format!(
+            "tool-finder: scheduled scan every {}h ({source}; set {INTERVAL_ENV}=0 to disable)",
+            interval.as_secs() / 3600
+        ),
+    }
 }
 
 /// A scan is due when neither the persisted scan nor this process's last
@@ -87,6 +109,28 @@ mod tests {
         assert_eq!(interval_from(Some("6")), Some(6 * HOUR));
         assert_eq!(interval_from(Some("0")), None);
         assert_eq!(interval_from(Some("nightly")), None);
+    }
+
+    #[test]
+    fn startup_line_states_the_effective_interval() {
+        let line = startup_line(None, interval_from(None), true);
+        assert!(line.contains("every 24h (default;"), "{line}");
+        assert!(
+            line.contains(&format!("{INTERVAL_ENV}=0 to disable")),
+            "{line}"
+        );
+        let line = startup_line(Some("6"), interval_from(Some("6")), true);
+        assert!(
+            line.contains(&format!("every 6h ({INTERVAL_ENV}=6;")),
+            "{line}"
+        );
+        let line = startup_line(Some("0"), interval_from(Some("0")), true);
+        assert_eq!(
+            line,
+            format!("tool-finder: scheduled scan disabled ({INTERVAL_ENV}=0)")
+        );
+        let line = startup_line(None, interval_from(None), false);
+        assert!(line.contains("no split manifests"), "{line}");
     }
 
     #[test]
