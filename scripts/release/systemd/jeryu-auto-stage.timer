@@ -1,0 +1,10 @@
+[Unit]
+Description=Stage jeryu-deploy main every 5 minutes once its gate is green
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

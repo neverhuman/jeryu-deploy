@@ -35,3 +35,20 @@ Before a release that adds a database migration, run the staged binary against a
 backup copy of the databases on a spare loopback port and check the new schema and
 routes; `switch.sh` snapshots before starting, and `rollback.sh` restores that
 snapshot.
+
+## Builder image
+
+`stage-release.sh` builds in `jeryu-builder:rust1.95-glibc2.35-r2`, defined by
+`builder.Dockerfile` (Ubuntu 22.04 / glibc 2.35, rustup-init pinned by sha256, Rust 1.95.0). When
+the tag is missing on the build host, the script builds it there first. Change the Dockerfile only
+together with a new `-rN` tag.
+
+## Auto-staging
+
+`auto-stage.sh` runs every 5 minutes on the release host (xbabe0) from
+`jeryu-auto-stage.timer`. It stages the forge's main once its combined status is `success`, using
+`stage-release.sh` from that same commit. It never deploys, so a "go" is only
+`deploy-release.sh <rel>`. The newest staged id is in `~/.local/state/jeryu-auto-stage/latest`, and
+every staged commit is in `staged.tsv`. A commit that fails to stage twice is left for a human.
+Install or update the timer with `scripts/release/install-auto-stage.sh`, and follow it with
+`journalctl --user -u jeryu-auto-stage`.

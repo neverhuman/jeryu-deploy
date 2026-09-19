@@ -18,13 +18,16 @@
 #
 # Env: JERYU_BUILD_HOST (xbabe2), JERYU_FORGE_HOST (atomicsoul, reached through
 # the build host), JERYU_BUILD_ROOT (~/jeryu-release-build on the build host),
-# JERYU_BUILDER_IMAGE (jeryu-builder:rust1.95-glibc2.35), JERYU_MAX_GLIBC (2.35),
+# JERYU_BUILDER_IMAGE (jeryu-builder:rust1.95-glibc2.35-r2, built from
+# scripts/release/builder.Dockerfile on the build host when missing), JERYU_MAX_GLIBC (2.35),
 # JERYU_DEPLOY_REMOTE (https://git.neverhuman.org/git/jeryu/jeryu-deploy.git).
 set -euo pipefail
 build_host="${JERYU_BUILD_HOST:-xbabe2}"
 forge_host="${JERYU_FORGE_HOST:-atomicsoul}"
 build_root="${JERYU_BUILD_ROOT:-~/jeryu-release-build}"
-image="${JERYU_BUILDER_IMAGE:-jeryu-builder:rust1.95-glibc2.35}"
+image="${JERYU_BUILDER_IMAGE:-jeryu-builder:rust1.95-glibc2.35-r2}"
+[[ "$image" =~ ^[a-z0-9._/-]+:[A-Za-z0-9._-]+$ ]] || { echo "bad builder image '$image'" >&2; exit 1; }
+here="$(cd "$(dirname "$0")" && pwd)"
 max_glibc="${JERYU_MAX_GLIBC:-2.35}"
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
 commit="${1:-}"
@@ -37,6 +40,12 @@ prev="$(ssh "$build_host" "ssh -n $forge_host 'readlink ~/.jeryu/bin/jeryu'")"
 prev="${prev#jeryu-}"
 [[ "$prev" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+-unsigned$ ]] || { echo "unexpected live release '$prev'; refusing" >&2; exit 1; }
 rel="prod-$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:7}-unsigned"
+
+# The builder is defined here, not borrowed: build it on the build host when its tag is missing.
+if ! ssh -n "$build_host" "docker image inspect $image >/dev/null 2>&1"; then
+  echo "[stage] building $image on $build_host from builder.Dockerfile" >&2
+  ssh "$build_host" "docker build -q -t $image -" < "$here/builder.Dockerfile" >&2
+fi
 echo "[stage] $rel from $commit (rollback target $prev)" >&2
 
 # shellcheck disable=SC2087 # expand locally on purpose: every value is validated above
@@ -51,8 +60,8 @@ git checkout -q --detach "$commit"
 GIT_CONFIG_GLOBAL="\$PWD/.cargo/hosted-gitconfig" PATH="\$HOME/.cargo/bin:\$PATH" cargo fetch --locked >/dev/null
 docker run --rm --network none --user "\$(id -u):\$(id -g)" \
   -e HOME=/tmp -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/src/target-release -e CARGO_INCREMENTAL=0 \
-  -e PATH=/usr/local/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/bin:/bin \
-  -e RUSTUP_HOME=/usr/local/rustup -e RUSTUP_TOOLCHAIN=1.95.0 \
+  -e PATH=/opt/rust/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin \
+  -e RUSTUP_HOME=/opt/rust/rustup -e RUSTUP_TOOLCHAIN=1.95.0 \
   -v "\$root":/src -v "\$HOME/.cargo/registry":/cargo/registry -v "\$HOME/.cargo/git":/cargo/git \
   -w /src/jeryu-deploy "$image" \
   cargo build --release --locked --offline -p jeryu-cli --bin jeryu >&2

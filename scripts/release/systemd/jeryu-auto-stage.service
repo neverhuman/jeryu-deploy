@@ -1,0 +1,9 @@
+[Unit]
+Description=Stage jeryu-deploy main as a release once its gate is green (never deploys)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# install-auto-stage.sh points this at an installed copy of auto-stage.sh.
+ExecStart=%h/.local/share/jeryu-auto-stage/auto-stage.sh
+TimeoutStartSec=45min
