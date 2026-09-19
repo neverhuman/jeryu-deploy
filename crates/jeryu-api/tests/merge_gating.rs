@@ -825,6 +825,80 @@ fn merge_with_unresolvable_head_returns_4xx_not_500() {
     fixture.cleanup();
 }
 
+/// Bare repo with NO `main`: only a `feature` branch exists, as in a freshly
+/// created repository whose first change arrives as a pull request.
+fn seed_empty_base_fixture(prefix: &str) -> GitFixture {
+    let root = temp_dir(&format!("{prefix}-root"));
+    let work = temp_dir(&format!("{prefix}-work"));
+    let manager = Arc::new(RepoManager::new(GitdConfig::new(&root)));
+    let id = RepoId::new("acme", "demo").unwrap();
+    let repo = manager.create_bare(&id).expect("create bare");
+
+    run_git(&work, &["init"], "git init");
+    run_git(
+        &work,
+        &["config", "user.email", "test@example.invalid"],
+        "config email",
+    );
+    run_git(&work, &["config", "user.name", "Test"], "config name");
+    std::fs::write(work.join("README.md"), "first\n").expect("write");
+    run_git(&work, &["add", "README.md"], "git add");
+    run_git(&work, &["commit", "-m", "first"], "git commit");
+    run_git(
+        &work,
+        &[
+            "push",
+            repo.path.to_str().unwrap(),
+            "HEAD:refs/heads/feature",
+        ],
+        "push feature",
+    );
+    let head_oid = rev_parse_head(&work);
+
+    GitFixture {
+        root,
+        work,
+        manager,
+        base_oid: String::new(),
+        head_oid,
+    }
+}
+
+#[test]
+fn merge_into_missing_base_creates_base_at_head() {
+    if !git_available() {
+        return;
+    }
+    // An approved PR into a repository with no `main` seeds `main` at the PR
+    // head (a fast-forward from nothing) instead of failing with
+    // "base ref refs/heads/main does not resolve to a commit".
+    let fixture = seed_empty_base_fixture("jeryu-missing-base");
+    let router = router_over(&fixture);
+    let number = open_pr_by_branch(&router, "feature", "main");
+    approve(&router, number);
+
+    let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(
+        merged.status, 200,
+        "merge into missing base: {}",
+        merged.body
+    );
+    let mb = body(&merged);
+    assert_eq!(mb["merged"], true);
+    assert_eq!(mb["sha"].as_str().expect("sha"), fixture.head_oid);
+
+    assert_eq!(
+        fixture.main_ref(),
+        fixture.head_oid,
+        "main must be created at the PR head"
+    );
+    let after = body(&router.get(&format!("/repos/acme/demo/pulls/{number}")));
+    assert_eq!(after["merged"], true);
+    assert_eq!(after["merge_commit_sha"], fixture.head_oid);
+
+    fixture.cleanup();
+}
+
 // ---------------------------------------------------------------------------
 // Merge -> GitHub mirror push (jeryu_api::github_mirror)
 // ---------------------------------------------------------------------------

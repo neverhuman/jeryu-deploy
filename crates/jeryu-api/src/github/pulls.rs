@@ -406,22 +406,11 @@ impl GithubRouter {
         let refs = RefService::new((**rm).clone());
 
         // Resolve the LIVE base tip, never the stored base sha. A base branch
-        // that does not resolve is an unprocessable request (422), not a 500.
+        // that does not exist yet (an empty repository) is created at the head
+        // below instead of failing the merge.
         let base_oid =
             match refs.resolve_commit(&resolved, &format!("refs/heads/{}", ready.base_ref)) {
-                Ok(Some(oid)) => oid,
-                Ok(None) => {
-                    return json_response(
-                        422,
-                        &json!({
-                            "message": format!(
-                                "base ref refs/heads/{} does not resolve to a commit",
-                                ready.base_ref
-                            ),
-                            "documentation_url": docs_url(),
-                        }),
-                    );
-                }
+                Ok(base_oid) => base_oid,
                 Err(err) => {
                     return json_response(
                         500,
@@ -453,6 +442,13 @@ impl GithubRouter {
                     &json!({ "message": err.to_string(), "documentation_url": docs_url() }),
                 );
             }
+        };
+
+        // No base branch yet: the gate already passed, so seed the base at the
+        // PR head, a fast-forward from nothing. Direct pushes to main stay
+        // blocked; this merge is the sanctioned path to create it.
+        let Some(base_oid) = base_oid else {
+            return self.create_base_at_head(rm, &refs, &resolved, &ready, &head_oid);
         };
 
         // If the head is already contained in the base history, the code has
@@ -556,6 +552,67 @@ impl GithubRouter {
             }
             // The ref already moved; we do NOT roll it back. A reconciler can
             // detect the divergence by comparing merge_commit_sha vs the ref.
+            Err(ForgeError::BranchProtection(reason)) => json_response(
+                405,
+                &json!({ "message": reason, "documentation_url": docs_url() }),
+            ),
+            Err(err) => error_response(err),
+        }
+    }
+
+    /// Create a missing `refs/heads/{base_ref}` at `head_oid` for an approved,
+    /// mergeable PR. The ref update is a compare-and-swap against the zero oid,
+    /// so a base that appeared concurrently is refused rather than overwritten.
+    #[cfg(feature = "web")]
+    fn create_base_at_head(
+        &self,
+        rm: &std::sync::Arc<jeryu_gitd::RepoManager>,
+        refs: &jeryu_gitd::refs::RefService,
+        resolved: &jeryu_gitd::repo::Repository,
+        ready: &MergeReady<'_>,
+        head_oid: &str,
+    ) -> Response {
+        use jeryu_gitd::refs::ZERO_OID;
+
+        let base_name = format!("refs/heads/{}", ready.base_ref);
+        if let Err(err) = refs.update_ref(
+            resolved,
+            "system:pr-merge",
+            &base_name,
+            head_oid,
+            Some(ZERO_OID),
+        ) {
+            return json_response(
+                409,
+                &json!({
+                    "message": format!("could not create {base_name}: {err}"),
+                    "documentation_url": docs_url(),
+                }),
+            );
+        }
+        crate::ci_bridge::on_push(
+            &self.core,
+            rm,
+            ready.owner,
+            ready.repo,
+            &[crate::ci_bridge::RefUpdate {
+                ref_name: base_name,
+                old_oid: ZERO_OID.to_string(),
+                new_oid: head_oid.to_string(),
+            }],
+            &crate::ci_bridge::default_origin_base_url(),
+        );
+        match self.core.finalize_merge(
+            ready.owner,
+            ready.repo,
+            ready.number,
+            head_oid.to_string(),
+            ready.req.sha.as_deref(),
+        ) {
+            Ok(result) => {
+                self.mirror_merged_main(rm, resolved, ready, head_oid);
+                merge_success_response(&result)
+            }
             Err(ForgeError::BranchProtection(reason)) => json_response(
                 405,
                 &json!({ "message": reason, "documentation_url": docs_url() }),
