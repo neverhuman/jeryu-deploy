@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::attention::{
-    Item, LatestDeployment, ProductionFacts, PullFacts, Severity, pull_items, queue_items,
-    release_items, runner_items, shift_items, todo_items, worker_items,
+    Draft, Item, LatestDeployment, ProductionFacts, PullFacts, Severity, order, pull_items,
+    queue_items, release_items, runner_items, shift_items, todo_items, worker_items,
 };
 use super::tests::{body_json, request, shift_forge};
 use super::types::Event;
@@ -599,23 +599,21 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
     assert_eq!(body["schema_version"], "jeryu.attention/v1");
     let items = body["items"].as_array().unwrap();
     let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
-    assert_eq!(
-        kinds,
-        [
-            // Critical first: open todos and no worker has ever reported.
-            // Then the oldest first, undated items leading.
-            "workers_down",
-            "shift_without_pr",
-            "release_staged",
-            "todo_blocked",
-        ],
-        "{body}"
-    );
+    // Critical first (open todos and no worker has ever reported), then the
+    // undated item. The todo and the staged release carry whole-second
+    // timestamps taken a moment apart, so which of them leads depends on
+    // whether a second ticked in between: `order` has its own test, and here
+    // only their presence is asserted.
+    assert_eq!(kinds[..2], ["workers_down", "shift_without_pr"], "{body}");
+    let mut rest = kinds[2..].to_vec();
+    rest.sort_unstable();
+    assert_eq!(rest, ["release_staged", "todo_blocked"], "{body}");
     assert_eq!(
         body["counts"],
         json!({"critical": 1, "action": 3, "watch": 0})
     );
-    let blocked = &items[3];
+    let of_kind = |kind: &str| items.iter().find(|i| i["kind"] == kind).unwrap();
+    let blocked = of_kind("todo_blocked");
     assert_eq!(blocked["todo_id"], id.as_str());
     assert!(
         blocked["reason"]
@@ -624,7 +622,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
             .contains("A human must cut tag split.7 first.")
     );
     assert_eq!(
-        items[2]["action"]["command"],
+        of_kind("release_staged")["action"]["command"],
         "scripts/release/deploy-release.sh prod-1"
     );
     assert_eq!(items[1]["shift"], "nightshift/2026-09-18");
@@ -658,4 +656,45 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .await
         .unwrap();
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// `since` arrives in several RFC 3339 spellings. Ordering the text put
+/// `…:38.100Z` before `…:37Z`-style neighbours by punctuation; the order is by
+/// instant, undated first, id as the tie-break.
+#[test]
+fn items_order_by_instant_not_by_timestamp_spelling() {
+    let item = |id: &str, since: Option<&str>| {
+        let mut item = Draft {
+            id: id.to_string(),
+            kind: "todo_blocked",
+            severity: Severity::Action,
+            title: id.to_string(),
+            reason: String::new(),
+            href: "/work/shift".to_string(),
+            label: "Open",
+            command: None,
+        }
+        .build();
+        item.since = since.map(str::to_string);
+        item
+    };
+    let mut items = vec![
+        item("fraction-later", Some("2026-09-19T14:45:38.100Z")),
+        item("offset-same-second", Some("2026-09-19T14:45:37.900+00:00")),
+        item("whole-second", Some("2026-09-19T14:45:37Z")),
+        item("b-undated", None),
+        item("a-undated", None),
+    ];
+    order(&mut items);
+    let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "a-undated",
+            "b-undated",
+            "whole-second",
+            "offset-same-second",
+            "fraction-later"
+        ]
+    );
 }

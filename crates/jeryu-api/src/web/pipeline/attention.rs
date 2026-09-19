@@ -266,12 +266,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         stage_failed.as_ref(),
         &production_facts(state),
     ));
-    items.sort_by(|a, b| {
-        a.severity
-            .cmp(&b.severity)
-            .then_with(|| a.since.cmp(&b.since))
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    order(&mut items);
     let count = |severity| items.iter().filter(|i| i.severity == severity).count();
     AttentionResponse {
         schema_version: ATTENTION_SCHEMA,
@@ -336,4 +331,22 @@ pub(crate) async fn attention(State(state): State<Arc<WebState>>) -> AxumRespons
             })
         }
     }
+}
+
+/// Most severe first, then the longest-waiting first (undated items lead),
+/// then by id so the order never depends on collection order.
+pub(super) fn order(items: &mut [Item]) {
+    items.sort_by(|a, b| {
+        a.severity
+            .cmp(&b.severity)
+            .then_with(|| since_instant(a).cmp(&since_instant(b)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+}
+
+/// When an item started waiting, as an instant. `since` strings come from
+/// several sources in several RFC 3339 spellings (whole seconds with `Z`,
+/// fractions, `+00:00`), so comparing the text orders them by punctuation.
+fn since_instant(item: &Item) -> Option<DateTime<Utc>> {
+    item.since.as_deref().and_then(parse_time)
 }
