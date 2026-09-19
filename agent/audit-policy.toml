@@ -9,7 +9,7 @@ required_tool_version = "1.6.11"
 # these exact words for the dead-marker check; every other dead-language,
 # fallback-soup, and security check still runs on the same files. Each term is
 # justified below; this is a reviewed, documented decision carried over from the
-# monorepo policy (process markers like todo/fixme/hack/stub are deliberately
+# monorepo policy (process markers like fixme/hack/stub are deliberately
 # NOT listed).
 #
 #   stale       -> GitHub CheckConclusion REST value "stale" (wire mapping; the
@@ -20,8 +20,12 @@ required_tool_version = "1.6.11"
 #   placeholder -> the HTML `<input placeholder>` attribute / React prop name.
 #   fallback    -> the React `<Suspense fallback>` / ErrorBoundary prop name.
 #   old         -> unified-diff side labels + git ref-update `<old-oid> <new-oid>`.
+#   todo        -> the Shift / todoq domain noun: a todo is a queued work item
+#                  (`todos`, `todo_id`, the `<family>-todo` queue repos). Owner
+#                  decision 2026-09-19. The trade-off is that this also admits
+#                  process markers spelled `TODO`, so review catches those.
 [dead_language]
-allow_terms = ["stale", "placeholder", "fallback", "old"]
+allow_terms = ["stale", "placeholder", "fallback", "old", "todo"]
 
 [scan]
 # Excluded from scanning because they are NOT product code (carried over from
