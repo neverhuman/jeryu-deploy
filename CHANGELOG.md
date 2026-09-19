@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Attention inbox accuracy, from the first live walk: reasons open with the
+  specific fact (a blocked todo's note verbatim), `shift_without_pr` needs
+  `unmerged_todos` so a branch replaced by a rebased one is quiet, and a failing
+  check the base branch does not require is a `watch` item, not an `action`.
+  `GET /api/v1/shift/families` names each repo's hosting `owner`. The source
+  browser answers 404, not 500, for a path that is not at the ref. A merged or
+  closed pull request's passport carries one plain blocker.
+
 - Add `GET /api/v1/pins` (what each deploy repo pins, how far behind it is, what
   a bump would ship, whether a bump is open) and the `pin_behind` attention
   kind; add `scripts/release/auto-pin.sh` with its timer and installer, which

@@ -1629,6 +1629,21 @@ async fn web_pull_merge_advances_real_bare_main_ref() {
     let merged = response_json(response).await;
 
     assert_eq!(merged["summary"]["state"], "merged");
+    // A merged pull request has no merge question left. The passport type has
+    // no third verdict, so it stays "blocked", but the one blocker says so in
+    // plain words instead of "the merge gate is blocked" or stale check rows;
+    // `summary.state` is what tells a client the pull request is finished.
+    let blockers = merged["merge_passport"]["blockers"].as_array().unwrap();
+    assert_eq!(blockers.len(), 1, "{blockers:?}");
+    assert_eq!(blockers[0]["code"], "passport_blocked_mergeability");
+    assert_eq!(blockers[0]["details"], "merged");
+    assert!(
+        blockers[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("already merged"),
+        "{blockers:?}"
+    );
     assert_eq!(
         bare_ref(storage.path(), "alice", "jeryu", "refs/heads/main"),
         head_sha,
@@ -4258,6 +4273,73 @@ async fn source_browser_rejects_unsafe_paths_before_storage_lookup() {
             "unsafe path should be rejected before git storage lookup: {path:?}"
         );
     }
+}
+
+/// The attention inbox treats a red check as blocking only when the base
+/// branch requires it. Live on 2026-09-19 two pull requests whose passport
+/// passed were listed as "checks failing" because `jankurai/proof`, which
+/// their branch does not require, was red.
+#[tokio::test]
+async fn attention_posture_separates_required_from_optional_failing_checks() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "jeryu",
+            "alice",
+            CreatePullRequestRequest {
+                title: "feature".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("deadbeef".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let fail = |name: &str| {
+        core.create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: name.to_string(),
+                head_sha: "deadbeef".to_string(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(CheckConclusion::Failure),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    };
+    fail("jankurai/proof");
+    let state = WebState::new(core.clone());
+    let posture = super::pulls::attention_posture(&state, &pr).expect("an open pull request");
+    assert!(posture.failing.is_empty(), "{posture:?}");
+    assert_eq!(posture.failing_optional, ["jankurai/proof"]);
+
+    core.set_branch_protection(
+        "alice",
+        "jeryu",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["jeryu/required".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    fail("jeryu/required");
+    let posture = super::pulls::attention_posture(&state, &pr).expect("an open pull request");
+    assert_eq!(posture.failing, ["jeryu/required"]);
+    assert_eq!(posture.failing_optional, ["jankurai/proof"]);
 }
 
 /// A link to a file that is on disk but was never committed (a generated

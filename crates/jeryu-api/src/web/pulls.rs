@@ -782,8 +782,11 @@ pub(crate) struct PullPosture {
     pub changes_requested: u32,
     pub approvals: u32,
     pub required_approvals: u32,
-    /// Required contexts that failed, or a count of other failing checks.
+    /// Required contexts that failed: these block the merge.
     pub failing: Vec<String>,
+    /// Failing checks the base branch does not require: red, but the pull
+    /// request can still merge.
+    pub failing_optional: Vec<String>,
     /// Something was checked, nothing failed and nothing is still running.
     pub checks_green: bool,
 }
@@ -801,8 +804,18 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
         .filter(|context| context.state == RequiredContextState::Failing)
         .map(|context| context.name.clone())
         .collect();
-    if failing.is_empty() && summary.checks.failing > 0 {
-        failing.push(format!("{} check(s)", summary.checks.failing));
+    failing.sort();
+    let mut failing_optional: Vec<String> = checks_for_pr(state, pr)
+        .checks
+        .into_iter()
+        .filter(|check| check.status == "failure")
+        .map(|check| check.name)
+        .filter(|name| !required.iter().any(|context| &context.name == name))
+        .collect();
+    failing_optional.sort();
+    failing_optional.dedup();
+    if failing.is_empty() && failing_optional.is_empty() && summary.checks.failing > 0 {
+        failing_optional.push(format!("{} check(s)", summary.checks.failing));
     }
     let required_passing = required
         .iter()
@@ -817,6 +830,7 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
             && summary.checks.pending == 0
             && (!required.is_empty() || summary.checks.total > 0),
         failing,
+        failing_optional,
     })
 }
 

@@ -77,22 +77,50 @@ pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {
                 "pr_ready_to_merge",
                 format!("{label} is ready to merge"),
                 format!(
-                    "\"{}\" by {} has passed its merge gate for {} minutes (checks green, \
-                     approvals in) and nothing automatic is going to merge it.",
+                    "\"{}\" by {} has passed its merge gate for {} minutes (required checks \
+                     green, approvals in) and nothing automatic is going to merge it.{}",
                     pull.title,
                     pull.author,
-                    (now - pull.updated_at).num_minutes()
+                    (now - pull.updated_at).num_minutes(),
+                    if posture.failing_optional.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " {} failed, which the base branch does not require.",
+                            posture.failing_optional.join(", ")
+                        )
+                    }
                 ),
                 "Merge the pull request",
+            ))
+        } else if !posture.failing_optional.is_empty() {
+            // Red, but not what the base branch requires: the pull request can
+            // still merge, so this is worth a look and waits on nobody.
+            Some((
+                "pr_checks_failing",
+                format!("A check that is not required failed on {label}"),
+                format!(
+                    "{} failed on \"{}\" by {}. The base branch does not require it, so it \
+                     does not block the merge.",
+                    posture.failing_optional.join(", "),
+                    pull.title,
+                    pull.author
+                ),
+                "Open the failing check",
             ))
         } else {
             None
         };
         if let Some((kind, title, reason, step)) = verdict {
+            let blocks = kind != "pr_checks_failing" || !posture.failing.is_empty();
             let mut item = Draft {
                 id: format!("{}:{}:{}", kind.replace('_', "-"), pull.repo, pull.number),
                 kind,
-                severity: Severity::Action,
+                severity: if blocks {
+                    Severity::Action
+                } else {
+                    Severity::Watch
+                },
                 title,
                 reason,
                 href: pull_href(&pull.repo, pull.number),

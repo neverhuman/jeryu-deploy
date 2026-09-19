@@ -81,6 +81,29 @@ pub(super) fn passport_blockers(
     review: &ReviewPosture,
     pr: &PullRequest,
 ) -> Vec<MergePassportBlocker> {
+    // A merged or closed pull request has no merge question left. Judging
+    // its historical head against today's rules listed "missing" checks and
+    // "the merge gate is blocked" on work that landed fine. The status type
+    // has only pass and blocked (jeryu-readmodel), so the verdict stays
+    // blocked; its single blocker says why in plain words, and clients tell a
+    // finished pull request from `summary.state`.
+    match web_pr_state(pr) {
+        WebPullRequestState::Merged => {
+            return vec![blocker(
+                "passport_blocked_mergeability",
+                "This pull request is already merged; there is nothing left to merge.",
+                Some("merged"),
+            )];
+        }
+        WebPullRequestState::Closed => {
+            return vec![blocker(
+                "passport_blocked_mergeability",
+                "This pull request is closed; reopen it before it can merge.",
+                Some("closed"),
+            )];
+        }
+        WebPullRequestState::Open => {}
+    }
     let mut blockers = Vec::new();
     if pr.draft {
         blockers.push(blocker(

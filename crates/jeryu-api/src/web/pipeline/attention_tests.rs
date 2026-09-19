@@ -284,6 +284,38 @@ fn pull_requests_waiting_on_a_person() {
         ),
         // Checks still running: nobody's turn yet.
         pull(6, 30, PullPosture::default()),
+        // Red, but only a check the base branch does not require (live:
+        // jankurai/proof on a seed PR whose passport passes). Worth a look,
+        // waiting on nobody.
+        pull(
+            7,
+            5,
+            PullPosture {
+                failing_optional: vec!["jankurai/proof".to_string()],
+                ..PullPosture::default()
+            },
+        ),
+        // The same once it can merge: merging is the step, the red check a footnote.
+        pull(
+            8,
+            45,
+            PullPosture {
+                can_merge: true,
+                checks_green: true,
+                failing_optional: vec!["jankurai/proof".to_string()],
+                ..PullPosture::default()
+            },
+        ),
+        // A required failure beside an optional one still blocks.
+        pull(
+            9,
+            5,
+            PullPosture {
+                failing: vec!["jeryu-web/required".to_string()],
+                failing_optional: vec!["jankurai/proof".to_string()],
+                ..PullPosture::default()
+            },
+        ),
     ];
     let items = pull_items(&pulls, now());
     assert_eq!(
@@ -293,8 +325,29 @@ fn pull_requests_waiting_on_a_person() {
             "pr_checks_failing",
             "pr_awaiting_approval",
             "pr_ready_to_merge",
+            "pr_checks_failing",
+            "pr_ready_to_merge",
+            "pr_checks_failing",
         ]
     );
+    assert_eq!(items[1].severity, Severity::Action);
+    assert_eq!(items[4].severity, Severity::Watch, "{:?}", items[4]);
+    assert!(
+        items[4]
+            .reason
+            .starts_with("jankurai/proof failed on \"PR 7\""),
+        "{}",
+        items[4].reason
+    );
+    assert!(items[4].reason.contains("does not block the merge"));
+    assert_eq!(items[5].severity, Severity::Action);
+    assert!(
+        items[5]
+            .reason
+            .contains("jankurai/proof failed, which the base branch does not")
+    );
+    assert_eq!(items[6].severity, Severity::Action);
+    assert!(items[6].reason.starts_with("jeryu-web/required failed on"));
     assert_eq!(items[0].href, "/repos/jeryu/jeryu/jeryu-web/pulls/1");
     assert!(items[1].reason.contains("jeryu-web/required failed"));
     assert!(items[2].reason.contains("0 of 1 required approval"));
