@@ -712,6 +712,7 @@ fn admin_only_request(method: &Method, path: &str) -> bool {
     admin_only_path(path)
         || (path.starts_with("/api/v1/shift/") && unsafe_method(method))
         || (pipeline_events_path(path) && !unsafe_method(method))
+        || attention_path(path)
 }
 
 /// Reading the pipeline event log is admin-only: events carry todo titles,
@@ -720,6 +721,12 @@ fn admin_only_request(method: &Method, path: &str) -> bool {
 /// identity), like runner heartbeats.
 fn pipeline_events_path(path: &str) -> bool {
     path == "/api/v1/events" || path == "/api/v1/events/"
+}
+
+/// The attention inbox names todos, notes and pull requests across every
+/// repository, so like the event log it is for global admins only.
+fn attention_path(path: &str) -> bool {
+    path == "/api/v1/attention" || path == "/api/v1/attention/"
 }
 
 fn admin_only_path(path: &str) -> bool {

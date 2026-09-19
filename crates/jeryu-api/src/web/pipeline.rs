@@ -13,7 +13,9 @@ mod store;
 mod types;
 
 #[cfg(test)]
-mod tests;
+mod attention_tests;
+#[cfg(test)]
+pub(crate) mod tests;
 
 use std::sync::Arc;
 

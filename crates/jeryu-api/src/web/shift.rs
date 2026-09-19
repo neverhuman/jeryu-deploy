@@ -35,6 +35,9 @@ pub(crate) use heartbeats::{migrate as migrate_shift_store, rfc3339_ms};
 use queue::{Queue, WriteError, commit_change, discover};
 use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;
+#[cfg(test)]
+pub(crate) use types::{Heartbeat, ShiftPr, ShiftRepo};
+pub(crate) use types::{ShiftBranch, ShiftTodo, WorkerRow};
 
 const PR_AUTHOR_ENV: &str = "JERYU_SHIFT_PR_AUTHOR";
 const DEFAULT_PR_AUTHOR: &str = "alton2";
@@ -645,6 +648,50 @@ pub(crate) fn shift_context(
         }
     }
     (None, None)
+}
+
+/// One family's queue and shift branches, for the attention inbox.
+pub(crate) struct FamilySnapshot {
+    pub name: String,
+    pub todos: Vec<ShiftTodo>,
+    pub shifts: Vec<ShiftBranch>,
+}
+
+/// Every family's todos (with derived merged/released) and shift branches.
+pub(crate) fn attention_snapshot(
+    state: &WebState,
+    now: chrono::DateTime<Utc>,
+) -> Vec<FamilySnapshot> {
+    discover(&state.repo_manager)
+        .into_iter()
+        .map(|queue| {
+            let queued = queue_todos(state, &queue).unwrap_or_default();
+            let mut todos: Vec<ShiftTodo> = queued.iter().map(|q| q.todo.to_api(now)).collect();
+            state.shift.truth.enrich(state, &queue, &mut todos);
+            FamilySnapshot {
+                shifts: shifts::list(state, &queue, &queued),
+                name: queue.family.name,
+                todos,
+            }
+        })
+        .collect()
+}
+
+/// Every slot seen in the last 24 hours, with its health at `now`.
+pub(crate) fn worker_rows(state: &WebState, now: chrono::DateTime<Utc>) -> Vec<WorkerRow> {
+    let now = now.timestamp_millis();
+    state
+        .shift
+        .heartbeats
+        .latest(now - 24 * 60 * 60 * 1000)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| WorkerRow {
+            last_seen: rfc3339_ms(row.received_ms),
+            healthy: now - row.received_ms <= HEALTHY_MS,
+            heartbeat: row.heartbeat,
+        })
+        .collect()
 }
 
 /// `GET /api/v1/shift/workers`: every slot seen in the last 24 hours.

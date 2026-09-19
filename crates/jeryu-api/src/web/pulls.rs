@@ -775,6 +775,51 @@ fn summary_with_required_contexts(
     }
 }
 
+/// Where an open pull request's merge gate stands, for the attention inbox.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PullPosture {
+    pub can_merge: bool,
+    pub changes_requested: u32,
+    pub approvals: u32,
+    pub required_approvals: u32,
+    /// Required contexts that failed, or a count of other failing checks.
+    pub failing: Vec<String>,
+    /// Something was checked, nothing failed and nothing is still running.
+    pub checks_green: bool,
+}
+
+/// The posture of an open, non-draft pull request; `None` for any other.
+pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<PullPosture> {
+    if pr.draft || pr.merged || !matches!(web_pr_state(pr), WebPullRequestState::Open) {
+        return None;
+    }
+    find_repo(state, &format!("{}/{}", pr.owner, pr.repo))?;
+    let required = required_contexts(state, pr);
+    let summary = summary_with_required_contexts(state, pr, &required);
+    let mut failing: Vec<String> = required
+        .iter()
+        .filter(|context| context.state == RequiredContextState::Failing)
+        .map(|context| context.name.clone())
+        .collect();
+    if failing.is_empty() && summary.checks.failing > 0 {
+        failing.push(format!("{} check(s)", summary.checks.failing));
+    }
+    let required_passing = required
+        .iter()
+        .all(|context| context.state == RequiredContextState::Passing);
+    Some(PullPosture {
+        can_merge: summary.mergeable.can_merge,
+        changes_requested: summary.review.changes_requested,
+        approvals: summary.review.approvals,
+        required_approvals: summary.review.required_approvals,
+        checks_green: failing.is_empty()
+            && required_passing
+            && summary.checks.pending == 0
+            && (!required.is_empty() || summary.checks.total > 0),
+        failing,
+    })
+}
+
 mod diff;
 mod posture;
 

@@ -260,7 +260,7 @@ fn store_assigns_increasing_seq_filters_and_prunes() {
     assert_eq!(reopened.latest_seq().unwrap(), other.event.seq);
 }
 
-async fn body_json(response: axum::response::Response) -> Value {
+pub(crate) async fn body_json(response: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -564,7 +564,7 @@ fn stored_events_reach_pipeline_scope_subscribers_only() {
 
 /// An admin token and a router over the shift fixture (queue repo with two
 /// todos, `jeryu-deploy` with a nightshift branch).
-fn shift_forge(dir: &Path) -> (axum::Router, String) {
+pub(crate) fn shift_forge(dir: &Path) -> (axum::Router, String) {
     crate::web::shift::tests::fixture(dir);
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
