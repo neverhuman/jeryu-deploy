@@ -394,10 +394,12 @@ fn score_ingest_invalid(reason: &str) -> AxumResponse {
 
 mod compare;
 mod deployed;
+mod release_tag;
 mod source;
 
 pub(super) use compare::repo_compare;
 pub(super) use deployed::deployed_repositories;
+pub(super) use release_tag::repo_release_tag;
 pub(super) use source::{
     repo_blob, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree,
 };

@@ -136,7 +136,7 @@ pub(in crate::web) async fn repo_compare(
 
 /// A full or abbreviated sha, or a branch/tag name: no option-looking values,
 /// no range or reflog syntax, nothing git would read as more than one revision.
-fn is_revision(value: &str) -> bool {
+pub(super) fn is_revision(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 255
         && !value.starts_with(['-', '/', '.'])
