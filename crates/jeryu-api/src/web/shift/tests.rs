@@ -14,7 +14,7 @@ use super::todo_file::{TodoFile, slugify};
 use super::types::Heartbeat;
 use crate::web::{WebState, app};
 
-const LEGACY: &str = r#"+++
+const PRE_SHIFT_TODO: &str = r#"+++
 id = "20260919-004112-c52b54"
 family = "jeryu"
 title = "Backend: replace \"fake\" fixture"
@@ -76,10 +76,13 @@ fn todoq_files_round_trip_byte_for_byte() {
 }
 
 #[test]
-fn legacy_filed_by_reads_as_requested_by_and_dumps_in_todoq_order() {
-    let todo = TodoFile::parse(LEGACY).expect("parse legacy");
+fn filed_by_reads_as_requested_by_and_dumps_in_todoq_order() {
+    let todo = TodoFile::parse(PRE_SHIFT_TODO).expect("parse pre-shift todo");
     assert_eq!(todo.requested_by, "alton@xbabe0");
-    assert!(todo.triaged, "a legacy todo counts as triaged");
+    assert!(
+        todo.triaged,
+        "a todo filed before triage existed counts as triaged"
+    );
     assert_eq!(
         todo.body,
         "Backend cleanup: stop serving fake data.\n\nSecond paragraph."
@@ -127,7 +130,7 @@ fn bad_files_are_refused_and_lease_liveness_is_time_based() {
     assert!(TodoFile::parse("no fence").is_err());
     assert!(TodoFile::parse("+++\nid = \"x\"\n").is_err());
     assert!(TodoFile::parse("+++\nid = \"x\"\nstatus = \"weird\"\n+++\n").is_err());
-    let mut todo = TodoFile::parse(LEGACY).unwrap();
+    let mut todo = TodoFile::parse(PRE_SHIFT_TODO).unwrap();
     todo.status = "claimed".to_string();
     todo.lease_until = "2026-09-19T02:00:00Z".to_string();
     let before = Utc.with_ymd_and_hms(2026, 9, 19, 1, 0, 0).unwrap();
@@ -185,7 +188,11 @@ fn fixture(root: &Path) {
     std::fs::create_dir_all(work.join("todos")).unwrap();
     run_git(&work, &["init", "-q"]);
     std::fs::write(work.join("family.toml"), FAMILY_TOML).unwrap();
-    std::fs::write(work.join("todos/20260919-004112-c52b54-backend.md"), LEGACY).unwrap();
+    std::fs::write(
+        work.join("todos/20260919-004112-c52b54-backend.md"),
+        PRE_SHIFT_TODO,
+    )
+    .unwrap();
     std::fs::write(
         work.join("todos/20260919-010000-abcdef-ship-it.md"),
         CURRENT,
