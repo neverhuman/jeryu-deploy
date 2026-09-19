@@ -175,6 +175,7 @@ otherwise open `href` and do what `action.label` says.
 | `todo_stuck_claim` | watch | claimed, lease dead for 10 minutes or more |
 | `todo_waiting_on_blocker` | watch | open, and a `blocked_by` todo is blocked, handed off, or done but not merged |
 | `shift_without_pr` | action | a shift branch is ahead of the base with no pull request, or only a closed one |
+| `shift_stranded_work` | action | a shift's pull request already merged, and todos landed on the branch afterwards: their `Todo:` trailer is on no base commit, so the work is finished and on no open pull request |
 | `pr_changes_requested`, `pr_checks_failing`, `pr_awaiting_approval`, `pr_ready_to_merge` | action | an open, non-draft pull request; the first that applies, in this order. `pr_awaiting_approval` needs green checks; `pr_ready_to_merge` needs the PR unchanged for 10 minutes |
 | `queue_failed` | action | a merge-queue entry failed or was dropped in the last 24 hours and its PR is still open |
 | `reviewer_stuck` | action | the automated reviewer's last verdict on a still-open PR is `hold`, `too_large`, `publication_rejected` or `failed` |

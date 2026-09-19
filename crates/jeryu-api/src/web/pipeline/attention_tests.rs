@@ -153,6 +153,11 @@ fn a_shift_branch_with_work_and_no_pull_request() {
             state: state.to_string(),
             url: "/repos/jeryu/jeryu/x/pulls/7".to_string(),
         }),
+        unmerged_todos: Vec::new(),
+    };
+    let stranded = |name: &str, state: &str, todos: &[&str]| ShiftRepo {
+        unmerged_todos: todos.iter().map(|id| (*id).to_string()).collect(),
+        ..repo(name, 1, Some(state))
     };
     let shifts = [ShiftBranch {
         branch: "bulletshift/2026-09-19".to_string(),
@@ -163,11 +168,28 @@ fn a_shift_branch_with_work_and_no_pull_request() {
             repo("jeryu-web", 1, Some("closed")),
             repo("jeryu-core", 3, Some("mergeable")),
             repo("jeryu-ci-runner", 0, None),
+            // Merged by replay: still "ahead" by sha, but every todo is on base.
+            stranded("jeryu-tool", "merged", &[]),
+            // A todo landed after the pull request merged: finished, going nowhere.
+            stranded("jeryu-jira", "merged", &["20260919-053426-6e19e4"]),
+            // The same on a branch whose pull request is still open rides that one.
+            stranded("jeryu-cache", "mergeable", &["t9"]),
         ],
         todo_ids: vec!["t1".to_string(), "t2".to_string()],
     }];
     let items = shift_items("jeryu", &shifts);
-    assert_eq!(kinds(&items), ["shift_without_pr", "shift_without_pr"]);
+    assert_eq!(
+        kinds(&items),
+        [
+            "shift_without_pr",
+            "shift_without_pr",
+            "shift_stranded_work"
+        ]
+    );
+    assert_eq!(items[2].repo.as_deref(), Some("jeryu-jira"));
+    assert_eq!(items[2].todo_id.as_deref(), Some("20260919-053426-6e19e4"));
+    assert!(items[2].reason.contains("already merged"));
+    assert_eq!(items[2].action.label, "Open a new review PR for the branch");
     assert_eq!(items[0].repo.as_deref(), Some("jeryu-deploy"));
     assert_eq!(items[1].repo.as_deref(), Some("jeryu-web"));
     assert_eq!(items[0].shift.as_deref(), Some("bulletshift/2026-09-19"));

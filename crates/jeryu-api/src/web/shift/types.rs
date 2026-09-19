@@ -263,6 +263,12 @@ pub(crate) struct ShiftRepo {
     pub behind: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<ShiftPr>,
+    /// Todos whose commits are on this branch but not on the base, neither as
+    /// themselves nor replayed (no base commit carries their `Todo:` trailer).
+    /// After the shift's pull request merged, these are stranded: work that
+    /// landed on the branch too late to ride that pull request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unmerged_todos: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

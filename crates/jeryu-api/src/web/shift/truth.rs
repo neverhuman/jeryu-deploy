@@ -144,7 +144,7 @@ fn is_ancestor(git_bin: &str, dir: &Path, ancestor: &str, descendant: &str) -> b
 }
 
 /// Todo id -> the newest base-branch commit carrying `Todo: <id>`.
-fn scan_trailers(git_bin: &str, dir: &Path, base_head: &str) -> HashMap<String, String> {
+pub(super) fn scan_trailers(git_bin: &str, dir: &Path, base_head: &str) -> HashMap<String, String> {
     let Ok(out) = git(
         git_bin,
         dir,

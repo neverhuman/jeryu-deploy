@@ -38,8 +38,8 @@ pub(crate) use queue::{git as run_git, resolve as resolve_commit};
 use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;
 #[cfg(test)]
-pub(crate) use types::{Heartbeat, ShiftPr, ShiftRepo};
-pub(crate) use types::{ShiftBranch, ShiftTodo, WorkerRow};
+pub(crate) use types::{Heartbeat, ShiftPr};
+pub(crate) use types::{ShiftBranch, ShiftRepo, ShiftTodo, WorkerRow};
 use visibility::stage_event;
 pub(crate) use visibility::{FamilySnapshot, attention_snapshot, shift_context, worker_rows};
 

@@ -91,6 +91,43 @@ fn ahead_behind(git_bin: &str, dir: &std::path::Path, base: &str, branch: &str) 
     .unwrap_or((0, 0))
 }
 
+/// Todo ids carried by commits in `base..branch` that no base commit carries.
+/// A linear-history merge replays commits under new shas, so `ahead` alone
+/// cannot tell merged work from work that never landed; the trailer can.
+pub(super) fn unmerged_todos(
+    git_bin: &str,
+    dir: &std::path::Path,
+    base: &str,
+    branch: &str,
+) -> Vec<String> {
+    let range = format!("refs/heads/{base}..refs/heads/{branch}");
+    let Ok(out) = git(
+        git_bin,
+        dir,
+        &[
+            "log",
+            "-n",
+            "200",
+            "--format=%(trailers:key=Todo,valueonly,separator=%x2C)",
+            &range,
+        ],
+        &[],
+        None,
+    ) else {
+        return Vec::new();
+    };
+    let on_base = super::truth::scan_trailers(git_bin, dir, &format!("refs/heads/{base}"));
+    let mut ids = std::collections::BTreeSet::new();
+    for line in String::from_utf8_lossy(&out).lines() {
+        for id in line.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+            if !on_base.contains_key(id) {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+    ids.into_iter().collect()
+}
+
 /// Shift branches of one family, newest date first.
 pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec<ShiftBranch> {
     let git_bin = state.repo_manager.config().git_bin.clone();
@@ -147,12 +184,18 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
                         .map(|t| t.todo.id.clone())
                         .collect(),
                 });
+            let unmerged_todos = if ahead > 0 {
+                unmerged_todos(&git_bin, &repository.path, base, branch)
+            } else {
+                Vec::new()
+            };
             entry.repos.push(ShiftRepo {
                 repo: repo.name.clone(),
                 head: head.to_string(),
                 ahead,
                 behind,
                 pr,
+                unmerged_todos,
             });
         }
     }

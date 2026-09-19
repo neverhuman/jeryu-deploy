@@ -969,3 +969,34 @@ async fn shifts_resolve_a_family_repo_hosted_under_another_owner() {
         "the PR is opened in the hosting owner: {opened}"
     );
 }
+
+/// A linear-history merge replays commits under new shas, so a merged shift
+/// still looks "ahead". The `Todo:` trailer tells merged work from work that
+/// landed on the branch after its pull request merged and never reached base.
+#[test]
+fn unmerged_todos_are_found_by_trailer_not_by_sha() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    run_git(repo, &["init", "-q", "."]);
+    let commit = |file: &str, message: &str| {
+        std::fs::write(repo.join(file), file).unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-q", "-m", message]);
+    };
+    commit("base.txt", "base");
+    run_git(repo, &["checkout", "-q", "-b", "nightshift/2026-09-18"]);
+    commit("a.txt", "first todo\n\nTodo: 20260919-000001-aaaaaa");
+    commit("b.txt", "second todo\n\nTodo: 20260919-000002-bbbbbb");
+    commit("c.txt", "no trailer at all");
+    // The pull request merged when only the first todo was there, replayed
+    // onto main under a new sha.
+    run_git(repo, &["checkout", "-q", "main"]);
+    commit(
+        "a.txt",
+        "first todo (replayed)\n\nTodo: 20260919-000001-aaaaaa",
+    );
+
+    let found = super::shifts::unmerged_todos("git", repo, "main", "nightshift/2026-09-18");
+    assert_eq!(found, ["20260919-000002-bbbbbb"]);
+    assert!(super::shifts::unmerged_todos("git", repo, "main", "main").is_empty());
+}

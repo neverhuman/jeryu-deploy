@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::{Draft, Item, STUCK_CLAIM_MINUTES, Severity, parse_time, todo_href};
-use crate::web::shift::{ShiftBranch, ShiftTodo, WorkerRow};
+use crate::web::shift::{ShiftBranch, ShiftRepo, ShiftTodo, WorkerRow};
 
 /// When the todo last changed hands: its newest attempt's end, else filing.
 fn todo_since(todo: &ShiftTodo) -> Option<String> {
@@ -143,6 +143,14 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
     let mut items = Vec::new();
     for shift in shifts {
         for repo in &shift.repos {
+            // Work that landed on the branch after its pull request merged
+            // is stranded: the branch looks done, and nothing will review it.
+            let stranded = repo.pr.as_ref().is_some_and(|pr| pr.state == "merged")
+                && !repo.unmerged_todos.is_empty();
+            if stranded {
+                items.push(stranded_item(family, shift, repo));
+                continue;
+            }
             let unreviewed =
                 repo.ahead > 0 && repo.pr.as_ref().is_none_or(|pr| pr.state == "closed");
             if !unreviewed {
@@ -221,4 +229,35 @@ pub(crate) fn worker_items(families: &[(String, usize)], workers: &[WorkerRow]) 
         items.push(item);
     }
     items
+}
+
+fn stranded_item(family: &str, shift: &ShiftBranch, repo: &ShiftRepo) -> Item {
+    let mut item = Draft {
+        id: format!("shift-stranded:{family}:{}:{}", repo.repo, shift.branch),
+        kind: "shift_stranded_work",
+        severity: Severity::Action,
+        title: format!(
+            "{} has finished work on {} that never reached the base branch",
+            repo.repo, shift.branch
+        ),
+        reason: format!(
+            "The pull request for the {family} shift branch {} in {} already merged, but {} \
+             todo(s) landed on the branch afterwards ({}). Their commits are on no open pull \
+             request and not on the base branch, so the work is finished and going nowhere.",
+            shift.branch,
+            repo.repo,
+            repo.unmerged_todos.len(),
+            repo.unmerged_todos.join(", ")
+        ),
+        href: format!("/work/shift?family={family}"),
+        label: "Open a new review PR for the branch",
+        command: None,
+    }
+    .build();
+    item.family = Some(family.to_string());
+    item.repo = Some(repo.repo.clone());
+    item.sha = Some(repo.head.clone());
+    item.shift = Some(shift.branch.clone());
+    item.todo_id = repo.unmerged_todos.first().cloned();
+    item
 }
