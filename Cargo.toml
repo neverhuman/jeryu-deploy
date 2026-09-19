@@ -73,3 +73,12 @@ jeryu-sandbox-linux = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.g
 
 [patch."https://github.com/neverhuman/jeryu-intelligence.git"]
 jeryu-rustjet = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.1" }
+
+# Account creation and login hash with argon2 at production cost; unoptimized it
+# takes ~1 s per hash, which dominated the web tests' wall time. Optimizing just
+# the hash crates keeps debug builds of everything else fast to compile.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

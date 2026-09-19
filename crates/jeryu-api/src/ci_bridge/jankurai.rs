@@ -310,6 +310,7 @@ pub(super) fn verify_jankurai_authority(
     ))
 }
 
+#[cfg_attr(test, allow(dead_code))]
 pub(super) fn jankurai_bin() -> Result<PathBuf, String> {
     let path = std::env::var_os("JERYU_JANKURAI_BIN")
         .filter(|value| !value.is_empty())
@@ -367,8 +368,22 @@ pub(super) fn record_authoritative_jankurai_score(
             origin_base_url,
         },
         update,
-        jankurai_bin,
+        push_jankurai_bin,
     );
+}
+
+/// The auditor a push runs. Unit tests never spawn the host's governed jankurai:
+/// whether it is installed decides only an advisory check they do not assert, and
+/// each run cost ~10 s. The audit path itself is proven through
+/// `record_authoritative_jankurai_score_with` with a scripted auditor.
+#[cfg(not(test))]
+fn push_jankurai_bin() -> Result<PathBuf, String> {
+    jankurai_bin()
+}
+
+#[cfg(test)]
+fn push_jankurai_bin() -> Result<PathBuf, String> {
+    Err("unit tests do not run the governed jankurai".to_string())
 }
 
 /// The forge repository a proof is published on, and the forge origin its

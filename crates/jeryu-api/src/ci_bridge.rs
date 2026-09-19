@@ -276,9 +276,13 @@ required_tool_version = "1.6.11"
 excluded_paths = [".jankurai/", "apps/web/dist/"]
 "#;
 
+#[cfg_attr(test, allow(dead_code))] // only the non-test push auditor reads it
 const GOVERNED_JANKURAI_PATH: &str = "/home/ubuntu/.jeryu/bin/jankurai";
+#[cfg_attr(test, allow(dead_code))] // only the non-test push auditor reads it
 const GOVERNED_JANKURAI_RECEIPT_DIR: &str = "/home/ubuntu/.jeryu/receipts/jankurai/sha256";
+#[cfg_attr(test, allow(dead_code))] // only the non-test push auditor reads it
 const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
+#[cfg_attr(test, allow(dead_code))] // only the non-test push auditor reads it
 const GOVERNED_JANKURAI_SHA256: &str =
     "9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c";
 const GOVERNED_JANKURAI_SOURCE_REPO: &str = "https://git.neverhuman.org/git/jeryu/jankurai.git";

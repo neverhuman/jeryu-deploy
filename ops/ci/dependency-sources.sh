@@ -211,7 +211,10 @@ for pin in "${hosted_pins[@]}"; do
 done
 
 cargo deny check sources
-cargo test --locked -p jeryu-api --features web --test hosted_dependency_transport -- \
+# Same package selection as pr-ci.sh's workspace test run, so this reuses its
+# build instead of recompiling jeryu-api for `-p`'s narrower feature resolution.
+cargo test --locked --workspace --exclude jeryu-sandbox-linux --features jeryu-api/web \
+  --test hosted_dependency_transport -- \
   --test-threads=1
 if [[ "$(sha256sum "${active_global}" | awk '{print $1}')" != "${active_global_sha256}" ]]; then
   printf 'active Git transport configuration changed during validation\n' >&2

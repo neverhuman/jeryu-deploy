@@ -95,7 +95,13 @@ echo "[pr-ci] cargo test (excl. jeryu-sandbox-linux + agentbridge sandbox-runtim
 # the sandboxed process does not stream its marker inside the 30s window and the
 # proof flakes. They run green on the dedicated GitHub-mirror runners (full caps,
 # unloaded); skip them here exactly like the agent-stream/sandbox live tests.
-cargo test --locked --workspace --exclude jeryu-sandbox-linux --jobs "$JOBS" --no-fail-fast -- \
+# JERYU_JANKURAI_BIN without a receipt makes every push audit in the integration
+# tests (merge_gating) fail its identity check at once instead of spawning the
+# host's governed jankurai for ~10 s per push. Those tests assert refs and merge
+# gating, never the advisory jankurai/proof verdict; the lib tests already skip it
+# under cfg(test) and prove the audit path with a scripted auditor.
+JERYU_JANKURAI_BIN=/nonexistent/jankurai \
+  cargo test --locked --workspace --exclude jeryu-sandbox-linux --jobs "$JOBS" --no-fail-fast -- \
   --test-threads "$TEST_THREADS" \
   --skip same_write_path_succeeds_inside_and_is_blocked_outside \
   --skip unsandboxed_control_can_write_outside_proving_landlock_is_the_blocker \

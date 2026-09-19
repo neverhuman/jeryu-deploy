@@ -22,8 +22,14 @@ fi
 
 cargo run --locked -q -p jeryu-split-tool -- verify-lock --lock jeryu-split.lock.toml
 echo "web gate: jeryu-web pin in jeryu-split.lock.toml is well formed"
-cargo test --locked -p jeryu-api --features web --jobs "${JERYU_CI_JOBS}" --test web_dist_pin
+# Select packages exactly as pr-ci.sh's workspace test run does: `-p jeryu-api`
+# resolves a different feature set than `--workspace` (jeryu-cli enables web), so
+# it recompiled jeryu-api twice here to run tests that were already built. With
+# the same selection both runs reuse those binaries; jeryu-api/web is named
+# explicitly so the lane still proves the web build when run on its own.
+web_test=(cargo test --locked --workspace --exclude jeryu-sandbox-linux --features jeryu-api/web
+  --jobs "${JERYU_CI_JOBS}")
+"${web_test[@]}" --test web_dist_pin
 echo "web gate: a tampered, stale or missing web dist fails the build"
-cargo test --locked -p jeryu-api --features web --jobs "${JERYU_CI_JOBS}" \
-  browser_repo_routes_serve_the_spa_shell
+"${web_test[@]}" browser_repo_routes_serve_the_spa_shell
 echo "web gate: Deploy API SPA integration passed"
