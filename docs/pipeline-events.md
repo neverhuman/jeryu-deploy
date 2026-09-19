@@ -17,7 +17,8 @@ never HTML. A path under `/api/v1/` that no route matches answers
 `404 api_route_not_found`.
 
 Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
-`crates/jeryu-api/src/web/pipeline/`, `crates/jeryu-api/src/web/shift/truth.rs`,
+`crates/jeryu-api/src/web/pipeline/` (store, emit points, attention rules),
+`crates/jeryu-api/src/web/shift/truth.rs` and `shift/visibility.rs`,
 `db/migrations/0002_pipeline_events.sql`.
 
 ## Access

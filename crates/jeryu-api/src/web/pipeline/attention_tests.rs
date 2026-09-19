@@ -365,9 +365,10 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     assert_eq!(down[1].severity, Severity::Critical);
     assert!(down[1].action.command.is_some());
     // No open PR and nothing queued: a silent gate is nobody's problem yet.
-    assert!(runner_items(&[stale_gate.clone()], &BTreeSet::new(), false, now()).is_empty());
+    let only_stale = std::slice::from_ref(&stale_gate);
+    assert!(runner_items(only_stale, &BTreeSet::new(), false, now()).is_empty());
     assert_eq!(
-        kinds(&runner_items(&[stale_gate], &BTreeSet::new(), true, now())),
+        kinds(&runner_items(only_stale, &BTreeSet::new(), true, now())),
         ["gate_runner_down"],
         "the merge queue waiting on a gate counts"
     );
