@@ -20,6 +20,8 @@ authority. Durable detail is intentionally routed rather than duplicated:
 - Audit and release controls: `agent/audit-policy.toml`, `docs/audit-rubric.md`,
   `docs/release.md`, and `docs/release-process.md`.
 - Tool-finder scheduled scan and proposal decisions: `docs/tool-finder.md`.
+- Pipeline event log, attention inbox and their agent guide:
+  `docs/pipeline-events.md`.
 
 Governed Jankurai rotations run the closed projection integration test, the
 hostile-identity shell verifier, full score, and protected-base diff audit

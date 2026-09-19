@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add the pipeline event log (`POST`/`GET /api/v1/events`, the admin-only
+  `pipeline` WebSocket scope, server-side events for todos, worker stages, pull
+  requests, the merge queue, runners and deployments) and the attention inbox
+  (`GET /api/v1/attention`); derive `merged`, `released`, `pr` and `cost_usd` on
+  `GET /api/v1/shift/todos`; have `auto-stage.sh` report staged releases; and
+  answer unknown `/api/v1/` paths with a typed JSON 404 instead of the web
+  app's HTML. Contract: `docs/pipeline-events.md`.
+
 - Decompose the agent-run web control surface into handler, bounded-store,
   frozen-diff export, and focused TTY regression modules; preserve the existing
   route and wire behavior behind a new narrow `just agent-runs` proof command.

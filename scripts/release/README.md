@@ -89,3 +89,8 @@ together with a new `-rN` tag.
 every staged commit is in `staged.tsv`. A commit that fails to stage twice is left for a human.
 Install or update the timer with `scripts/release/install-auto-stage.sh`, and follow it with
 `journalctl --user -u jeryu-auto-stage`.
+
+Each attempt also posts a pipeline event to the forge (`release.staged` with the deploy command,
+or `release.stage_failed` with the tail of the staging output), which is how the attention inbox
+knows a release is staged and waiting. Posting is best-effort and never fails a staging. The
+contract is in [`docs/pipeline-events.md`](../../docs/pipeline-events.md).
