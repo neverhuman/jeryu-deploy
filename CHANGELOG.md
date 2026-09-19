@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add `GET /api/v1/pins` (what each deploy repo pins, how far behind it is, what
+  a bump would ship, whether a bump is open) and the `pin_behind` attention
+  kind; add `scripts/release/auto-pin.sh` with its timer and installer, which
+  opens the jeryu-web pin bump pull request once jeryu-web main is green and
+  never merges. Contract: `docs/pipeline-events.md#pins`.
+
 - Add the pipeline event log (`POST`/`GET /api/v1/events`, the admin-only
   `pipeline` WebSocket scope, server-side events for todos, worker stages, pull
   requests, the merge queue, runners and deployments) and the attention inbox

@@ -8,6 +8,8 @@ tools. This page is the contract that makes it visible in one place:
   cursor and a WebSocket nudge. It answers "what is the system doing".
 - **`/api/v1/attention`**: what is waiting on a person right now, computed from
   current state. It answers "what needs me".
+- **`/api/v1/pins`**: what each deploy repo pins and how far behind it is. It
+  answers "what could be released".
 - **`/api/v1/shift/todos`** additions: whether a done todo is merged and
   released, and which pull request carries it.
 
@@ -28,11 +30,13 @@ Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
 | `POST /api/v1/events` | a global admin, or a login in `JERYU_EVENT_REPORTERS` (comma-separated, default `gatebot,pragent`) |
 | `GET /api/v1/events` | global admins |
 | `GET /api/v1/attention` | global admins |
+| `GET /api/v1/pins` | global admins |
 | WebSocket scope `pipeline` | global admins |
 
 Reads are admin-only in v1 because events and attention items carry todo
 titles, notes and log tails from repositories the reader may not be able to
-see. Filtering per repository is a later step.
+see, and pins list the unreleased commits of every dependency. Filtering per
+repository is a later step.
 
 ## Events
 
@@ -98,6 +102,7 @@ Posted by producers:
 |---|---|
 | `todoq` | `todo.claimed`, `todo.attempt_finished` (`outcome` `done`, `retry`, `blocked` or `ratelimit`; `cost_usd`, `seconds`, `log_tail`), `todo.merged`, `todo.waiting_on_unmerged`, `shift.exhausted`, `worker.error` |
 | `auto-stage` | `release.staged` (`sha` is the staged commit; `detail` has `release`, `previous_release`, `deploy_command`), `release.stage_failed` (`log_tail`; `needs_human` on the final attempt) |
+| `auto-pin` | `pin.bump_opened` (`repo` is the consumer, `pr` the bump, `sha` the dependency commit; `detail` has `dependency`, `from`, `to`, `web_dist_sha256`), `pin.bump_failed` (`log_tail`; `needs_human` on the second failure for the same commit) |
 | `pr-gate` | `gate.log` (`outcome` including `timed_out` and `inputs_changed`, `seconds`, `log_tail`, a receipt subset in `detail`) |
 
 ### `POST /api/v1/events`
@@ -178,6 +183,47 @@ otherwise open `href` and do what `action.label` says.
 | `release_staged` | action | the newest `release.staged` event names a commit production does not run and is newer than the live deployment; `action.command` is the event's `detail.deploy_command` |
 | `release_stage_failed` | critical | the newest `release.stage_failed` with `needs_human` is newer than the newest `release.staged` |
 | `deploy_failed` | critical | a repository's newest production deployment ended in `failure` or `error` |
+| `pin_behind` | action or watch | a deploy repo's pin misses green, merged work of a dependency (see [Pins](#pins)). A `commit` pin with no bump open is `action`, with the documented bump command; with a bump pull request open it is `watch` and `href` is that pull request; a `tag` pin is `watch`, because nothing cuts tags. Gone when the pin is current |
+
+## Pins
+
+What could be released. A deploy repo pins its dependencies: the web app by
+commit in its `*-split.lock.toml`, Rust crates by git tag in its Cargo
+manifests. When a dependency's default branch moves, `GET /api/v1/pins` says
+how far behind each pin is and what a bump would ship. It reads the hosted bare
+repositories directly and is cached for 60 seconds.
+
+```json
+{"schema_version": "jeryu.pins/v1", "generated_at": "...",
+ "consumers": [{"repo": "jeryu/jeryu-deploy", "family": "jeryu", "branch": "main", "pins": [...]}]}
+```
+
+A consumer is every hosted repository whose default branch has a root
+`*-split.lock.toml`. A consumer with nothing to report has `"pins": []`.
+
+| Pin field | Notes |
+|---|---|
+| `dependency` | `owner/name` of the hosted repository: under the consumer's owner, else the only hosted repository with that name. A dependency this forge does not host is left out |
+| `kind` | `commit`: a lock `[[repo]]` entry with a 40-hex `commit` and a `web_dist_sha256`, the only lock entry the release build uses (the lock's crate tags are not read by cargo and drift, so they are never reported); also a git dependency pinned by `rev`. `tag`: a git dependency with `tag = "..."` in the root or a `crates/*/Cargo.toml` manifest, whatever host its URL names |
+| `source` | the file that holds the pin |
+| `pinned_ref`, `pinned_sha` | the sha or tag as written, and the commit it resolves to (null when it does not) |
+| `latest_sha`, `latest_at` | the dependency's default-branch head and its commit time |
+| `behind` | commits on the default branch the pin does not reach (counting stops at 1000) |
+| `latest_green` | the combined commit status of `latest_sha`: true, false (failing or pending), or null when nothing posts statuses there |
+| `state` | `current`; `behind` (behind, and the head is green or ungated); `behind_not_green`; `diverged` (the pin is not an ancestor of the head); `unknown` (unresolvable) |
+| `bump_pr` | `{"number", "state", "url"}` of an open pull request in the consumer titled `release: pin <dependency name> ...`, or from an `auto/pin-` branch naming the dependency; else null |
+| `unreleased` | up to 20 `{"sha", "subject"}`, newest first: what a bump would ship |
+
+Lock shapes it does not know (a `repo = "..."` entry, `commit = "PENDING"`) are
+skipped, never an error.
+
+**The web pin bumps itself.** `scripts/release/auto-pin.sh` (timer
+`jeryu-auto-pin.timer`, every 5 minutes on the release host) opens the bump
+pull request once jeryu-web main is green: `release: pin jeryu-web <sha7>` from
+`auto/pin-web-<sha12>`, exactly the two lock fields, listing the commits it
+ships. It only proposes; review, the merge queue, auto-stage and a person's
+deploy follow as for any change. Tag pins have no automation: the item tells a
+person that work is waiting for a tag.
 
 ## Todo truth
 
@@ -240,6 +286,11 @@ happens on the page at `href`. Items are current state: fix the cause and the
 item is gone on the next call (within 10 seconds). Do not treat `needs_human`
 on an old event as an open item.
 
+**Find out what could be released.** `GET /api/v1/pins`: every pin with
+`state = "behind"` is merged, green work that no release of the consumer would
+include; `unreleased` lists it and `bump_pr` says whether the bump is already
+proposed. Do not open a second bump while `bump_pr` is set.
+
 **Tell a missing route from success.** A `404` with
 `code = "api_route_not_found"` means this server does not have the route; it
 may be older than the client.
@@ -257,6 +308,12 @@ may be older than the client.
   copy posts `release.staged`; until then the inbox cannot know about a staged
   release. Staging output is also kept under
   `~/.local/state/jeryu-auto-stage/logs/`.
+- **auto-pin.** Not enabled by a deploy. Run
+  `scripts/release/install-auto-pin.sh` once on the release host (it needs
+  docker for the pinned node image, a git credential that may push branches to
+  jeryu-deploy, and the alton2 token file, mode 0600). Disable with
+  `systemctl --user disable --now jeryu-auto-pin.timer`. State and build logs
+  are under `~/.local/state/jeryu-auto-pin/`.
 - **Deployment logs.** `deploy-release.sh` still sets no `log_url`: nothing
   serves the switch log yet. A `deploy.status` event carries the status
   description; serving the log is a follow-up.
