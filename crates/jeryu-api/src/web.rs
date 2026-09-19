@@ -12,6 +12,7 @@ mod merge_queue;
 pub(crate) use merge_queue::is_queue_owned_ref;
 mod mcp_backend;
 mod permissions;
+mod pipeline;
 mod pulls;
 mod repo_admin;
 mod repositories;
@@ -120,6 +121,8 @@ pub(crate) struct WebState {
     pub(crate) merge_queue: Arc<merge_queue::MergeQueue>,
     /// todoq shift heartbeats (`<data_dir>/shift.sqlite`) and PR author.
     pub(crate) shift: shift::ShiftState,
+    /// Pipeline event log (`<data_dir>/shift.sqlite`, table `pipeline_events`).
+    pub(crate) events: pipeline::EventStore,
     /// Auxiliary codegraph SQLite store for read-only oracle queries.
     pub(crate) codegraph_store: CodeGraphStore,
     /// Shared git-daemon repository manager backing the smart-HTTP transport.
@@ -232,6 +235,7 @@ impl WebState {
             }
         };
         let shift = shift::ShiftState::open(&shift_path);
+        let events = pipeline::EventStore::open(&shift_path).expect("open pipeline event store");
         // Pre-warm the agent pool over the real CLI lifecycle. With the OCI gate
         // closed this only records planned cells (no daemon), so construction is
         // infallible in every environment the web edge boots in.
@@ -251,6 +255,7 @@ impl WebState {
             gate_runners: control_plane::GateRunnerStore::from_env(),
             merge_queue: Arc::default(),
             shift,
+            events,
             codegraph_store,
             repo_manager,
             core: core_handle,
@@ -719,6 +724,10 @@ fn router(state: Arc<WebState>) -> AxumRouter {
         )
         // Shift pages: todoq family queues, slot heartbeats, shift branches.
         // Reads need a login; every POST is admin-only (auth::admin_only_request).
+        .route(
+            "/api/v1/events",
+            get(pipeline::list_events).post(pipeline::post_events),
+        )
         .route("/api/v1/shift/families", get(shift::families))
         .route(
             "/api/v1/shift/todos",

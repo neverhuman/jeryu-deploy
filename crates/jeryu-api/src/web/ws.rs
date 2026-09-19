@@ -237,7 +237,7 @@ pub(super) fn snapshot_event(state: &WebState, scope: &str) -> Option<WebEvent> 
     None
 }
 
-fn authorize_scope(state: &WebState, account: &AccountSummary, scope: &str) -> bool {
+pub(super) fn authorize_scope(state: &WebState, account: &AccountSummary, scope: &str) -> bool {
     if account.role == UserRole::Admin {
         return known_scope(scope);
     }
@@ -254,6 +254,7 @@ fn known_scope(scope: &str) -> bool {
     scope == "global.activity"
         || scope == "system.health"
         || scope == super::tool_finder::SCAN_SCOPE
+        || scope == super::pipeline::PIPELINE_SCOPE
         || scope.starts_with("pool.")
         || scope.starts_with("workcell.")
         || scope.starts_with("agent_run.")

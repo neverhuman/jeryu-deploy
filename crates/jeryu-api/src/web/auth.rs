@@ -709,7 +709,17 @@ fn csrf_valid(state: &WebState, headers: &HeaderMap) -> bool {
 /// Admin-only by path, plus every mutation under `/api/v1/shift/` (its reads
 /// stay open to any logged-in account).
 fn admin_only_request(method: &Method, path: &str) -> bool {
-    admin_only_path(path) || (path.starts_with("/api/v1/shift/") && unsafe_method(method))
+    admin_only_path(path)
+        || (path.starts_with("/api/v1/shift/") && unsafe_method(method))
+        || (pipeline_events_path(path) && !unsafe_method(method))
+}
+
+/// Reading the pipeline event log is admin-only: events carry todo titles,
+/// notes and log tails from repositories the reader may not have access to.
+/// Posting is decided in the handler (admin or a `JERYU_EVENT_REPORTERS`
+/// identity), like runner heartbeats.
+fn pipeline_events_path(path: &str) -> bool {
+    path == "/api/v1/events" || path == "/api/v1/events/"
 }
 
 fn admin_only_path(path: &str) -> bool {

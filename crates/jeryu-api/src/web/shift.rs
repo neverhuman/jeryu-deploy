@@ -28,7 +28,8 @@ use serde_json::{Value, json};
 
 use super::WebState;
 use super::workcells_support::{TypedError, typed_error};
-use heartbeats::{HEALTHY_MS, HeartbeatStore, rfc3339_ms};
+use heartbeats::{HEALTHY_MS, HeartbeatStore};
+pub(crate) use heartbeats::{migrate as migrate_shift_store, rfc3339_ms};
 use queue::{Queue, WriteError, commit_change, discover};
 use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;

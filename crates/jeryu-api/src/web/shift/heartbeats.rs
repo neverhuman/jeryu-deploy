@@ -14,11 +14,18 @@ use sha2::{Digest, Sha256};
 
 use super::types::{CapacityBucket, Heartbeat, HistoryResponse, Segment, SlotHistory};
 
-const MIGRATIONS: &[(i64, &str, &str)] = &[(
-    1,
-    "0001_shift_heartbeats",
-    include_str!("../../../../../db/migrations/0001_shift_heartbeats.sql"),
-)];
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (
+        1,
+        "0001_shift_heartbeats",
+        include_str!("../../../../../db/migrations/0001_shift_heartbeats.sql"),
+    ),
+    (
+        2,
+        "0002_pipeline_events",
+        include_str!("../../../../../db/migrations/0002_pipeline_events.sql"),
+    ),
+];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
 pub(crate) const HEALTHY_MS: i64 = 120 * 1000;
@@ -170,7 +177,9 @@ impl HeartbeatStore {
     }
 }
 
-fn migrate(conn: &Connection) -> Result<(), String> {
+/// Apply every shift.sqlite migration not yet recorded. Idempotent, so each
+/// store sharing the file (heartbeats, pipeline events) may call it on open.
+pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS shift_schema_migrations (
             version INTEGER PRIMARY KEY,
