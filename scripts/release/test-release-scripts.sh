@@ -2,7 +2,8 @@
 # test-release-scripts.sh — exercise the real switch.sh and rollback.sh against a
 # throwaway forge home: real SQLite databases, a "binary" that is a copy of sleep
 # (so /proc/<pid>/exe resolves to the installed release), a stand-in systemctl
-# that runs it, and a file:// health URL. No service, network or credential.
+# that runs it, and a file:// health URL. Then auto-stage.sh against a local bare
+# repo with stand-in ssh and curl. No service, network or credential.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 T="$(mktemp -d)"
@@ -80,5 +81,73 @@ ok "rollback restores PREV and the pre-switch database, keeping the post-switch 
 rm -rf "$JERYU_HOME/backups/pre-$REL"
 if bash "$JERYU_HOME/releases/$REL/rollback.sh" >/dev/null 2>&1; then fail "rollback ran without a snapshot"; fi
 ok "rollback refuses without a pre-switch snapshot"
+
+# --- auto-stage.sh: stage once, tell the forge, never let a failed event POST fail staging ---
+# Stand-ins: a local bare repo as the remote (its stage-release.sh is a stub that stages or fails
+# on demand), ssh that names the live release, curl that answers the status API and records every
+# event body. No network, no token beyond a throwaway file.
+A="$T/auto"; mkdir -p "$A/bin" "$A/src/scripts/release"
+cat >"$A/src/scripts/release/stage-release.sh" <<EOF
+#!/usr/bin/env bash
+echo "building \$1" >&2
+[ -e "$A/fail" ] && { echo "error: linker exploded" >&2; exit 3; }
+echo "prod-20260103T000000Z-\${1:0:7}-unsigned"
+EOF
+chmod +x "$A/src/scripts/release/stage-release.sh"
+git -C "$A/src" init -q -b main
+git -C "$A/src" -c user.name=t -c user.email=t@t add .
+git -C "$A/src" -c user.name=t -c user.email=t@t commit -q -m stage
+git clone -q --bare "$A/src" "$A/remote.git"
+sha="$(git -C "$A/remote.git" rev-parse refs/heads/main)"
+cat >"$A/bin/ssh" <<EOF
+#!/usr/bin/env bash
+echo "jeryu-$PREV"
+EOF
+cat >"$A/bin/curl" <<EOF
+#!/usr/bin/env bash
+# The status API answers success; an event POST is recorded, or refused when told to.
+case "\$*" in
+  *"/api/v1/events"*) [ -e "$A/refuse-events" ] && exit 22; cat >>"$A/events.jsonl"; echo >>"$A/events.jsonl" ;;
+  *) echo '{"state":"success"}' ;;
+esac
+EOF
+chmod +x "$A/bin/ssh" "$A/bin/curl"
+echo "not-a-real-token" >"$A/token"
+auto_stage() {
+  PATH="$A/bin:$PATH" JERYU_DEPLOY_REMOTE="$A/remote.git" JERYU_AUTO_STAGE_STATE="$A/state" \
+    JERYU_STATUS_TOKEN_FILE="$A/token" JERYU_BASE="https://forge.invalid" bash "$here/auto-stage.sh"
+}
+
+touch "$A/fail"
+if auto_stage >"$A/run1.log" 2>&1; then fail "auto-stage reported success for a failed staging"; fi
+[[ "$(jq -r '.kind' "$A/events.jsonl")" == release.stage_failed ]] || fail "no release.stage_failed event"
+[[ "$(jq -r '.needs_human' "$A/events.jsonl")" == false ]] || fail "the first failure is retried, not a human's turn"
+jq -e '.log_tail | contains("linker exploded")' "$A/events.jsonl" >/dev/null || fail "the failure event lacks the log tail"
+grep -q "linker exploded" "$A/run1.log" || fail "staging output no longer reaches the journal"
+if grep -rq "not-a-real-token" "$A/run1.log" "$A/events.jsonl"; then fail "the token leaked"; fi
+: >"$A/events.jsonl"
+if auto_stage >/dev/null 2>&1; then fail "second failed staging reported success"; fi
+[[ "$(jq -r '.needs_human' "$A/events.jsonl")" == true ]] || fail "the final failed attempt must ask for a human"
+[[ "$(jq -r '.event_id' "$A/events.jsonl")" == "auto-stage:failed:${sha:0:12}:2" ]] || fail "failure event_id is not stable"
+ok "auto-stage reports a failed staging with its log tail, and asks for a human on the last attempt"
+
+rm -f "$A/fail" "$A/state/failures/$sha"; : >"$A/events.jsonl"
+touch "$A/refuse-events"
+auto_stage >"$A/run3.log" 2>&1 || { cat "$A/run3.log" >&2; fail "a refused event POST failed the staging"; }
+want="prod-20260103T000000Z-${sha:0:7}-unsigned"
+[[ "$(cat "$A/state/latest")" == "$want" ]] || fail "latest is not the staged release"
+grep -q "posting release.staged failed (ignored)" "$A/run3.log" || fail "a refused event POST was not logged"
+ok "auto-stage stages even when the forge refuses the event"
+
+rm -f "$A/refuse-events"; rm -rf "$A/state"
+auto_stage >/dev/null 2>&1 || fail "auto-stage failed"
+[[ "$(jq -r '.kind' "$A/events.jsonl")" == release.staged ]] || fail "no release.staged event"
+[[ "$(jq -r '.detail.deploy_command' "$A/events.jsonl")" == "scripts/release/deploy-release.sh $want" ]] || fail "staged event lacks the deploy command"
+[[ "$(jq -r '.detail.previous_release' "$A/events.jsonl")" == "$PREV" ]] || fail "staged event lacks the live release"
+[[ "$(jq -r '.sha' "$A/events.jsonl")" == "$sha" ]] || fail "staged event names the wrong commit"
+: >"$A/events.jsonl"
+auto_stage >/dev/null 2>&1 || fail "an idle auto-stage tick failed"
+[[ ! -s "$A/events.jsonl" ]] || fail "an already-staged commit emitted again"
+ok "auto-stage reports a staged release once, with the deploy command and what is live"
 
 echo "release scripts: $pass passed"
