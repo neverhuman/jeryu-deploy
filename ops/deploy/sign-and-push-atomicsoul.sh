@@ -9,7 +9,7 @@ env_file="${JERYU_PRODUCTION_ENV:-}"
 bundle="target/release/bundle"
 release="${JERYU_DEPLOY_RELEASE:-${JERYU_RELEASE_TAG:-}}"
 host=""
-web_dist="apps/web/dist"
+web_dist="${JERYU_WEB_DIST:-}"
 split_manifest="repos.manifest.toml"
 dry_run=0
 force=0
@@ -23,7 +23,8 @@ Options:
   --bundle DIR          release bundle directory (default: target/release/bundle)
   --release RELEASE     release id, defaults to env JERYU_DEPLOY_RELEASE
   --host SSH_HOST       SSH host, defaults to env JERYU_ATOMICSOUL_HOST or atomicsoul
-  --web-dist DIR        web dist to install on atomicsoul (default: apps/web/dist)
+  --web-dist DIR        web dist to install on atomicsoul (default: $JERYU_WEB_DIST,
+                        the pinned build from scripts/release/build-web-dist.sh)
   --split-manifest TOML split manifest to install (default: repos.manifest.toml)
   --dry-run             sign and validate locally, but do not contact atomicsoul
   --force               replace an existing remote release directory
@@ -133,6 +134,10 @@ fi
 }
 [[ -x "${bundle}/jeryu" ]] || {
   printf 'sign-and-push-atomicsoul: executable bundle artifact missing: %s/jeryu\n' "${bundle}" >&2
+  exit 1
+}
+[[ -n "${web_dist}" ]] || {
+  printf 'sign-and-push-atomicsoul: no web dist; pass --web-dist or set JERYU_WEB_DIST (source ops/ci/web-dist-env.sh after scripts/release/build-web-dist.sh)\n' >&2
   exit 1
 }
 [[ -f "${web_dist}/index.html" ]] || {

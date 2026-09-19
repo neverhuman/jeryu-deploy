@@ -7,7 +7,8 @@ cd "${ROOT}"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/jeryu-atomicsoul-release.XXXXXX")"
 trap 'rm -rf "${tmp}"' EXIT
-mkdir -p "${tmp}/bundle"
+mkdir -p "${tmp}/bundle" "${tmp}/web-dist"
+printf '<!doctype html><title>jeryu</title>\n' >"${tmp}/web-dist/index.html"
 
 release="test-atomicsoul-release"
 env_dir="${tmp}/env"
@@ -26,6 +27,7 @@ sha256sum "${tmp}/bundle/jeryu" | awk '{print $1 "  jeryu"}' >"${tmp}/bundle/SHA
 ops/deploy/sign-and-push-atomicsoul.sh \
   --env "${env_dir}/production.env" \
   --bundle "${tmp}/bundle" \
+  --web-dist "${tmp}/web-dist" \
   --release "${release}" \
   --dry-run >/dev/null
 
@@ -50,3 +52,15 @@ jq -e \
 
 printf 'atomicsoul deploy helper smoke ok\n'
 bash ops/deploy/test-atomicsoul-activation.sh
+
+# With neither --web-dist nor JERYU_WEB_DIST there is no dist to ship: fail
+# with a pointer to the pinned build, never fall back to a repo path.
+if out="$(env -u JERYU_WEB_DIST ops/deploy/sign-and-push-atomicsoul.sh \
+  --env "${env_dir}/production.env" \
+  --bundle "${tmp}/bundle" \
+  --release "${release}" \
+  --dry-run 2>&1)"; then
+  echo "expected sign-and-push to refuse a missing web dist" >&2
+  exit 1
+fi
+grep -q 'no web dist; pass --web-dist or set JERYU_WEB_DIST' <<<"${out}"
