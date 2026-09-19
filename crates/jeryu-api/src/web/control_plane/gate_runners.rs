@@ -63,6 +63,9 @@ pub(crate) struct GateRunnerTask {
     pub pr: u64,
     pub sha: String,
     pub recipe: String,
+    /// `started_at` is accepted too: pr-redteam spells it that way, and the
+    /// contract denies unknown fields, so every one of its beats was refused.
+    #[serde(alias = "started_at")]
     pub started_at: DateTime<Utc>,
 }
 
@@ -75,6 +78,7 @@ pub(crate) struct GateRunnerResult {
     pub recipe: String,
     pub conclusion: String,
     pub seconds: u64,
+    #[serde(alias = "finished_at")]
     pub finished_at: DateTime<Utc>,
 }
 
@@ -344,6 +348,27 @@ mod tests {
         assert!(store.may_report("pragent"));
         assert!(store.may_report("gatebot"));
         assert!(!store.may_report("alton"));
+    }
+
+    #[test]
+    fn the_beat_pr_redteam_really_sends_is_accepted() {
+        // Verbatim shape from ~/pr-redteam (2026-09-19): snake_case stamps. The
+        // contract denied them as unknown fields, so no reviewer ever showed
+        // on /runners, and the refusal was plain text the tool did not log.
+        let beat: GateRunnerHeartbeat = serde_json::from_str(
+            r#"{"runnerId":"xbabe0/redteam","host":"xbabe0","slot":0,"labels":["redteam"],
+                "current":{"repo":"jeryu/jeryu-web","pr":43,"sha":"30106a749a37f0d8","recipe":"redteam-review","started_at":"2026-09-19T17:47:30Z"},
+                "last":{"repo":"jeryu/jeryu-deploy","pr":63,"sha":"3ccfa84d8e8f07cd","recipe":"redteam-review","conclusion":"approve","seconds":14,"finished_at":"2026-09-19T17:47:48Z"}}"#,
+        )
+        .expect("snake_case stamps are accepted");
+        assert!(is_reviewer(&beat));
+        let store = GateRunnerStore::with_reporters(["pragent"]);
+        assert!(store.record(beat, "pragent", Utc::now()).is_ok());
+        // The camelCase spelling the gate runner sends still works.
+        let camel: Result<GateRunnerResult, _> = serde_json::from_str(
+            r#"{"repo":"veox/jain-web","pr":1,"sha":"abc30d78","recipe":"just required","conclusion":"success","seconds":9,"finishedAt":"2026-09-19T17:47:48Z"}"#,
+        );
+        assert!(camel.is_ok());
     }
 
     #[test]
