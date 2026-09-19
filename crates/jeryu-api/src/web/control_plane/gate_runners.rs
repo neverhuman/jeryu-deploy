@@ -7,8 +7,14 @@
 //! [`RUNNER_OFFLINE_AFTER_SECS`] rather than silently dropped, and a restarted
 //! forge repopulates within one tick because runners report every minute.
 //!
+//! pr-redteam, the agent PR reviewer, reports through the same contract with
+//! the [`REVIEWER_LABEL`] label; its `last.conclusion` is a review verdict
+//! (`approve`, `hold`, or an outcome with no usable verdict) instead of a gate
+//! result, and `/runners` renders it as a reviewer rather than a gate slot.
+//!
 //! Only logins named in `JERYU_RUNNER_REPORTERS` (comma-separated, default
-//! `gatebot`) may report, so an ordinary account cannot paint fake runners.
+//! `gatebot,pragent`) may report, so an ordinary account cannot paint fake
+//! runners.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -19,7 +25,19 @@ use serde::{Deserialize, Serialize};
 /// Seconds without a heartbeat before a runner is shown offline.
 pub(crate) const RUNNER_OFFLINE_AFTER_SECS: i64 = 180;
 const MAX_RUNNERS: usize = 256;
-const DEFAULT_REPORTERS: &str = "gatebot";
+const DEFAULT_REPORTERS: &str = "gatebot,pragent";
+/// Heartbeat label that marks a PR reviewer (pr-redteam) instead of a gate slot.
+pub(crate) const REVIEWER_LABEL: &str = "redteam";
+const GATE_CONCLUSIONS: &[&str] = &["success", "failure", "error"];
+/// Every decision pr-redteam records for a finished review pass.
+const REVIEW_CONCLUSIONS: &[&str] = &[
+    "approve",
+    "hold",
+    "failed",
+    "interrupted",
+    "publication_rejected",
+    "too_large",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -146,6 +164,11 @@ pub(crate) fn is_online(record: &GateRunnerRecord, now: DateTime<Utc>) -> bool {
     (now - record.received_at).num_seconds() <= RUNNER_OFFLINE_AFTER_SECS
 }
 
+/// A heartbeat from a PR reviewer rather than a gate runner slot.
+pub(crate) fn is_reviewer(heartbeat: &GateRunnerHeartbeat) -> bool {
+    heartbeat.labels.iter().any(|label| label == REVIEWER_LABEL)
+}
+
 fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
     check_token("runnerId", &heartbeat.runner_id, 128, "._/-")?;
     check_token("host", &heartbeat.host, 64, ".-")?;
@@ -160,8 +183,13 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
     }
     if let Some(result) = &heartbeat.last {
         check_gate("last", &result.repo, &result.sha, &result.recipe)?;
-        if !matches!(result.conclusion.as_str(), "success" | "failure" | "error") {
-            return Err("last.conclusion: expected success, failure or error".to_string());
+        let (allowed, expected) = if is_reviewer(heartbeat) {
+            (REVIEW_CONCLUSIONS, REVIEW_CONCLUSIONS.join(", "))
+        } else {
+            (GATE_CONCLUSIONS, "success, failure or error".to_string())
+        };
+        if !allowed.contains(&result.conclusion.as_str()) {
+            return Err(format!("last.conclusion: expected {expected}"));
         }
     }
     Ok(())
@@ -282,6 +310,31 @@ mod tests {
         bad_conclusion.last.as_mut().unwrap().conclusion = "green".to_string();
         assert!(store.record(bad_conclusion, "gatebot", now).is_err());
         assert!(store.snapshot().is_empty());
+    }
+
+    #[test]
+    fn reviewer_beats_carry_review_verdicts() {
+        let store = GateRunnerStore::with_reporters(["pragent"]);
+        let now = Utc::now();
+        let mut review = beat("xbabe0/redteam");
+        review.labels = vec![REVIEWER_LABEL.to_string()];
+        for conclusion in ["approve", "hold", "failed"] {
+            review.last.as_mut().unwrap().conclusion = conclusion.to_string();
+            assert!(store.record(review.clone(), "pragent", now).is_ok());
+        }
+        review.last.as_mut().unwrap().conclusion = "success".to_string();
+        assert!(store.record(review, "pragent", now).is_err());
+        let mut gate = beat("xbabe2/slot0");
+        gate.last.as_mut().unwrap().conclusion = "approve".to_string();
+        assert!(store.record(gate, "pragent", now).is_err());
+    }
+
+    #[test]
+    fn pragent_reports_by_default() {
+        let store = GateRunnerStore::with_reporters(DEFAULT_REPORTERS.split(','));
+        assert!(store.may_report("pragent"));
+        assert!(store.may_report("gatebot"));
+        assert!(!store.may_report("alton"));
     }
 
     #[test]

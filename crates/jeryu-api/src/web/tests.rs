@@ -6709,6 +6709,84 @@ async fn runner_heartbeats_are_reporter_only_and_reach_the_fleet() {
 }
 
 #[tokio::test]
+async fn redteam_heartbeats_from_pragent_reach_the_fleet_as_a_reviewer() {
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("pragent", "pragent-password", UserRole::User)
+        .unwrap();
+    core.create_account("alton", "alton-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "test", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, pragent, alton) = (token("alice"), token("pragent"), token("alton"));
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let heartbeat = serde_json::json!({
+        "runnerId": "xbabe0/redteam",
+        "host": "xbabe0",
+        "slot": 0,
+        "labels": ["redteam"],
+        "current": {
+            "repo": "jeryu/jeryu-web", "pr": 44,
+            "sha": "abc30d78ca5eadc15694dd1434d9f8f99c44a0d3",
+            "recipe": "redteam-review", "startedAt": "2026-09-19T05:20:00Z"
+        },
+        "last": {
+            "repo": "jeryu/jeryu-deploy", "pr": 43,
+            "sha": "55ee4dd0efe046dc716f77fa73536d35b760fe4e",
+            "recipe": "redteam-review", "conclusion": "approve",
+            "seconds": 22, "finishedAt": "2026-09-19T05:21:43Z"
+        }
+    });
+    let post = |token: &str| {
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/api/v1/runners/heartbeat")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(heartbeat.to_string()))
+            .unwrap()
+    };
+
+    let refused = router.clone().oneshot(post(&alton)).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response_json(refused).await["code"], "permission_denied");
+
+    let accepted = router.clone().oneshot(post(&pragent)).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(response_json(accepted).await["runnerId"], "xbabe0/redteam");
+
+    let fleet = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/control-plane/runners")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fleet.status(), StatusCode::OK);
+    let body = response_json(fleet).await;
+    let node = &body["local"]["nodeDetails"][0];
+    assert_eq!(node["runnerId"], "xbabe0/redteam");
+    assert_eq!(node["source"], "pr-redteam");
+    assert_eq!(node["classes"][0], "reviewer");
+    assert_eq!(node["capacity"], 0);
+    assert_eq!(node["activeTasks"][0]["label"], "jeryu/jeryu-web#44");
+    assert_eq!(node["lastActivity"]["conclusion"], "approve");
+    assert_eq!(body["local"]["totalSlots"], 0);
+}
+
+#[tokio::test]
 async fn gate_identity_publishes_statuses_without_admin_but_cannot_protect() {
     use axum::body::Body;
     use axum::http::Request;

@@ -27,12 +27,18 @@ pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFa
         .filter_map(|node| node.last_updated.as_ref())
         .max()
         .cloned();
+    // Reviewers are listed but hold no gate slot, so they stay out of the
+    // gate capacity figures.
     let online: Vec<&RunnerNodeSummary> = node_details
         .iter()
-        .filter(|node| node.state != "offline")
+        .filter(|node| node.state != "offline" && node.source != REVIEWER_SOURCE)
         .collect();
     let online_runners = count(online.len());
-    let offline_runners = count(node_details.len()) - online_runners;
+    let gate_nodes = node_details
+        .iter()
+        .filter(|node| node.source != REVIEWER_SOURCE)
+        .count();
+    let offline_runners = count(gate_nodes) - online_runners;
     let busy_runners = count(
         online
             .iter()
@@ -96,7 +102,10 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// One node per reporting gate runner slot. A slot silent for longer than
+/// `source` of a node reported by the pr-redteam reviewer.
+pub(crate) const REVIEWER_SOURCE: &str = "pr-redteam";
+
+/// One node per reporting gate runner slot, plus one per reviewer. A slot silent for longer than
 /// [`RUNNER_OFFLINE_AFTER_SECS`] is shown offline, with no running task.
 pub(crate) fn gate_runner_nodes(
     records: &[GateRunnerRecord],
@@ -107,6 +116,7 @@ pub(crate) fn gate_runner_nodes(
         .map(|record| {
             let beat = &record.heartbeat;
             let online = is_online(record, now);
+            let reviewer = is_reviewer(beat);
             let received = record.received_at.to_rfc3339();
             let mut labels = vec![beat.host.clone(), format!("slot {}", beat.slot)];
             for label in &beat.labels {
@@ -137,12 +147,17 @@ pub(crate) fn gate_runner_nodes(
                 .collect();
             RunnerNodeSummary {
                 runner_id: beat.runner_id.clone(),
-                source: "pr-gate-runner".to_string(),
+                source: if reviewer {
+                    REVIEWER_SOURCE
+                } else {
+                    "pr-gate-runner"
+                }
+                .to_string(),
                 state: if online { "active" } else { "offline" }.to_string(),
-                capacity: 1,
+                capacity: u32::from(!reviewer),
                 in_flight: count(active_tasks.len()),
                 labels,
-                classes: vec!["pr-gate".to_string()],
+                classes: vec![if reviewer { "reviewer" } else { "pr-gate" }.to_string()],
                 active_task_count: count(active_tasks.len()),
                 last_updated: Some(received),
                 active_tasks,
