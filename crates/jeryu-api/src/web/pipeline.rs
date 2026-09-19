@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
@@ -30,8 +31,9 @@ use serde_json::{Value, json};
 use super::WebState;
 use super::workcells_support::{TypedError, typed_error};
 pub(crate) use store::EventStore;
+use store::Inserted;
+use types::{EVENTS_SCHEMA, EventsResponse, MAX_BATCH, normalize};
 pub(crate) use types::{Event, EventsQuery, NewEvent};
-use types::{EventsResponse, MAX_BATCH, normalize};
 
 /// WebSocket scope every stored event is published on (admin-only).
 pub(crate) const PIPELINE_SCOPE: &str = "pipeline";
@@ -79,14 +81,21 @@ fn may_report(account: &AccountSummary, reporters: &[String]) -> bool {
     account.role == UserRole::Admin || reporters.iter().any(|login| login == &account.login)
 }
 
-/// Store one event and fan it out on the `pipeline` scope.
-pub(crate) fn record(state: &WebState, reporter: &str, event: NewEvent) -> Result<Event, String> {
+/// Store one event and fan it out on the `pipeline` scope. A repeat of an
+/// `event_id` the reporter already stored writes and publishes nothing.
+pub(crate) fn record(
+    state: &WebState,
+    reporter: &str,
+    event: NewEvent,
+) -> Result<Inserted, String> {
     let event = normalize(event)?;
-    let stored = state
+    let inserted = state
         .events
         .insert(reporter, &event, Utc::now().timestamp_millis())?;
-    publish(state, &stored);
-    Ok(stored)
+    if !inserted.duplicate {
+        publish(state, &inserted.event);
+    }
+    Ok(inserted)
 }
 
 fn publish(state: &WebState, event: &Event) {
@@ -154,7 +163,9 @@ fn events_from_body(body: &Bytes) -> Result<Vec<NewEvent>, String> {
 }
 
 /// `POST /api/v1/events`: one event, or `{"events": [...]}` (at most 50).
-/// The whole batch is validated before any event is stored.
+/// The whole batch is validated before any event is stored. Safe to retry for
+/// events that carry an `event_id`: a repeat answers with the original `seq`
+/// (`201` when anything new was stored, `200` when every event was a repeat).
 pub(crate) async fn post_events(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
@@ -180,9 +191,13 @@ pub(crate) async fn post_events(
         }
     };
     let mut seqs = Vec::with_capacity(events.len());
+    let mut duplicates = 0;
     for event in events {
         match record(&state, &account.login, event) {
-            Ok(stored) => seqs.push(stored.seq),
+            Ok(inserted) => {
+                seqs.push(inserted.event.seq);
+                duplicates += usize::from(inserted.duplicate);
+            }
             Err(reason) => {
                 return events_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -193,24 +208,47 @@ pub(crate) async fn post_events(
             }
         }
     }
-    (
-        StatusCode::CREATED,
-        Json(json!({ "ok": true, "seqs": seqs })),
-    )
-        .into_response()
+    let status = if duplicates == seqs.len() {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    let body = json!({
+        "schema_version": EVENTS_SCHEMA,
+        "ok": true,
+        "seqs": seqs,
+        "duplicates": duplicates,
+    });
+    (status, Json(body)).into_response()
 }
 
 /// `GET /api/v1/events` (admin-only by path, see `auth::admin_only_path`).
 pub(crate) async fn list_events(
     State(state): State<Arc<WebState>>,
-    Query(query): Query<EventsQuery>,
+    query: Result<Query<EventsQuery>, QueryRejection>,
 ) -> AxumResponse {
+    let query = match query {
+        Ok(Query(query)) => query,
+        Err(rejection) => {
+            return events_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "events_invalid_query",
+                &rejection.body_text(),
+                "after_seq, before_seq, limit and pr are integers; needs_human is true or false",
+            );
+        }
+    };
     let page = state
         .events
         .query(&query)
         .and_then(|events| Ok((events, state.events.latest_seq()?)));
     match page {
-        Ok((events, latest_seq)) => Json(EventsResponse { events, latest_seq }).into_response(),
+        Ok((events, latest_seq)) => Json(EventsResponse {
+            schema_version: EVENTS_SCHEMA,
+            events,
+            latest_seq,
+        })
+        .into_response(),
         Err(reason) => events_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "events_store_failed",

@@ -76,7 +76,34 @@ pub(super) async fn spa_fallback(
     State(state): State<std::sync::Arc<super::WebState>>,
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
 ) -> AxumResponse {
+    if is_unrouted_api_path(uri.path()) {
+        return unknown_api_route(uri.path());
+    }
     spa_response(&state.spa_dir, uri.path()).await
+}
+
+/// No page of the web app lives under `/api/v1/`, so a request that reaches
+/// the fallback there named a route this server does not have.
+fn is_unrouted_api_path(path: &str) -> bool {
+    path == "/api/v1" || path.starts_with("/api/v1/")
+}
+
+/// A missing API route answers a JSON 404. Serving the web app's HTML shell
+/// with a 200 here made a missing route look like success to every API client.
+fn unknown_api_route(path: &str) -> AxumResponse {
+    super::workcells_support::typed_error(super::workcells_support::TypedError {
+        status: StatusCode::NOT_FOUND,
+        code: "api_route_not_found",
+        purpose: "route a jeryu API request",
+        reason: &format!("no API route matches {path}"),
+        common_fixes: &[
+            "check the path and HTTP method against the API docs",
+            "the server may be older than the client: compare /api/v1/bootstrap versions",
+        ],
+        docs_url: "docs/phase7-api.md",
+        repair_hint: "list the available routes in docs/phase7-api.md and docs/pipeline-events.md",
+        message: "API route not found",
+    })
 }
 
 /// Forwards a GitHub-compatible REST request to the in-process [`GithubRouter`],

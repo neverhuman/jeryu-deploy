@@ -29,6 +29,14 @@ fn normalize_rejects_bad_identity_fields_and_clips_human_text() {
             json!({"source": "Todoq", "kind": "a.b", "summary": "x"}),
         ),
         (
+            "event_id",
+            json!({"source": "todoq", "kind": "a.b", "summary": "x", "event_id": "has space"}),
+        ),
+        (
+            "event_id",
+            json!({"source": "todoq", "kind": "a.b", "summary": "x", "event_id": "x".repeat(65)}),
+        ),
+        (
             "kind",
             json!({"source": "todoq", "kind": "claimed", "summary": "x"}),
         ),
@@ -134,7 +142,8 @@ fn store_assigns_increasing_seq_filters_and_prunes() {
             &event("todo.claimed", "old"),
             now - RETENTION_MS - 1000,
         )
-        .unwrap();
+        .unwrap()
+        .event;
     let mut claimed = event("todo.claimed", "claimed");
     claimed.family = Some("jeryu".to_string());
     claimed.todo_id = Some("t1".to_string());
@@ -146,9 +155,9 @@ fn store_assigns_increasing_seq_filters_and_prunes() {
     let mut todo_done = event("todo.attempt_finished", "done");
     todo_done.todo_id = Some("t1".to_string());
     // The first write after an hour prunes the row older than 30 days.
-    let a = store.insert("alice", &claimed, now).unwrap();
-    let b = store.insert("gatebot", &gate, now).unwrap();
-    let c = store.insert("alice", &todo_done, now).unwrap();
+    let a = store.insert("alice", &claimed, now).unwrap().event;
+    let b = store.insert("gatebot", &gate, now).unwrap().event;
+    let c = store.insert("alice", &todo_done, now).unwrap().event;
     assert!(old.seq < a.seq && a.seq < b.seq && b.seq < c.seq);
     assert_eq!(store.latest_seq().unwrap(), c.seq);
 
@@ -233,8 +242,22 @@ fn store_assigns_increasing_seq_filters_and_prunes() {
     let reopened = EventStore::open(&path).unwrap();
     let next = reopened
         .insert("alice", &event("a.b", "again"), now)
-        .unwrap();
+        .unwrap()
+        .event;
     assert!(next.seq > c.seq, "AUTOINCREMENT never reuses a sequence");
+
+    // A named event is stored once per reporter; a repeat returns the original.
+    let mut named = event("todo.claimed", "named");
+    named.event_id = Some("todoq:t1:claim:1".to_string());
+    let first = reopened.insert("alice", &named, now).unwrap();
+    assert!(!first.duplicate);
+    named.summary = "a retry with different text".to_string();
+    let again = reopened.insert("alice", &named, now + 5).unwrap();
+    assert!(again.duplicate);
+    assert_eq!(again.event, first.event, "the stored event comes back");
+    let other = reopened.insert("gatebot", &named, now).unwrap();
+    assert!(!other.duplicate, "ids are scoped to the reporter");
+    assert_eq!(reopened.latest_seq().unwrap(), other.event.seq);
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -345,6 +368,30 @@ async fn events_routes_enforce_reporter_and_admin_access() {
     assert_eq!(batch.status(), StatusCode::CREATED);
     assert_eq!(body_json(batch).await["seqs"].as_array().unwrap().len(), 2);
 
+    // A producer that never saw the response retries: same seqs, nothing new.
+    let named = json!({"events": [
+        {"event_id": "todoq:t1:merged", "source": "todoq", "kind": "todo.merged", "summary": "t1 merged", "todo_id": "t2"},
+    ]});
+    let first_try = call(
+        HttpMethod::POST,
+        "/api/v1/events",
+        &admin,
+        Some(named.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_try.status(), StatusCode::CREATED);
+    let first_try = body_json(first_try).await;
+    assert_eq!(first_try["schema_version"], "jeryu.pipeline_events/v1");
+    assert_eq!(first_try["duplicates"], 0);
+    let retry = call(HttpMethod::POST, "/api/v1/events", &admin, Some(named))
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), StatusCode::OK, "an all-repeat POST is 200");
+    let retry = body_json(retry).await;
+    assert_eq!(retry["seqs"], first_try["seqs"]);
+    assert_eq!(retry["duplicates"], 1);
+
     // One bad event refuses the whole batch and names the entry.
     let bad = call(
         HttpMethod::POST,
@@ -393,9 +440,16 @@ async fn events_routes_enforce_reporter_and_admin_access() {
             .unwrap(),
     )
     .await;
+    assert_eq!(page["schema_version"], "jeryu.pipeline_events/v1");
     let events = page["events"].as_array().unwrap();
-    assert_eq!(events.len(), 3, "the refused batch stored nothing");
+    assert_eq!(
+        events.len(),
+        4,
+        "the refused batch and the retry stored nothing"
+    );
     assert_eq!(page["latest_seq"], events[0]["seq"]);
+    assert_eq!(events[0]["event_id"], "todoq:t1:merged");
+    let events = &events[1..];
     assert_eq!(events[2]["seq"], first);
     assert_eq!(events[2]["reporter"], "gatebot", "reporter is the login");
     assert_eq!(events[2]["needs_human"], true);
@@ -421,6 +475,37 @@ async fn events_routes_enforce_reporter_and_admin_access() {
         .map(|e| e["kind"].as_str().unwrap())
         .collect();
     assert_eq!(kinds, ["todo.claimed", "todo.attempt_finished"]);
+
+    // A route this server does not have is a JSON 404, not the web app's
+    // HTML shell with a 200 that reads as success.
+    for (method, uri) in [
+        (HttpMethod::GET, "/api/v1/notifications"),
+        (HttpMethod::GET, "/api/v1/events/12"),
+        (HttpMethod::POST, "/api/v1/nope"),
+    ] {
+        let missing = call(method, uri, &admin, None).await.unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(body_json(missing).await["code"], "api_route_not_found");
+    }
+
+    // Every refusal is a typed JSON error an agent can act on, never HTML.
+    let bad_query = call(
+        HttpMethod::GET,
+        "/api/v1/events?after_seq=soon",
+        &admin,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(bad_query.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bad_query = body_json(bad_query).await;
+    assert_eq!(bad_query["code"], "events_invalid_query");
+    assert!(
+        bad_query["repair_hint"]
+            .as_str()
+            .unwrap()
+            .contains("after_seq")
+    );
 }
 
 #[test]
@@ -461,7 +546,7 @@ fn stored_events_reach_pipeline_scope_subscribers_only() {
 
     let mut claimed = event("todo.claimed", "w1 claimed t1");
     claimed.todo_id = Some("t1".to_string());
-    let stored = super::record(&state, "alice", claimed).unwrap();
+    let stored = super::record(&state, "alice", claimed).unwrap().event;
     super::emit(&state, event("nodot", "dropped, never panics"));
 
     let frame = serde_json::to_value(pipeline_rx.try_recv().expect("one frame")).unwrap();

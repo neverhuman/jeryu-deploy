@@ -21,11 +21,17 @@
 -- pull request it names) and no tenant-scoped rows: reads are admin-only, so
 -- no row level security applies. seq is AUTOINCREMENT so a pruned sequence
 -- number is never reused and a client cursor stays valid.
--- The CHECK constraint keeps needs_human a boolean.
+-- The CHECK constraint keeps needs_human a boolean. The partial UNIQUE index
+-- on (reporter, event_id) is what makes POST /api/v1/events safe to retry: a
+-- producer that names its event gets the original row back instead of a
+-- duplicate. It is scoped to the reporter so one login cannot suppress
+-- another's events by guessing ids, and partial so events without an id are
+-- never deduplicated.
 
 CREATE TABLE IF NOT EXISTS pipeline_events (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_ms       INTEGER NOT NULL,
+    event_id    TEXT,
     source      TEXT    NOT NULL,
     kind        TEXT    NOT NULL,
     reporter    TEXT    NOT NULL,
@@ -46,6 +52,9 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
     log_url     TEXT,
     detail_json TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS pipeline_events_event_id
+    ON pipeline_events (reporter, event_id) WHERE event_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS pipeline_events_ts
     ON pipeline_events (ts_ms);

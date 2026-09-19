@@ -11,6 +11,9 @@ pub(crate) const MAX_KIND_CHARS: usize = 64;
 pub(crate) const MAX_OUTCOME_CHARS: usize = 32;
 pub(crate) const MAX_LOG_URL_CHARS: usize = 512;
 pub(crate) const MAX_KEY_CHARS: usize = 200;
+pub(crate) const MAX_EVENT_ID_CHARS: usize = 64;
+/// `schema_version` of every `/api/v1/events` response.
+pub(crate) const EVENTS_SCHEMA: &str = "jeryu.pipeline_events/v1";
 pub(crate) const MAX_LOG_TAIL_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_DETAIL_BYTES: usize = 8 * 1024;
 
@@ -19,6 +22,11 @@ pub(crate) const MAX_DETAIL_BYTES: usize = 8 * 1024;
 /// a stored event back cannot choose its own reporter or sequence.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct NewEvent {
+    /// The producer's own name for this event. Posting the same id again (as
+    /// the same login) returns the stored event instead of a duplicate, so a
+    /// producer may retry a POST whose response it never saw.
+    #[serde(default)]
+    pub event_id: Option<String>,
     pub source: String,
     pub kind: String,
     #[serde(default)]
@@ -72,6 +80,7 @@ impl NewEvent {
 pub(crate) struct Event {
     pub seq: i64,
     pub ts: String,
+    pub event_id: Option<String>,
     pub source: String,
     pub kind: String,
     pub reporter: String,
@@ -109,6 +118,7 @@ pub(crate) struct EventsQuery {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct EventsResponse {
+    pub schema_version: &'static str,
     pub events: Vec<Event>,
     pub latest_seq: i64,
 }
@@ -196,6 +206,17 @@ fn key(name: &str, value: Option<String>) -> Result<Option<String>, String> {
 /// to its last 16 KiB, because producers send these best-effort and a long
 /// line is no reason to lose the event.
 pub(crate) fn normalize(event: NewEvent) -> Result<NewEvent, String> {
+    let event_id = blank(event.event_id);
+    if let Some(id) = &event_id
+        && !(id.len() <= MAX_EVENT_ID_CHARS
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-')))
+    {
+        return Err(format!(
+            "event_id: at most {MAX_EVENT_ID_CHARS} characters of [A-Za-z0-9._:-]"
+        ));
+    }
     if !valid_source(&event.source) {
         return Err("source: expected ^[a-z][a-z0-9-]{0,31}$".to_string());
     }
@@ -258,6 +279,7 @@ pub(crate) fn normalize(event: NewEvent) -> Result<NewEvent, String> {
         Some(_) => return Err("detail: must be a JSON object".to_string()),
     };
     Ok(NewEvent {
+        event_id,
         source: event.source,
         kind: event.kind,
         actor: blank(event.actor).map(|a| clip_chars(&a, MAX_ACTOR_CHARS)),

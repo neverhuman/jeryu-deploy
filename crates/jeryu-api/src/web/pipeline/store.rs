@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{Connection, Row, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use super::super::shift::{migrate_shift_store, rfc3339_ms};
 use super::types::{Event, EventsQuery, NewEvent};
@@ -21,8 +21,16 @@ const PRUNE_EVERY_MS: i64 = 60 * 60 * 1000;
 const DEFAULT_LIMIT: i64 = 100;
 const MAX_LIMIT: i64 = 500;
 
-const COLUMNS: &str = "seq, ts_ms, source, kind, reporter, actor, family, repo, pr, sha, todo_id,
+const COLUMNS: &str = "seq, ts_ms, event_id, source, kind, reporter, actor, family, repo, pr, sha, todo_id,
     shift, outcome, needs_human, summary, reason, cost_usd, seconds, log_tail, log_url, detail_json";
+
+/// What [`EventStore::insert`] did.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Inserted {
+    pub event: Event,
+    /// True when the reporter had already stored this `event_id`.
+    pub duplicate: bool,
+}
 
 #[derive(Clone)]
 pub(crate) struct EventStore {
@@ -48,25 +56,48 @@ impl EventStore {
         })
     }
 
-    /// Append one already-normalised event and return it as stored.
+    /// Append one already-normalised event and return it as stored. When the
+    /// reporter already stored an event with the same `event_id`, nothing is
+    /// written and that event comes back with `duplicate = true`.
     pub(crate) fn insert(
         &self,
         reporter: &str,
         event: &NewEvent,
         now_ms: i64,
-    ) -> Result<Event, String> {
+    ) -> Result<Inserted, String> {
         let mut inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        if let Some(event_id) = &event.event_id {
+            let existing = inner
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT {COLUMNS} FROM pipeline_events
+                          WHERE reporter = ?1 AND event_id = ?2"
+                    ),
+                    params![reporter, event_id],
+                    event_from_row,
+                )
+                .optional()
+                .map_err(|err| err.to_string())?;
+            if let Some(event) = existing {
+                return Ok(Inserted {
+                    event,
+                    duplicate: true,
+                });
+            }
+        }
         let detail = event.detail.as_ref().map(|d| d.to_string());
         inner
             .conn
             .execute(
-                "INSERT INTO pipeline_events (ts_ms, source, kind, reporter, actor, family, repo,
-                   pr, sha, todo_id, shift, outcome, needs_human, summary, reason, cost_usd,
-                   seconds, log_tail, log_url, detail_json)
+                "INSERT INTO pipeline_events (ts_ms, event_id, source, kind, reporter, actor,
+                   family, repo, pr, sha, todo_id, shift, outcome, needs_human, summary, reason,
+                   cost_usd, seconds, log_tail, log_url, detail_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   ?17, ?18, ?19, ?20)",
+                   ?17, ?18, ?19, ?20, ?21)",
                 params![
                     now_ms,
+                    event.event_id,
                     event.source,
                     event.kind,
                     reporter,
@@ -100,9 +131,10 @@ impl EventStore {
                 .map_err(|err| err.to_string())?;
             inner.last_prune_ms = now_ms;
         }
-        Ok(Event {
+        let event = Event {
             seq,
             ts: rfc3339_ms(now_ms),
+            event_id: event.event_id.clone(),
             source: event.source.clone(),
             kind: event.kind.clone(),
             reporter: reporter.to_string(),
@@ -122,6 +154,10 @@ impl EventStore {
             log_tail: event.log_tail.clone(),
             log_url: event.log_url.clone(),
             detail: event.detail.clone(),
+        };
+        Ok(Inserted {
+            event,
+            duplicate: false,
         })
     }
 
@@ -222,28 +258,29 @@ impl EventStore {
 }
 
 fn event_from_row(row: &Row<'_>) -> rusqlite::Result<Event> {
-    let detail: Option<String> = row.get(20)?;
+    let detail: Option<String> = row.get(21)?;
     Ok(Event {
         seq: row.get(0)?,
         ts: rfc3339_ms(row.get(1)?),
-        source: row.get(2)?,
-        kind: row.get(3)?,
-        reporter: row.get(4)?,
-        actor: row.get(5)?,
-        family: row.get(6)?,
-        repo: row.get(7)?,
-        pr: row.get(8)?,
-        sha: row.get(9)?,
-        todo_id: row.get(10)?,
-        shift: row.get(11)?,
-        outcome: row.get(12)?,
-        needs_human: row.get(13)?,
-        summary: row.get(14)?,
-        reason: row.get(15)?,
-        cost_usd: row.get(16)?,
-        seconds: row.get(17)?,
-        log_tail: row.get(18)?,
-        log_url: row.get(19)?,
+        event_id: row.get(2)?,
+        source: row.get(3)?,
+        kind: row.get(4)?,
+        reporter: row.get(5)?,
+        actor: row.get(6)?,
+        family: row.get(7)?,
+        repo: row.get(8)?,
+        pr: row.get(9)?,
+        sha: row.get(10)?,
+        todo_id: row.get(11)?,
+        shift: row.get(12)?,
+        outcome: row.get(13)?,
+        needs_human: row.get(14)?,
+        summary: row.get(15)?,
+        reason: row.get(16)?,
+        cost_usd: row.get(17)?,
+        seconds: row.get(18)?,
+        log_tail: row.get(19)?,
+        log_url: row.get(20)?,
         detail: detail.and_then(|d| serde_json::from_str(&d).ok()),
     })
 }
