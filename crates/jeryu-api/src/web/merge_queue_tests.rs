@@ -454,3 +454,39 @@ async fn enqueueing_needs_write_access() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(!fx.has_ref("refs/queue/main/1"));
 }
+
+#[tokio::test]
+async fn a_fast_forward_pr_reuses_its_head_result_for_the_same_commit() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    // The head already contains the base tip: the replay is the head itself,
+    // so the tree and the gate inputs are the same commit, not a copy.
+    assert_eq!(body["queue_sha"], fx.head);
+    assert_eq!(
+        git(&fx.bare, &["rev-parse", &format!("{}^{{tree}}", fx.head)]),
+        git(&fx.bare, &["rev-parse", "refs/queue/main/1^{tree}"])
+    );
+
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    let entry = fx.entry();
+    assert_eq!(entry.state, merge_queue::QueueState::Landed, "{entry:?}");
+    assert_eq!(entry.attempts.len(), 1, "no second gate was requested");
+    assert_eq!(entry.landed_sha.as_deref(), Some(fx.head.as_str()));
+    assert_eq!(fx.main(), fx.head);
+}
+
+#[tokio::test]
+async fn a_replay_never_borrows_the_head_result() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let moved = fx.advance_main("other.txt", "other\n");
+    fx.status(&fx.head, CommitStatusState::Success);
+    let (_, body) = fx.enqueue().await;
+    let queue_sha = body["queue_sha"].as_str().unwrap().to_string();
+    assert_ne!(queue_sha, fx.head);
+    for _ in 0..3 {
+        merge_queue::tick(&fx.state);
+    }
+    assert_eq!(fx.entry().state, merge_queue::QueueState::Building);
+    assert_eq!(fx.main(), moved, "a green head does not land a new commit");
+}

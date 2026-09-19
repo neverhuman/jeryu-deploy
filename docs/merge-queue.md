@@ -133,3 +133,50 @@ Endpoints: `POST`/`DELETE /api/v1/repos/:id/pulls/:n/queue`,
 
 Moving the store into jeryu-core (for history queries and the PR journey view)
 is a follow-up.
+
+## Gate latency: head gate vs queue gate (2026-09-19)
+
+Every change is gated twice today: once at the PR head, once at the queue
+commit. The queue gate is the authoritative one.
+
+### What enqueue requires today
+
+`POST …/pulls/:n/queue` runs `pulls::queue_gate`, which is the full merge
+passport on the PR head: every required context **green on the head**, the
+required approvals, no changes requested, no unresolved threads. `advance`
+checks the same passport again on every tick. Landing (`land_queued`) goes
+through jeryu-core `evaluate_merge_readiness(pr_head)`, and that also checks
+required statuses on the **head** sha, not on the queue sha. `pr-redteam` asks
+for the queue only after a direct merge answers 409 "linear history", and it
+only tries a merge when `mergeable.can_merge` is true. So it also waits for the
+head gate.
+
+### Proposal: enqueue on approval (not implemented, needs a decision)
+
+For branches whose required contexts are gated on the queue commit, allow
+enqueue on approval alone and drop the green-head requirement. The queue gate
+stays mandatory, and the landing rule does not change: only a green gate on the
+exact queue sha lands. Put it behind a per-branch switch that is off by default.
+Doing this needs three changes that belong to other owners:
+
+1. **jeryu-core**: a readiness check for queue landing that evaluates required
+   contexts on the queue sha and reviews on the PR head. Today core refuses to
+   land a PR whose head has no green required status. jeryu-deploy consumes core
+   by a split tag, so a later todo has to bump the tag after this change.
+2. **pr-redteam** (jeryu-ci-runner): enqueue on approval without waiting for
+   `can_merge`, when the switch is on for the branch.
+3. **Gate runner**: stop gating PR heads on those branches, or rank them below
+   queue commits. Otherwise the head gate still uses runner capacity.
+
+### Fast-forward PRs: no second gate
+
+If the PR head already contains the base tip, `replay` returns the head sha
+itself as the queue commit. It is not a copy with the same tree. It is the same
+commit, so the "queue gate" reads the result the runner already posted on that
+sha. Same tree, same gate inputs, same runner source, and nothing is gated
+again (`a_fast_forward_pr_reuses_its_head_result_for_the_same_commit`).
+`pr-redteam` does not queue such a PR anyway, because a direct merge succeeds.
+A replay onto a moved base is a new sha and never borrows the head's result,
+even when the trees would match (`a_replay_never_borrows_the_head_result`).
+Reusing a result across different shas or gate inputs stays out of scope. The
+formal reviewer rejected it ("exact source authority", jain-deploy#55 v1).
