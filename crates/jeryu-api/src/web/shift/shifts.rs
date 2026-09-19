@@ -42,8 +42,18 @@ fn state_name(state: &PullRequestState) -> String {
         .unwrap_or_else(|| "open".to_string())
 }
 
+/// A pull request as a todo links to it.
+pub(super) fn pr_summary(repo: &str, pr: &PullRequest) -> super::types::TodoPr {
+    super::types::TodoPr {
+        repo: repo.to_string(),
+        number: pr.number,
+        state: state_name(&pr.state),
+        url: pull_request_web_path(&pr.owner, &pr.repo, pr.number),
+    }
+}
+
 /// The PR for `branch` into `base`: the open one if any, else the newest.
-fn find_pr(
+pub(super) fn find_pr(
     state: &WebState,
     owner: &str,
     repo: &str,

@@ -52,10 +52,31 @@ pub(crate) struct ShiftTodo {
     pub shift: String,
     pub change_set: String,
     pub commits: BTreeMap<String, String>,
+    /// True when the file says so or, on `GET /api/v1/shift/todos`, when the
+    /// server finds every commit on its base branch (see `truth.rs`).
     pub merged: bool,
+    /// Whether production runs the merged work; `null` when no production
+    /// deployment is known for any of the todo's repos.
+    pub released: Option<bool>,
+    /// The shift pull request that carries the todo (the first of `prs`).
+    pub pr: Option<TodoPr>,
+    /// One shift pull request per repo the todo committed to.
+    pub prs: Vec<TodoPr>,
+    /// Total spend over every attempt, when any attempt recorded a cost.
+    pub cost_usd: Option<f64>,
     pub note: String,
     pub triaged: bool,
     pub worked_by: Vec<Attempt>,
+}
+
+/// A shift pull request as a todo links to it. `repo` is the family repo name,
+/// the same spelling as the keys of `commits`.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub(crate) struct TodoPr {
+    pub repo: String,
+    pub number: u64,
+    pub state: String,
+    pub url: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]

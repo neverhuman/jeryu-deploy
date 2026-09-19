@@ -706,3 +706,181 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
     .unwrap();
     assert_eq!(not_shift.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+fn deploy(core: &ForgeCore, sha: &str, payload: Value) {
+    use jeryu_core::{CreateDeploymentRequest, CreateDeploymentStatusRequest, DeploymentState};
+    let deployment = core
+        .create_deployment(
+            "jeryu",
+            "jeryu-deploy",
+            "alice",
+            CreateDeploymentRequest {
+                sha: sha.to_string(),
+                ref_name: None,
+                task: "deploy".to_string(),
+                environment: "production".to_string(),
+                description: None,
+                payload: Some(payload),
+                production_environment: None,
+                transient_environment: false,
+            },
+        )
+        .unwrap();
+    core.create_deployment_status(
+        "jeryu",
+        "jeryu-deploy",
+        deployment.id,
+        "alice",
+        CreateDeploymentStatusRequest {
+            state: DeploymentState::Success,
+            description: None,
+            environment_url: None,
+            log_url: None,
+            auto_inactive: true,
+        },
+    )
+    .unwrap();
+}
+
+/// The queue file says `merged = false` for nearly every landed todo, so the
+/// todos route derives merged, released and the carrying PR from the hosted
+/// repositories: through a rebase (new sha, `Todo:` trailer) and a deployment.
+#[tokio::test]
+async fn todos_route_derives_merged_released_and_pr() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let root = dir.path();
+    let bare = root.join("jeryu/jeryu-deploy.git");
+    let shift_head = run_git(&bare, &["rev-parse", "refs/heads/nightshift/2026-09-18"]);
+    let base = run_git(&bare, &["rev-parse", "refs/heads/main"]);
+    let todo_id = "20260919-020000-feed01";
+    let landed_todo = CURRENT
+        .replace("20260919-010000-abcdef", todo_id)
+        .replace("bulletshift/2026-09-18", "nightshift/2026-09-18")
+        .replace(
+            r#"commits = { "jeryu-web" = "0123456789abcdef" }"#,
+            &format!(r#"commits = {{ "jeryu-deploy" = "{shift_head}" }}"#),
+        );
+    let work = root.join("work-todo");
+    std::fs::write(
+        work.join("todos/20260919-020000-feed01-landed.md"),
+        landed_todo,
+    )
+    .unwrap();
+    run_git(&work, &["add", "."]);
+    run_git(&work, &["commit", "-q", "-m", "done feed01"]);
+    run_git(
+        &work,
+        &[
+            "push",
+            "-q",
+            root.join("jeryu/jeryu-todo.git").to_str().unwrap(),
+            "queue",
+        ],
+    );
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu-deploy".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new_with_git_storage(core.clone(), root.to_path_buf())
+            .with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let todo = || async {
+        let todos = body_json(
+            router
+                .clone()
+                .oneshot(request(
+                    HttpMethod::GET,
+                    "/api/v1/shift/todos?family=jeryu&status=done",
+                    &admin,
+                    None,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let todos = todos["todos"].as_array().unwrap().clone();
+        // The other done todo names a repo this forge does not host: the file
+        // value stands and nothing is known about its release.
+        let unhosted = todos.iter().find(|t| t["id"] != todo_id).unwrap();
+        assert_eq!(unhosted["merged"], false);
+        assert_eq!(unhosted["released"], Value::Null);
+        assert_eq!(unhosted["cost_usd"], 1.25, "cost is summed over attempts");
+        todos.into_iter().find(|t| t["id"] == todo_id).unwrap()
+    };
+
+    // On the shift branch only: not merged, no deployment known, no PR yet.
+    let before = todo().await;
+    assert_eq!(before["merged"], false);
+    assert_eq!(before["released"], Value::Null);
+    assert_eq!(before["pr"], Value::Null);
+
+    let opened = router
+        .clone()
+        .oneshot(request(
+            HttpMethod::POST,
+            "/api/v1/shift/shifts/jeryu/pr",
+            &admin,
+            Some(json!({"branch": "nightshift/2026-09-18"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(opened.status(), StatusCode::OK);
+    deploy(&core, &base, json!({"release": "prod-1"}));
+    let with_pr = todo().await;
+    assert_eq!(with_pr["pr"]["repo"], "jeryu-deploy");
+    assert_eq!(with_pr["pr"]["number"], 1);
+    // The state is core's PullRequestState, the same spelling the shift
+    // cards already use (`mergeable` for an open PR with nothing blocking it).
+    assert_eq!(with_pr["pr"]["state"], "mergeable");
+    assert_eq!(with_pr["prs"].as_array().unwrap().len(), 1);
+    assert_eq!(with_pr["merged"], false);
+    assert_eq!(
+        with_pr["released"], false,
+        "production is known and does not have the work"
+    );
+
+    // The shift lands rebased: a new sha on main carrying the Todo trailer.
+    let deploy_work = root.join("work-deploy");
+    run_git(&deploy_work, &["checkout", "-q", "main"]);
+    std::fs::write(deploy_work.join("README"), "y").unwrap();
+    run_git(
+        &deploy_work,
+        &[
+            "commit",
+            "-q",
+            "-am",
+            &format!("work\n\nTodo: {todo_id}\nShift: nightshift/2026-09-18"),
+        ],
+    );
+    let landed = run_git(&deploy_work, &["rev-parse", "HEAD"]);
+    assert_ne!(landed, shift_head, "a rebase gives the work a new sha");
+    run_git(
+        &deploy_work,
+        &["push", "-q", bare.to_str().unwrap(), "main"],
+    );
+    let merged = todo().await;
+    assert_eq!(merged["merged"], true, "found by its Todo trailer");
+    assert_eq!(merged["released"], false);
+
+    deploy(&core, &landed, json!({"release": "prod-2"}));
+    let released = todo().await;
+    assert_eq!(released["merged"], true);
+    assert_eq!(released["released"], true);
+}

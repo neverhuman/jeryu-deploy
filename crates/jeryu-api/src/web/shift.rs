@@ -9,6 +9,7 @@ mod heartbeats;
 mod queue;
 mod shifts;
 mod todo_file;
+mod truth;
 mod types;
 
 #[cfg(test)]
@@ -46,6 +47,8 @@ const DOCS: &str = "docs/architecture.md";
 pub(crate) struct ShiftState {
     pub(crate) heartbeats: HeartbeatStore,
     pub(crate) pr_author: String,
+    /// Derived merged/released state of done todos (see `truth.rs`).
+    pub(crate) truth: truth::TruthCache,
 }
 
 impl ShiftState {
@@ -58,6 +61,7 @@ impl ShiftState {
         Self {
             heartbeats: HeartbeatStore::open(path).expect("open shift heartbeat store"),
             pr_author,
+            truth: truth::TruthCache::default(),
         }
     }
 }
@@ -196,12 +200,13 @@ pub(crate) async fn list_todos(
                 );
             }
         };
-        todos.extend(
-            queued
-                .iter()
-                .map(|q| q.todo.to_api(now))
-                .filter(|t| matches(t, &query)),
-        );
+        let mut family_todos: Vec<ShiftTodo> = queued
+            .iter()
+            .map(|q| q.todo.to_api(now))
+            .filter(|t| matches(t, &query))
+            .collect();
+        state.shift.truth.enrich(&state, &queue, &mut family_todos);
+        todos.extend(family_todos);
     }
     todos.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
     Json(TodosResponse {

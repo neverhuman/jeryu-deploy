@@ -290,6 +290,17 @@ impl TodoFile {
             change_set: self.change_set.clone(),
             commits: self.commits.iter().cloned().collect(),
             merged: self.merged,
+            released: None,
+            pr: None,
+            prs: Vec::new(),
+            cost_usd: {
+                let costs: Vec<f64> = self
+                    .attempts_list()
+                    .iter()
+                    .filter_map(|attempt| attempt.cost_usd)
+                    .collect();
+                (!costs.is_empty()).then(|| costs.iter().sum())
+            },
             note: self.note.clone(),
             triaged: self.triaged,
             worked_by: self.attempts_list(),
