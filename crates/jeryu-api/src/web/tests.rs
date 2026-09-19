@@ -115,8 +115,8 @@ async fn bootstrap_tui_reflects_seeded_repo_pr_and_failing_check() {
     assert_eq!(activity.pools[0].pool, "default");
     assert_eq!(activity.pools[0].failed_jobs, 1);
 
-    // System health is Healthy (core is open), never the Unknown fixture.
-    assert!(matches!(state.tui.system.scm.status, HealthLevel::Healthy));
+    // No component is probed, so health is Unknown rather than a blanket Healthy.
+    assert!(matches!(state.tui.system.scm.status, HealthLevel::Unknown));
 
     // The actual `/api/v1/bootstrap.tui` handler serves exactly this model.
     let served = bootstrap_tui(State(state.clone())).await.0;
@@ -2686,7 +2686,8 @@ async fn workcell_repair_live_requires_ci_run_id() {
 /// fixture sample remains available purely as a test fallback.
 #[test]
 fn empty_server_assembles_empty_pool_activity_and_fixture_still_available() {
-    let model = crate::read_model::assemble_read_model(&ForgeCore::new());
+    let model =
+        crate::read_model::assemble_read_model(&[], &crate::read_model::FleetCapacity::default());
     assert!(model.pool_activity.repos.is_empty());
     assert!(model.pool_activity.pools.is_empty());
     assert!(matches!(model.pool_activity.health(), HealthLevel::Unknown));

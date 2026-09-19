@@ -292,6 +292,40 @@ pub(crate) fn collect_check_runs(core: &ForgeCore, repos: &[ControlRepo]) -> Vec
     checks
 }
 
+/// Queued/running/failed check-run counts per repository, counting only check
+/// runs on open-PR heads (the same [`active_view`] the control-plane summary
+/// uses), so failures recorded against merged or closed PRs never pile up.
+pub(crate) fn active_repo_jobs(core: &ForgeCore) -> Vec<crate::read_model::RepoJobs> {
+    let repos = collect_repos(core);
+    let pull_requests = collect_pull_requests(core, &repos);
+    let check_runs = collect_check_runs(core, &repos);
+    let (_, current) = active_view(&pull_requests, &check_runs);
+    let queued = check_status(&CheckRunStatus::Queued);
+    let running = check_status(&CheckRunStatus::InProgress);
+    let completed = check_status(&CheckRunStatus::Completed);
+    let failure = check_conclusion(&jeryu_core::CheckConclusion::Failure);
+    repos
+        .iter()
+        .map(|repo| {
+            let mut jobs = crate::read_model::RepoJobs {
+                repo: repo.full_name.clone(),
+                ..Default::default()
+            };
+            for check in current.iter().filter(|check| check.repo == repo.full_name) {
+                let status = check.status.as_str();
+                if status == queued {
+                    jobs.queued = jobs.queued.saturating_add(1);
+                } else if status == running {
+                    jobs.running = jobs.running.saturating_add(1);
+                } else if status == completed && check.conclusion.as_deref() == Some(failure) {
+                    jobs.failed = jobs.failed.saturating_add(1);
+                }
+            }
+            jobs
+        })
+        .collect()
+}
+
 /// A PR still in flight: anything but merged or closed.
 pub(crate) fn is_active_pr(pr: &ControlPullRequest) -> bool {
     !matches!(pr.state.as_str(), "merged" | "closed")

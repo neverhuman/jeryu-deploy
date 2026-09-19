@@ -165,9 +165,13 @@ impl WebState {
         data_dir: PathBuf,
         split_catalog: SplitCatalog,
     ) -> Self {
-        // Assemble a LIVE read model from ForgeCore state so the TUI/web panes
-        // render real pool activity and system health, not the empty fixture.
-        let tui = crate::read_model::assemble_read_model(&core);
+        // Seed the read model from ForgeCore state. No runner has reported a
+        // heartbeat yet, so capacity starts at zero; `workcells::live_tui`
+        // re-derives pools/health from the live fabric on every request.
+        let tui = crate::read_model::assemble_read_model(
+            &control_plane::active_repo_jobs(&core),
+            &crate::read_model::FleetCapacity::default(),
+        );
         // ForgeCore is Arc-backed, so this handle shares state with `github`.
         let core_handle = core.clone();
         let codegraph_path = {

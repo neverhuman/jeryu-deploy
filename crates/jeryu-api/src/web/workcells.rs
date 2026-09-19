@@ -459,6 +459,12 @@ fn normalize_pr_base(ref_name: String) -> String {
 
 pub(super) fn live_tui(state: &WebState) -> TuiReadModel {
     let mut tui = state.tui.clone();
+    let live = crate::read_model::assemble_read_model(
+        &super::control_plane::active_repo_jobs(state.github.core()),
+        &super::control_plane::fleet_capacity(state),
+    );
+    tui.pool_activity = live.pool_activity;
+    tui.system = live.system;
     tui.workcells = dashboard_from_manager(state);
     tui
 }

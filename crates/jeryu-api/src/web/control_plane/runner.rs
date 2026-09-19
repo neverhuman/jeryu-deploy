@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use std::collections::BTreeSet;
@@ -14,11 +13,11 @@ use super::*;
 /// The runner fabric as the forge actually knows it: gate runners that have
 /// reported a heartbeat, plus workcell leases and their running agent runs.
 /// Nothing is invented; with no reporting runner the fabric is `unknown`.
-pub(crate) fn runner_fabric(state: &Arc<WebState>) -> RunnerFabricResponse {
+pub(crate) fn runner_fabric(state: &WebState) -> RunnerFabricResponse {
     runner_fabric_at(state, Utc::now())
 }
 
-pub(crate) fn runner_fabric_at(state: &Arc<WebState>, now: DateTime<Utc>) -> RunnerFabricResponse {
+pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFabricResponse {
     let workcells = manager(state).workcells();
     let agent_runs = state.agent_runs.list();
     let seed = gate_runner_nodes(&state.gate_runners.snapshot(), now);
@@ -76,6 +75,20 @@ pub(crate) fn runner_fabric_at(state: &Arc<WebState>, now: DateTime<Utc>) -> Run
             reason: "optional GitHub mirror runner adapter is not configured".to_string(),
             docs_url: MIRROR_DOCS.to_string(),
         },
+    }
+}
+
+/// The live fabric's capacity in read-model terms, so the TUI Pools/Health
+/// panes show exactly what `GET /api/v1/control-plane/runners` shows.
+pub(crate) fn fleet_capacity(state: &WebState) -> crate::read_model::FleetCapacity {
+    let local = runner_fabric(state).local;
+    crate::read_model::FleetCapacity {
+        online_runners: local.online_runners,
+        busy_runners: local.busy_runners,
+        idle_runners: local.idle_runners,
+        stuck_runners: local.offline_runners,
+        active_slots: local.active_slots,
+        total_slots: local.total_slots,
     }
 }
 

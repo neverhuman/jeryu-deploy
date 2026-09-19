@@ -24,7 +24,7 @@ use jeryu_core::{CheckConclusion, ForgeCore};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::read_model::assemble_read_model;
+use crate::read_model::{FleetCapacity, assemble_read_model};
 
 /// The MCP read substrate every mutating tool ultimately reads through.
 const READ_SUBSTRATE_TOOL: &str = "jeryu.get_system_snapshot";
@@ -227,11 +227,14 @@ fn representative_repo(core: &ForgeCore) -> (Option<String>, Option<String>) {
 /// The first live read-model pool name backing CI work, or `None` on an empty
 /// server (where the assembler intentionally surfaces no synthetic pool).
 fn representative_queue(core: &ForgeCore) -> Option<String> {
-    assemble_read_model(core)
-        .pool_activity
-        .pools
-        .first()
-        .map(|pool| pool.pool.clone())
+    assemble_read_model(
+        &super::control_plane::active_repo_jobs(core),
+        &FleetCapacity::default(),
+    )
+    .pool_activity
+    .pools
+    .first()
+    .map(|pool| pool.pool.clone())
 }
 
 #[cfg(test)]

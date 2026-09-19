@@ -451,3 +451,58 @@ fn helper_branches_normalize_tty_time_and_check_states() {
     );
     assert_eq!(check_conclusion(&CheckConclusion::TimedOut), "timed_out");
 }
+
+#[test]
+fn bootstrap_tui_pools_match_the_live_runner_fabric() {
+    let state = seeded_state();
+    let now = Utc::now();
+    report(&state, "xbabe2/slot0", true, now);
+    report(&state, "xbabe2/slot1", false, now);
+    report(
+        &state,
+        "xbabe2/slot2",
+        false,
+        now - chrono::Duration::seconds(600),
+    );
+
+    let runners = runner_fabric(&state).local;
+    let tui = crate::web::workcells::live_tui(&state);
+    let pool = &tui.pool_activity.pools[0];
+    assert_eq!(pool.online_runners, runners.online_runners);
+    assert_eq!(pool.active_slots, runners.active_slots);
+    assert_eq!(pool.configured_max_slots, runners.total_slots);
+    assert_eq!(pool.stuck_runners, runners.offline_runners);
+    assert_eq!(
+        pool.configured_max_slots, 3,
+        "reporting slots, not a fixture"
+    );
+    assert_eq!(tui.system.runners.online, 2);
+    assert!(matches!(
+        tui.system.scm.status,
+        jeryu_readmodel::HealthLevel::Unknown
+    ));
+}
+
+#[test]
+fn active_repo_jobs_ignore_checks_off_open_pr_heads() {
+    let state = seeded_state();
+    let core = state.github.core();
+    let before: u32 = active_repo_jobs(core).iter().map(|jobs| jobs.failed).sum();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "old".to_string(),
+            head_sha: "0000000000000000000000000000000000000000".to_string(),
+            status: Some(CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    let after: u32 = active_repo_jobs(core).iter().map(|jobs| jobs.failed).sum();
+    assert_eq!(
+        before, after,
+        "a failure off any open PR head is not active"
+    );
+}
