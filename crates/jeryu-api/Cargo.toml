@@ -7,6 +7,7 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"], optional = true }
 anyhow.workspace = true
 base64 = { version = "0.22", optional = true }
@@ -50,7 +51,7 @@ tower = "0.5"
 
 [features]
 default = []
-web = ["dep:axum", "dep:pulldown-cmark", "dep:base64", "dep:flate2", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:uuid"]
+web = ["dep:axum", "dep:rusqlite", "dep:pulldown-cmark", "dep:base64", "dep:flate2", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:uuid"]
 
 [lints]
 workspace = true

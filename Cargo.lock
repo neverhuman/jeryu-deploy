@@ -1135,6 +1135,7 @@ dependencies = [
  "jeryu-wsversion",
  "pulldown-cmark",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

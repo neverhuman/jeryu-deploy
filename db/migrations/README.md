@@ -1,10 +1,18 @@
 # Migrations
 
-No SQL migrations are owned by this split today. Add numbered migrations here only with rollback, backfill, and lock-safety notes in the same change.
+Numbered, immutable SQL migrations for the SQLite stores jeryu-api owns.
+Numbering is a zero-padded four-digit sequence (`0001_<name>.sql`). The store
+that owns a migration embeds it and records its sha256 when applied; a changed
+file for an applied version stops the server at startup.
 
-The first migration must establish a deterministic numbering convention; every
-later migration must be ordered, immutable after release, and checksum-bound in
-the release receipt. The same reviewed change must provide:
+| Migration | Store | Owner |
+|---|---|---|
+| `0001_shift_heartbeats.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/shift/heartbeats.rs` |
+
+Each migration carries its rollback, backfill, and lock-safety notes in its
+header comment. Every later migration must be ordered, immutable after
+release, and checksum-bound in the release receipt. The same reviewed change
+must provide:
 
 - a restorable pre-migration backup and restore rehearsal;
 - the forward command plus a tested rollback or explicit fix-forward command;
@@ -12,6 +20,6 @@ the release receipt. The same reviewed change must provide:
 - compatibility expectations for overlapping binary versions; and
 - deterministic post-migration schema, constraint, row-count, and read checks.
 
-Until such a change lands, release evidence must continue to declare
+A release that ships a new migration declares it (and its checksum) instead of
 `data_migration=none`. A missing checksum, backup, recovery command, or
 verification result is a deployment stop condition.

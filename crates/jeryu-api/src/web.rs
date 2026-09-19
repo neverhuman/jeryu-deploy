@@ -17,6 +17,7 @@ mod repo_admin;
 mod repositories;
 mod request_id;
 mod sessions;
+mod shift;
 mod surface;
 mod tool_build;
 mod tool_finder;
@@ -117,6 +118,8 @@ pub(crate) struct WebState {
     pub(crate) gate_runners: control_plane::GateRunnerStore,
     /// Merge queue index; the queue itself lives in `refs/queue*` of each repo.
     pub(crate) merge_queue: Arc<merge_queue::MergeQueue>,
+    /// todoq shift heartbeats (`<data_dir>/shift.sqlite`) and PR author.
+    pub(crate) shift: shift::ShiftState,
     /// Auxiliary codegraph SQLite store for read-only oracle queries.
     pub(crate) codegraph_store: CodeGraphStore,
     /// Shared git-daemon repository manager backing the smart-HTTP transport.
@@ -207,6 +210,24 @@ impl WebState {
             }
         };
         let work = WorkStore::open(work_path).expect("open work store");
+        let shift_path = {
+            #[cfg(test)]
+            {
+                static TEST_SHIFT_DB_SEQ: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                std::env::temp_dir().join(format!(
+                    "jeryu-web-shift-{}-{}-{}.sqlite",
+                    std::process::id(),
+                    jeryu_runner_core::receipt::now_ms(),
+                    TEST_SHIFT_DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ))
+            }
+            #[cfg(not(test))]
+            {
+                data_dir.join("shift.sqlite")
+            }
+        };
+        let shift = shift::ShiftState::open(&shift_path);
         // Pre-warm the agent pool over the real CLI lifecycle. With the OCI gate
         // closed this only records planned cells (no daemon), so construction is
         // infallible in every environment the web edge boots in.
@@ -225,6 +246,7 @@ impl WebState {
             agent_runs: agent_runs::AgentRunStore::new(),
             gate_runners: control_plane::GateRunnerStore::from_env(),
             merge_queue: Arc::default(),
+            shift,
             codegraph_store,
             repo_manager,
             core: core_handle,
@@ -689,6 +711,25 @@ fn router(state: Arc<WebState>) -> AxumRouter {
         .route(
             "/api/v1/tool-finder/proposals/:tool_id/decision",
             post(tool_proposals::decide),
+        )
+        // Shift pages: todoq family queues, slot heartbeats, shift branches.
+        // Reads need a login; every POST is admin-only (auth::admin_only_request).
+        .route("/api/v1/shift/families", get(shift::families))
+        .route(
+            "/api/v1/shift/todos",
+            get(shift::list_todos).post(shift::file_todos),
+        )
+        .route(
+            "/api/v1/shift/todos/:family/:id/action",
+            post(shift::todo_action),
+        )
+        .route("/api/v1/shift/heartbeat", post(shift::heartbeat))
+        .route("/api/v1/shift/workers", get(shift::workers))
+        .route("/api/v1/shift/workers/history", get(shift::workers_history))
+        .route("/api/v1/shift/shifts", get(shift::list_shifts))
+        .route(
+            "/api/v1/shift/shifts/:family/pr",
+            post(shift::open_shift_pr),
         )
         .route("/api/v1/control-plane/status", get(control_plane::status))
         .route(

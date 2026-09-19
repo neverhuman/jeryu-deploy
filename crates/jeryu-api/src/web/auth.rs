@@ -544,7 +544,8 @@ pub(super) async fn gate(
         );
     }
 
-    if admin_only_path(request.uri().path()) && account.role != UserRole::Admin {
+    if admin_only_request(request.method(), request.uri().path()) && account.role != UserRole::Admin
+    {
         return forbidden("admin role required");
     }
 
@@ -703,6 +704,12 @@ fn csrf_valid(state: &WebState, headers: &HeaderMap) -> bool {
         return false;
     };
     state.core.session_csrf_matches(&session_token, csrf_token)
+}
+
+/// Admin-only by path, plus every mutation under `/api/v1/shift/` (its reads
+/// stay open to any logged-in account).
+fn admin_only_request(method: &Method, path: &str) -> bool {
+    admin_only_path(path) || (path.starts_with("/api/v1/shift/") && unsafe_method(method))
 }
 
 fn admin_only_path(path: &str) -> bool {
