@@ -97,7 +97,12 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
     let base = &queue.family.base_branch;
     let mut branches: BTreeMap<String, ShiftBranch> = BTreeMap::new();
     for repo in &queue.family.repos {
-        let Ok(repository) = state.repo_manager.open_parts(&queue.owner, &repo.name) else {
+        // A family's code may be hosted under another owner than its queue
+        // (the jain queue is jain-split/jain-todo, its repos are veox/*).
+        let Some(owner) = super::truth::hosted_owner(state, queue, &repo.name) else {
+            continue;
+        };
+        let Ok(repository) = state.repo_manager.open_parts(&owner, &repo.name) else {
             continue;
         };
         let Ok(listing) = git(
@@ -124,7 +129,7 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
                 continue;
             };
             let (ahead, behind) = ahead_behind(&git_bin, &repository.path, base, branch);
-            let pr = find_pr(state, &queue.owner, &repo.name, branch, base).map(|pr| ShiftPr {
+            let pr = find_pr(state, &owner, &repo.name, branch, base).map(|pr| ShiftPr {
                 number: pr.number,
                 state: state_name(&pr.state),
                 url: pull_request_web_path(&pr.owner, &pr.repo, pr.number),
@@ -222,14 +227,17 @@ pub(crate) fn open_prs(
     let author = &state.shift.pr_author;
     let mut out = Vec::new();
     for repo in &queue.family.repos {
-        let Ok(repository) = state.repo_manager.open_parts(&queue.owner, &repo.name) else {
+        let Some(owner) = super::truth::hosted_owner(state, queue, &repo.name) else {
+            continue;
+        };
+        let Ok(repository) = state.repo_manager.open_parts(&owner, &repo.name) else {
             continue;
         };
         let Some(head_sha) = resolve(&git_bin, &repository.path, &format!("refs/heads/{branch}"))
         else {
             continue;
         };
-        if let Some(pr) = find_pr(state, &queue.owner, &repo.name, branch, base)
+        if let Some(pr) = find_pr(state, &owner, &repo.name, branch, base)
             && is_open(&pr)
         {
             out.push(CreatedPr {
@@ -244,7 +252,7 @@ pub(crate) fn open_prs(
         let pr = state
             .core
             .create_pull_request(
-                &queue.owner,
+                &owner,
                 &repo.name,
                 author,
                 CreatePullRequestRequest {
@@ -264,7 +272,7 @@ pub(crate) fn open_prs(
         crate::ci_bridge::seed_pull_request_head(
             &state.core,
             state.repo_manager.as_ref(),
-            &queue.owner,
+            &owner,
             &repo.name,
             &format!("refs/heads/{}", pr.head.ref_name),
             &pr.head.sha,

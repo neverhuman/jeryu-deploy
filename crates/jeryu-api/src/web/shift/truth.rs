@@ -67,7 +67,7 @@ struct RepoFacts {
 /// family's code lives under another owner (the jain queue is
 /// `jain-split/jain-todo` while its repos are `veox/*`), the only hosted
 /// repository with that name.
-fn hosted_owner(state: &WebState, queue: &Queue, name: &str) -> Option<String> {
+pub(super) fn hosted_owner(state: &WebState, queue: &Queue, name: &str) -> Option<String> {
     if state.repo_manager.open_parts(&queue.owner, name).is_ok() {
         return Some(queue.owner.clone());
     }

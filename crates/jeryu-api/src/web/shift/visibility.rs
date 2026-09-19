@@ -69,7 +69,9 @@ pub(crate) fn shift_context(
     branch: &str,
 ) -> (Option<String>, Option<String>) {
     for queue in discover(&state.repo_manager) {
-        if queue.owner == owner && queue.family.repos.iter().any(|r| r.name == repo) {
+        if queue.family.repos.iter().any(|r| r.name == repo)
+            && super::truth::hosted_owner(state, &queue, repo).as_deref() == Some(owner)
+        {
             let shift = shifts::classify(&queue, branch).map(|_| branch.to_string());
             return (Some(queue.family.name), shift);
         }

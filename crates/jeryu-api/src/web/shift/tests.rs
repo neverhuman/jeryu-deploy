@@ -884,3 +884,88 @@ async fn todos_route_derives_merged_released_and_pr() {
     assert_eq!(released["merged"], true);
     assert_eq!(released["released"], true);
 }
+
+/// The jain queue is `jain-split/jain-todo` while its code is `veox/*`: a
+/// family repo hosted under another owner than its queue still lists its
+/// shift branches and gets its review PR.
+#[tokio::test]
+async fn shifts_resolve_a_family_repo_hosted_under_another_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("veox")).unwrap();
+    std::fs::rename(
+        root.join("jeryu/jeryu-deploy.git"),
+        root.join("veox/jeryu-deploy.git"),
+    )
+    .unwrap();
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_repository(
+        "veox",
+        CreateRepositoryRequest {
+            name: "jeryu-deploy".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new_with_git_storage(core.clone(), root.to_path_buf())
+            .with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    let shifts = body_json(
+        router
+            .clone()
+            .oneshot(request(
+                HttpMethod::GET,
+                "/api/v1/shift/shifts?family=jeryu",
+                &admin,
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let branches: Vec<&str> = shifts["shifts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["branch"].as_str())
+        .collect();
+    assert!(
+        branches.contains(&"nightshift/2026-09-18"),
+        "the veox-hosted repo's shift is listed: {branches:?}"
+    );
+
+    let opened = body_json(
+        router
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                "/api/v1/shift/shifts/jeryu/pr",
+                &admin,
+                Some(json!({"branch": "nightshift/2026-09-18"})),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(opened["prs"][0]["created"], true, "{opened}");
+    assert!(
+        opened["prs"][0]["url"]
+            .as_str()
+            .unwrap()
+            .contains("/veox/jeryu-deploy/"),
+        "the PR is opened in the hosting owner: {opened}"
+    );
+}
