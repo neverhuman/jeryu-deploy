@@ -125,6 +125,7 @@ fn active_view_drops_merged_and_closed_prs_and_their_checks() {
         repo: "alice/jeryu".to_string(),
         number,
         title: String::new(),
+        author: "alice".to_string(),
         draft: false,
         state: state.to_string(),
         head_ref: String::new(),

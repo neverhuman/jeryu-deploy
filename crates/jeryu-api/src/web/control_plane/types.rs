@@ -99,6 +99,8 @@ pub(crate) struct ControlPullRequest {
     pub repo: String,
     pub number: u64,
     pub title: String,
+    /// Login of the pull request's author.
+    pub author: String,
     pub draft: bool,
     pub state: String,
     pub head_ref: String,

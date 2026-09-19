@@ -1796,7 +1796,7 @@ async fn control_plane_status_priorities_and_absence_states_are_live() {
     core.create_pull_request(
         "alice",
         "jeryu",
-        "alice",
+        "bob",
         CreatePullRequestRequest {
             title: "feature".to_string(),
             head: "feature".to_string(),
@@ -1825,6 +1825,12 @@ async fn control_plane_status_priorities_and_absence_states_are_live() {
     assert_eq!(status.schema_version, "jeryu.control_plane/v1");
     assert_eq!(status.summary.repo_count, 1);
     assert_eq!(status.summary.draft_pr_count, 1);
+    assert_eq!(status.pull_requests.len(), 1);
+    assert_eq!(status.pull_requests[0].author, "bob");
+    assert_eq!(
+        serde_json::to_value(&status.pull_requests[0]).unwrap()["author"],
+        "bob"
+    );
     // The only failure is on a commit no open PR points at: history, not work.
     assert_eq!(status.summary.failing_check_count, 0);
     assert_eq!(

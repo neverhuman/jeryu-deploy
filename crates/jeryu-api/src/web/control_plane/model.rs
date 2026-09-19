@@ -241,6 +241,7 @@ pub(crate) fn collect_pull_requests(
                 repo: repo.full_name.clone(),
                 number: pr.number,
                 title: pr.title,
+                author: pr.author,
                 draft: pr.draft,
                 state: format!("{:?}", pr.state).to_ascii_lowercase(),
                 head_ref: pr.head.ref_name,
