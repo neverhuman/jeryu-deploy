@@ -482,6 +482,9 @@ async fn events_routes_enforce_reporter_and_admin_access() {
         (HttpMethod::GET, "/api/v1/notifications"),
         (HttpMethod::GET, "/api/v1/events/12"),
         (HttpMethod::POST, "/api/v1/nope"),
+        // Every API version, not only v1.
+        (HttpMethod::GET, "/api/v3/nope"),
+        (HttpMethod::GET, "/api/nope"),
     ] {
         let missing = call(method, uri, &admin, None).await.unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{uri}");
@@ -506,6 +509,26 @@ async fn events_routes_enforce_reporter_and_admin_access() {
             .unwrap()
             .contains("after_seq")
     );
+
+    // A kind filter that can only match nothing is a mistake, and says so; a
+    // real kind and a prefix ending in a dot are both filters.
+    for (uri, status) in [
+        (
+            "/api/v1/events?kind=NOT%20A%20KIND",
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        ("/api/v1/events?kind=todo", StatusCode::UNPROCESSABLE_ENTITY),
+        ("/api/v1/events?kind=.", StatusCode::UNPROCESSABLE_ENTITY),
+        ("/api/v1/events?kind=todo.", StatusCode::OK),
+        ("/api/v1/events?kind=todo.claimed", StatusCode::OK),
+        ("/api/v1/events?kind=", StatusCode::OK),
+    ] {
+        let response = call(HttpMethod::GET, uri, &admin, None).await.unwrap();
+        assert_eq!(response.status(), status, "{uri}");
+        if status != StatusCode::OK {
+            assert_eq!(body_json(response).await["code"], "events_invalid_query");
+        }
+    }
 }
 
 #[test]

@@ -243,6 +243,16 @@ pub(crate) async fn list_events(
             );
         }
     };
+    if let Some(kind) = query.kind.as_deref().filter(|kind| !kind.is_empty())
+        && !types::valid_kind_filter(kind)
+    {
+        return events_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "events_invalid_query",
+            &format!("kind: {kind:?} is neither a kind (todo.claimed) nor a prefix (todo.)"),
+            "use a dotted lower-case kind, or a prefix that ends in a dot",
+        );
+    }
     let page = state
         .events
         .query(&query)

@@ -15,8 +15,9 @@ tools. This page is the contract that makes it visible in one place:
 
 JSON is snake_case. Every refusal on these routes is a typed JSON error
 (`code`, `message`, `reason`, `repair_hint`, `common_fixes`, `docs_url`),
-never HTML. A path under `/api/v1/` that no route matches answers
-`404 api_route_not_found`.
+never HTML. A path under `/api/` (any version) that no route matches answers
+`404 api_route_not_found`. A `family` the forge does not host answers
+`404 shift_family_not_found` on the shift todo and shift list routes, never an empty list.
 
 Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
 `crates/jeryu-api/src/web/pipeline/` (store, emit points, attention rules),
@@ -121,7 +122,9 @@ event is stored, and a refusal names the entry (`events[1]: kind: ...`).
 
 Query: `after_seq`, `before_seq`, `limit` (1 to 500, default 100), `family`,
 `repo`, `pr`, `todo_id`, `source`, `kind`, `needs_human`. `kind` matches exactly,
-or as a prefix when it ends with a dot (`kind=todo.`).
+or as a prefix when it ends with a dot (`kind=todo.`). Anything else (`kind=todo`,
+`kind=Not A Kind`) answers `422 events_invalid_query`: it could only ever match nothing, and an
+empty page would read as "no such events".
 
 - Without `after_seq`: the newest events, **newest first** (a page to show).
 - With `after_seq`: events with `seq > after_seq`, **oldest first** (a cursor

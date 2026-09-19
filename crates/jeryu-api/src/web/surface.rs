@@ -82,10 +82,11 @@ pub(super) async fn spa_fallback(
     spa_response(&state.spa_dir, uri.path()).await
 }
 
-/// No page of the web app lives under `/api/v1/`, so a request that reaches
+/// No page of the web app lives under `/api/`, so a request that reaches
 /// the fallback there named a route this server does not have.
 fn is_unrouted_api_path(path: &str) -> bool {
-    path == "/api/v1" || path.starts_with("/api/v1/")
+    // Every API version: `/api/v3/nope` fell through to the web app as well.
+    path == "/api" || path.starts_with("/api/")
 }
 
 /// A missing API route answers a JSON 404. Serving the web app's HTML shell

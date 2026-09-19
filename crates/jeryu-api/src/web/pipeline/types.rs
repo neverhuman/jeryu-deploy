@@ -135,6 +135,17 @@ fn valid_source(source: &str) -> bool {
         && chars.all(|c| is_lower(c) || c.is_ascii_digit() || c == '-')
 }
 
+/// A `kind` query filter: an exact kind (`todo.claimed`) or a prefix ending in
+/// a dot (`todo.`). Anything else can only ever match nothing, and answering
+/// that with an empty page tells an agent "no such events" when the truth is
+/// "no such kind".
+pub(super) fn valid_kind_filter(filter: &str) -> bool {
+    match filter.strip_suffix('.') {
+        Some(prefix) => !prefix.is_empty() && valid_kind(&format!("{prefix}.x")),
+        None => valid_kind(filter),
+    }
+}
+
 /// `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`, at most [`MAX_KIND_CHARS`].
 fn valid_kind(kind: &str) -> bool {
     let segment = |s: &str| {

@@ -207,6 +207,12 @@ pub(crate) async fn list_todos(
     State(state): State<Arc<WebState>>,
     Query(query): Query<TodosQuery>,
 ) -> AxumResponse {
+    // A family nobody hosts is a mistake in the request, not an empty queue.
+    if let Some(family) = query.family.as_deref().filter(|f| !f.is_empty())
+        && let Err(resp) = find_queue(&state, family)
+    {
+        return *resp;
+    }
     let now = Utc::now();
     let mut todos = Vec::new();
     for queue in discover(&state.repo_manager) {
@@ -657,6 +663,11 @@ pub(crate) async fn list_shifts(
     State(state): State<Arc<WebState>>,
     Query(query): Query<ShiftsQuery>,
 ) -> AxumResponse {
+    if let Some(family) = query.family.as_deref().filter(|f| !f.is_empty())
+        && let Err(resp) = find_queue(&state, family)
+    {
+        return *resp;
+    }
     let mut all = Vec::new();
     for queue in discover(&state.repo_manager) {
         if let Some(family) = query.family.as_deref().filter(|f| !f.is_empty())

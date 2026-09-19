@@ -657,6 +657,17 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
     assert_eq!(history["slots"][0]["segments"][0]["state"], "working");
     assert!(!history["capacity"].as_array().unwrap().is_empty());
 
+    // A family nobody hosts is a mistake in the request, not an empty queue:
+    // an agent that misspells one must not read "nothing to do".
+    for uri in [
+        "/api/v1/shift/todos?family=jeryo",
+        "/api/v1/shift/shifts?family=jeryo",
+    ] {
+        let unknown = call(HttpMethod::GET, uri, &user, None).await.unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(body_json(unknown).await["code"], "shift_family_not_found");
+    }
+
     // Shifts and the review PR (authored by the configured shift author).
     let shifts = body_json(
         call(
