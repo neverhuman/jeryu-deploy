@@ -33,6 +33,10 @@ const DOCS: &str = "/docs/tools-registry.md";
 const TASK_STATUS_OPEN: &str = "open";
 
 /// Serializes registry read-modify-write cycles within this process.
+///
+/// This lock is process-local: it does not guard against another process
+/// (a second API instance, jeryu-tool-finder, a hand edit) rewriting
+/// `tools-registry.toml` concurrently.
 static REGISTRY_WRITE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Deserialize, PartialEq, Eq, Clone, Copy)]
@@ -202,16 +206,39 @@ fn apply_decision(
                 .filter(|cluster| !cluster.is_empty())
                 .map(str::to_string);
             tools.remove(index);
-            let removed = remove_open_tasks(registry_path, tool_id)?;
-            Applied {
+            // Tasks are only deleted once the registry no longer lists the
+            // tool, so a failed registry write leaves both intact.
+            let open_tasks = find_open_tasks(registry_path, tool_id);
+            write_registry(registry_path, &doc.to_string())?;
+            let removed = remove_tasks(open_tasks)?;
+            return Ok(Applied {
                 receipt: receipt(tool_id, "reject", None, removed, decided_by),
                 rejected_cluster: cluster,
-            }
+            });
         }
     };
-    std::fs::write(registry_path, doc.to_string())
-        .map_err(|error| DecisionError::Io(error.to_string()))?;
+    write_registry(registry_path, &doc.to_string())?;
     Ok(applied)
+}
+
+/// Write the registry to a sibling temp file, then rename it into place so
+/// readers never see a partial file and a failed write changes nothing.
+fn write_registry(registry_path: &Path, contents: &str) -> Result<(), DecisionError> {
+    let tmp = registry_tmp_path(registry_path);
+    let result = std::fs::write(&tmp, contents).and_then(|()| std::fs::rename(&tmp, registry_path));
+    result.map_err(|error| {
+        let _ = std::fs::remove_file(&tmp);
+        DecisionError::Io(error.to_string())
+    })
+}
+
+fn registry_tmp_path(registry_path: &Path) -> std::path::PathBuf {
+    let mut name = registry_path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_default();
+    name.push(".tmp");
+    registry_path.with_file_name(name)
 }
 
 fn receipt(
@@ -230,15 +257,16 @@ fn receipt(
     }
 }
 
-/// Delete `tasks/*.toml` files for `tool_id` that were never started.
-fn remove_open_tasks(registry_path: &Path, tool_id: &str) -> Result<Vec<String>, DecisionError> {
+/// Find `tasks/*.toml` files for `tool_id` that were never started, as
+/// `(path, task id)` pairs.
+fn find_open_tasks(registry_path: &Path, tool_id: &str) -> Vec<(std::path::PathBuf, String)> {
     let Some(tasks_dir) = registry_path.parent().map(|dir| dir.join("tasks")) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(&tasks_dir) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
-    let mut removed = Vec::new();
+    let mut found = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
@@ -252,9 +280,18 @@ fn remove_open_tasks(registry_path: &Path, tool_id: &str) -> Result<Vec<String>,
         };
         let field = |key: &str| task.get(key).and_then(|item| item.as_str());
         if field("tool_id") == Some(tool_id) && field("status") == Some(TASK_STATUS_OPEN) {
-            std::fs::remove_file(&path).map_err(|error| DecisionError::Io(error.to_string()))?;
-            removed.push(field("id").unwrap_or_default().to_string());
+            found.push((path.clone(), field("id").unwrap_or_default().to_string()));
         }
+    }
+    found
+}
+
+/// Delete the given task files, returning their sorted task ids.
+fn remove_tasks(tasks: Vec<(std::path::PathBuf, String)>) -> Result<Vec<String>, DecisionError> {
+    let mut removed = Vec::new();
+    for (path, id) in tasks {
+        std::fs::remove_file(&path).map_err(|error| DecisionError::Io(error.to_string()))?;
+        removed.push(id);
     }
     removed.sort();
     Ok(removed)
@@ -349,6 +386,21 @@ origin_cluster = "c-1"
         let tasks = path.parent().unwrap().join("tasks");
         assert!(!tasks.join("0001-prop.toml").exists());
         assert!(tasks.join("0002-kept.toml").exists());
+    }
+
+    #[test]
+    fn reject_keeps_task_files_when_the_registry_write_fails() {
+        let path = fixture("reject-write-fails");
+        // A directory at the temp path makes the registry write fail.
+        std::fs::create_dir(registry_tmp_path(&path)).unwrap();
+        assert!(matches!(
+            apply_decision(&path, "prop", Decision::Reject, "alton"),
+            Err(DecisionError::Io(_))
+        ));
+        let tasks = path.parent().unwrap().join("tasks");
+        assert!(tasks.join("0001-prop.toml").exists());
+        assert!(tasks.join("0002-kept.toml").exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), REGISTRY);
     }
 
     #[test]
