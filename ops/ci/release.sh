@@ -37,6 +37,8 @@ git verify-commit --raw HEAD >/dev/null 2>&1 \
   || die "missing PR publication metadata: ${PUBLICATION_FILE}; run bash ci-fast-push.sh --full from a PR branch before tagging"
 
 # --- 1. validate + build the release binary --------------------------------
+# The release profile embeds only the jeryu-web dist pinned in the split lock.
+source "${HERE}/web-dist-env.sh"
 cargo test --locked --workspace --jobs "${JERYU_CI_JOBS}"
 BIN="${JERYU_RELEASE_BINARY:-target/release/jeryu}"
 if [ -n "${JERYU_RELEASE_BINARY:-}" ]; then

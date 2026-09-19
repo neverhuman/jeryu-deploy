@@ -2,12 +2,18 @@
 # stage-release.sh [COMMIT] — build jeryu-deploy at COMMIT (default: the forge's
 # current main) and stage it on the forge host, ready for deploy-release.sh.
 #
-#   1. On the build host: a dedicated checkout at COMMIT, `cargo fetch --locked`
-#      through the hosted transport overlay (the build itself is offline), then
-#      `cargo build --release --locked --offline` in the glibc 2.35 builder image
-#      with no network, so the binary runs on the forge host's glibc.
+#   1. On the build host: a dedicated checkout at COMMIT; build-web-dist.sh
+#      builds the jeryu-web commit pinned in that checkout's
+#      jeryu-split.lock.toml (pinned node image, network allowed) into
+#      ~/jeryu-release-build/web-dist/<web commit>/dist and refuses a hash
+#      that differs from the lock; `cargo fetch --locked` through the hosted
+#      transport overlay; then `cargo build --release --locked --offline` in the
+#      glibc 2.35 builder image with no network and JERYU_WEB_DIST mounted
+#      read-only, so jeryu-api's build.rs re-verifies the dist hash against the
+#      lock before embedding it, and the binary runs on the forge host's glibc.
 #   2. Refuse a binary that needs a newer glibc than the forge host has.
-#   3. Stage bundle/jeryu, the vendored web dist, RELEASE.txt, RELEASE.env
+#   3. Stage bundle/jeryu, that same web dist, RELEASE.txt (with the jeryu-web
+#      commit and dist hash), RELEASE.env
 #      (REL and PREV, where PREV is read from the live symlink on the forge
 #      host), switch.sh and rollback.sh from the same commit, and SHA256SUMS.
 #   4. Copy to the forge host's ~/.jeryu/incoming/<REL>/ and verify the sums
@@ -21,6 +27,7 @@
 # JERYU_BUILDER_IMAGE (jeryu-builder:rust1.95-glibc2.35-r2, built from
 # scripts/release/builder.Dockerfile on the build host when missing), JERYU_MAX_GLIBC (2.35),
 # JERYU_DEPLOY_REMOTE (https://git.neverhuman.org/git/jeryu/jeryu-deploy.git).
+# jeryu-web is cloned on the build host from build-web-dist.sh's default remote.
 set -euo pipefail
 build_host="${JERYU_BUILD_HOST:-xbabe2}"
 forge_host="${JERYU_FORGE_HOST:-atomicsoul}"
@@ -57,8 +64,13 @@ cd "\$root/jeryu-deploy"
 git fetch -q origin
 git checkout -q --detach "$commit"
 [[ "\$(git rev-parse HEAD)" == "$commit" ]]
+[[ -f scripts/release/build-web-dist.sh ]] || { echo "$commit predates the pinned jeryu-web dist; refusing" >&2; exit 1; }
+web="\$(JERYU_WEB_SRC="\$root/jeryu-web" bash scripts/release/build-web-dist.sh "\$root/web-dist" | tail -1)"
+web_commit="\${web%% *}"; web_sha="\${web##* }"
+web_dist="\$root/web-dist/\$web_commit/dist"
 GIT_CONFIG_GLOBAL="\$PWD/.cargo/hosted-gitconfig" PATH="\$HOME/.cargo/bin:\$PATH" cargo fetch --locked >/dev/null
 docker run --rm --network none --user "\$(id -u):\$(id -g)" \
+  -v "\$web_dist":/web-dist:ro -e JERYU_WEB_DIST=/web-dist \
   -e HOME=/tmp -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/src/target-release -e CARGO_INCREMENTAL=0 \
   -e PATH=/opt/rust/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin \
   -e RUSTUP_HOME=/opt/rust/rustup -e RUSTUP_TOOLCHAIN=1.95.0 \
@@ -73,12 +85,11 @@ echo "[stage] binary needs \$glibc (max $max_glibc)" >&2
 
 stage="\$root/stage/$rel"; rm -rf "\$stage"; mkdir -p "\$stage/bundle" "\$stage/web-dist"
 cp "\$bin" "\$stage/bundle/jeryu"
-tmp="\$(mktemp -d)"; git archive "$commit" apps/web/dist | tar -x -C "\$tmp"
-cp -a "\$tmp/apps/web/dist/." "\$stage/web-dist/"; rm -rf "\$tmp"
+cp -a "\$web_dist/." "\$stage/web-dist/"; chmod -R u+w "\$stage/web-dist"
 cp scripts/release/switch.sh scripts/release/rollback.sh "\$stage/"
 printf 'REL=%s\nPREV=%s\n' "$rel" "$prev" > "\$stage/RELEASE.env"
-printf 'release=%s\njeryu_deploy_commit=%s\nsigned=false (owner decision)\nbuilder=%s, --network none, cargo --locked --offline\nrollback_target=%s\nbinary_glibc=%s\n' \
-  "$rel" "$commit" "$image" "$prev" "\$glibc" > "\$stage/RELEASE.txt"
+printf 'release=%s\njeryu_deploy_commit=%s\njeryu_web_commit=%s\nweb_dist_sha256=%s\nsigned=false (owner decision)\nbuilder=%s, --network none, cargo --locked --offline\nrollback_target=%s\nbinary_glibc=%s\n' \
+  "$rel" "$commit" "\$web_commit" "\$web_sha" "$image" "$prev" "\$glibc" > "\$stage/RELEASE.txt"
 (cd "\$stage" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 rsync -a "\$stage" $forge_host:.jeryu/incoming/
 ssh -n $forge_host "cd ~/.jeryu/incoming/$rel && sha256sum --quiet -c SHA256SUMS && chmod +x switch.sh rollback.sh && ./bundle/jeryu --version" >&2

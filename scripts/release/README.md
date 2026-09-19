@@ -9,11 +9,13 @@ rel=$(scripts/release/stage-release.sh)        # build main, stage on atomicsoul
 scripts/release/deploy-release.sh "$rel"       # switch, and record the deployment
 ```
 
-- **`stage-release.sh [COMMIT]`** builds `jeryu-cli` in the glibc 2.35 builder
+- **`stage-release.sh [COMMIT]`** builds the pinned web dist with
+  `build-web-dist.sh` (below), then `jeryu-cli` in the glibc 2.35 builder
   image on xbabe2 with no network (`cargo --locked --offline`, dependencies fetched
   first through `.cargo/hosted-gitconfig`), refuses a binary needing a newer glibc
-  than the forge host has, and stages `bundle/jeryu`, the vendored web dist,
-  `RELEASE.txt`, `RELEASE.env` (`REL`, and `PREV` read from the live symlink),
+  than the forge host has, and stages `bundle/jeryu`, the web dist,
+  `RELEASE.txt` (with the jeryu-web commit and dist hash), `RELEASE.env` (`REL`,
+  and `PREV` read from the live symlink),
   `switch.sh`, `rollback.sh` and `SHA256SUMS` in `~/.jeryu/incoming/<release>/` on
   atomicsoul. It changes nothing else there.
 - **`deploy-release.sh RELEASE`** records a `production` deployment of
@@ -35,6 +37,41 @@ Before a release that adds a database migration, run the staged binary against a
 backup copy of the databases on a spare loopback port and check the new schema and
 routes; `switch.sh` snapshots before starting, and `rollback.sh` restores that
 snapshot.
+
+## The web UI
+
+The SPA is not in this repository. `jeryu-split.lock.toml` pins it with one entry:
+
+```toml
+web_artifact = "pinned"
+
+[[repo]]
+name = "jeryu-web"
+commit = "<40-hex jeryu-web commit>"
+web_dist_sha256 = "<sha256 of that commit's dist manifest>"
+```
+
+- **`build-web-dist.sh [--commit SHA] OUT_ROOT`** checks jeryu-web out at exactly
+  the locked commit (refusing a dirty tree or a different HEAD), runs `npm ci` and
+  `vite build` in the pinned `node:20.20.1` image (the only networked build step),
+  and writes `OUT_ROOT/<commit>/dist` plus `MANIFEST.sha256`: one `sha256sum` line
+  per file, sorted by path. The dist hash is the sha256 of that manifest, and the
+  script refuses one that differs from the lock.
+- The offline binary build passes the dist in as `JERYU_WEB_DIST`.
+  `crates/jeryu-api/build.rs` recomputes the manifest hash and fails the build on
+  a mismatch, a missing dist, or a release build without one. Tests and dev builds
+  embed no SPA (with a cargo warning), or an unverified local dist named explicitly
+  by `JERYU_WEB_DIST_LOCAL`, which a release build refuses.
+
+To ship a UI change, merge it to jeryu-web main, then change only the lock entry:
+
+```sh
+scripts/release/build-web-dist.sh --commit <jeryu-web sha> /tmp/web-dist   # prints "<sha> <hash>"
+# set commit = "<sha>" and web_dist_sha256 = "<hash>" in jeryu-split.lock.toml; land it
+```
+
+jeryu-web keeps its build reproducible (same commit, same hash) and checks it
+with its `scripts/check-reproducible-web-build.sh`.
 
 ## Builder image
 

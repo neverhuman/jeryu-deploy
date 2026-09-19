@@ -4,7 +4,8 @@
 # jeryu/jeryu-deploy to environment "production":
 #
 #   1. POST /repos/jeryu/jeryu-deploy/deployments (sha, payload: release id,
-#      previous release, binary digest, host), then an in_progress status.
+#      previous release, binary digest, the pinned jeryu-web commit and dist
+#      hash, host), then an in_progress status.
 #   2. Run the staged switch.sh on the forge host.
 #   3. Append success, or failure (switch.sh prints its own rollback command).
 #      The forge's auto_inactive retires the previous production deployment.
@@ -42,11 +43,15 @@ field() { sed -n "s/^$1=//p" <<<"$meta" | head -1; }
 sha="$(field jeryu_deploy_commit | cut -d' ' -f1)"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "staged RELEASE.txt has no 40-hex jeryu_deploy_commit" >&2; exit 1; }
 
+# Empty for a release staged before jeryu-web was pinned by commit.
+web_commit="$(field jeryu_web_commit)"; web_sha="$(field web_dist_sha256)"
+
 jq -n --arg sha "$sha" --arg rel "$rel" --arg prev "$(field rollback_target)" \
   --arg bin "$(field binary_sha256)" --arg live "$(field live)" --arg host "$forge_host" \
+  --arg web "$web_commit" --arg web_sha "$web_sha" \
   '{sha:$sha, ref:"main", environment:"production", description:("release " + $rel),
     payload:{release:$rel, previous_release:$prev, previous_binary:$live, binary_sha256:$bin,
-             host:$host, signed:false}}' >"$tmp/deployment.json"
+             jeryu_web_commit:$web, web_dist_sha256:$web_sha, host:$host, signed:false}}' >"$tmp/deployment.json"
 
 record() {
   local created

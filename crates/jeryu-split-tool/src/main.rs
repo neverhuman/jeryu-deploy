@@ -587,9 +587,26 @@ fn verify_lock(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn is_lower_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn verify_lock_value(value: &Value) -> Result<()> {
     let repos = repositories(value)?;
     let mut failures = Vec::new();
+    // jeryu-web ships as a dist pinned by commit and content hash (see
+    // crates/jeryu-api/build.rs), so its entry carries no tag.
+    let web_pinned = match value.get("web_artifact").and_then(Value::as_str) {
+        None => false,
+        Some("pinned") => true,
+        Some(other) => {
+            failures.push(format!("web_artifact must be \"pinned\", found {other}"));
+            false
+        }
+    };
     for repo in repos {
         let repo = table(repo, "lock repo entry")?;
         let name = repo
@@ -597,6 +614,7 @@ fn verify_lock_value(value: &Value) -> Result<()> {
             .and_then(Value::as_str)
             .filter(|name| !name.trim().is_empty())
             .unwrap_or("<unknown>");
+        let web = web_pinned && name == "jeryu-web";
         for field in [
             "name",
             "github_slug",
@@ -605,6 +623,9 @@ fn verify_lock_value(value: &Value) -> Result<()> {
             "commit",
             "required_check",
         ] {
+            if web && field == "tag" {
+                continue;
+            }
             if repo
                 .get(field)
                 .and_then(Value::as_str)
@@ -617,13 +638,28 @@ fn verify_lock_value(value: &Value) -> Result<()> {
             .get("commit")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let valid_sha = commit.len() == 40
-            && commit
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-        if commit != "PENDING" && commit != "PENDING_SELF" && !valid_sha {
+        let valid_sha = is_lower_hex(commit, 40);
+        if web {
+            if !valid_sha {
+                failures.push(format!("{name} commit must be a full 40-hex sha: {commit}"));
+            }
+            let dist = repo
+                .get("web_dist_sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !is_lower_hex(dist, 64) {
+                failures.push(format!("{name} web_dist_sha256 is not a sha256: {dist}"));
+            }
+        } else if commit != "PENDING" && commit != "PENDING_SELF" && !valid_sha {
             failures.push(format!("{name} commit is not a sha: {commit}"));
         }
+    }
+    if web_pinned
+        && !repos
+            .iter()
+            .any(|repo| repo.get("name").and_then(Value::as_str) == Some("jeryu-web"))
+    {
+        failures.push("web_artifact is \"pinned\" but the lock has no jeryu-web entry".to_string());
     }
     if failures.is_empty() {
         Ok(())

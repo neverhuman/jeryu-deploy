@@ -119,6 +119,17 @@ fn pkt_line(payload: &[u8]) -> Vec<u8> {
     encoded
 }
 
+/// A stub SPA shell. The readiness probe (`/healthz`) is answered by the SPA
+/// fallback, and tests build without an embedded jeryu-web dist.
+fn write_spa_shell(spa_dir: &std::path::Path) {
+    std::fs::create_dir_all(spa_dir).unwrap();
+    std::fs::write(
+        spa_dir.join("index.html"),
+        r#"<!doctype html><html><body><div id="root"></div></body></html>"#,
+    )
+    .unwrap();
+}
+
 async fn wait_until_listening(addr: SocketAddr, server: &mut tokio::task::JoinHandle<()>) {
     let deadline = Instant::now() + Duration::from_secs(20);
     let client = reqwest::Client::builder()
@@ -180,7 +191,7 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
     let git_root = base.join("git");
     let spa_dir = base.join("spa");
     let work = base.join("work");
-    std::fs::create_dir_all(&spa_dir).unwrap();
+    write_spa_shell(&spa_dir);
     std::fs::create_dir_all(&work).unwrap();
 
     // Reserve a free loopback port, then release it for serve() to bind.
@@ -331,7 +342,7 @@ async fn s4_git_pack_rpc_routes_decode_gzip_before_git() {
     let data_dir = base.join("data");
     let git_root = base.join("git");
     let spa_dir = base.join("spa");
-    std::fs::create_dir_all(&spa_dir).unwrap();
+    write_spa_shell(&spa_dir);
 
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = probe.local_addr().unwrap();
@@ -433,7 +444,7 @@ async fn s4_git_lfs_batch_and_locks_verify_routes_return_protocol_json() {
     let data_dir = base.join("data");
     let git_root = base.join("git");
     let spa_dir = base.join("spa");
-    std::fs::create_dir_all(&spa_dir).unwrap();
+    write_spa_shell(&spa_dir);
 
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = probe.local_addr().unwrap();
@@ -529,7 +540,7 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
     let git_root = base.join("git");
     let spa_dir = base.join("spa");
     let work = base.join("work");
-    std::fs::create_dir_all(&spa_dir).unwrap();
+    write_spa_shell(&spa_dir);
     std::fs::create_dir_all(&work).unwrap();
 
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -668,7 +679,7 @@ async fn s4_real_git_client_negotiates_protocol_v2_over_http() {
     let git_root = base.join("git");
     let spa_dir = base.join("spa");
     let work = base.join("work");
-    std::fs::create_dir_all(&spa_dir).unwrap();
+    write_spa_shell(&spa_dir);
     std::fs::create_dir_all(&work).unwrap();
 
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

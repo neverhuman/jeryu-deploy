@@ -45,11 +45,11 @@ artifact-support:
 profile:
   printf '%s\n' "deploy"
 
-# Canonical end-user binary build: stage the SPA from the sibling jeryu-web
-# checkout (or keep the vendored copy), then build the fused `jeryu` binary.
+# Canonical end-user binary build: build the jeryu-web commit pinned in
+# jeryu-split.lock.toml into target/web-dist (unless JERYU_WEB_DIST names it),
+# then build the fused `jeryu` binary, whose build.rs verifies the dist hash.
 build-release:
-  ./scripts/stage-web-dist.sh
-  source ops/ci/hosted-git-env.sh; cargo build --locked --release -p jeryu-cli --jobs {{jobs}}
+  source ops/ci/web-dist-env.sh; source ops/ci/hosted-git-env.sh; cargo build --locked --release -p jeryu-cli --jobs {{jobs}}
 
 # Entry point for the protected jeryu-deploy/required check: the existing lane, unchanged.
 required:

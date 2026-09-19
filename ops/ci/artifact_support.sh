@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/ops/ci/lib.sh"
 cd "${ROOT}"
+# The pinned jeryu-web dist the release binary embeds (verified by build.rs).
+source "${ROOT}/ops/ci/web-dist-env.sh"
 
 ARTIFACT_ROOT="${JERYU_ARTIFACT_SUPPORT_ROOT:-target/artifact-support}"
 EVIDENCE_DIR="${ARTIFACT_ROOT}/evidence"
@@ -57,7 +59,7 @@ cargo run --locked -q -p jeryu-cli --bin jeryu-artifact-support -- \
   evidence \
   --evidence-dir "${EVIDENCE_DIR}" \
   --binary "${BINARY}" \
-  --web-dist apps/web/dist \
+  --web-dist "${JERYU_WEB_DIST}" \
   --route-probe "${ROUTE_PROBE}" \
   --commit "${COMMIT}" \
   --tree "${TREE}" \

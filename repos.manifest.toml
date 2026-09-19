@@ -509,7 +509,6 @@ copy_paths = [
   "images",
   "docs",
   "agent",
-  "apps/web/dist",
 ]
 source_paths = [
   "crates/jeryu-api/**",

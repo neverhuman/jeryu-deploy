@@ -34,9 +34,11 @@ Primary lanes:
   union from `agent/ci-lanes.toml`, including GitHub clean profile proof,
   security toolchain verification, retired-listener/process rejection, and all
   full workflow lanes.
-- `bash ops/ci/web.sh`: validates Deploy's tracked, immutable `apps/web/dist`
-  bundle and its API serving integration. Web source, Playwright, and rendered
-  UX gates run in the standalone `jeryu-web` repository before staging.
+- `bash ops/ci/web.sh`: validates the jeryu-web pin in `jeryu-split.lock.toml`
+  (a 40-hex `commit` plus the `web_dist_sha256` of its dist; no SPA is tracked
+  here), the fail-closed dist verification in `crates/jeryu-api/build.rs`, and
+  the API serving integration. Web source, Playwright, and rendered UX gates run
+  in the standalone `jeryu-web` repository.
 - `bash ci-fast-push.sh`: local publish path after gates pass; it pushes the
   current branch and opens or reports a PR. Direct `HEAD:main` push requires
   explicit `--push-main` or `JERYU_CI_PUSH_MAIN=1`.

@@ -75,6 +75,51 @@ fn lock_rejects_missing_and_noncanonical_commits() {
 }
 
 #[test]
+fn verify_lock_pins_jeryu_web_by_commit_and_dist_hash() {
+    let web = |commit: &str, dist: &str| -> Value {
+        toml::from_str(&format!(
+            r#"
+                web_artifact = "pinned"
+                [[repo]]
+                name = "jeryu-web"
+                github_slug = "neverhuman/jeryu-web"
+                local_path = "/tmp/jeryu-web"
+                commit = "{commit}"
+                web_dist_sha256 = "{dist}"
+                required_check = "jeryu-web/required"
+            "#
+        ))
+        .unwrap()
+    };
+    let commit = "cdbef2cbf2fb93ca41ff780fc56f91d0b16620c2";
+    let dist = "3afaf92cd37e5a657f83ded3f436de58387c02d8f1137f4c28893857083066fd";
+    verify_lock_value(&web(commit, dist)).unwrap();
+
+    let error = verify_lock_value(&web("PENDING", "abc"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("jeryu-web commit must be a full 40-hex sha: PENDING"));
+    assert!(error.contains("jeryu-web web_dist_sha256 is not a sha256: abc"));
+
+    let mut other = web(commit, dist);
+    other["web_artifact"] = Value::String("local-or-pinned".to_string());
+    let error = verify_lock_value(&other).unwrap_err().to_string();
+    assert!(error.contains("web_artifact must be \"pinned\""));
+    assert!(error.contains("jeryu-web missing tag"));
+}
+
+#[test]
+fn the_repository_lock_pins_jeryu_web() {
+    let lock = read_toml(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../jeryu-split.lock.toml"
+    )))
+    .unwrap();
+    verify_lock_value(&lock).unwrap();
+    assert_eq!(lock["web_artifact"].as_str(), Some("pinned"));
+}
+
+#[test]
 fn manifest_rejects_duplicate_repositories() {
     let duplicate: Value = toml::from_str(
         r#"
