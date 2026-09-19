@@ -220,7 +220,17 @@ pub(crate) fn fixture(root: &Path) {
     run_git(&deploy, &["commit", "-q", "-m", "base"]);
     run_git(&deploy, &["checkout", "-q", "-b", "nightshift/2026-09-18"]);
     std::fs::write(deploy.join("README"), "y").unwrap();
-    run_git(&deploy, &["commit", "-q", "-am", "work"]);
+    // Workers end every landing with the todo's trailer; it is how the forge
+    // tells work that still needs a review from a branch replayed onto base.
+    run_git(
+        &deploy,
+        &[
+            "commit",
+            "-q",
+            "-am",
+            "work\n\nTodo: 20260919-010000-abcdef",
+        ],
+    );
     run_git(&owner, &["init", "-q", "--bare", "jeryu-deploy.git"]);
     let bare = owner.join("jeryu-deploy.git");
     run_git(
@@ -464,6 +474,11 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
     let families = body_json(families).await;
     assert_eq!(families["families"][0]["queue_repo"], "jeryu/jeryu-todo");
     assert_eq!(families["families"][0]["repos"][1]["name"], "jeryu-web");
+    assert_eq!(
+        families["families"][0]["repos"][1]["owner"],
+        Value::Null,
+        "a family repo this forge does not host has no owner to link to"
+    );
 
     let todos = body_json(
         call(
@@ -903,11 +918,13 @@ async fn shifts_resolve_a_family_repo_hosted_under_another_owner() {
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
+    core.create_account("bob", "bob-password", UserRole::User)
+        .unwrap();
     core.create_repository(
         "veox",
         CreateRepositoryRequest {
             name: "jeryu-deploy".to_string(),
-            private: false,
+            private: true,
             description: None,
             default_branch: Some("main".to_string()),
         },
@@ -915,6 +932,10 @@ async fn shifts_resolve_a_family_repo_hosted_under_another_owner() {
     .unwrap();
     let admin = core
         .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let outsider = core
+        .create_personal_access_token("bob", "t", None)
         .unwrap()
         .secret;
     let router = app(
@@ -936,6 +957,53 @@ async fn shifts_resolve_a_family_repo_hosted_under_another_owner() {
             .unwrap(),
     )
     .await;
+    let families = body_json(
+        router
+            .clone()
+            .oneshot(request(
+                HttpMethod::GET,
+                "/api/v1/shift/families",
+                &admin,
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let hosted: Vec<(&str, Option<&str>)> = families["families"][0]["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|repo| (repo["name"].as_str().unwrap(), repo["owner"].as_str()))
+        .collect();
+    assert!(
+        hosted.contains(&("jeryu-deploy", Some("veox"))),
+        "the families route names the hosting owner, not the queue's: {hosted:?}"
+    );
+
+    // Where a private repo is hosted is not told to an account that cannot read it.
+    let seen = body_json(
+        router
+            .clone()
+            .oneshot(request(
+                HttpMethod::GET,
+                "/api/v1/shift/families",
+                &outsider,
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        seen["families"][0]["repos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|repo| repo["owner"].is_null()),
+        "{seen}"
+    );
+
     let branches: Vec<&str> = shifts["shifts"]
         .as_array()
         .unwrap()

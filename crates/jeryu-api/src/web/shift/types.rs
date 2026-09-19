@@ -14,9 +14,21 @@ pub(crate) struct FamiliesResponse {
 pub(crate) struct FamilySummary {
     pub name: String,
     pub queue_repo: String,
-    pub repos: Vec<FamilyRepo>,
+    pub repos: Vec<FamilyRepoSummary>,
     pub shift_tz: String,
     pub landing: String,
+}
+
+/// A family repo as `GET /api/v1/shift/families` reports it: the entry from
+/// `family.toml` plus where the repo is hosted, so a client can link to it.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct FamilyRepoSummary {
+    pub name: String,
+    pub order: i64,
+    /// The owner the repo is hosted under, which is not always the queue's
+    /// (the jain queue is `jain-split/jain-todo`, its code is `veox/*`).
+    /// `null` when this forge does not host the repo at all.
+    pub owner: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

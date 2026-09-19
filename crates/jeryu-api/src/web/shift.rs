@@ -126,13 +126,32 @@ fn git_failure(reason: &str) -> AxumResponse {
 }
 
 /// `GET /api/v1/shift/families`
-pub(crate) async fn families(State(state): State<Arc<WebState>>) -> Json<FamiliesResponse> {
+pub(crate) async fn families(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+) -> Json<FamiliesResponse> {
+    // Any logged-in account reads the families, but where a repo is hosted is
+    // told only to a reader who may read that repo.
+    let may_read = |owner: &str, repo: &str| {
+        account.role == jeryu_core::UserRole::Admin
+            || state.core.user_can_read_repo(&account.login, owner, repo)
+    };
     let families = discover(&state.repo_manager)
         .into_iter()
         .map(|q| FamilySummary {
             queue_repo: q.full_name(),
+            repos: q
+                .family
+                .repos
+                .iter()
+                .map(|repo| FamilyRepoSummary {
+                    name: repo.name.clone(),
+                    order: repo.order,
+                    owner: truth::hosted_owner(&state, &q, &repo.name)
+                        .filter(|owner| may_read(owner, &repo.name)),
+                })
+                .collect(),
             name: q.family.name,
-            repos: q.family.repos,
             shift_tz: q.family.shift_tz,
             landing: q.family.landing,
         })
