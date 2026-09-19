@@ -157,7 +157,7 @@ Items are sorted by severity, then oldest first.
 | `kind` | see below |
 | `severity` | `critical` (the pipeline is stuck or broken), `action` (a human decision or click is the next step), `watch` (unusual, may heal by itself) |
 | `title` | one line |
-| `reason` | why it needs a person, written for a reader with no context; at most 1000 characters |
+| `reason` | why it needs a person, written for a reader with no context. The specific fact leads (a blocked todo's note verbatim, the failing check's name, the queue's own reason), the consequence follows; at most 1000 characters |
 | `since` | RFC 3339 or null |
 | `family`, `repo`, `pr`, `todo_id`, `sha`, `shift` | nullable join keys. `repo` is `owner/name`, except on `shift_without_pr`, which uses the family repo name as the Shift API does |
 | `href` | the in-app page where the step happens |
@@ -169,12 +169,12 @@ otherwise open `href` and do what `action.label` says.
 
 | Kind | Severity | Meaning |
 |---|---|---|
-| `todo_blocked` | action | status `blocked`; the reason carries the note |
+| `todo_blocked` | action | status `blocked`; the reason opens with the note, and the one step is to release the todo |
 | `todo_handoff` | action | status `handoff` |
 | `todo_untriaged` | action | open and `triaged = false`; workers skip it |
 | `todo_stuck_claim` | watch | claimed, lease dead for 10 minutes or more |
 | `todo_waiting_on_blocker` | watch | open, and a `blocked_by` todo is blocked, handed off, or done but not merged |
-| `shift_without_pr` | action | a shift branch is ahead of the base with no pull request, or only a closed one |
+| `shift_without_pr` | action | a shift branch holds todos that are on no base commit (`unmerged_todos`), with no pull request or only a closed one. Being ahead by sha is not enough: a branch closed and replaced by a rebased one stays ahead for ever |
 | `shift_stranded_work` | action | a shift's pull request already merged, and todos landed on the branch afterwards: their `Todo:` trailer is on no base commit, so the work is finished and on no open pull request |
 | `pr_changes_requested`, `pr_checks_failing`, `pr_awaiting_approval`, `pr_ready_to_merge` | action | an open, non-draft pull request; the first that applies, in this order. `pr_awaiting_approval` needs green checks; `pr_ready_to_merge` needs the PR unchanged for 10 minutes |
 | `queue_failed` | action | a merge-queue entry failed or was dropped in the last 24 hours and its PR is still open |

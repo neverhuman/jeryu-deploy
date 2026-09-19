@@ -39,9 +39,9 @@ pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {
                 "pr_changes_requested",
                 format!("Changes requested on {label}"),
                 format!(
-                    "A reviewer asked for changes on the current head of \"{}\" by {}. It \
-                     cannot merge until the author pushes a fix or the reviewer withdraws \
-                     the request. The review on the pull request page says what is wrong.",
+                    "A reviewer asked for changes on \"{}\" by {}; the review on the pull \
+                     request page says what is wrong. It cannot merge until a fix is pushed \
+                     or the request is withdrawn.",
                     pull.title, pull.author
                 ),
                 "Read the review and push a fix, or dismiss it",
@@ -51,11 +51,11 @@ pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {
                 "pr_checks_failing",
                 format!("Checks failing on {label}"),
                 format!(
-                    "\"{}\" by {} cannot merge: {} failed on its current head. The checks \
-                     panel on the pull request page links each failing check's details.",
+                    "{} failed on \"{}\" by {}, so it cannot merge. The checks panel on the \
+                     pull request page links each failing check's details.",
+                    posture.failing.join(", "),
                     pull.title,
-                    pull.author,
-                    posture.failing.join(", ")
+                    pull.author
                 ),
                 "Open the failing check and fix or re-run it",
             ))
@@ -64,9 +64,9 @@ pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {
                 "pr_awaiting_approval",
                 format!("{label} is waiting for approval"),
                 format!(
-                    "\"{}\" by {} has green checks and {} of {} required approval(s). It \
-                     needs a reviewer other than its author to approve the current head.",
-                    pull.title, pull.author, posture.approvals, posture.required_approvals
+                    "{} of {} required approval(s) on \"{}\" by {}; its checks are green. A \
+                     reviewer other than the author has to approve the current head.",
+                    posture.approvals, posture.required_approvals, pull.title, pull.author
                 ),
                 "Review and approve the pull request",
             ))
@@ -77,8 +77,8 @@ pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {
                 "pr_ready_to_merge",
                 format!("{label} is ready to merge"),
                 format!(
-                    "\"{}\" by {} passes its merge gate (checks green, approvals in) and \
-                     has sat open for {} minutes. Nothing automatic is going to merge it.",
+                    "\"{}\" by {} has passed its merge gate for {} minutes (checks green, \
+                     approvals in) and nothing automatic is going to merge it.",
                     pull.title,
                     pull.author,
                     (now - pull.updated_at).num_minutes()
@@ -141,11 +141,17 @@ pub(crate) fn queue_items(
                 entry.repo, entry.number
             ),
             reason: format!(
-                "The merge queue tried to land this approved pull request onto {} and gave \
-                 up: {}. It stays open and will not be retried until somebody queues it \
-                 again, usually after a rebase or a fix.",
-                entry.base,
-                entry.reason.as_deref().unwrap_or("no reason was recorded")
+                "{}. The merge queue gave up landing this approved pull request onto {}; it \
+                 is not retried until somebody queues it again, usually after a rebase or a \
+                 fix.",
+                capitalized(
+                    entry
+                        .reason
+                        .as_deref()
+                        .unwrap_or("no reason was recorded")
+                        .trim_end_matches('.')
+                ),
+                entry.base
             ),
             href: pull_href(&entry.repo, entry.number),
             label: "Fix what the reason names, then queue the pull request again",
@@ -192,9 +198,8 @@ pub(crate) fn runner_items(
                 last.repo, last.pr
             ),
             reason: format!(
-                "{} reviewed this pull request and ended with \"{}\": {explained}. The \
-                 automated reviewer will not approve this head, so a person has to review \
-                 it or the author has to change it.",
+                "{} ended with \"{}\": {explained}. It will not approve this head, so a \
+                 person has to review it or the author has to change it.",
                 record.heartbeat.runner_id, last.conclusion
             ),
             href: pull_href(&last.repo, last.pr),
@@ -224,8 +229,8 @@ pub(crate) fn runner_items(
             title: "No PR gate runner is reporting".to_string(),
             reason: format!(
                 "{} pull request(s) are open{} and no gate runner slot has sent a heartbeat \
-                 in the last 3 minutes, so required checks will never be posted and nothing \
-                 can merge. The runners are systemd user timers on the gate host.",
+                 in the last 3 minutes, so no required check is posted and nothing can \
+                 merge. The runners are systemd user timers on the gate host.",
                 open_pulls.len(),
                 if queue_building {
                     " and the merge queue is waiting on a gate"
@@ -297,10 +302,9 @@ pub(crate) fn release_items(
                 severity: Severity::Action,
                 title: format!("{release} is staged and waiting for a deploy"),
                 reason: format!(
-                    "The release was built from a commit whose gate is green and copied to \
-                     the production host, but production still runs {}. Deploying is a \
-                     deliberate manual step: nothing will switch production until the \
-                     deploy command is run.",
+                    "Production still runs {}. This release is built from a commit whose \
+                     gate is green and is already on the production host; nothing switches \
+                     until the deploy command is run.",
                     live.map_or_else(
                         || "an earlier build".to_string(),
                         |(sha, _)| sha.chars().take(10).collect()
@@ -329,12 +333,17 @@ pub(crate) fn release_items(
             severity: Severity::Critical,
             title: "Staging a release failed and was given up".to_string(),
             reason: format!(
-                "The auto-stager could not build a release from {} and stopped retrying \
-                 that commit, so nothing newer than the last staged release can be \
-                 deployed. {} The event's log tail on the Activity page shows where the \
-                 build stopped.",
-                event.sha.as_deref().unwrap_or("the newest green commit"),
-                event.reason.as_deref().unwrap_or("")
+                "{}The auto-stager stopped retrying {}, so nothing newer than the last \
+                 staged release can be deployed. The event's log tail on the Activity page \
+                 shows where the build stopped.",
+                event
+                    .reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty())
+                    .map(|reason| format!("{}. ", reason.trim_end_matches('.')))
+                    .unwrap_or_default(),
+                event.sha.as_deref().unwrap_or("the newest green commit")
             ),
             href: "/activity?kind=release.".to_string(),
             label: "Read the staging log and fix the build",
@@ -361,7 +370,7 @@ pub(crate) fn release_items(
             title: format!("The production deploy of {what} failed"),
             reason: format!(
                 "The newest production deployment of {} ended in {}{}. The deploy script \
-                 rolls back on failure, so production probably runs the previous release; \
+                 rolls back on failure, so production probably runs the previous release: \
                  confirm what is live before deploying again.",
                 facts.repo,
                 latest.state.as_deref().unwrap_or("failure"),
@@ -382,4 +391,13 @@ pub(crate) fn release_items(
         items.push(item);
     }
     items
+}
+
+/// A reason that opens a sentence starts with a capital.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }

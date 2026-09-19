@@ -131,7 +131,14 @@ fn todos_blocked_handed_off_untriaged_stuck_or_behind_a_blocker() {
     );
     assert_eq!(items[0].id, "todo-blocked:jeryu:t-blocked");
     assert_eq!(items[0].severity, Severity::Action);
-    assert!(items[0].reason.contains("a human must cut it"));
+    assert!(
+        items[0]
+            .reason
+            .starts_with("The jeryu-core tag split.7 does not exist; a human must cut it. "),
+        "the note leads, verbatim: {}",
+        items[0].reason
+    );
+    assert_eq!(items[0].action.label, "Release the todo");
     assert_eq!(items[0].href, "/work/shift?family=jeryu&todo=t-blocked");
     assert_eq!(items[0].todo_id.as_deref(), Some("t-blocked"));
     assert_eq!(items[3].severity, Severity::Watch);
@@ -159,15 +166,24 @@ fn a_shift_branch_with_work_and_no_pull_request() {
         unmerged_todos: todos.iter().map(|id| (*id).to_string()).collect(),
         ..repo(name, 1, Some(state))
     };
+    let unreviewed = |name: &str, ahead, pr: Option<&str>, todos: &[&str]| ShiftRepo {
+        unmerged_todos: todos.iter().map(|id| (*id).to_string()).collect(),
+        ..repo(name, ahead, pr)
+    };
     let shifts = [ShiftBranch {
         branch: "bulletshift/2026-09-19".to_string(),
         kind: "bulletshift".to_string(),
         date: "2026-09-19".to_string(),
         repos: vec![
-            repo("jeryu-deploy", 2, None),
-            repo("jeryu-web", 1, Some("closed")),
+            unreviewed("jeryu-deploy", 2, None, &["t1", "t2"]),
+            unreviewed("jeryu-web", 1, Some("closed"), &["t2"]),
             repo("jeryu-core", 3, Some("mergeable")),
             repo("jeryu-ci-runner", 0, None),
+            // Closed and replaced by a rebased branch that merged: the commits
+            // stay "ahead" by sha for ever, but every todo is on the base.
+            repo("jeryu-redline", 6, Some("closed")),
+            // Ahead with no pull request, and nothing a todo is waiting on.
+            repo("jeryu-intelligence", 2, None),
             // Merged by replay: still "ahead" by sha, but every todo is on base.
             stranded("jeryu-tool", "merged", &[]),
             // A todo landed after the pull request merged: finished, going nowhere.
@@ -191,6 +207,13 @@ fn a_shift_branch_with_work_and_no_pull_request() {
     assert!(items[2].reason.contains("already merged"));
     assert_eq!(items[2].action.label, "Open a new review PR for the branch");
     assert_eq!(items[0].repo.as_deref(), Some("jeryu-deploy"));
+    assert!(
+        items[0]
+            .reason
+            .starts_with("2 finished todo(s) (t1, t2) sit on bulletshift/2026-09-19"),
+        "{}",
+        items[0].reason
+    );
     assert_eq!(items[1].repo.as_deref(), Some("jeryu-web"));
     assert_eq!(items[0].shift.as_deref(), Some("bulletshift/2026-09-19"));
     assert_eq!(items[0].action.label, "Open the shift's review PR");
@@ -317,7 +340,13 @@ fn a_failed_merge_queue_entry_whose_pull_request_is_still_open() {
     let items = queue_items(&entries, &open, now());
     assert_eq!(kinds(&items), ["queue_failed", "queue_failed"]);
     assert_eq!(items[0].pr, Some(40));
-    assert!(items[0].reason.contains("the gate failed on abc and def"));
+    assert!(
+        items[0]
+            .reason
+            .starts_with("The gate failed on abc and def. "),
+        "the queue's own reason leads: {}",
+        items[0].reason
+    );
 }
 
 fn runner(

@@ -17,6 +17,16 @@ fn todo_since(todo: &ShiftTodo) -> Option<String> {
         .or_else(|| Some(todo.filed_at.clone()).filter(|filed| !filed.is_empty()))
 }
 
+/// A note as one closed sentence, so whatever follows it reads as its own.
+fn sentence(note: &str) -> String {
+    let note = note.trim();
+    if note.ends_with(['.', '!', '?', ':', ';']) {
+        note.to_string()
+    } else {
+        format!("{note}.")
+    }
+}
+
 /// Queue todos that wait on a person: blocked, handed off, untriaged, a dead
 /// claim, or open behind a blocker that itself cannot move.
 pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) -> Vec<Item> {
@@ -38,30 +48,34 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                 "todo_blocked",
                 Severity::Action,
                 format!("Blocked: {}", todo.title),
+                // The note is the information: it leads, verbatim. What being
+                // blocked means comes last and stays short.
                 if todo.note.trim().is_empty() {
                     format!(
-                        "This {family} todo is blocked after {} attempt(s) and nobody left a \
-                         note saying why. No worker will pick it up again until somebody \
-                         releases it.",
+                        "No note says why: it was blocked after {} attempt(s). No {family} \
+                         worker picks it up until it is released.",
                         todo.attempts
                     )
                 } else {
                     format!(
-                        "This {family} todo is blocked, so no worker will pick it up again \
-                         until somebody releases it. The note left on it: {}",
-                        todo.note.trim()
+                        "{} No {family} worker picks it up until it is released.",
+                        sentence(&todo.note)
                     )
                 },
-                "Read the note, fix or re-scope the todo, then release it",
+                "Release the todo",
             )),
             "handoff" => Some(draft(
                 "todo_handoff",
                 Severity::Action,
                 format!("Handed to a person: {}", todo.title),
-                format!(
-                    "This {family} todo was handed off for a person to finish. {}",
-                    todo.note.trim()
-                ),
+                if todo.note.trim().is_empty() {
+                    format!("A {family} worker handed this todo to a person and left no note.")
+                } else {
+                    format!(
+                        "{} A {family} worker handed this todo to a person.",
+                        sentence(&todo.note)
+                    )
+                },
                 "Finish the work by hand or release the todo back to the workers",
             )),
             "claimed" => {
@@ -74,10 +88,9 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                             Severity::Watch,
                             format!("Stuck claim: {}", todo.title),
                             format!(
-                                "{} claimed this {family} todo but stopped renewing its lease \
-                                 {} minutes ago, so the worker probably died mid-run. Another \
-                                 worker reclaims it on its next pass; if it stays here, release \
-                                 it by hand.",
+                                "{} stopped renewing its lease {} minutes ago, so the worker \
+                                 probably died mid-run. Another {family} worker reclaims the \
+                                 todo on its next pass; release it by hand only if it stays here.",
                                 todo.claim_by,
                                 gone.num_minutes()
                             ),
@@ -90,8 +103,8 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                 Severity::Action,
                 format!("Needs triage: {}", todo.title),
                 format!(
-                    "This {family} todo was filed without a title and repos of its own, so \
-                     workers skip it until it is triaged."
+                    "It was filed without a title and repos of its own, so {family} workers \
+                     skip it until it has both."
                 ),
                 "Set the todo's title and repos so a worker can claim it",
             )),
@@ -101,7 +114,8 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                 .filter_map(|id| by_id.get(id.as_str()))
                 .find_map(|blocker| match blocker.status.as_str() {
                     "blocked" | "handoff" => Some(format!(
-                        "It waits on \"{}\" ({}), which is {} and will not move without a person.",
+                        "It waits on \"{}\" ({}), which is {} and will not move without a \
+                         person.",
                         blocker.title, blocker.id, blocker.status
                     )),
                     "done" if !blocker.merged => Some(format!(
@@ -116,7 +130,7 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                         "todo_waiting_on_blocker",
                         Severity::Watch,
                         format!("Waiting on a blocker: {}", todo.title),
-                        format!("No worker may start this {family} todo yet. {why}"),
+                        format!("{why} No {family} worker may start it until then."),
                         "Clear the blocker it names",
                     )
                 }),
@@ -151,8 +165,12 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
                 items.push(stranded_item(family, shift, repo));
                 continue;
             }
-            let unreviewed =
-                repo.ahead > 0 && repo.pr.as_ref().is_none_or(|pr| pr.state == "closed");
+            // A linear-history merge replays commits under new shas, so a
+            // branch whose pull request was closed and replaced by a rebased
+            // one stays "ahead" for ever. Only todos that are on no base
+            // commit are work that still needs a review.
+            let unreviewed = !repo.unmerged_todos.is_empty()
+                && repo.pr.as_ref().is_none_or(|pr| pr.state == "closed");
             if !unreviewed {
                 continue;
             }
@@ -165,17 +183,12 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
                     repo.repo, shift.branch
                 ),
                 reason: format!(
-                    "The {family} shift branch {} in {} holds {} commit(s){} that are not on \
-                     the base branch, and no open pull request asks for them to be reviewed, \
-                     so the work cannot land.",
+                    "{} finished todo(s) ({}) sit on {} in {} and no open pull request asks \
+                     for a review, so the work cannot land.",
+                    repo.unmerged_todos.len(),
+                    repo.unmerged_todos.join(", "),
                     shift.branch,
-                    repo.repo,
-                    repo.ahead,
-                    if shift.todo_ids.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" from {} todo(s)", shift.todo_ids.len())
-                    }
+                    repo.repo
                 ),
                 href: format!("/work/shift?family={family}"),
                 label: "Open the shift's review PR",
@@ -210,10 +223,9 @@ pub(crate) fn worker_items(families: &[(String, usize)], workers: &[WorkerRow]) 
             severity: Severity::Critical,
             title: format!("No {family} worker is running"),
             reason: format!(
-                "{waiting} {family} todo(s) are open or claimed and no worker slot for the \
-                 family has sent a heartbeat in the last 2 minutes{}. Nothing will be \
-                 worked until a worker runs again; workers are started by the todoq \
-                 supervisor unit on the operator's host.",
+                "{waiting} {family} todo(s) wait and no {family} worker slot has sent a \
+                 heartbeat in the last 2 minutes{}. The todoq supervisor on the operator's \
+                 host starts the workers.",
                 last_seen
                     .as_ref()
                     .map(|seen| format!(" (last seen {seen})"))
@@ -241,13 +253,13 @@ fn stranded_item(family: &str, shift: &ShiftBranch, repo: &ShiftRepo) -> Item {
             repo.repo, shift.branch
         ),
         reason: format!(
-            "The pull request for the {family} shift branch {} in {} already merged, but {} \
-             todo(s) landed on the branch afterwards ({}). Their commits are on no open pull \
-             request and not on the base branch, so the work is finished and going nowhere.",
-            shift.branch,
-            repo.repo,
+            "{} todo(s) ({}) landed on {} in {} after its pull request already merged. They \
+             are on no open pull request and not on the base branch: finished {family} work \
+             that is going nowhere.",
             repo.unmerged_todos.len(),
-            repo.unmerged_todos.join(", ")
+            repo.unmerged_todos.join(", "),
+            shift.branch,
+            repo.repo
         ),
         href: format!("/work/shift?family={family}"),
         label: "Open a new review PR for the branch",
