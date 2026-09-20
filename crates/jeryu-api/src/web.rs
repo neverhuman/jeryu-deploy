@@ -522,6 +522,10 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
         config.secure_cookies,
     );
     bootstrap_public_accounts(&state, &config.data_dir)?;
+    // The forge core protects every repository's default branch on startup;
+    // todoq pushes claims straight to a queue repo's `queue` branch, so the
+    // family queues are opted back out right after that backfill.
+    shift::exempt_queues_from_default_branch_protection(&state, BOOTSTRAP_ADMIN_LOGIN);
     let state = shared_state(state, &config.spa_dir);
     tool_finder_schedule::spawn(state.clone());
     merge_queue::spawn_worker(state.clone(), std::time::Duration::from_secs(10));

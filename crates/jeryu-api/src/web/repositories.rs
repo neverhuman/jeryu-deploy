@@ -14,8 +14,9 @@ use axum::response::{IntoResponse, Response as AxumResponse};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jeryu_core::{
     AccountSummary, CheckConclusion, CheckRun, CheckRunStatus, ForgeError, PullRequest,
-    PullRequestState, RecordJankuraiScoreRequest, Repository, UserRole,
+    PullRequestState, RecordJankuraiScoreRequest, RepoBranches, Repository, UserRole,
 };
+use jeryu_gitd::RepoManager;
 use jeryu_gitd::refs::RefService;
 use jeryu_readmodel::contracts::{
     AvailableAction, BlobEncoding, BlobResponse, EntityHandle, JankuraiScoreListResponse,
@@ -103,14 +104,40 @@ pub(super) async fn repo_detail(
     }
 }
 
+/// Branch existence read from the managed bare repositories, so the forge core
+/// can refuse a default branch that git does not have. A repository with no
+/// bare storage (a metadata-only import) has no branches at all.
+#[derive(Debug)]
+struct ManagedRepoBranches {
+    manager: std::sync::Arc<RepoManager>,
+}
+
+impl RepoBranches for ManagedRepoBranches {
+    fn branch_exists(&self, owner: &str, name: &str, branch: &str) -> Result<bool, ForgeError> {
+        let Ok(bare) = self.manager.open_parts(owner, name) else {
+            return Ok(false);
+        };
+        RefService::new((*self.manager).clone())
+            .resolve_commit(&bare, &format!("refs/heads/{branch}"))
+            .map(|commit| commit.is_some())
+            .map_err(|error| ForgeError::Storage(format!("read refs of {owner}/{name}: {error}")))
+    }
+}
+
 /// PATCH /api/v1/repos/:id — update mutable repository metadata.
 ///
 /// Body is a JSON object; only the keys that are PRESENT are applied, so
 /// `{"family": "veox-split"}` sets the family, `{"family": null}` clears it,
 /// and an absent key leaves it untouched. Hand-parsed because serde's
 /// `Option<Option<T>>` cannot distinguish absent from null.
+///
+/// `{"default_branch": "queue"}` moves the default branch. It is admin-only
+/// (repository write access is not enough: the default branch decides what a
+/// clone checks out and which branch is auto-protected) and the branch must
+/// already exist in git storage.
 pub(super) async fn repo_update(
     State(state): State<std::sync::Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath(id): AxumPath<String>,
     body: Bytes,
 ) -> AxumResponse {
@@ -130,7 +157,10 @@ pub(super) async fn repo_update(
     let Some(fields) = parsed.as_object() else {
         return repo_update_invalid("body must be a JSON object");
     };
-    if let Some(unknown) = fields.keys().find(|key| key.as_str() != "family") {
+    if let Some(unknown) = fields
+        .keys()
+        .find(|key| !matches!(key.as_str(), "family" | "default_branch"))
+    {
         return repo_update_invalid(&format!("unknown field: {unknown}"));
     }
     let mut updated = repo.clone();
@@ -165,6 +195,41 @@ pub(super) async fn repo_update(
             }
         };
     }
+    if let Some(branch_value) = fields.get("default_branch") {
+        if account.role != UserRole::Admin {
+            return api_error(
+                axum::http::StatusCode::FORBIDDEN,
+                "forbidden",
+                "admin role required to change the default branch",
+            );
+        }
+        let serde_json::Value::String(branch) = branch_value else {
+            return repo_update_invalid("default_branch must be a string");
+        };
+        let branches = ManagedRepoBranches {
+            manager: state.repo_manager.clone(),
+        };
+        updated = match state.github.core().set_repository_default_branch(
+            &repo.owner,
+            &repo.name,
+            branch,
+            &branches,
+        ) {
+            Ok(repo) => repo,
+            // A missing branch is about the body, not the route: the
+            // repository itself was found, so this stays a 422.
+            Err(ForgeError::Validation(reason)) | Err(ForgeError::NotFound(reason)) => {
+                return repo_update_invalid(&reason);
+            }
+            Err(error) => {
+                return api_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage_failed",
+                    &format!("repository update could not be persisted: {error}"),
+                );
+            }
+        };
+    }
     Json(repo_summary(&state, &updated)).into_response()
 }
 
@@ -179,6 +244,7 @@ fn repo_update_invalid(reason: &str) -> AxumResponse {
             common_fixes: &[
                 "send a JSON object with a family string field",
                 "send {\"family\": null} to clear the grouping",
+                "send {\"default_branch\": \"queue\"} with an existing branch",
             ],
             docs_url: "docs/errors.md#invalid-input",
             repair_hint: &format!("fix the PATCH body and retry ({reason})"),

@@ -49,6 +49,37 @@ const STATES: &[&str] = &["idle", "working", "stopping", "paused"];
 const STAGES: &[&str] = &["prepare", "agent", "gate", "land", "record"];
 const DOCS: &str = "docs/architecture.md";
 
+/// Opt every hosted family queue out of automatic default-branch protection.
+///
+/// A queue repo (`<family>-todo` with a `queue` branch carrying `family.toml`)
+/// is written by todoq itself: claims are pushed straight to `queue`, so that
+/// branch must never be made pull-request-only. Called once at startup, after
+/// the forge core has backfilled protection rules, with an admin `actor`;
+/// opting out also removes the rule the backfill just created, as long as it
+/// is still exactly the automatic one. Returns how many repos it changed, and
+/// skips a queue whose repo is unregistered, already exempt, or whose opt-out
+/// the core refuses (a repository that requires a status context keeps its
+/// protection).
+pub(crate) fn exempt_queues_from_default_branch_protection(state: &WebState, actor: &str) -> usize {
+    let mut exempted = 0;
+    for queue in discover(&state.repo_manager) {
+        let Ok(repo) = state.core.get_repository(&queue.owner, &queue.repo) else {
+            continue;
+        };
+        if repo.default_branch_protection_opt_out {
+            continue;
+        }
+        if state
+            .core
+            .set_default_branch_protection_opt_out(actor, &queue.owner, &queue.repo, true)
+            .is_ok()
+        {
+            exempted += 1;
+        }
+    }
+    exempted
+}
+
 /// Shift state carried on `WebState`.
 #[derive(Clone)]
 pub(crate) struct ShiftState {

@@ -5986,6 +5986,7 @@ async fn repo_update_sets_and_clears_family() {
     let updated = response_json(
         repo_update(
             State(state.clone()),
+            authenticated_admin_account("alice"),
             AxumPath(id.clone()),
             axum::body::Bytes::from_static(br#"{"family": "veox-split"}"#),
         )
@@ -5999,6 +6000,7 @@ async fn repo_update_sets_and_clears_family() {
     let cleared = response_json(
         repo_update(
             State(state.clone()),
+            authenticated_admin_account("alice"),
             AxumPath("jeryu/veox-nht".to_string()),
             axum::body::Bytes::from_static(br#"{"family": null}"#),
         )
@@ -6016,6 +6018,7 @@ async fn repo_update_sets_and_clears_family() {
     ] {
         let response = repo_update(
             State(state.clone()),
+            authenticated_admin_account("alice"),
             AxumPath(id.clone()),
             axum::body::Bytes::copy_from_slice(body),
         )
@@ -6028,6 +6031,7 @@ async fn repo_update_sets_and_clears_family() {
 
     let missing = repo_update(
         State(state),
+        authenticated_admin_account("alice"),
         AxumPath("jeryu/missing".to_string()),
         axum::body::Bytes::from_static(br#"{"family": "x"}"#),
     )
@@ -6036,6 +6040,90 @@ async fn repo_update_sets_and_clears_family() {
         missing.into_response().status(),
         axum::http::StatusCode::NOT_FOUND
     );
+}
+
+/// PATCH /api/v1/repos/:id moves the default branch: an admin may point it at
+/// any branch git actually has, the new default is protected like the old one
+/// was, a non-admin writer may not, and an unknown branch is a 422.
+#[tokio::test]
+async fn repo_update_moves_the_default_branch_for_admins_only() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::web::shift::tests::fixture(dir.path());
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu-deploy".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new_with_git_storage(
+        core.clone(),
+        dir.path().to_path_buf(),
+    ));
+
+    let moved = response_json(
+        repo_update(
+            State(state.clone()),
+            authenticated_admin_account("alice"),
+            AxumPath("jeryu/jeryu-deploy".to_string()),
+            axum::body::Bytes::from_static(br#"{"default_branch": "nightshift/2026-09-18"}"#),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(moved["default_branch"], "nightshift/2026-09-18");
+    assert_eq!(
+        core.get_repository("jeryu", "jeryu-deploy")
+            .unwrap()
+            .default_branch,
+        "nightshift/2026-09-18"
+    );
+    assert!(
+        core.get_branch_protection("jeryu", "jeryu-deploy", "nightshift/2026-09-18")
+            .is_ok(),
+        "the new default branch is protected like the old one"
+    );
+
+    // Repository write access is not enough.
+    let refused = repo_update(
+        State(state.clone()),
+        authenticated_account("bob"),
+        AxumPath("jeryu/jeryu-deploy".to_string()),
+        axum::body::Bytes::from_static(br#"{"default_branch": "main"}"#),
+    )
+    .await;
+    assert_eq!(
+        refused.into_response().status(),
+        axum::http::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        core.get_repository("jeryu", "jeryu-deploy")
+            .unwrap()
+            .default_branch,
+        "nightshift/2026-09-18"
+    );
+
+    // A branch git does not have, and a non-string, are both 422s.
+    for body in [
+        br#"{"default_branch": "no-such-branch"}"#.as_slice(),
+        br#"{"default_branch": 7}"#.as_slice(),
+    ] {
+        let response = repo_update(
+            State(state.clone()),
+            authenticated_admin_account("alice"),
+            AxumPath("jeryu/jeryu-deploy".to_string()),
+            axum::body::Bytes::copy_from_slice(body),
+        )
+        .await;
+        assert_eq!(
+            response.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
 }
 
 /// DELETE /api/v1/repos/:id — an unknown repository is a structured 404.

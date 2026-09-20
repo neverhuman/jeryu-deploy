@@ -263,6 +263,62 @@ fn discovery_reads_family_toml_and_todos_from_the_bare_repo() {
     assert_eq!(todos[0].todo.requested_by, "alton@xbabe0");
 }
 
+/// A family queue is written by todoq directly, so the startup sweep opts it
+/// out of automatic default-branch protection and removes the rule the forge
+/// core created on repository create. Repos that are not queues keep theirs.
+#[test]
+fn queue_repos_are_exempt_from_default_branch_protection() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    for (name, default_branch) in [("jeryu-todo", "queue"), ("jeryu-deploy", "main")] {
+        core.create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: false,
+                description: None,
+                default_branch: Some(default_branch.to_string()),
+            },
+        )
+        .unwrap();
+    }
+    assert!(
+        core.get_branch_protection("jeryu", "jeryu-todo", "queue")
+            .is_ok(),
+        "create protects the default branch before the sweep runs"
+    );
+    let state = WebState::new_with_git_storage(core.clone(), dir.path().to_path_buf());
+
+    assert_eq!(
+        super::exempt_queues_from_default_branch_protection(&state, "alice"),
+        1
+    );
+    assert!(
+        core.get_repository("jeryu", "jeryu-todo")
+            .unwrap()
+            .default_branch_protection_opt_out
+    );
+    assert!(
+        core.get_branch_protection("jeryu", "jeryu-todo", "queue")
+            .is_err(),
+        "todoq pushes claims straight to queue: the branch is not PR-only"
+    );
+    assert!(
+        core.get_branch_protection("jeryu", "jeryu-deploy", "main")
+            .is_ok(),
+        "a repo that is not a queue keeps its protected default branch"
+    );
+
+    // Idempotent: a second startup finds nothing left to exempt.
+    assert_eq!(
+        super::exempt_queues_from_default_branch_protection(&state, "alice"),
+        0
+    );
+}
+
 #[test]
 fn cas_write_commits_on_queue_and_retries_a_lost_race() {
     let dir = tempfile::tempdir().unwrap();
