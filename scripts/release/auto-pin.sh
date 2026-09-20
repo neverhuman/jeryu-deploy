@@ -159,21 +159,35 @@ if [ -z "$pushed" ]; then
   co="$work/checkout"
   git clone -q --no-hardlinks "$cache" "$co" 2>>"$log" && git -C "$co" checkout -q -b "$branch" "$main" 2>>"$log" \
     || give_up "could not cut $branch from main ${main:0:12}"
+  pinned_hash="$(awk '
+    /^\[\[repo\]\]/ { inweb = 0 }
+    /^name = "jeryu-web"$/ { inweb = 1 }
+    inweb && $1 == "web_dist_sha256" && $2 == "=" { gsub(/"/, "", $3); print $3; exit }' "$co/$lock_file")"
   awk -v commit="$head" -v hash="$hash" '
     /^\[\[repo\]\]/ { inweb = 0 }
     /^name = "jeryu-web"$/ { inweb = 1 }
     inweb && $1 == "commit" && $2 == "=" { print "commit = \"" commit "\""; next }
     inweb && $1 == "web_dist_sha256" && $2 == "=" { print "web_dist_sha256 = \"" hash "\""; next }
     { print }' "$co/$lock_file" >"$work/lock.new" && cat "$work/lock.new" >"$co/$lock_file"
-  # The bump is exactly two changed lines in exactly one file, or it is not a bump.
-  [[ "$(git -C "$co" diff --numstat | tr '\t' ' ')" == "2 2 $lock_file" ]] \
-    || give_up "the lock edit is not exactly the two pin fields"
+  # The bump is exactly the pin fields in exactly one file, or it is not a bump. A web commit that
+  # touches only tests or docs builds the bundle that is already pinned: then the commit moves and
+  # the hash line stays as it is, which is one changed line, not two. Refusing that left such a
+  # head unpinned, and the inbox asking for a human, until some later commit changed the bundle.
+  changed=2 same_bundle=""
+  if [[ "$hash" == "$pinned_hash" ]]; then
+    changed=1
+    same_bundle="
+The bundle is byte-identical to the one already pinned (these commits change no shipped file), so
+only \`commit\` moves."
+  fi
+  [[ "$(git -C "$co" diff --numstat | tr '\t' ' ')" == "$changed $changed $lock_file" ]] \
+    || give_up "the lock edit is not exactly the pin fields"
   git -C "$co" -c user.name="$git_name" -c user.email="$git_email" commit -q -am "$title
 
 Ships these jeryu-web commits (${pin:0:7}..${head:0:7}):
 $shipped
 
-web_dist_sha256 $hash, from scripts/release/build-web-dist.sh --commit $head.
+web_dist_sha256 $hash, from scripts/release/build-web-dist.sh --commit $head.$same_bundle
 Opened by auto-pin.sh once jeryu-web main was green; only $lock_file changes." 2>>"$log" \
     || give_up "could not commit the bump"
   git -C "$co" push -q "$remote" "HEAD:refs/heads/$branch" 2>>"$log" || give_up "could not push $branch"

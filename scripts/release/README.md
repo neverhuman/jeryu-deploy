@@ -68,7 +68,9 @@ To ship a UI change, merge it to jeryu-web main. **The bump then proposes itself
 `install-auto-pin.sh`, disable with `systemctl --user disable --now jeryu-auto-pin.timer`)
 waits for jeryu-web main to be green, builds the dist with this script from jeryu-deploy main,
 changes exactly the two lock fields on `auto/pin-web-<sha12>` and opens
-`release: pin jeryu-web <sha7>` as alton2. It never merges: the reviewer and the merge queue land
+`release: pin jeryu-web <sha7>` as alton2. (A head that changes no shipped file, such as a
+test-only commit, builds the bundle already pinned: then only `commit` moves and the pull request
+says the bundle is unchanged.) It never merges: the reviewer and the merge queue land
 it, auto-stage stages main, and a person deploys. It skips a head while any bump is open, retries
 a failing head once, then posts `pin.bump_failed` for a human and leaves that head alone. What is
 pinned, how far behind it is and whether a bump is open: `GET /api/v1/pins` and the inbox item

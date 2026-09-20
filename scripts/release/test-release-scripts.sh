@@ -275,4 +275,16 @@ auto_pin >"$P/run.log" 2>&1 || fail "an up-to-date tick failed"
 [[ ! -s "$P/curl-args" && ! -s "$P/run.log" && "$(lines "$P/builds")" == "$builds" ]] || fail "an up-to-date pin is not a silent no-op"
 ok "auto-pin is a silent no-op once the pin is the web head"
 
+# A web commit that changes no shipped file (tests, docs) builds the bundle that is already pinned.
+echo "a test-only change" >"$P/web/NOTES.md"; g "$P/web" add NOTES.md; g "$P/web" commit -q -m "web tests only"; g "$P/web" push -q "$P/web.git" main
+h3="$(git -C "$P/web" rev-parse HEAD)"; b3="auto/pin-web-${h3:0:12}"
+echo '[]' >"$P/pulls.json"; : >"$P/events.jsonl"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "auto-pin refused a head whose bundle is the pinned one"; }
+lock_now="$(git -C "$P/deploy.git" show "$b3:jeryu-split.lock.toml")"
+grep -qx "commit = \"$h3\"" <<<"$lock_now" && grep -qx "web_dist_sha256 = \"$dist_b\"" <<<"$lock_now" || fail "the same-bundle bump does not carry the new commit and the unchanged hash"
+[[ "$(git -C "$P/deploy.git" diff --numstat main "$b3" | tr '\t' ' ')" == "1 1 jeryu-split.lock.toml" ]] || fail "a same-bundle bump must change the commit line only"
+git -C "$P/deploy.git" log -1 --format=%B "$b3" | grep -q "byte-identical" || fail "the same-bundle bump does not say the bundle is unchanged"
+jq -es '.[0] | .kind == "pin.bump_opened"' "$P/events.jsonl" >/dev/null || fail "the same-bundle bump posted no event"
+ok "auto-pin pins a head whose bundle is unchanged by moving the commit only"
+
 echo "release scripts: $pass passed"
