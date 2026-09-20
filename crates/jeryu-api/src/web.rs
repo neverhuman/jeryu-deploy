@@ -130,6 +130,9 @@ pub(crate) struct WebState {
     pub(crate) attention: pipeline::attention::AttentionCache,
     /// What every deploy repo pins (`GET /api/v1/pins`), cached for a minute.
     pub(crate) pins: pipeline::pins::PinsCache,
+    /// The repo graph's `depends_on` edges, read from every repository's Cargo
+    /// manifests and cached for a minute so the graph never walks them twice.
+    pub(crate) repo_depends: control_plane::DependsCache,
     /// Auxiliary codegraph SQLite store for read-only oracle queries.
     pub(crate) codegraph_store: CodeGraphStore,
     /// Shared git-daemon repository manager backing the smart-HTTP transport.
@@ -268,6 +271,7 @@ impl WebState {
             disputes,
             attention: pipeline::attention::AttentionCache::default(),
             pins: pipeline::pins::PinsCache::default(),
+            repo_depends: control_plane::DependsCache::default(),
             codegraph_store,
             repo_manager,
             core: core_handle,

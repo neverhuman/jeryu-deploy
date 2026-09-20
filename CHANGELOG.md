@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Repo graph v2 (`jeryu.repo_graph/v2`): `depends_on` edges between
+  repositories, derived from every repository's Cargo manifests at its indexed
+  default-branch ref. Each edge carries the tag it pins, the newest tag of that
+  tag's series and whether the pin is that newest tag, so a stale pin is
+  visible on the edge. The edges are opt-in behind
+  `GET /api/v1/control-plane/repo-graph?include=depends_on` (the Intelligence
+  page's graph is unchanged) and the manifest reads are cached for a minute
+  rather than walking every repository per request. Repo nodes now say
+  `releaseMember`, read from the split family manifest.
+
 - Quality-gate visibility before the `jankurai/proof` gate is made required:
   `GET /api/v1/jankurai/overview?days=7|30&repo=` (pass/fail counts and rate in
   daily buckets, per repo and overall, failures by cap or hard rule with the

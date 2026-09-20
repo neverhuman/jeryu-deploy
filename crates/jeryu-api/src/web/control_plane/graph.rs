@@ -5,6 +5,16 @@ use crate::web::{WebState, server_time};
 
 use super::*;
 
+/// Edge kinds a caller can opt into with `?include=`. Nothing else in the
+/// graph changes shape, so a page that asks for nothing is untouched.
+const DEPENDS_ON: &str = "depends_on";
+
+fn includes(query: Option<&RepoGraphQuery>, kind: &str) -> bool {
+    query
+        .and_then(|query| query.include.as_deref())
+        .is_some_and(|include| include.split(',').any(|item| item.trim() == kind))
+}
+
 pub(crate) fn repo_graph_response(
     state: &Arc<WebState>,
     query: Option<RepoGraphQuery>,
@@ -20,36 +30,82 @@ pub(crate) fn repo_graph_response(
     // The graph shows work in flight: merged/closed PRs and their checks
     // would otherwise swamp it (hundreds of stale red check nodes).
     let (active_prs, current_checks) = active_view(&pull_requests, &check_runs);
-    let mut graph = build_repo_graph(
-        &repos,
-        &active_prs,
-        &current_checks,
-        &codegraph,
-        &tool_build,
-        &runners,
-        &mirror,
-    );
+    // Manifest reads are worth a git process per repository, so they only
+    // happen for a caller that asked for the dependency tree.
+    let depends = if includes(query.as_ref(), DEPENDS_ON) {
+        depends_snapshot(state)
+    } else {
+        Vec::new()
+    };
+    let release_members = release_member_names(state, &repos);
+    let mut graph = build_repo_graph(RepoGraphInputs {
+        repos: &repos,
+        prs: &active_prs,
+        checks: &current_checks,
+        depends: &depends,
+        release_members: &release_members,
+        codegraph: &codegraph,
+        tool_build: &tool_build,
+        runners: &runners,
+        mirror: &mirror,
+    });
     if let Some(query) = query {
         filter_graph(&mut graph, query);
     }
     graph
 }
 
-fn build_repo_graph(
-    repos: &[ControlRepo],
-    prs: &[ControlPullRequest],
-    checks: &[ControlCheckRun],
-    codegraph: &CodegraphControlSummary,
-    tool_build: &ToolBuildControlSummary,
-    runners: &RunnerFabricResponse,
-    mirror: &RemoteStatusResponse,
-) -> RepoGraphResponse {
+/// The repositories `repos.manifest.toml` lists as members of a release
+/// family, by `owner/name`. It says who ships together; it is not where the
+/// dependency edges come from.
+fn release_member_names(state: &Arc<WebState>, repos: &[ControlRepo]) -> BTreeSet<String> {
+    repos
+        .iter()
+        .filter(|repo| {
+            state
+                .split_catalog
+                .classify(&repo.owner, &repo.name)
+                .is_some()
+        })
+        .map(|repo| repo.full_name.clone())
+        .collect()
+}
+
+/// Everything the graph is drawn from, read once per request.
+struct RepoGraphInputs<'a> {
+    repos: &'a [ControlRepo],
+    prs: &'a [ControlPullRequest],
+    checks: &'a [ControlCheckRun],
+    depends: &'a [DependsEdge],
+    release_members: &'a BTreeSet<String>,
+    codegraph: &'a CodegraphControlSummary,
+    tool_build: &'a ToolBuildControlSummary,
+    runners: &'a RunnerFabricResponse,
+    mirror: &'a RemoteStatusResponse,
+}
+
+fn build_repo_graph(input: RepoGraphInputs<'_>) -> RepoGraphResponse {
+    let RepoGraphInputs {
+        repos,
+        prs,
+        checks,
+        depends,
+        release_members,
+        codegraph,
+        tool_build,
+        runners,
+        mirror,
+    } = input;
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for repo in repos {
         let mut metadata = BTreeMap::new();
         metadata.insert("owner".to_string(), repo.owner.clone());
         metadata.insert("defaultBranch".to_string(), repo.default_branch.clone());
+        metadata.insert(
+            "releaseMember".to_string(),
+            release_members.contains(&repo.full_name).to_string(),
+        );
         nodes.push(GraphNode {
             id: format!("repo:{}", repo.full_name),
             label: repo.full_name.clone(),
@@ -78,6 +134,7 @@ fn build_repo_graph(
             kind: "has_pr".to_string(),
             state: pr.state_evidence.clone(),
             weight: 1.0,
+            metadata: BTreeMap::new(),
         });
     }
     for check in checks {
@@ -103,6 +160,23 @@ fn build_repo_graph(
             kind: "has_check".to_string(),
             state: check.state.clone(),
             weight: 1.0,
+            metadata: BTreeMap::new(),
+        });
+    }
+    // One edge per dependency as found: a cycle between two repositories is
+    // real and the renderer decides how to draw it.
+    for edge in depends {
+        edges.push(GraphEdge {
+            source: format!("repo:{}", edge.consumer),
+            target: format!("repo:{}", edge.dependency),
+            kind: DEPENDS_ON.to_string(),
+            state: match edge.pin_is_newest {
+                Some(true) => EvidenceState::Fresh,
+                Some(false) => EvidenceState::Queued,
+                None => EvidenceState::Unknown,
+            },
+            weight: 1.0,
+            metadata: edge_metadata(edge),
         });
     }
     nodes.push(GraphNode {
@@ -228,7 +302,7 @@ fn build_repo_graph(
         });
     }
     RepoGraphResponse {
-        schema_version: "jeryu.repo_graph/v1".to_string(),
+        schema_version: "jeryu.repo_graph/v2".to_string(),
         generated_at: server_time(),
         nodes,
         edges,

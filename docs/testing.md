@@ -164,7 +164,9 @@ regressing — each test asserts a discriminating signal, not a tautology):
 
 - `cargo test -p jeryu-api --features web --jobs 40 control_plane`: REST and
   pure aggregation proof for `/api/v1/control-plane/status`, priorities,
-  repo-graph clusters, artifact absence states, local runner capacity,
+  repo-graph clusters, its opt-in `?include=depends_on` dependency edges read
+  from each repository's Cargo manifests, artifact absence states, local
+  runner capacity,
   read-only mirror degradation, camelCase contracts, and
   `/api/v1/agent-runs` listing.
 - `cargo test -p jeryu-mcp --jobs 40`: MCP catalog and memory fallback proof

@@ -8,11 +8,12 @@
 //!
 //! The implementation is split across focused submodules — request/response
 //! [`types`], axum [`handlers`], the snapshot [`model`], the runner [`runner`]
-//! fabric, [`priorities`] ranking, the repo [`graph`] builder, and the [`mcp`]
+//! fabric, [`priorities`] ranking, the repo [`graph`] builder and its [`depends`] edges, and the [`mcp`]
 //! facade — while this file re-exports the same surface the rest of the web
 //! edge already depends on.
 
 mod checks;
+mod depends;
 mod gate_runners;
 mod graph;
 mod handlers;
@@ -23,6 +24,8 @@ mod runner;
 mod types;
 
 #[cfg(test)]
+mod depends_tests;
+#[cfg(test)]
 mod tests;
 
 const SCHEMA_VERSION: &str = "jeryu.control_plane/v1";
@@ -31,6 +34,7 @@ const MIRROR_DOCS: &str = "docs/agent-native-standard.md";
 const ARTIFACT_DOCS: &str = "docs/release.md#release-receipt";
 
 pub(super) use checks::*;
+pub(super) use depends::*;
 pub(super) use gate_runners::*;
 pub(super) use graph::*;
 pub(super) use handlers::*;

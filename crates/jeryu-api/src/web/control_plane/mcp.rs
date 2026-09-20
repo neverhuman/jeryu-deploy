@@ -26,6 +26,7 @@ pub(crate) fn mcp_priorities(state: &Arc<WebState>, args: &Value) -> Value {
 pub(crate) fn mcp_repo_graph_clusters(state: &Arc<WebState>, args: &Value) -> Value {
     let query = RepoGraphQuery {
         repo: None,
+        include: None,
         cluster_kind: args
             .get("cluster_kind")
             .and_then(Value::as_str)
@@ -44,6 +45,10 @@ pub(crate) fn mcp_repo_graph_query(state: &Arc<WebState>, args: &Value) -> Value
     let query = RepoGraphQuery {
         repo: args
             .get("repo")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        include: args
+            .get("include")
             .and_then(Value::as_str)
             .map(ToString::to_string),
         cluster_kind: args

@@ -383,6 +383,10 @@ pub(crate) struct GraphEdge {
     pub kind: String,
     pub state: EvidenceState,
     pub weight: f64,
+    /// Edge-kind detail (a `depends_on` edge carries its pin and staleness).
+    /// Absent from the wire when empty, so containment edges are unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -414,6 +418,10 @@ pub(crate) struct PriorityQuery {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct RepoGraphQuery {
     pub repo: Option<String>,
+    /// Comma-separated opt-in edge kinds; `depends_on` adds repo-to-repo
+    /// dependency edges. Callers that ask for nothing get the containment
+    /// graph they always got.
+    pub include: Option<String>,
     pub cluster_kind: Option<String>,
     pub query: Option<String>,
     pub limit: Option<usize>,

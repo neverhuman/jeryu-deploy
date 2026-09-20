@@ -1904,6 +1904,7 @@ async fn control_plane_status_priorities_and_absence_states_are_live() {
         State(state),
         Query(super::control_plane::RepoGraphQuery {
             repo: None,
+            include: None,
             cluster_kind: Some("ci_blocker".to_string()),
             query: None,
             limit: None,
@@ -1911,7 +1912,7 @@ async fn control_plane_status_priorities_and_absence_states_are_live() {
     )
     .await
     .0;
-    assert_eq!(graph.schema_version, "jeryu.repo_graph/v1");
+    assert_eq!(graph.schema_version, "jeryu.repo_graph/v2");
     assert!(
         graph
             .clusters

@@ -307,7 +307,7 @@ fn mcp_facade_returns_limited_graph_jobs_and_blockers() {
             "limit": 3
         }),
     );
-    assert_eq!(graph["schemaVersion"], "jeryu.repo_graph/v1");
+    assert_eq!(graph["schemaVersion"], "jeryu.repo_graph/v2");
     assert!(graph["nodes"].as_array().unwrap().len() <= 3);
 
     let remote = mcp_remote_status();
