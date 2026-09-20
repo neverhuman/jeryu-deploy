@@ -6811,7 +6811,8 @@ async fn repo_list_reports_pushed_at_and_sorts_activity_by_it() {
 async fn tool_finder_scan_status_idle_busy_guard_and_snapshot_arm() {
     let core = ForgeCore::new();
     let mut raw_state = WebState::new(core);
-    // No manifests wired: a scan cannot start, with a typed repair path.
+    // Neither manifests nor hosted repositories: a scan cannot start, with a
+    // typed repair path.
     let state = Arc::new(raw_state.clone());
     let idle = response_json(
         super::tool_finder::scan_status(State(state.clone()))
@@ -6821,9 +6822,9 @@ async fn tool_finder_scan_status_idle_busy_guard_and_snapshot_arm() {
     .await;
     assert_eq!(idle["phase"], "idle");
     assert_eq!(idle["running"], false);
-    let no_manifests =
+    let not_configured =
         response_json(super::tool_finder::scan_start(State(state.clone())).await).await;
-    assert_eq!(no_manifests["code"], "tool_finder_no_manifests");
+    assert_eq!(not_configured["code"], "tool_finder_not_configured");
 
     // With manifests wired and the single flight already claimed, POST is a
     // 409 with the running snapshot's repair hints.
@@ -6842,6 +6843,292 @@ async fn tool_finder_scan_status_idle_busy_guard_and_snapshot_arm() {
     assert_eq!(event.entity, "system/host");
     assert_eq!(event.payload["running"], true);
     assert_eq!(event.payload["phase"], "discover");
+}
+
+/// A bare repository holding one commit of `files` on `main`, laid out where
+/// the forge's `RepoManager` resolves it.
+fn build_bare_repo_with_files(
+    storage_root: &std::path::Path,
+    owner: &str,
+    repo: &str,
+    files: &[(&str, &str)],
+) -> String {
+    use std::process::Command;
+
+    let bare = storage_root.join(owner).join(format!("{repo}.git"));
+    std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
+    let work = storage_root.join(format!("{owner}-{repo}-source-work"));
+    std::fs::create_dir_all(&work).expect("create work dir");
+
+    let git = |args: &[&str], cwd: &std::path::Path| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "jeryu-test")
+            .env("GIT_AUTHOR_EMAIL", "jeryu-test@example.com")
+            .env("GIT_COMMITTER_NAME", "jeryu-test")
+            .env("GIT_COMMITTER_EMAIL", "jeryu-test@example.com")
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+
+    git(&["init", "--quiet", "-b", "main"], &work);
+    for (rel, contents) in files {
+        write_file(&work, rel, contents);
+        git(&["add", rel], &work);
+    }
+    git(&["commit", "--quiet", "-m", "seed"], &work);
+    let head = git(&["rev-parse", "HEAD"], &work);
+    git(
+        &[
+            "clone",
+            "--quiet",
+            "--bare",
+            ".",
+            bare.to_str().expect("bare utf8"),
+        ],
+        &work,
+    );
+    head
+}
+
+/// The duplicated body both fixture repos carry, so a cross-repo cluster is
+/// there to be found once the bare repos are materialized.
+const SHARED_TOOL_FIXTURE: &str = r#"
+pub fn retry_remote_call(input: &str) -> Result<String, String> {
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let response = call_remote(input);
+        if response.is_ok() {
+            return response;
+        }
+        if attempts > 3 {
+            return Err("failed".to_string());
+        }
+    }
+}
+"#;
+
+/// A forge with two bare repos in one family, the first carrying the manifest
+/// that names them both. Returns the state and the storage tempdir (which must
+/// outlive it).
+fn hosted_family_state(private: bool) -> (Arc<WebState>, tempfile::TempDir) {
+    let core = ForgeCore::new();
+    for name in ["jeryu-deploy", "jeryu-cache"] {
+        core.create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    let storage = tempdir().expect("git storage dir");
+    build_bare_repo_with_files(
+        storage.path(),
+        "jeryu",
+        "jeryu-deploy",
+        &[
+            (
+                "repos.manifest.toml",
+                "repo_family = \"jeryu-split\"\n\n[[repo]]\nname = \"jeryu-deploy\"\n\n[[repo]]\njeryu_slug = \"jeryu/jeryu-cache\"\n",
+            ),
+            ("src/lib.rs", SHARED_TOOL_FIXTURE),
+        ],
+    );
+    build_bare_repo_with_files(
+        storage.path(),
+        "jeryu",
+        "jeryu-cache",
+        &[("src/lib.rs", SHARED_TOOL_FIXTURE)],
+    );
+    let state = Arc::new(WebState::with_repo_manager(
+        core,
+        Arc::new(RepoManager::new(GitdConfig::new(
+            storage.path().to_path_buf(),
+        ))),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist"),
+        std::env::temp_dir(),
+        SplitCatalog::load(&[]),
+    ));
+    (state, storage)
+}
+
+/// Discovery reads the family out of the bare repos themselves, materializes
+/// both default branches, and the scanner finds the duplicated code in them —
+/// the whole point: no working-tree checkout exists anywhere here.
+#[tokio::test]
+async fn tool_finder_scans_hosted_bare_repos_without_any_checkout() {
+    let (state, _storage) = hosted_family_state(false);
+
+    // The source report names the hosted family and calls itself configured.
+    let source = response_json(super::tool_finder::source(State(state.clone())).await).await;
+    assert_eq!(source["kind"], "hosted");
+    assert_eq!(source["configured"], true);
+    assert_eq!(source["schema_version"], "jeryu.tool_finder.source/v1");
+    let mut named: Vec<&str> = source["repos"]
+        .as_array()
+        .expect("repos")
+        .iter()
+        .map(|repo| repo["repo"].as_str().expect("repo id"))
+        .collect();
+    named.sort_unstable();
+    assert_eq!(named, vec!["jeryu/jeryu-cache", "jeryu/jeryu-deploy"]);
+    assert_eq!(source["repos"][0]["family"], "jeryu-split");
+    assert_eq!(source["repos"][0]["branch"], "main");
+
+    // Materializing writes both trees out of the bare repos.
+    let worker_state = state.clone();
+    let scan_source = tokio::task::spawn_blocking(move || {
+        super::tool_finder::resolve_scan_source(&worker_state)
+            .map_err(|error| error.to_string())
+            .expect("hosted scan source")
+    })
+    .await
+    .expect("materialize");
+    let roots = scan_source.roots().to_vec();
+    assert_eq!(roots.len(), 2);
+    for (repo, root) in &roots {
+        assert!(
+            root.join("src/lib.rs").is_file(),
+            "{repo} must have its sources on disk"
+        );
+    }
+    let workspace_root = roots[0]
+        .1
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root")
+        .to_path_buf();
+
+    // The scanner finds the duplicated body across the two materialized trees.
+    let report = jeryu_codegraph::scan_tool_build_family(
+        &roots,
+        "system/host",
+        "hosted-default-branch",
+        ToolBuildScanConfig {
+            window_lines: 5,
+            min_normalized_tokens: 12,
+            min_occurrences: 2,
+            max_file_bytes: 64 * 1024,
+            max_clusters: 10,
+            min_repo_count: 2,
+        },
+    )
+    .expect("scan the materialized trees");
+    assert!(
+        !report.clusters.is_empty(),
+        "the duplicated body must cluster across both bare repos"
+    );
+    let repos: BTreeSet<&str> = report.clusters[0]
+        .occurrences
+        .iter()
+        .map(|occurrence| occurrence.repo_id.as_str())
+        .collect();
+    assert_eq!(
+        repos,
+        BTreeSet::from(["jeryu/jeryu-cache", "jeryu/jeryu-deploy"])
+    );
+
+    // Dropping the source removes the scratch tree: no disk left behind.
+    drop(scan_source);
+    assert!(!workspace_root.exists(), "the scratch tree must be removed");
+}
+
+/// Private repos are materialized, because findings name their files. That is
+/// only sound while every tool-finder route is global-admin-only.
+#[tokio::test]
+async fn tool_finder_hosted_sources_include_private_repos_behind_admin_only_routes() {
+    let (state, _storage) = hosted_family_state(true);
+    let source = super::tool_finder::source_payload(&state);
+    assert_eq!(source.kind, "hosted");
+    assert_eq!(source.repos.len(), 2);
+    assert!(
+        source.repos.iter().all(|repo| repo.private),
+        "the fixture family is private"
+    );
+    for path in [
+        "/api/v1/tool-finder/source",
+        "/api/v1/tool-finder/dashboard",
+        "/api/v1/tool-finder/scan",
+    ] {
+        assert!(
+            super::auth::admin_only_request(&axum::http::Method::GET, path),
+            "{path} must stay admin-only while private sources are scanned"
+        );
+    }
+}
+
+/// A forge with repositories but no family file anywhere says so, instead of
+/// failing a scan with a bare "no split-family repos discovered".
+#[tokio::test]
+async fn tool_finder_source_reports_not_configured_without_a_family_file() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "standalone".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let storage = tempdir().expect("git storage dir");
+    build_bare_repo_with_files(
+        storage.path(),
+        "jeryu",
+        "standalone",
+        &[("src/lib.rs", "pub fn solo() {}\n")],
+    );
+    let state = Arc::new(WebState::with_repo_manager(
+        core,
+        Arc::new(RepoManager::new(GitdConfig::new(
+            storage.path().to_path_buf(),
+        ))),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist"),
+        std::env::temp_dir(),
+        SplitCatalog::load(&[]),
+    ));
+
+    let source = response_json(super::tool_finder::source(State(state.clone())).await).await;
+    assert_eq!(source["kind"], "none");
+    assert_eq!(source["configured"], false);
+    assert!(
+        source["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("no split family is configured on this server"),
+        "{source:?}"
+    );
+    assert!(
+        source["skipped"].as_array().expect("skipped").is_empty(),
+        "nothing was skipped: nothing named a family"
+    );
+
+    // A repository named by a family file but not hosted here is reported as
+    // skipped rather than silently dropped.
+    let (family_state, _family_storage) = hosted_family_state(false);
+    family_state
+        .core
+        .set_repository_archived("admin", "jeryu", "jeryu-cache", true)
+        .expect("archive the member");
+    let source = super::tool_finder::source_payload(&family_state);
+    assert_eq!(source.repos.len(), 1);
+    assert_eq!(source.repos[0].repo, "jeryu/jeryu-deploy");
+    assert_eq!(source.skipped.len(), 1);
+    assert_eq!(source.skipped[0].repo, "jeryu/jeryu-cache");
+    assert_eq!(source.skipped[0].reason, "unreadable");
 }
 
 #[tokio::test]

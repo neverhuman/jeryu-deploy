@@ -247,9 +247,14 @@ fn is_manifest(path: &str) -> bool {
             .is_some_and(|name| !name.contains('/'))
 }
 
-/// The hosted repository a pin names: under the consumer's owner first, else
-/// the only hosted repository with that name.
-fn hosted<'a>(repos: &'a [Repository], owner: &str, name: &str) -> Option<&'a Repository> {
+/// The hosted repository a name refers to: under the asking repository's owner
+/// first, else the only hosted repository with that name. Shared with the
+/// tool-finder, which resolves split-family members the same way.
+pub(crate) fn hosted_repository<'a>(
+    repos: &'a [Repository],
+    owner: &str,
+    name: &str,
+) -> Option<&'a Repository> {
     let mut named = repos.iter().filter(|repo| repo.name == name);
     let same_owner = named.clone().find(|repo| repo.owner == owner);
     same_owner.or_else(|| match (named.next(), named.next()) {
@@ -431,7 +436,7 @@ fn consumer_pins(
         .iter()
         .filter(|(_, pin)| pin.name != consumer.name)
         .filter_map(|(source, pin)| {
-            let dependency = hosted(repos, &consumer.owner, &pin.name)?;
+            let dependency = hosted_repository(repos, &consumer.owner, &pin.name)?;
             Some(resolve_pin(state, consumer, dependency, source, pin))
         })
         .collect();

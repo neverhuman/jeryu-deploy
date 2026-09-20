@@ -708,7 +708,7 @@ fn csrf_valid(state: &WebState, headers: &HeaderMap) -> bool {
 
 /// Admin-only by path, plus every mutation under `/api/v1/shift/` (its reads
 /// stay open to any logged-in account).
-fn admin_only_request(method: &Method, path: &str) -> bool {
+pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
     admin_only_path(path)
         || (path.starts_with("/api/v1/shift/") && unsafe_method(method))
         || (pipeline_events_path(path) && !unsafe_method(method))

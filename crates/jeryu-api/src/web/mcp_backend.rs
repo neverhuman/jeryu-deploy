@@ -289,10 +289,11 @@ impl WebMcpBackend {
                         json!({ "already_running": true, "status": *status }),
                     )
                 }
-                Err(super::tool_finder::StartScanError::NoManifests) => {
-                    jeryu_mcp::ToolResponse::error(
-                        "tool-finder scan unavailable: no split manifests are wired into this server",
-                    )
+                Err(super::tool_finder::StartScanError::NotConfigured) => {
+                    jeryu_mcp::ToolResponse::error(format!(
+                        "tool-finder scan unavailable: {}",
+                        super::tool_finder::NOT_CONFIGURED
+                    ))
                 }
             },
             "tool_finder.dashboard" => {

@@ -1,12 +1,24 @@
 //! System-wide tool-finder surface: live scan trigger with WebSocket progress,
 //! the `/tools` pattern-family dashboard, and cluster -> registry proposal.
 //!
-//! The scan runs the jeryu-codegraph v2 pipeline over every split family on
-//! the host inside `spawn_blocking`; its progress callback folds into the
+//! The scan runs the jeryu-codegraph v2 pipeline over every split family the
+//! server can reach inside `spawn_blocking`; its progress callback folds into the
 //! single-flight [`ToolFinderScanState`] and publishes throttled `WebEvent`s
 //! on scope [`SCAN_SCOPE`] through the [`super::WsHub`] push lane. Results
 //! persist to the codegraph SQLite store under repo id [`SYSTEM_REPO_ID`],
 //! which the dashboard (and MCP) read back as enriched pattern families.
+//!
+//! Two scan sources exist, tried in that order:
+//!
+//! - **working-tree**: the `--split-manifest` paths, whose sibling checkouts
+//!   the scanner walks directly. This is the local-development source.
+//! - **hosted**: the bare repositories this forge serves. [`hosted`] discovers
+//!   split families from the repositories themselves and materializes each
+//!   member's default branch into a bounded scratch tree. This is what the
+//!   hosted forge has, where no checkout exists.
+//!
+//! When neither source yields a family, `GET /api/v1/tool-finder/source` says
+//! so in as many words instead of the scan failing with a bare message.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -31,6 +43,11 @@ use serde_json::json;
 
 use super::workcells_support::{TypedError, typed_error};
 use super::{WebState, server_time};
+
+pub(crate) mod hosted;
+
+/// Schema of `GET /api/v1/tool-finder/source`.
+const SOURCE_SCHEMA: &str = "jeryu.tool_finder.source/v1";
 
 /// WebSocket scope the scan streams on.
 pub(super) const SCAN_SCOPE: &str = "tool_finder.scan";
@@ -200,13 +217,13 @@ pub(super) async fn scan_start(State(state): State<Arc<WebState>>) -> AxumRespon
             ],
             "wait for the running scan to finish, then POST again",
         ),
-        Err(StartScanError::NoManifests) => tool_finder_typed_error(
+        Err(StartScanError::NotConfigured) => tool_finder_typed_error(
             StatusCode::FAILED_DEPENDENCY,
-            "tool_finder_no_manifests",
+            "tool_finder_not_configured",
             "start the system-wide tool-finder scan",
-            "no split manifests are wired into this server",
-            &["start the server with --split-manifest pointing at a family manifest"],
-            "configure --split-manifest, restart, then POST again",
+            NOT_CONFIGURED,
+            NOT_CONFIGURED_FIXES,
+            "configure a split family on this server, then POST again",
         ),
     }
 }
@@ -214,18 +231,30 @@ pub(super) async fn scan_start(State(state): State<Arc<WebState>>) -> AxumRespon
 /// Why a scan could not start.
 pub(super) enum StartScanError {
     Busy(Box<ToolFinderScanStatus>),
-    NoManifests,
+    /// This server has neither split-manifest checkouts nor a hosted
+    /// repository that names a split family.
+    NotConfigured,
 }
 
-/// Shared scan trigger (HTTP + MCP): claims the single flight, then runs the
-/// engine scan + persistence on a blocking thread, streaming throttled
-/// progress through the WS hub.
+/// The one sentence every surface uses for "this server has nothing to scan".
+pub(super) const NOT_CONFIGURED: &str = "no split family is configured on this server: no --split-manifest checkout, \
+     and no hosted repository's default branch has a root repos.manifest.toml \
+     or *-split.lock.toml";
+
+const NOT_CONFIGURED_FIXES: &[&str] = &[
+    "GET /api/v1/tool-finder/source to see what discovery found and what it skipped",
+    "host the split family's repos.manifest.toml or *-split.lock.toml on its default branch",
+    "for a local checkout host, start the server with --split-manifest",
+];
+
+/// Shared scan trigger (HTTP + MCP): claims the single flight, then resolves a
+/// scan source, runs the engine scan + persistence on a blocking thread, and
+/// streams throttled progress through the WS hub.
 pub(super) fn start_system_scan(
     state: &Arc<WebState>,
 ) -> Result<ToolFinderScanStatus, StartScanError> {
-    let parents = manifest_parents(&state.split_manifests);
-    if parents.is_empty() {
-        return Err(StartScanError::NoManifests);
+    if !could_scan(state) {
+        return Err(StartScanError::NotConfigured);
     }
     let status = state
         .tool_finder_scan
@@ -237,17 +266,14 @@ pub(super) fn start_system_scan(
     tokio::spawn(async move {
         let blocking_state = task_state.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            let roots = discover_system_repo_roots(&parents)
-                .map_err(|error| format!("discover split families: {error}"))?;
-            if roots.is_empty() {
-                return Err("no split-family repos discovered".to_string());
-            }
+            let source = resolve_scan_source(&blocking_state).map_err(|error| error.to_string())?;
+            publish_source_event(&blocking_state, &source);
             let options = ToolBuildScanOptions::system_default();
             let progress_state = blocking_state.clone();
             let report = scan_tool_build_system(
-                &roots,
+                source.roots(),
                 SYSTEM_REPO_ID,
-                "working-tree",
+                source.commit_label(),
                 &options,
                 &move |progress| {
                     if let Some(status) = progress_state.tool_finder_scan.apply_progress(&progress)
@@ -288,6 +314,211 @@ pub(super) fn start_system_scan(
     });
 
     Ok(status)
+}
+
+/// Could this server have anything to scan at all? A cheap in-memory check, so
+/// the 424 is decided on the handler thread; the real (git-reading) discovery
+/// happens on the blocking thread and reports its own emptiness.
+fn could_scan(state: &WebState) -> bool {
+    !state.split_manifests.is_empty()
+        || state
+            .core
+            .list_repositories(None)
+            .iter()
+            .any(|repo| !repo.archived && !repo.disabled)
+}
+
+/// The sources one scan will read. The hosted variant owns its scratch tree:
+/// holding the value alive holds the materialized sources on disk.
+pub(super) enum ScanSource {
+    /// `--split-manifest` sibling checkouts, walked in place.
+    WorkingTree(Vec<(String, PathBuf)>),
+    /// Default branches materialized out of the hosted bare repositories.
+    Hosted(hosted::ScanWorkspace),
+}
+
+impl ScanSource {
+    pub(super) fn roots(&self) -> &[(String, PathBuf)] {
+        match self {
+            Self::WorkingTree(roots) => roots,
+            Self::Hosted(workspace) => &workspace.roots,
+        }
+    }
+
+    /// The `commit_sha` label the persisted report carries.
+    fn commit_label(&self) -> &'static str {
+        match self {
+            Self::WorkingTree(_) => "working-tree",
+            Self::Hosted(_) => "hosted-default-branch",
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::WorkingTree(_) => "working-tree",
+            Self::Hosted(_) => "hosted",
+        }
+    }
+
+    fn skipped(&self) -> &[hosted::SkippedRepo] {
+        match self {
+            Self::WorkingTree(_) => &[],
+            Self::Hosted(workspace) => &workspace.skipped,
+        }
+    }
+}
+
+/// Why no scan source could be resolved.
+pub(super) enum ScanSourceError {
+    NotConfigured,
+    Hosted(hosted::HostedSourceError),
+}
+
+impl std::fmt::Display for ScanSourceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotConfigured => formatter.write_str(NOT_CONFIGURED),
+            Self::Hosted(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+/// Resolve the sources for one scan: the configured checkouts when they exist
+/// (local development), else the hosted bare repositories (the forge). Runs
+/// git; call it off the async workers.
+pub(super) fn resolve_scan_source(state: &WebState) -> Result<ScanSource, ScanSourceError> {
+    let parents = manifest_parents(&state.split_manifests);
+    if !parents.is_empty() {
+        let roots = discover_system_repo_roots(&parents).unwrap_or_default();
+        if !roots.is_empty() {
+            return Ok(ScanSource::WorkingTree(roots));
+        }
+    }
+    match hosted::materialize(state, hosted::discover(state)) {
+        Ok(workspace) => Ok(ScanSource::Hosted(workspace)),
+        Err(hosted::HostedSourceError::NotConfigured) => Err(ScanSourceError::NotConfigured),
+        Err(error) => Err(ScanSourceError::Hosted(error)),
+    }
+}
+
+/// Announce what a scan is about to read and what discovery left out, so the
+/// bounds are visible rather than silent.
+fn publish_source_event(state: &Arc<WebState>, source: &ScanSource) {
+    let skipped = source.skipped();
+    let summary = format!(
+        "tool-finder scan sources: {} repos from {} ({} skipped)",
+        source.roots().len(),
+        source.kind(),
+        skipped.len()
+    );
+    let payload = json!({
+        "kind": source.kind(),
+        "repos": source.roots().iter().map(|(repo, _)| repo).collect::<Vec<_>>(),
+        "skipped": skipped,
+    });
+    state.ws.publish(SCAN_SCOPE, move |seq| WebEvent {
+        seq,
+        timestamp: server_time(),
+        scope: SCAN_SCOPE.to_string(),
+        kind: "tool_finder.scan.source".to_string(),
+        entity: SYSTEM_REPO_ID.to_string(),
+        summary,
+        payload,
+    });
+}
+
+/// `GET /api/v1/tool-finder/source` — what a scan would read right now, and
+/// what it would leave out. Admin-only by path, like every other tool-finder
+/// route; hosted discovery reads private repositories too.
+pub(super) async fn source(State(state): State<Arc<WebState>>) -> AxumResponse {
+    let worker_state = state.clone();
+    match tokio::task::spawn_blocking(move || source_payload(&worker_state)).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(error) => {
+            let reason = error.to_string();
+            tool_finder_typed_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "tool_finder_source_failed",
+                "report the tool-finder scan source",
+                &reason,
+                &["retry in a few seconds"],
+                "retry; if it persists check the server log for a discovery panic",
+            )
+        }
+    }
+}
+
+/// What `GET /api/v1/tool-finder/source` answers.
+#[derive(Debug, serde::Serialize)]
+pub(super) struct ToolFinderSource {
+    pub schema_version: &'static str,
+    pub generated_at: String,
+    /// `working-tree`, `hosted` or `none`.
+    pub kind: &'static str,
+    /// False when this server has no split family to scan at all.
+    pub configured: bool,
+    /// One sentence naming the state, for the Findings page to paint.
+    pub detail: String,
+    /// The `--split-manifest` paths, if any.
+    pub split_manifests: Vec<String>,
+    pub repos: Vec<hosted::ScanSourceRepo>,
+    pub skipped: Vec<hosted::SkippedRepo>,
+}
+
+/// Shared source report (HTTP + MCP). Discovery only: nothing is materialized,
+/// so this stays cheap enough to poll from the page.
+pub(super) fn source_payload(state: &WebState) -> ToolFinderSource {
+    let split_manifests: Vec<String> = state
+        .split_manifests
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    let mut report = ToolFinderSource {
+        schema_version: SOURCE_SCHEMA,
+        generated_at: server_time(),
+        kind: "none",
+        configured: false,
+        detail: NOT_CONFIGURED.to_string(),
+        split_manifests,
+        repos: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let parents = manifest_parents(&state.split_manifests);
+    if !parents.is_empty() {
+        let roots = discover_system_repo_roots(&parents).unwrap_or_default();
+        if !roots.is_empty() {
+            report.kind = "working-tree";
+            report.configured = true;
+            report.detail = format!(
+                "{} split-family checkouts beside the configured --split-manifest paths",
+                roots.len()
+            );
+            report.repos = roots
+                .into_iter()
+                .map(|(repo, _)| hosted::ScanSourceRepo {
+                    repo,
+                    family: None,
+                    branch: None,
+                    commit: None,
+                    private: false,
+                })
+                .collect();
+            return report;
+        }
+    }
+    let found = hosted::discover(state);
+    report.skipped = found.skipped;
+    if found.repos.is_empty() {
+        return report;
+    }
+    report.kind = "hosted";
+    report.configured = true;
+    report.detail = format!(
+        "{} hosted repositories, read from their default branches in the bare repos",
+        found.repos.len()
+    );
+    report.repos = found.repos;
+    report
 }
 
 /// The directories whose `*-split` children carry family manifests, derived

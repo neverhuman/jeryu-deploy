@@ -2,6 +2,9 @@
 //! schedule so Shared tools → Findings stays current without anyone pressing
 //! "Run live scan".
 //!
+//! It runs wherever a scan can run: a server with `--split-manifest`
+//! checkouts, or a forge whose hosted repositories name a split family.
+//!
 //! `JERYU_TOOL_FINDER_SCAN_INTERVAL_HOURS` sets the cadence (default 24; `0`
 //! disables). The loop wakes hourly and starts a scan only when both the
 //! persisted scan and the last scan this process started are older than the
@@ -19,16 +22,18 @@ const INTERVAL_ENV: &str = "JERYU_TOOL_FINDER_SCAN_INTERVAL_HOURS";
 const DEFAULT_INTERVAL_HOURS: u64 = 24;
 const WAKE_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// Spawn the scheduler when a cadence is configured and manifests are wired.
+/// Spawn the scheduler when a cadence is configured and this server has a
+/// scan source: split-manifest checkouts or hosted repositories.
 pub(super) fn spawn(state: Arc<WebState>) {
     let raw = std::env::var(INTERVAL_ENV).ok();
     let interval = interval_from(raw.as_deref());
-    let has_manifests = !state.split_manifests.is_empty();
-    eprintln!("{}", startup_line(raw.as_deref(), interval, has_manifests));
+    let has_sources =
+        !state.split_manifests.is_empty() || !state.core.list_repositories(None).is_empty();
+    eprintln!("{}", startup_line(raw.as_deref(), interval, has_sources));
     let Some(interval) = interval else {
         return;
     };
-    if !has_manifests {
+    if !has_sources {
         return;
     }
     tokio::spawn(async move {
@@ -45,7 +50,7 @@ pub(super) fn spawn(state: Arc<WebState>) {
             match start_system_scan(&state) {
                 Ok(_) => last_started = Some(Instant::now()),
                 Err(StartScanError::Busy(_)) => {}
-                Err(StartScanError::NoManifests) => return,
+                Err(StartScanError::NotConfigured) => return,
             }
         }
     });
@@ -61,15 +66,16 @@ fn interval_from(raw: Option<&str>) -> Option<Duration> {
 }
 
 /// The one line logged at startup so the effective cadence is visible.
-fn startup_line(raw: Option<&str>, interval: Option<Duration>, has_manifests: bool) -> String {
+fn startup_line(raw: Option<&str>, interval: Option<Duration>, has_sources: bool) -> String {
     let source = match raw.map(str::trim) {
         None | Some("") => "default".to_string(),
         Some(value) => format!("{INTERVAL_ENV}={value}"),
     };
-    match (interval, has_manifests) {
+    match (interval, has_sources) {
         (None, _) => format!("tool-finder: scheduled scan disabled ({source})"),
         (Some(_), false) => {
-            "tool-finder: scheduled scan disabled (no split manifests configured)".to_string()
+            "tool-finder: scheduled scan disabled (no split manifests and no hosted repositories)"
+                .to_string()
         }
         (Some(interval), true) => format!(
             "tool-finder: scheduled scan every {}h ({source}; set {INTERVAL_ENV}=0 to disable)",
@@ -131,6 +137,7 @@ mod tests {
         );
         let line = startup_line(None, interval_from(None), false);
         assert!(line.contains("no split manifests"), "{line}");
+        assert!(line.contains("no hosted repositories"), "{line}");
     }
 
     #[test]

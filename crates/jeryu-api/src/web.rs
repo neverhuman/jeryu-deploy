@@ -749,6 +749,7 @@ fn router(state: Arc<WebState>) -> AxumRouter {
             "/api/v1/tool-finder/scan",
             get(tool_finder::scan_status).post(tool_finder::scan_start),
         )
+        .route("/api/v1/tool-finder/source", get(tool_finder::source))
         .route("/api/v1/tool-finder/dashboard", get(tool_finder::dashboard))
         .route(
             "/api/v1/tool-finder/propose/:cluster_id",
