@@ -7524,3 +7524,104 @@ async fn gate_identity_publishes_statuses_without_admin_but_cannot_protect() {
         );
     }
 }
+
+/// Seeds one repository, a global admin, a writer granted write on it, and a
+/// reader with no grant at all.
+fn feature_flag_state() -> WebState {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("writer", "writer-password", UserRole::User)
+        .unwrap();
+    core.create_account("reader", "reader-password", UserRole::User)
+        .unwrap();
+    core.grant_repo_access(
+        "jeryu-admin",
+        "writer",
+        "alice",
+        "jeryu",
+        RepoAccessLevel::Write,
+    )
+    .unwrap();
+    WebState::new(core)
+}
+
+/// An admin sees every write surface, repository creation included.
+#[test]
+fn bootstrap_flags_open_every_write_surface_for_an_admin() {
+    let state = feature_flag_state();
+    let flags = bootstrap_payload_for_user(&state, &authenticated_admin_account("jeryu-admin").0)
+        .expect("bootstrap serializes")
+        .feature_flags;
+    assert!(flags.repo_create);
+    assert!(flags.settings_write);
+    assert!(flags.merge_write);
+    assert!(flags.agents);
+}
+
+/// A repository writer gets the repo-scoped write surfaces, but not the
+/// forge-wide repository creation one.
+#[test]
+fn bootstrap_flags_follow_a_repository_write_grant() {
+    let state = feature_flag_state();
+    let flags = bootstrap_payload_for_user(&state, &authenticated_account("writer").0)
+        .expect("bootstrap serializes")
+        .feature_flags;
+    assert!(!flags.repo_create, "creating repositories stays admin-only");
+    assert!(flags.settings_write);
+    assert!(flags.merge_write);
+    assert!(flags.agents);
+}
+
+/// A viewer with no write grant anywhere sees the read-side surfaces only —
+/// the write flags follow the grants, not a constant.
+#[test]
+fn bootstrap_flags_close_write_surfaces_without_a_grant() {
+    let state = feature_flag_state();
+    let flags = bootstrap_payload_for_user(&state, &authenticated_account("reader").0)
+        .expect("bootstrap serializes")
+        .feature_flags;
+    assert!(!flags.repo_create);
+    assert!(!flags.settings_write);
+    assert!(!flags.merge_write);
+    assert!(!flags.agents);
+    assert!(flags.markdown_html);
+    assert!(flags.mcp);
+    assert!(flags.workcells);
+}
+
+/// An operator reading `/.jeryu/capabilities` can tell a flag that is off by
+/// policy from one that is off for want of a grant.
+#[test]
+fn capabilities_payload_explains_every_bootstrap_feature_flag() {
+    let payload = capabilities_payload();
+    let notes = payload["web_feature_flags"]["flags"]
+        .as_object()
+        .expect("feature flag notes object");
+    for flag in [
+        "repo_create",
+        "settings_write",
+        "merge_write",
+        "markdown_html",
+        "agents",
+        "mcp",
+        "workcells",
+    ] {
+        let note = notes[flag].as_str().unwrap_or_default();
+        assert!(!note.is_empty(), "no operator note for flag {flag}");
+    }
+    assert!(
+        notes["repo_create"].as_str().unwrap().contains("admin"),
+        "the admin-only repository creation flag must say so"
+    );
+}

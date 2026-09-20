@@ -8,16 +8,14 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method as HttpMethod, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response as AxumResponse};
 use jeryu_core::{AccountSummary, UserRole};
-use jeryu_readmodel::contracts::{
-    RenderedMarkdown, RepositorySummary, Viewer, WebBootstrap, WebFeatureFlags,
-};
+use jeryu_readmodel::contracts::{RenderedMarkdown, RepositorySummary, Viewer, WebBootstrap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Component, Path, PathBuf};
 use tokio::fs;
 
 use super::markdown::render_markdown;
-use super::permissions::permissions;
+use super::permissions::{feature_flags, permissions};
 #[cfg(test)]
 use super::repositories::repo_summaries;
 use super::repositories::repo_summaries_for_user;
@@ -492,7 +490,13 @@ pub(super) fn bootstrap_payload(
     state: &super::WebState,
 ) -> Result<WebBootstrap, serde_json::Error> {
     let repos = repo_summaries(state);
-    bootstrap_payload_with_repos(state, "local", Some("Local Operator".to_string()), repos)
+    bootstrap_payload_with_repos(
+        state,
+        "local",
+        Some("Local Operator".to_string()),
+        None,
+        repos,
+    )
 }
 
 pub(super) fn bootstrap_payload_for_user(
@@ -500,13 +504,14 @@ pub(super) fn bootstrap_payload_for_user(
     account: &AccountSummary,
 ) -> Result<WebBootstrap, serde_json::Error> {
     let repos = repo_summaries_for_user(state, Some(account));
-    bootstrap_payload_with_repos(state, &account.login, None, repos)
+    bootstrap_payload_with_repos(state, &account.login, None, Some(account), repos)
 }
 
 fn bootstrap_payload_with_repos(
     state: &super::WebState,
     login: &str,
     display_name: Option<String>,
+    account: Option<&AccountSummary>,
     repos: Vec<RepositorySummary>,
 ) -> Result<WebBootstrap, serde_json::Error> {
     let tui = serialize_payload(&super::workcells::live_tui(state))?;
@@ -523,15 +528,7 @@ fn bootstrap_payload_with_repos(
         tui,
         recent_repositories: repos.into_iter().take(10).collect(),
         websocket_url: "/api/v1/ws".to_string(),
-        feature_flags: WebFeatureFlags {
-            repo_create: false,
-            settings_write: false,
-            merge_write: false,
-            markdown_html: true,
-            agents: false,
-            mcp: true,
-            workcells: true,
-        },
+        feature_flags: feature_flags(state, account),
     })
 }
 

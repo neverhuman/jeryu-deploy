@@ -1012,6 +1012,13 @@ fn capabilities_payload() -> Value {
             "host_auth_boundary": GH_AUTH_BOUNDARY,
             "agent_auth": "jeryu agent auth doctor <tool>; jeryu agent auth import --from-host <tool>",
         },
+        "web_feature_flags": {
+            "purpose": "What each /api/v1/bootstrap feature flag gates, and what turns it on for a viewer. A flag reported off means this viewer lacks the grant, or the note says the flag is admin-only — never that the code is missing.",
+            "flags": permissions::FEATURE_FLAG_NOTES
+                .iter()
+                .map(|(flag, note)| ((*flag).to_string(), Value::String((*note).to_string())))
+                .collect::<serde_json::Map<String, Value>>(),
+        },
         "fast_path_advice":
             "Prefer the jeryu MCP tools for mutations; gh REST/GraphQL is supported but slower.",
     })
