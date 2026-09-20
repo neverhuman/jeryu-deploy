@@ -511,7 +511,9 @@ pub(super) fn filtered_repo_list_response_for_user(
         // fallback for repos that have never been pushed to.
         _ => repositories.sort_by(|a, b| {
             let key = |repo: &RepositorySummary| {
-                repo.pushed_at.clone().unwrap_or_else(|| repo.updated_at.clone())
+                repo.pushed_at
+                    .clone()
+                    .unwrap_or_else(|| repo.updated_at.clone())
             };
             key(b).cmp(&key(a))
         }),
