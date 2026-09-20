@@ -159,7 +159,7 @@ pub(super) async fn repo_update(
     };
     if let Some(unknown) = fields
         .keys()
-        .find(|key| !matches!(key.as_str(), "family" | "default_branch"))
+        .find(|key| !matches!(key.as_str(), "family" | "default_branch" | "archived"))
     {
         return repo_update_invalid(&format!("unknown field: {unknown}"));
     }
@@ -229,6 +229,51 @@ pub(super) async fn repo_update(
                 );
             }
         };
+    }
+    if let Some(archived_value) = fields.get("archived") {
+        // Admin-only for the same reason `default_branch` is: archiving makes
+        // the repository read-only for everyone, so it is a decision about the
+        // repository, not a use of write access to it.
+        if account.role != UserRole::Admin {
+            return api_error(
+                axum::http::StatusCode::FORBIDDEN,
+                "forbidden",
+                "admin role required to archive or unarchive a repository",
+            );
+        }
+        let serde_json::Value::Bool(archived) = archived_value else {
+            return repo_update_invalid("archived must be a boolean");
+        };
+        updated = match state.github.core().set_repository_archived(
+            &account.login,
+            &repo.owner,
+            &repo.name,
+            *archived,
+        ) {
+            Ok(repo) => repo,
+            Err(ForgeError::Validation(reason)) => {
+                return repo_update_invalid(&reason);
+            }
+            Err(ForgeError::NotFound(_)) => {
+                return api_error(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "not_found",
+                    "repository not found",
+                );
+            }
+            Err(error) => {
+                return api_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage_failed",
+                    &format!("repository update could not be persisted: {error}"),
+                );
+            }
+        };
+        // `set_repository_archived` is idempotent, so only say so when the flag
+        // actually moved -- a no-op PATCH should not litter the timeline.
+        if repo.archived != updated.archived {
+            super::pipeline::emit::repository_archived(&state, &updated, &account.login);
+        }
     }
     Json(repo_summary(&state, &updated)).into_response()
 }

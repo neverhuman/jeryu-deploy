@@ -2,7 +2,7 @@
 //! did into a [`NewEvent`] and hands it to [`super::emit`], which is
 //! best-effort: none of these can fail the request they ride on.
 
-use jeryu_core::PullRequest;
+use jeryu_core::{PullRequest, Repository};
 use serde_json::{Value, json};
 
 use super::super::WebState;
@@ -39,6 +39,38 @@ pub(crate) fn pull(state: &WebState, pr: &PullRequest, event: PullEvent<'_>) {
             reason: event.reason,
             detail: event.detail,
             ..NewEvent::forge(event.kind, event.summary)
+        },
+    );
+}
+
+/// `repo.archived` / `repo.unarchived`: the repository just became read-only,
+/// or writable again. Archiving deletes nothing and is reversible, so the two
+/// carry the same shape and both are a plain success -- the kind is what says
+/// which way it went.
+pub(crate) fn repository_archived(state: &WebState, repo: &Repository, actor: &str) {
+    let (kind, summary) = if repo.archived {
+        (
+            "repo.archived",
+            format!(
+                "{} is archived: read-only until it is unarchived",
+                repo.full_name
+            ),
+        )
+    } else {
+        (
+            "repo.unarchived",
+            format!("{} is unarchived: writable again", repo.full_name),
+        )
+    };
+    emit(
+        state,
+        NewEvent {
+            actor: Some(actor.to_string()),
+            repo: Some(repo.full_name.clone()),
+            outcome: Some("success".to_string()),
+            needs_human: false,
+            detail: Some(json!({ "archived": repo.archived })),
+            ..NewEvent::forge(kind, summary)
         },
     );
 }

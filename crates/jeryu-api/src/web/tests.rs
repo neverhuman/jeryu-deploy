@@ -6127,6 +6127,119 @@ async fn repo_update_moves_the_default_branch_for_admins_only() {
     }
 }
 
+/// PATCH /api/v1/repos/:id archives and unarchives: an admin may flip the
+/// flag either way, a repository writer may not, the change is reversible and
+/// deletes nothing, a non-boolean is a 422 and an unknown repository is a 404.
+#[tokio::test]
+async fn repo_update_archives_and_unarchives_for_admins_only() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu-deploy".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core.clone()));
+
+    assert!(
+        !core
+            .get_repository("jeryu", "jeryu-deploy")
+            .unwrap()
+            .archived,
+        "a new repository is not archived"
+    );
+
+    // An admin archives it.
+    let archived = repo_update(
+        State(state.clone()),
+        authenticated_admin_account("alice"),
+        AxumPath("jeryu/jeryu-deploy".to_string()),
+        axum::body::Bytes::from_static(br#"{"archived": true}"#),
+    )
+    .await;
+    assert_eq!(
+        archived.into_response().status(),
+        axum::http::StatusCode::OK
+    );
+    assert!(
+        core.get_repository("jeryu", "jeryu-deploy")
+            .unwrap()
+            .archived
+    );
+
+    // Repository write access is not enough to unarchive it.
+    let refused = repo_update(
+        State(state.clone()),
+        authenticated_account("bob"),
+        AxumPath("jeryu/jeryu-deploy".to_string()),
+        axum::body::Bytes::from_static(br#"{"archived": false}"#),
+    )
+    .await;
+    assert_eq!(
+        refused.into_response().status(),
+        axum::http::StatusCode::FORBIDDEN
+    );
+    assert!(
+        core.get_repository("jeryu", "jeryu-deploy")
+            .unwrap()
+            .archived,
+        "the refused request changed nothing"
+    );
+
+    // Reversible: the admin unarchives it and the repository is back.
+    let unarchived = repo_update(
+        State(state.clone()),
+        authenticated_admin_account("alice"),
+        AxumPath("jeryu/jeryu-deploy".to_string()),
+        axum::body::Bytes::from_static(br#"{"archived": false}"#),
+    )
+    .await;
+    assert_eq!(
+        unarchived.into_response().status(),
+        axum::http::StatusCode::OK
+    );
+    assert!(
+        !core
+            .get_repository("jeryu", "jeryu-deploy")
+            .unwrap()
+            .archived
+    );
+    assert!(
+        core.get_repository("jeryu", "jeryu-deploy").is_ok(),
+        "unarchiving deletes nothing"
+    );
+
+    // A non-boolean is about the body: 422.
+    let bad = repo_update(
+        State(state.clone()),
+        authenticated_admin_account("alice"),
+        AxumPath("jeryu/jeryu-deploy".to_string()),
+        axum::body::Bytes::from_static(br#"{"archived": "yes"}"#),
+    )
+    .await;
+    assert_eq!(
+        bad.into_response().status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // An unknown repository is a 404, not a 403, even for an admin.
+    let missing = repo_update(
+        State(state.clone()),
+        authenticated_admin_account("alice"),
+        AxumPath("jeryu/missing".to_string()),
+        axum::body::Bytes::from_static(br#"{"archived": true}"#),
+    )
+    .await;
+    assert_eq!(
+        missing.into_response().status(),
+        axum::http::StatusCode::NOT_FOUND
+    );
+}
+
 /// DELETE /api/v1/repos/:id — an unknown repository is a structured 404.
 #[tokio::test]
 async fn repo_delete_unknown_repo_is_404() {
