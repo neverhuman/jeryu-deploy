@@ -614,3 +614,92 @@ fn github_response(response: GithubResponse) -> AxumResponse {
     }
     axum_response
 }
+
+#[cfg(test)]
+mod authz_tests {
+    use super::{AccountSummary, UserRole, authorize_github_repo_request};
+    use crate::Method;
+    use jeryu_core::{AccountStatus, ForgeCore};
+
+    fn account(login: &str, role: UserRole) -> AccountSummary {
+        AccountSummary {
+            login: login.to_string(),
+            display_name: login.to_string(),
+            role,
+            status: AccountStatus::Active,
+            auth_epoch: 0,
+            must_change_password: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn state() -> crate::web::WebState {
+        crate::web::WebState::new(ForgeCore::new())
+    }
+
+    /// Archiving is admin-only on the GitHub-compatible edge, and is
+    /// deliberately stricter than the repository-write rule that covers the
+    /// other PATCH paths: it makes a repository read-only for everyone, so it
+    /// is a decision about the repository, not a use of write access to it.
+    ///
+    /// A repository writer who is not an admin must be refused before the
+    /// router ever sees the request.
+    #[test]
+    fn patch_repository_is_admin_only() {
+        let state = state();
+
+        for path in [
+            "/repos/alice/jeryu",
+            "/api/v3/repos/alice/jeryu",
+            "/repos/alice/jeryu?anything=1",
+        ] {
+            let refused = authorize_github_repo_request(
+                &state,
+                Method::Patch,
+                path,
+                &account("bob", UserRole::User),
+            );
+            assert!(
+                refused.is_some(),
+                "a non-admin must be refused PATCH {path}"
+            );
+
+            let allowed = authorize_github_repo_request(
+                &state,
+                Method::Patch,
+                path,
+                &account("alice", UserRole::Admin),
+            );
+            assert!(allowed.is_none(), "an admin may PATCH {path}");
+        }
+    }
+
+    /// The sibling arm: creating a repository is admin-only too. Covered here
+    /// so both admin-only arms of this function move together.
+    #[test]
+    fn post_repos_is_admin_only() {
+        let state = state();
+
+        assert!(
+            authorize_github_repo_request(
+                &state,
+                Method::Post,
+                "/repos",
+                &account("bob", UserRole::User)
+            )
+            .is_some(),
+            "a non-admin must be refused repository creation"
+        );
+        assert!(
+            authorize_github_repo_request(
+                &state,
+                Method::Post,
+                "/repos",
+                &account("alice", UserRole::Admin)
+            )
+            .is_none(),
+            "an admin may create a repository"
+        );
+    }
+}
