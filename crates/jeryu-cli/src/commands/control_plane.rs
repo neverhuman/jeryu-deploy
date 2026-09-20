@@ -17,12 +17,14 @@ pub(crate) fn run_status(
     let value = api(api_url)?.get("/api/v1/control-plane/status")?;
     let summary = value.get("summary").unwrap_or(&Value::Null);
     let human = format!(
-        "control plane: repos={} priorities={} mirror={} artifacts={} runners={}",
+        "control plane: repos={} priorities={} mirror={} artifacts={} runners={}\nfailing checks: {}{}",
         number(summary, "repoCount"),
         number(summary, "priorityCount"),
         text(summary, "mirrorState"),
         text(summary, "artifactState"),
-        text(summary, "runnerState")
+        text(summary, "runnerState"),
+        number(summary, "failingCheckCount"),
+        top_failing_cause(summary)
     );
     render(out, json_output, &value, &human)
 }
@@ -195,6 +197,24 @@ pub(crate) fn run_tool_finder(
             render(out, json_output, &value, &human)
         }
     }
+}
+
+/// The largest repeated cause behind the failing-check count, so the status
+/// line says whether the backlog is one broken lane or many.
+fn top_failing_cause(summary: &Value) -> String {
+    let Some(cause) = summary
+        .get("failingCheckCauses")
+        .and_then(Value::as_array)
+        .and_then(|causes| causes.first())
+    else {
+        return String::new();
+    };
+    format!(
+        " ({}% {} -> {})",
+        number(cause, "sharePercent"),
+        text(cause, "name"),
+        text(cause, "conclusion")
+    )
 }
 
 /// Minimal percent-encoding for the `/` in a repo id like `family/jeryu-split`.

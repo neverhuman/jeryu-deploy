@@ -66,27 +66,40 @@ pub(crate) fn priority_insights(input: PriorityInputs<'_>) -> Vec<PriorityInsigh
         .filter(|check| check.state == EvidenceState::Failed)
         .collect::<Vec<_>>();
     if !failing.is_empty() {
+        let causes = failing_check_causes(checks);
+        let title = match causes.first() {
+            // Lead with the dominant cause: a backlog that is one broken lane
+            // is one repair, not `failing.len()` of them.
+            Some(top) => format!(
+                "{} failing check run(s); {}% are {}",
+                failing.len(),
+                top.share_percent,
+                top.name
+            ),
+            None => format!("{} failing check run(s)", failing.len()),
+        };
         insights.push(priority(PriorityDraft {
             id: "ci-failing-checks".to_string(),
-            title: format!("{} failing check run(s)", failing.len()),
+            title,
             severity: InsightSeverity::High,
             score: 780,
             owner: "forge-api",
             proof_lane: "cargo test -p jeryu-api --features web --jobs 40 control_plane",
-            recommended_action: "inspect failing check-run evidence and route repair through typed errors",
-            evidence: failing
+            recommended_action:
+                "repair the largest repeated cause first, then re-baseline the remaining failures",
+            evidence: causes
                 .iter()
-                .take(5)
-                .map(|check| format!("{} {} {}", check.repo, check.name, check.head_sha))
+                .map(|cause| failing_cause_evidence(cause, failing.len()))
                 .collect(),
-            source_links: failing
-                .iter()
-                .take(5)
-                .map(|check| SourceLink {
-                    label: check.name.clone(),
-                    url: format!("/api/v1/ci/runs/{}/evidence", check.id),
-                })
-                .collect(),
+            source_links: std::iter::once(SourceLink {
+                label: "how to read a failing-check backlog".to_string(),
+                url: FLEET_BASELINE_DOCS.to_string(),
+            })
+            .chain(failing.iter().take(5).map(|check| SourceLink {
+                label: check.name.clone(),
+                url: format!("/api/v1/ci/runs/{}/evidence", check.id),
+            }))
+            .collect(),
             state: EvidenceState::Failed,
         }));
     }

@@ -66,11 +66,29 @@ pub(crate) struct ControlPlaneSummary {
     pub failing_check_count: usize,
     pub missing_check_pr_count: usize,
     pub priority_count: usize,
+    /// The repeated causes behind `failing_check_count`, largest first, so a
+    /// backlog reads as "one broken lane" or "many" without fetching every
+    /// check run. Capped at [`FAILING_CAUSE_LIMIT`] entries.
+    pub failing_check_causes: Vec<FailingCheckCause>,
     pub critical_priority_count: usize,
     pub high_priority_count: usize,
     pub mirror_state: EvidenceState,
     pub artifact_state: EvidenceState,
     pub runner_state: EvidenceState,
+}
+
+/// One repeated failure shape: a check name plus the conclusion it reached.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FailingCheckCause {
+    pub name: String,
+    pub conclusion: String,
+    pub count: usize,
+    /// Percent of all failing check runs, rounded down.
+    pub share_percent: u32,
+    /// Repositories this cause appears in, capped at [`FAILING_CAUSE_REPO_LIMIT`].
+    pub repos: Vec<String>,
+    pub repo_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

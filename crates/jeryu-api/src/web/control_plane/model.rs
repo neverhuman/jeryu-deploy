@@ -499,6 +499,7 @@ fn summary(
             .filter(|check| check.state == EvidenceState::Failed)
             .count(),
         missing_check_pr_count: prs.iter().filter(|pr| pr.checks.missing).count(),
+        failing_check_causes: failing_check_causes(checks),
         priority_count: priorities.len(),
         critical_priority_count: priorities
             .iter()

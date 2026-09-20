@@ -507,3 +507,141 @@ fn active_repo_jobs_ignore_checks_off_open_pr_heads() {
         "a failure off any open PR head is not active"
     );
 }
+
+/// A backlog dominated by one lane must read as one repair, not N.
+#[test]
+fn failing_check_causes_group_a_backlog_by_repeated_shape() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu-web".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    // Nine heads fail the same lane, one fails a different lane: the shape the
+    // real fleet backlog has.
+    for (index, repo) in [
+        "jeryu",
+        "jeryu",
+        "jeryu",
+        "jeryu",
+        "jeryu",
+        "jeryu-web",
+        "jeryu-web",
+        "jeryu-web",
+        "jeryu-web",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let head = format!("head-{index}");
+        seed_failing_head(&core, repo, &head, "ci/gate", CheckConclusion::Failure);
+    }
+    seed_failing_head(
+        &core,
+        "jeryu",
+        "head-odd",
+        "ci/fmt",
+        CheckConclusion::TimedOut,
+    );
+
+    let snapshot = snapshot(&Arc::new(WebState::new(core)));
+    assert_eq!(snapshot.summary.failing_check_count, 10);
+    let causes = &snapshot.summary.failing_check_causes;
+    assert_eq!(causes.len(), 2, "two distinct failure shapes");
+
+    let top = &causes[0];
+    assert_eq!(top.name, "ci/gate");
+    assert_eq!(top.conclusion, "failure");
+    assert_eq!(top.count, 9);
+    assert_eq!(top.share_percent, 90);
+    assert_eq!(top.repo_count, 2);
+    assert_eq!(top.repos, vec!["alice/jeryu", "alice/jeryu-web"]);
+
+    assert_eq!(causes[1].name, "ci/fmt");
+    assert_eq!(causes[1].count, 1);
+    assert_eq!(causes[1].conclusion, "timed_out");
+
+    let insight = snapshot
+        .priorities
+        .iter()
+        .find(|item| item.id == "ci-failing-checks")
+        .expect("failing checks priority");
+    assert_eq!(insight.title, "10 failing check run(s); 90% are ci/gate");
+    assert_eq!(
+        insight.evidence[0],
+        "9 of 10 (90%) are ci/gate -> failure across 2 repo(s): alice/jeryu, alice/jeryu-web"
+    );
+}
+
+#[test]
+fn failing_check_causes_are_empty_when_nothing_fails() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let snapshot = snapshot(&Arc::new(WebState::new(core)));
+    assert_eq!(snapshot.summary.failing_check_count, 0);
+    assert!(snapshot.summary.failing_check_causes.is_empty());
+    assert!(
+        !snapshot
+            .priorities
+            .iter()
+            .any(|item| item.id == "ci-failing-checks")
+    );
+}
+
+fn seed_failing_head(
+    core: &ForgeCore,
+    repo: &str,
+    head_sha: &str,
+    check: &str,
+    conclusion: CheckConclusion,
+) {
+    core.create_pull_request(
+        "alice",
+        repo,
+        "alice",
+        CreatePullRequestRequest {
+            title: head_sha.to_string(),
+            head: head_sha.to_string(),
+            base: "main".to_string(),
+            head_sha: Some(head_sha.to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "alice",
+        repo,
+        CreateCheckRunRequest {
+            name: check.to_string(),
+            head_sha: head_sha.to_string(),
+            status: Some(CheckRunStatus::Completed),
+            conclusion: Some(conclusion),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+}

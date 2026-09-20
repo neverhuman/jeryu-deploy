@@ -4,7 +4,9 @@
 //! surfaces: [`ForgeCore`], the runner fleet snapshot, the live agent-run store,
 //! and the auxiliary codegraph/tool-build store. GitHub mirror data is optional
 //! read-only evidence and is represented here as explicit `missing` state until
-//! a live mirror adapter supplies it.
+//! a live mirror adapter supplies it. `docs/fleet-health-baseline.md` records
+//! what each headline summary field measures — notably which `missing` states
+//! are fixed defaults rather than observations.
 //!
 //! The implementation is split across focused submodules — request/response
 //! [`types`], axum [`handlers`], the snapshot [`model`], the runner [`runner`]
@@ -32,6 +34,12 @@ const SCHEMA_VERSION: &str = "jeryu.control_plane/v1";
 const RULES_VERSION: &str = "rules-v1";
 const MIRROR_DOCS: &str = "docs/agent-native-standard.md";
 const ARTIFACT_DOCS: &str = "docs/release.md#release-receipt";
+const FLEET_BASELINE_DOCS: &str = "docs/fleet-health-baseline.md";
+/// How many repeated failure shapes the summary carries. Enough to tell "one
+/// lane" from "many" without turning the summary into the check-run list.
+const FAILING_CAUSE_LIMIT: usize = 5;
+/// How many repository names each cause names before the count speaks for it.
+const FAILING_CAUSE_REPO_LIMIT: usize = 5;
 
 pub(super) use checks::*;
 pub(super) use depends::*;
