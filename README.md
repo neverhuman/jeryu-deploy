@@ -13,6 +13,9 @@ authority. Durable detail is intentionally routed rather than duplicated:
 
 - Architecture and trust boundaries: `docs/architecture.md` and
   `docs/boundaries.md`.
+- Decisions that outlive the work that produced them, with their context and
+  consequences: `docs/adr/` (`docs/adr/README.md` explains the shape, and
+  cross-cutting family decisions live here rather than in a single repository).
 - Tests and required proof: `docs/testing.md`, `agent/test-map.json`, and
   `agent/proof-lanes.toml`.
 - Ownership and generated files: `agent/owner-map.json`,

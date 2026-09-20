@@ -6,6 +6,9 @@ Owns:
   (`docs/generated-zones.md`), audit (`docs/audit-rubric.md`), and
   release-control (`docs/release.md`, `docs/release-process.md`) documentation,
   all routed from root `AGENTS.md`.
+- Architecture decision records (`docs/adr/`): the convention in
+  `docs/adr/README.md`, the cross-cutting family decisions numbered under it,
+  and keeping `Supersedes:`/`Superseded-by:` consistent in both directions.
 - Keeping root `AGENTS.md` and `README.md` routed to the same canonical docs.
 - Workcell export-slice documentation in `docs/workcell.md`, including the
   release and testing proof commands for typed no-PR denial evidence.
@@ -35,4 +38,6 @@ Proof lane:
   when codegraph oracle API/MCP docs change.
 - `cargo test -p jeryu-api --features web --jobs 40 workcell_export_slice`
   when workcell export-slice docs change.
+- `cargo test -p jeryu-api --features web --jobs 40 --test adr_records`
+  when `docs/adr/` changes.
 - `bash ci-fast-push.sh --no-push` before release-facing docs are signed.
