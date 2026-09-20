@@ -453,10 +453,11 @@ fn runner(
             host: "xbabe2".to_string(),
             slot: 0,
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            interval_seconds: None,
             current: None,
             last: last.map(|(conclusion, pr)| GateRunnerResult {
                 repo: "jeryu/jeryu-web".to_string(),
-                pr,
+                pr: Some(pr),
                 sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
                 recipe: "review".to_string(),
                 conclusion: conclusion.to_string(),

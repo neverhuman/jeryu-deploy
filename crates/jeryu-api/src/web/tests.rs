@@ -7419,6 +7419,113 @@ async fn redteam_heartbeats_from_pragent_reach_the_fleet_as_a_reviewer() {
 }
 
 #[tokio::test]
+async fn automation_heartbeats_from_an_admin_reach_the_fleet_without_a_slot() {
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    // alton2 is an admin and is not named in JERYU_RUNNER_REPORTERS.
+    core.create_account("alton2", "alton2-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("mallory", "mallory-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "test", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, mallory) = (token("alton2"), token("mallory"));
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let beat = |conclusion: &str, interval: u64| {
+        serde_json::json!({
+            "runnerId": "xbabe0/auto-stage",
+            "host": "xbabe0",
+            "slot": 0,
+            "labels": ["automation"],
+            "intervalSeconds": interval,
+            "last": {
+                "repo": "jeryu/jeryu-deploy",
+                "sha": "77dc3310aa5eadc15694dd1434d9f8f99c44a0d3",
+                "recipe": "auto-stage", "conclusion": conclusion,
+                "seconds": 0, "finishedAt": "2026-09-20T04:10:00Z"
+            }
+        })
+    };
+    let post = |token: &str, body: serde_json::Value| {
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/api/v1/runners/heartbeat")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let refused = router
+        .clone()
+        .oneshot(post(&mallory, beat("staged", 300)))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response_json(refused).await["code"], "permission_denied");
+
+    for (body, message) in [
+        (
+            beat("success", 300),
+            "last.conclusion: expected opened, staged, waiting, failed",
+        ),
+        (beat("staged", 29), "intervalSeconds: expected 30 to 86400"),
+        (
+            beat("staged", 86_401),
+            "intervalSeconds: expected 30 to 86400",
+        ),
+    ] {
+        let invalid = router.clone().oneshot(post(&admin, body)).await.unwrap();
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = response_json(invalid).await;
+        assert_eq!(body["code"], "invalid_input");
+        assert_eq!(body["message"], message);
+    }
+
+    let accepted = router
+        .clone()
+        .oneshot(post(&admin, beat("staged", 300)))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let accepted = response_json(accepted).await;
+    assert_eq!(accepted["runnerId"], "xbabe0/auto-stage");
+    assert_eq!(accepted["offlineAfterSeconds"], 900);
+
+    let fleet = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/control-plane/runners")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = response_json(fleet).await;
+    let node = &body["local"]["nodeDetails"][0];
+    assert_eq!(node["runnerId"], "xbabe0/auto-stage");
+    assert_eq!(node["source"], "automation");
+    assert_eq!(node["classes"][0], "automation");
+    assert_eq!(node["state"], "active");
+    assert_eq!(node["capacity"], 0);
+    assert_eq!(node["offlineAfterSeconds"], 900);
+    assert_eq!(node["lastActivity"]["conclusion"], "staged");
+    assert!(node["lastActivity"]["pr"].is_null());
+    // A timer is not gate capacity: no slot, and the fabric is still unknown.
+    assert_eq!(body["local"]["totalSlots"], 0);
+    assert_eq!(body["local"]["onlineRunners"], 0);
+    assert_eq!(body["local"]["state"], "unknown");
+}
+
+#[tokio::test]
 async fn gate_identity_publishes_statuses_without_admin_but_cannot_protect() {
     use axum::body::Body;
     use axum::http::Request;

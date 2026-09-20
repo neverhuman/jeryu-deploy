@@ -76,6 +76,12 @@ a failing head once, then posts `pin.bump_failed` for a human and leaves that he
 pinned, how far behind it is and whether a bump is open: `GET /api/v1/pins` and the inbox item
 `pin_behind` (docs/pipeline-events.md).
 
+Every tick also ends with one runner heartbeat (`<host>/auto-pin`, label `automation`), so
+`/runners` shows the timer alive and what it last did: `opened` a bump, `waiting` behind one or
+for the web gate, or `failed` on a head. Same token, same `curl --config` file, same origin guard
+as the events; a refused beat costs one log line and never the tick. `JERYU_AUTO_PIN_BEAT=0` turns
+it off. Contract: [`docs/pipeline-events.md`](../../docs/pipeline-events.md#runner-heartbeats).
+
 The manual fallback changes only the lock entry:
 
 ```sh
@@ -107,3 +113,8 @@ Each attempt also posts a pipeline event to the forge (`release.staged` with the
 or `release.stage_failed` with the tail of the staging output), which is how the attention inbox
 knows a release is staged and waiting. Posting is best-effort and never fails a staging. The
 contract is in [`docs/pipeline-events.md`](../../docs/pipeline-events.md).
+
+Every tick, idle ones included, ends with one runner heartbeat (`<host>/auto-stage`, label
+`automation`, no `pr`), so `/runners` shows the timer alive and whether it last `staged` a commit,
+is `waiting` for main's gate, or `failed`. Best-effort like the events; `JERYU_AUTO_STAGE_BEAT=0`
+turns it off.

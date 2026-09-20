@@ -5,7 +5,7 @@ use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
-use jeryu_core::AccountSummary;
+use jeryu_core::{AccountSummary, UserRole};
 use serde_json::json;
 
 use crate::web::WebState;
@@ -44,18 +44,21 @@ pub(crate) async fn runners(State(state): State<Arc<WebState>>) -> Json<RunnerFa
     Json(runner_fabric(&state))
 }
 
-/// `POST /api/v1/runners/heartbeat`: a gate runner slot reports what it is doing.
+/// `POST /api/v1/runners/heartbeat`: a gate runner slot, the reviewer or a
+/// background timer reports what it is doing. Open to the named reporters and
+/// to forge admins (see [`GateRunnerStore::may_report`]).
 pub(crate) async fn runner_heartbeat(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
     Json(heartbeat): Json<GateRunnerHeartbeat>,
 ) -> Response {
-    if !state.gate_runners.may_report(&account.login) {
+    let admin = account.role == UserRole::Admin;
+    if !state.gate_runners.may_report(&account.login, admin) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
                 "code": "permission_denied",
-                "message": "this account may not report runner heartbeats (JERYU_RUNNER_REPORTERS)",
+                "message": "this account may not report runner heartbeats: report as a forge admin or a JERYU_RUNNER_REPORTERS login",
             })),
         )
             .into_response();

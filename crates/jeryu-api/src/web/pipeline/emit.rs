@@ -6,7 +6,7 @@ use jeryu_core::PullRequest;
 use serde_json::{Value, json};
 
 use super::super::WebState;
-use super::super::control_plane::{GateRunnerHeartbeat, is_reviewer};
+use super::super::control_plane::{GateRunnerHeartbeat, is_automation, is_reviewer, work_label};
 use super::{NewEvent, emit};
 
 /// A pull request event, tagged with the family and shift branch when the
@@ -264,14 +264,27 @@ fn deployment(
     );
 }
 
+/// A heartbeat's optional pull request number as an event's: none stays none.
+fn event_pr(pr: Option<u64>) -> Option<i64> {
+    pr.and_then(|pr| i64::try_from(pr).ok())
+        .filter(|pr| *pr > 0)
+}
+
 /// `gate.started` / `gate.finished` (or `review.*` for pr-redteam) when a
 /// runner's heartbeat shows a new `current` task or a new `last` result.
 /// Runners beat every minute, so an unchanged beat emits nothing.
+///
+/// A background timer's beat (`automation` label) emits nothing at all: the
+/// release scripts post their own `pin.*` and release events, and a second
+/// `gate.*` line for the same fact would misreport it as a gate.
 pub(crate) fn runner_heartbeat(
     state: &WebState,
     previous: Option<&GateRunnerHeartbeat>,
     current: &GateRunnerHeartbeat,
 ) {
+    if is_automation(current) {
+        return;
+    }
     let reviewer = is_reviewer(current);
     let (noun, verb) = if reviewer {
         ("review", "reviewing")
@@ -287,12 +300,16 @@ pub(crate) fn runner_heartbeat(
             NewEvent {
                 actor: Some(current.runner_id.clone()),
                 repo: Some(task.repo.clone()),
-                pr: i64::try_from(task.pr).ok().filter(|pr| *pr > 0),
+                pr: event_pr(task.pr),
                 sha: Some(task.sha.clone()),
                 detail: Some(source_detail(&task.recipe)),
                 ..NewEvent::forge(
                     &format!("{noun}.started"),
-                    format!("{} {verb} {}#{}", current.runner_id, task.repo, task.pr),
+                    format!(
+                        "{} {verb} {}",
+                        current.runner_id,
+                        work_label(&task.repo, task.pr, &task.sha)
+                    ),
                 )
             },
         );
@@ -316,7 +333,7 @@ pub(crate) fn runner_heartbeat(
             NewEvent {
                 actor: Some(current.runner_id.clone()),
                 repo: Some(result.repo.clone()),
-                pr: i64::try_from(result.pr).ok().filter(|pr| *pr > 0),
+                pr: event_pr(result.pr),
                 sha: Some(result.sha.clone()),
                 outcome: Some(result.conclusion.clone()),
                 needs_human: reviewer_needs_human,
@@ -327,10 +344,9 @@ pub(crate) fn runner_heartbeat(
                 ..NewEvent::forge(
                     &format!("{noun}.finished"),
                     format!(
-                        "{} {noun} of {}#{}: {} in {}s",
+                        "{} {noun} of {}: {} in {}s",
                         current.runner_id,
-                        result.repo,
-                        result.pr,
+                        work_label(&result.repo, result.pr, &result.sha),
                         result.conclusion,
                         result.seconds
                     ),

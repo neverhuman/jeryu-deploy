@@ -90,7 +90,7 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 | `shift.pr_opened` | the Shift page opened a shift's review PR |
 | `pr.opened`, `pr.review`, `pr.approved`, `pr.merged` | pull request steps on the v1 routes and the GitHub-compatible edge; `pr.review` has `outcome` `approve`, `request_changes` or `comment`, and `needs_human` for `request_changes`. Tagged with `family` and `shift` when the head is a shift branch |
 | `queue.enqueued`, `queue.building`, `queue.landed`, `queue.failed`, `queue.dequeued`, `queue.refused` | merge-queue transitions. `queue.building` is a rebuild (moved base, or a retry after a red gate). `queue.landed` is followed by `pr.merged` with `detail.via = "merge_queue"`. `queue.refused` means the PR could not be replayed onto the base and somebody has to rebase it |
-| `gate.started`, `gate.finished`, `review.started`, `review.finished` | a runner heartbeat's `current` or `last` differs from that runner's previous beat (`review.*` for the `redteam` label). A reviewer verdict of `hold`, `failed`, `publication_rejected` or `too_large` sets `needs_human` |
+| `gate.started`, `gate.finished`, `review.started`, `review.finished` | a runner heartbeat's `current` or `last` differs from that runner's previous beat (`review.*` for the `redteam` label; never for the `automation` label, see [Runner heartbeats](#runner-heartbeats)). A reviewer verdict of `hold`, `failed`, `publication_rejected` or `too_large` sets `needs_human` |
 | `deploy.created`, `deploy.status` | a write to the Deployments API; `outcome` is the deployment status state, `needs_human` for `failure` and `error`. `deploy-release.sh` needs no change |
 
 There is no `status.posted`: commit statuses are too noisy, and `gate.*` covers
@@ -279,6 +279,74 @@ per family repo per request, per-todo git only when its base branch or
 production deployment moved, and merged or released work is never re-checked.
 A family whose repos live under another owner than its queue resolves them by
 unique repository name.
+
+## Runner heartbeats
+
+`/runners` is drawn from heartbeats, not from the event log. Gate runner slots,
+the pr-redteam reviewer and the release timers (`auto-pin.sh`, `auto-stage.sh`)
+all report through one route; the forge keeps the latest beat per `runnerId` in
+memory, so a restarted forge repopulates within one tick of each reporter.
+Implementation: `crates/jeryu-api/src/web/control_plane/gate_runners.rs`.
+
+### `POST /api/v1/runners/heartbeat`
+
+Who may post: a login in `JERYU_RUNNER_REPORTERS` (comma-separated, default
+`gatebot,pragent`), or any global admin. The rule exists so an ordinary account
+cannot paint fake runners; admins are not ordinary accounts, and the release
+timers run as the admin `alton2`. Anyone else gets `403 permission_denied`.
+
+```json
+{"runnerId": "xbabe0/auto-pin", "host": "xbabe0", "slot": 0,
+ "labels": ["automation"], "intervalSeconds": 300,
+ "last": {"repo": "jeryu/jeryu-deploy", "pr": 74, "sha": "ea04cac1f0…",
+          "recipe": "auto-pin", "conclusion": "opened", "seconds": 0,
+          "finishedAt": "2026-09-20T04:10:00Z"}}
+```
+
+Unknown fields are refused. A malformed beat is `422 invalid_input` whose
+`message` names the field.
+
+| Field | Meaning |
+|---|---|
+| `runnerId`, `host`, `slot` | required. `runnerId` is the stable key, `<host>/<name>` by convention (`xbabe2/slot0`, `xbabe0/redteam`, `xbabe0/auto-stage`) |
+| `labels` | optional. `redteam` marks the reviewer and `automation` marks a background timer (the two are exclusive); anything else is a gate slot |
+| `intervalSeconds` | optional integer, 30 to 86400: how often this runner beats. Absent means the runner is offline after 180 seconds of silence; present, after `max(180, 3 * intervalSeconds)` |
+| `current` | optional: `{repo, pr?, sha, recipe, startedAt}`, the work in hand |
+| `last` | optional: `{repo, pr?, sha, recipe, conclusion, seconds, finishedAt}`, the newest finished work. Leave it out when there is no history |
+| `pr` | optional in both, for every label: absent or `null` when the work has no pull request (auto-stage stages a commit) |
+| `last.conclusion` | by label. Gate slot: `success`, `failure`, `error`. `redteam`: `approve`, `hold`, `failed`, `interrupted`, `publication_rejected`, `too_large`. `automation`: `opened` (a pull request), `staged` (a release), `waiting` (behind `pr`, or for the gate of `sha` when there is no `pr`), `failed` |
+
+The answer is `{"accepted": true, "runnerId": "…", "offlineAfterSeconds": 900}`
+with the threshold that now applies to this runner.
+
+A gate slot's or the reviewer's beat emits `gate.*` / `review.*` events when its
+`current` or `last` changes (see Kinds). An `automation` beat never emits an
+event: the release scripts post their own `pin.*` and `release.*` events.
+
+### Reading them: `GET /api/v1/control-plane/runners`
+
+Each reporting runner is one entry of `local.nodeDetails`:
+
+```json
+{"runnerId": "xbabe0/auto-stage", "source": "automation", "state": "active",
+ "capacity": 0, "inFlight": 0, "labels": ["xbabe0", "slot 0", "automation"],
+ "classes": ["automation"], "activeTaskCount": 0,
+ "lastUpdated": "2026-09-20T04:15:02+00:00", "activeTasks": [],
+ "lastActivity": {"repo": "jeryu/jeryu-deploy", "pr": null, "sha": "77dc3310aa…",
+                  "recipe": "auto-stage", "conclusion": "staged", "seconds": 0,
+                  "finishedAt": "2026-09-20T04:10:00+00:00"},
+ "offlineAfterSeconds": 900}
+```
+
+`source` is `pr-gate-runner`, `pr-redteam` or `automation` (`classes` says the
+same as `pr-gate`, `reviewer`, `automation`). `state` is `offline` once
+`lastUpdated` is older than `offlineAfterSeconds`; an offline runner is kept and
+shown, never dropped. `lastActivity.pr` is `null` for work without a pull
+request, and a task's `label` is then `<repo>@<sha7>` instead of `<repo>#<pr>`.
+Reviewers and timers hold no gate slot: `capacity` is 0 and they are left out
+of `onlineRunners`, `offlineRunners`, the slot totals and the inbox's
+`gate_runner_down` rule. `offlineAfterSeconds` is absent on workcell nodes,
+which do not report by heartbeat.
 
 ## For agents
 

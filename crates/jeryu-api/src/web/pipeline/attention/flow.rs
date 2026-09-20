@@ -216,40 +216,41 @@ pub(crate) fn runner_items(
             "failed" => "the review run ended without a usable verdict",
             _ => continue,
         };
-        if !open_pulls.contains(&(last.repo.clone(), last.pr)) {
+        let Some(pr) = last
+            .pr
+            .filter(|pr| open_pulls.contains(&(last.repo.clone(), *pr)))
+        else {
             continue;
-        }
+        };
         let mut item = Draft {
-            id: format!("reviewer-stuck:{}:{}", last.repo, last.pr),
+            id: format!("reviewer-stuck:{}:{}", last.repo, pr),
             kind: "reviewer_stuck",
             severity: Severity::Action,
-            title: format!(
-                "The automated reviewer stopped on {}#{}",
-                last.repo, last.pr
-            ),
+            title: format!("The automated reviewer stopped on {}#{}", last.repo, pr),
             reason: format!(
                 "{} ended with \"{}\": {explained}. It will not approve this head, so a \
                  person has to review it or the author has to change it.",
                 record.heartbeat.runner_id, last.conclusion
             ),
-            href: pull_href(&last.repo, last.pr),
+            href: pull_href(&last.repo, pr),
             label: "Review the pull request by hand",
             command: None,
         }
         .build();
         item.since = Some(last.finished_at.to_rfc3339());
         item.repo = Some(last.repo.clone());
-        item.pr = Some(last.pr);
+        item.pr = Some(pr);
         item.sha = Some(last.sha.clone());
         items.push(item);
     }
-    let gate_online = runners
-        .iter()
-        .any(|r| !is_reviewer(&r.heartbeat) && is_online(r, now));
+    // A background timer (auto-pin, auto-stage) beating is not a gate slot.
+    let gate_slot =
+        |r: &&GateRunnerRecord| crate::web::control_plane::holds_gate_slot(&r.heartbeat);
+    let gate_online = runners.iter().filter(gate_slot).any(|r| is_online(r, now));
     if !gate_online && (!open_pulls.is_empty() || queue_building) {
         let last_seen = runners
             .iter()
-            .filter(|r| !is_reviewer(&r.heartbeat))
+            .filter(gate_slot)
             .map(|r| r.received_at)
             .max();
         let mut item = Draft {

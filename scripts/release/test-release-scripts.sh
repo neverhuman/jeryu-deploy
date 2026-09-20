@@ -105,8 +105,10 @@ echo "jeryu-$PREV"
 EOF
 cat >"$A/bin/curl" <<EOF
 #!/usr/bin/env bash
-# The status API answers success; an event POST is recorded, or refused when told to.
+# The status API answers success; an event POST or a heartbeat is recorded, or refused when told to.
+printf '%s\n' "\$*" >>"$A/curl-args"
 case "\$*" in
+  *"/api/v1/runners/heartbeat"*) [ -e "$A/refuse-beats" ] && exit 22; cat >>"$A/beats.jsonl"; echo >>"$A/beats.jsonl" ;;
   *"/api/v1/events"*) [ -e "$A/refuse-events" ] && exit 22; cat >>"$A/events.jsonl"; echo >>"$A/events.jsonl" ;;
   *) echo '{"state":"success"}' ;;
 esac
@@ -114,7 +116,7 @@ EOF
 chmod +x "$A/bin/ssh" "$A/bin/curl"
 echo "not-a-real-token" >"$A/token"
 auto_stage() {
-  PATH="$A/bin:$PATH" JERYU_DEPLOY_REMOTE="$A/remote.git" JERYU_AUTO_STAGE_STATE="$A/state" \
+  PATH="$A/bin:$PATH" JERYU_DEPLOY_REMOTE="$A/remote.git" JERYU_DEPLOY_REPO=jeryu/jeryu-deploy JERYU_AUTO_STAGE_STATE="$A/state" \
     JERYU_STATUS_TOKEN_FILE="$A/token" JERYU_BASE="https://forge.invalid" bash "$here/auto-stage.sh"
 }
 
@@ -149,6 +151,30 @@ auto_stage >/dev/null 2>&1 || fail "auto-stage failed"
 auto_stage >/dev/null 2>&1 || fail "an idle auto-stage tick failed"
 [[ ! -s "$A/events.jsonl" ]] || fail "an already-staged commit emitted again"
 ok "auto-stage reports a staged release once, with the deploy command and what is live"
+
+# Every tick, idle or not, posts one heartbeat so /runners shows the timer alive and what it did.
+newest() { jq -sc '.[-1]' "$1"; }
+me="$(hostname -s)"
+: >"$A/beats.jsonl"
+auto_stage >"$A/run5.log" 2>&1 || fail "an idle auto-stage tick failed"
+[[ "$(jq -s length "$A/beats.jsonl")" == 1 && ! -s "$A/run5.log" ]] || fail "an idle auto-stage tick must post exactly one heartbeat, silently"
+newest "$A/beats.jsonl" | jq -e --arg id "$me/auto-stage" --arg host "$me" --arg sha "$sha" '
+  .runnerId == $id and .host == $host and .slot == 0 and .labels == ["automation"] and .intervalSeconds == 300
+  and (has("current") | not) and .last.repo == "jeryu/jeryu-deploy" and .last.sha == $sha and (.last | has("pr") | not)
+  and .last.recipe == "auto-stage" and .last.conclusion == "staged" and .last.seconds == 0' >/dev/null || fail "the auto-stage heartbeat is not the contract's"
+[[ "$(newest "$A/beats.jsonl" | jq -r .last.finishedAt)" == "$(tail -n 1 "$A/state/staged.tsv" | cut -f3)" ]] || fail "the heartbeat does not date the staging from staged.tsv"
+rm -rf "$A/state"; touch "$A/fail" "$A/refuse-beats"; : >"$A/beats.jsonl"
+rc=0; auto_stage >"$A/run6.log" 2>&1 || rc=$?
+[[ $rc == 1 && "$(grep -c heartbeat "$A/run6.log")" == 1 ]] || fail "a refused heartbeat must cost one log line and leave the tick's result alone"
+rm -f "$A/refuse-beats"
+if auto_stage >/dev/null 2>&1; then fail "the second failed staging reported success"; fi
+newest "$A/beats.jsonl" | jq -e --arg sha "$sha" '.last.conclusion == "failed" and .last.sha == $sha' >/dev/null || fail "a staging that gave up does not beat as failed"
+rm -f "$A/fail"; rm -rf "$A/state"; : >"$A/beats.jsonl"
+JERYU_AUTO_STAGE_BEAT=0 auto_stage >/dev/null 2>&1 || fail "auto-stage failed with the heartbeat off"
+[[ ! -s "$A/beats.jsonl" ]] || fail "JERYU_AUTO_STAGE_BEAT=0 still posted a heartbeat"
+if grep -rq "not-a-real-token" "$A/curl-args" "$A/beats.jsonl" "$A"/run*.log; then fail "the token leaked into argv or output"; fi
+grep "runners/heartbeat" "$A/curl-args" | grep -qv -- "--config" && fail "a heartbeat did not get the token through a config file"
+ok "auto-stage beats once per tick with what it last did; a refused beat never fails the tick"
 
 # --- auto-pin.sh: propose the jeryu-web pin bump, exactly two lock lines, never merge ---
 # Stand-ins: local bare repos as the jeryu-deploy and jeryu-web remotes (jeryu-deploy main carries
@@ -194,6 +220,8 @@ url="\${!#}"; method=GET; prev=""
 for arg in "\$@"; do [ "\$prev" = -X ] && method="\$arg"; prev="\$arg"; done
 case "\$method \$url" in
   "POST https://git.neverhuman.org/api/v1/events") cat >>"$P/events.jsonl"; echo >>"$P/events.jsonl"; echo '{"ok":true}' ;;
+  "POST https://git.neverhuman.org/api/v1/runners/heartbeat")
+    [ -e "$P/refuse-beats" ] && exit 22; cat >>"$P/beats.jsonl"; echo >>"$P/beats.jsonl"; echo '{"accepted":true}' ;;
   "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls")
     [ -e "$P/refuse-pr" ] && exit 22; cat >>"$P/prs.jsonl"; echo >>"$P/prs.jsonl"; echo '{"number":7}' ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls?"*) cat "$P/pulls.json" ;;
@@ -203,14 +231,15 @@ esac
 EOF
 chmod +x "$P/bin/curl"
 echo "not-a-real-pin-token" >"$P/token"; chmod 600 "$P/token"
-echo '[]' >"$P/pulls.json"; echo pending >"$P/gate"; : >"$P/curl-args"; : >"$P/events.jsonl"; : >"$P/prs.jsonl"; : >"$P/builds"
+echo '[]' >"$P/pulls.json"; echo pending >"$P/gate"; : >"$P/curl-args"; : >"$P/events.jsonl"; : >"$P/prs.jsonl"; : >"$P/builds"; : >"$P/beats.jsonl"
 auto_pin() {
   PATH="$P/bin:$PATH" JERYU_DEPLOY_REMOTE="$P/deploy.git" JERYU_WEB_REMOTE="$P/web.git" \
-    JERYU_DEPLOY_REPO=jeryu/jeryu-deploy JERYU_WEB_REPO=jeryu/jeryu-web JERYU_AUTO_PIN_STATE="$P/state" \
+    JERYU_DEPLOY_REPO=jeryu/jeryu-deploy JERYU_WEB_REPO=jeryu/jeryu-web JERYU_AUTO_PIN_STATE="${PIN_STATE:-$P/state}" \
     JERYU_PIN_TOKEN_FILE="$P/token" JERYU_BASE="${PIN_BASE:-https://git.neverhuman.org}" bash "$here/auto-pin.sh"
 }
 branches() { git -C "$P/deploy.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/*'; }
 lines() { wc -l <"$1" | tr -d ' '; }
+beat_is() { newest "$P/beats.jsonl" | jq -e "${@:2}" "$1" >/dev/null; } # FILTER [jq args]: the newest heartbeat
 posted() { jq -s length "$1"; }
 
 rc=0; PIN_BASE=https://git.neverhuman.org.evil.invalid auto_pin >"$P/run.log" 2>&1 || rc=$?
@@ -222,7 +251,11 @@ ok "auto-pin refuses a foreign origin and a loose token file before any request"
 auto_pin >"$P/run.log" 2>&1 || fail "a not-green tick failed"
 grep -q "gate is pending; waiting" "$P/run.log" || fail "auto-pin did not wait for the web gate"
 [[ -z "$(branches)" && ! -s "$P/prs.jsonl" && ! -s "$P/builds" && ! -s "$P/events.jsonl" ]] || fail "auto-pin acted on a web head that is not green"
-ok "auto-pin waits while jeryu-web main is not green"
+[[ "$(posted "$P/beats.jsonl")" == 1 && "$(grep -c runners/heartbeat "$P/curl-args")" == 1 ]] || fail "a tick must post exactly one heartbeat"
+beat_is '.runnerId == $id and .host == $host and .slot == 0 and .labels == ["automation"] and .intervalSeconds == 300
+  and (has("current") | not) and .last.conclusion == "waiting" and .last.sha == $sha and (.last | has("pr") | not)' \
+  --arg id "$me/auto-pin" --arg host "$me" --arg sha "$h1" || fail "the auto-pin heartbeat is not the contract's"
+ok "auto-pin waits while jeryu-web main is not green, and beats once to say so"
 
 echo success >"$P/gate"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "auto-pin failed on the happy path"; }
@@ -238,8 +271,10 @@ msg="$(git -C "$P/deploy.git" log -1 --format=%B "$b1")"
 [[ "$(posted "$P/prs.jsonl")" == 1 ]] || fail "auto-pin did not open exactly one pull request"
 jq -es --arg b "$b1" --arg t "release: pin jeryu-web ${h1:0:7}" '.[0] | .head == $b and .base == "main" and .title == $t and (.body | contains("web change 3"))' "$P/prs.jsonl" >/dev/null || fail "the pull request is not the bump"
 jq -es --arg to "$h1" --arg from "$w1" --arg hash "$dist_b" '.[0] | .kind == "pin.bump_opened" and .source == "auto-pin" and .pr == 7 and .repo == "jeryu/jeryu-deploy" and .needs_human == false and .detail.to == $to and .detail.from == $from and .detail.web_dist_sha256 == $hash and .detail.dependency == "jeryu/jeryu-web"' "$P/events.jsonl" >/dev/null || fail "no pin.bump_opened event"
-if grep -rq "not-a-real-pin-token" "$P/curl-args" "$P/run.log" "$P/events.jsonl" "$P/prs.jsonl" "$P/state/logs"; then fail "the token leaked into argv or output"; fi
-grep -q -- "--config" "$P/curl-args" || fail "curl did not get the token through a config file"
+beat_is '.last == {repo: "jeryu/jeryu-deploy", pr: 7, sha: $sha, recipe: "auto-pin", conclusion: "opened", seconds: 0, finishedAt: $at}' \
+  --arg sha "$h1" --arg at "$(tail -n 1 "$P/state/opened.tsv" | cut -f3)" || fail "after opening a bump the heartbeat does not name its pull request"
+if grep -rq "not-a-real-pin-token" "$P/curl-args" "$P/run.log" "$P/events.jsonl" "$P/prs.jsonl" "$P/beats.jsonl" "$P/state/logs"; then fail "the token leaked into argv or output"; fi
+if grep -v -- "--config" "$P/curl-args" | grep -q .; then fail "curl did not get the token through a config file"; fi
 ok "auto-pin builds, changes exactly two lock lines, and opens one pull request with what it ships"
 
 jq -n --arg b "$b1" '[{number: 7, state: "closed", title: "x", head: {ref: $b}}]' >"$P/pulls.json"
@@ -253,6 +288,10 @@ h2="$(git -C "$P/web" rev-parse HEAD)"
 jq -n '[{number: 53, state: "open", title: "release: pin jeryu-web 427bebe (by hand)", head: {ref: "alton/pin-web"}}]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick behind an open bump failed"
 grep -q "bump #53 is open" "$P/run.log" && [[ "$(branches)" == "$b1" && "$(lines "$P/builds")" == 1 ]] || fail "auto-pin opened a second bump beside an open one"
+beat_is '.last.conclusion == "waiting" and .last.pr == 53 and .last.sha == $sha' --arg sha "$h2" || fail "a head behind an open bump does not beat as waiting for it"
+since="$(newest "$P/beats.jsonl" | jq -r .last.finishedAt)"; sleep 1
+auto_pin >/dev/null 2>&1 || fail "a second tick behind an open bump failed"
+beat_is '.last.finishedAt == $since' --arg since "$since" || fail "a wait must keep the time it began"
 ok "auto-pin never proposes twice: an existing pull request, a pushed branch, or any open bump"
 
 echo '[]' >"$P/pulls.json"; touch "$P/fail"; : >"$P/events.jsonl"
@@ -264,15 +303,23 @@ jq -es --arg id "auto-pin:failed:${h2:0:12}:2" '.[0] | .needs_human == true and 
 : >"$P/events.jsonl"; builds="$(lines "$P/builds")"
 auto_pin >"$P/run.log" 2>&1 || fail "a given-up head must be an idle tick"
 grep -q "leaving it for a human" "$P/run.log" && [[ ! -s "$P/events.jsonl" && "$(lines "$P/builds")" == "$builds" ]] || fail "auto-pin kept retrying a head it gave up on"
+beat_is '.last.conclusion == "failed" and .last.sha == $sha and (.last | has("pr") | not)' --arg sha "$h2" || fail "a head it gave up on does not beat as failed"
 ok "auto-pin counts a failed build, asks for a human on the second, then leaves that head alone"
 
-rm -f "$P/fail" "$P/state/failures/$h2"
-auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "auto-pin failed on the second head"; }
+rm -f "$P/fail" "$P/state/failures/$h2"; touch "$P/refuse-beats"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "auto-pin failed on the second head (the forge refusing the heartbeat must not matter)"; }
+[[ "$(grep -c heartbeat "$P/run.log")" == 1 ]] || fail "a refused heartbeat must cost exactly one log line"
+rm -f "$P/refuse-beats"
 b2="auto/pin-web-${h2:0:12}"
 git -C "$P/deploy.git" update-ref refs/heads/main "refs/heads/$b2" # the bump lands
+: >"$P/curl-args"; : >"$P/beats.jsonl"
+JERYU_AUTO_PIN_BEAT=0 auto_pin >"$P/run.log" 2>&1 || fail "an up-to-date tick failed with the heartbeat off"
+[[ ! -s "$P/curl-args" && ! -s "$P/run.log" ]] || fail "JERYU_AUTO_PIN_BEAT=0 still sent a request"
+PIN_STATE="$P/state-fresh" auto_pin >"$P/run.log" 2>&1 || fail "a first-ever tick failed"
+beat_is '.runnerId == $id and (has("last") | not)' --arg id "$me/auto-pin" || fail "a timer with no history must beat without a last"
 : >"$P/curl-args"; builds="$(lines "$P/builds")"
 auto_pin >"$P/run.log" 2>&1 || fail "an up-to-date tick failed"
-[[ ! -s "$P/curl-args" && ! -s "$P/run.log" && "$(lines "$P/builds")" == "$builds" ]] || fail "an up-to-date pin is not a silent no-op"
+[[ "$(cat "$P/curl-args")" == *"/api/v1/runners/heartbeat" && "$(lines "$P/curl-args")" == 1 && ! -s "$P/run.log" && "$(lines "$P/builds")" == "$builds" ]] || fail "an up-to-date pin is not a silent no-op"
 ok "auto-pin is a silent no-op once the pin is the web head"
 
 # A web commit that changes no shipped file (tests, docs) builds the bundle that is already pinned.

@@ -824,3 +824,62 @@ async fn runner_heartbeats_emit_gate_and_review_events_only_on_change() {
         "xbabe0/pr-redteam review of jeryu/jeryu-web#35: too_large in 114s"
     );
 }
+
+#[tokio::test]
+async fn automation_heartbeats_emit_no_events_and_a_gate_without_a_pr_still_does() {
+    let core = ForgeCore::new();
+    core.create_account("alton2", "alton2-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("gatebot", "gatebot-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "t", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, gatebot) = (token("alton2"), token("gatebot"));
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let sha = "77dc3310aa5eadc15694dd1434d9f8f99c44a0d3";
+    let timer = |last: Value| {
+        json!({"runnerId": "xbabe0/auto-pin", "host": "xbabe0", "slot": 0,
+               "labels": ["automation"], "intervalSeconds": 300, "last": last})
+    };
+    let did = |conclusion: &str, pr: Option<u64>| {
+        json!({"repo": "jeryu/jeryu-deploy", "pr": pr, "sha": sha, "recipe": "auto-pin",
+               "conclusion": conclusion, "seconds": 0, "finishedAt": "2026-09-20T04:10:00Z"})
+    };
+    let gate_task = json!({"repo": "jeryu/jeryu-deploy", "sha": sha,
+                           "recipe": "ops/ci/pr-ci.sh", "startedAt": "2026-09-20T04:11:00Z"});
+    for (who, body) in [
+        // Every transition a gate or reviewer would announce: none is news here.
+        (&admin, timer(Value::Null)),
+        (&admin, timer(did("waiting", Some(71)))),
+        (&admin, timer(did("opened", Some(74)))),
+        (&admin, timer(did("failed", None))),
+        (&gatebot, runner_beat(&["pr-gate"], Some(gate_task), None)),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                "/api/v1/runners/heartbeat",
+                who,
+                Some(body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let events = events_of(&router, &admin, "repo=jeryu/jeryu-deploy").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["kind"], "gate.started");
+    assert_eq!(events[0]["actor"], "xbabe2/slot0");
+    assert!(events[0]["pr"].is_null());
+    assert_eq!(
+        events[0]["summary"],
+        "xbabe2/slot0 gating jeryu/jeryu-deploy@77dc331"
+    );
+}

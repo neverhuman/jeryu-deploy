@@ -12,9 +12,20 @@
 //! (`approve`, `hold`, or an outcome with no usable verdict) instead of a gate
 //! result, and `/runners` renders it as a reviewer rather than a gate slot.
 //!
-//! Only logins named in `JERYU_RUNNER_REPORTERS` (comma-separated, default
-//! `gatebot,pragent`) may report, so an ordinary account cannot paint fake
-//! runners.
+//! The forge's background timers (`scripts/release/auto-pin.sh` and
+//! `auto-stage.sh`) report through the same contract with the
+//! [`AUTOMATION_LABEL`] label. Their `last.conclusion` says what the timer last
+//! did (`opened`, `staged`, `waiting`, `failed`), their work may have no pull
+//! request (`pr` is optional for every label), and they tick every five
+//! minutes, so a beat may carry `intervalSeconds`: the runner is then offline
+//! after `max(180, 3 * intervalSeconds)` instead of the flat 180 seconds.
+//! `/runners` lists them as automation; they hold no gate slot and their beats
+//! emit no pipeline events, because the scripts post their own.
+//!
+//! Who may report: logins named in `JERYU_RUNNER_REPORTERS` (comma-separated,
+//! default `gatebot,pragent`), or any forge admin. The rule exists so an
+//! ordinary account cannot paint fake runners; admins are not ordinary
+//! accounts, and the timers run as the admin `alton2`.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -22,12 +33,18 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Seconds without a heartbeat before a runner is shown offline.
+/// Seconds without a heartbeat before a runner is shown offline, for a runner
+/// that reports no `intervalSeconds` (or a short one).
 pub(crate) const RUNNER_OFFLINE_AFTER_SECS: i64 = 180;
+/// A runner that states its interval may miss two beats before it is offline.
+const OFFLINE_AFTER_INTERVALS: i64 = 3;
+const INTERVAL_SECONDS: std::ops::RangeInclusive<u64> = 30..=86_400;
 const MAX_RUNNERS: usize = 256;
 const DEFAULT_REPORTERS: &str = "gatebot,pragent";
 /// Heartbeat label that marks a PR reviewer (pr-redteam) instead of a gate slot.
 pub(crate) const REVIEWER_LABEL: &str = "redteam";
+/// Heartbeat label that marks a background timer (auto-pin, auto-stage).
+pub(crate) const AUTOMATION_LABEL: &str = "automation";
 const GATE_CONCLUSIONS: &[&str] = &["success", "failure", "error"];
 /// Every decision pr-redteam records for a finished review pass.
 const REVIEW_CONCLUSIONS: &[&str] = &[
@@ -38,6 +55,9 @@ const REVIEW_CONCLUSIONS: &[&str] = &[
     "publication_rejected",
     "too_large",
 ];
+/// What a background timer last did: opened a pull request, staged a release,
+/// is waiting behind earlier work, or gave up on a head.
+const AUTOMATION_CONCLUSIONS: &[&str] = &["opened", "staged", "waiting", "failed"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -48,6 +68,10 @@ pub(crate) struct GateRunnerHeartbeat {
     pub slot: u32,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// How often this runner beats, 30 to 86400. Stretches the offline
+    /// threshold for slow tickers; absent means the flat 180 seconds.
+    #[serde(default)]
+    pub interval_seconds: Option<u64>,
     /// The gate this slot is running now, if any.
     #[serde(default)]
     pub current: Option<GateRunnerTask>,
@@ -60,7 +84,9 @@ pub(crate) struct GateRunnerHeartbeat {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct GateRunnerTask {
     pub repo: String,
-    pub pr: u64,
+    /// Absent or null for work that has no pull request (a staged commit).
+    #[serde(default)]
+    pub pr: Option<u64>,
     pub sha: String,
     pub recipe: String,
     /// `started_at` is accepted too: pr-redteam spells it that way, and the
@@ -73,7 +99,9 @@ pub(crate) struct GateRunnerTask {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct GateRunnerResult {
     pub repo: String,
-    pub pr: u64,
+    /// Absent or null for work that has no pull request (a staged commit).
+    #[serde(default)]
+    pub pr: Option<u64>,
     pub sha: String,
     pub recipe: String,
     pub conclusion: String,
@@ -123,8 +151,11 @@ impl GateRunnerStore {
         }
     }
 
-    pub(crate) fn may_report(&self, login: &str) -> bool {
-        self.reporters.iter().any(|reporter| reporter == login)
+    /// A named reporter or any forge admin. The rule exists so an ordinary
+    /// account cannot paint fake runners; admins are not ordinary accounts,
+    /// and the release timers run as the admin `alton2`.
+    pub(crate) fn may_report(&self, login: &str, admin: bool) -> bool {
+        admin || self.reporters.iter().any(|reporter| reporter == login)
     }
 
     pub(crate) fn record(
@@ -139,6 +170,7 @@ impl GateRunnerStore {
             return Err(format!("at most {MAX_RUNNERS} runners may report"));
         }
         let runner_id = heartbeat.runner_id.clone();
+        let offline_after_seconds = offline_after_secs(&heartbeat);
         runners.insert(
             runner_id.clone(),
             GateRunnerRecord {
@@ -150,7 +182,7 @@ impl GateRunnerStore {
         Ok(HeartbeatAccepted {
             accepted: true,
             runner_id,
-            offline_after_seconds: RUNNER_OFFLINE_AFTER_SECS,
+            offline_after_seconds,
         })
     }
 
@@ -173,13 +205,39 @@ impl GateRunnerStore {
     }
 }
 
+/// Seconds of silence after which this runner is offline:
+/// `max(180, 3 * intervalSeconds)`, so a five-minute timer is not shown
+/// offline between two healthy ticks.
+pub(crate) fn offline_after_secs(heartbeat: &GateRunnerHeartbeat) -> i64 {
+    heartbeat
+        .interval_seconds
+        .and_then(|interval| i64::try_from(interval).ok())
+        .map_or(RUNNER_OFFLINE_AFTER_SECS, |interval| {
+            RUNNER_OFFLINE_AFTER_SECS.max(interval.saturating_mul(OFFLINE_AFTER_INTERVALS))
+        })
+}
+
 pub(crate) fn is_online(record: &GateRunnerRecord, now: DateTime<Utc>) -> bool {
-    (now - record.received_at).num_seconds() <= RUNNER_OFFLINE_AFTER_SECS
+    (now - record.received_at).num_seconds() <= offline_after_secs(&record.heartbeat)
 }
 
 /// A heartbeat from a PR reviewer rather than a gate runner slot.
 pub(crate) fn is_reviewer(heartbeat: &GateRunnerHeartbeat) -> bool {
     heartbeat.labels.iter().any(|label| label == REVIEWER_LABEL)
+}
+
+/// A heartbeat from a background timer rather than a gate runner slot.
+pub(crate) fn is_automation(heartbeat: &GateRunnerHeartbeat) -> bool {
+    heartbeat
+        .labels
+        .iter()
+        .any(|label| label == AUTOMATION_LABEL)
+}
+
+/// A gate runner slot: neither the reviewer nor a background timer. Only these
+/// count as gate capacity, and only these keep `gate_runner_down` quiet.
+pub(crate) fn holds_gate_slot(heartbeat: &GateRunnerHeartbeat) -> bool {
+    !is_reviewer(heartbeat) && !is_automation(heartbeat)
 }
 
 fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
@@ -191,12 +249,28 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
     for label in &heartbeat.labels {
         check_token("labels", label, 64, "._/:- ")?;
     }
+    if is_reviewer(heartbeat) && is_automation(heartbeat) {
+        return Err(format!(
+            "labels: {REVIEWER_LABEL} and {AUTOMATION_LABEL} are exclusive"
+        ));
+    }
+    if let Some(interval) = heartbeat.interval_seconds
+        && !INTERVAL_SECONDS.contains(&interval)
+    {
+        return Err(format!(
+            "intervalSeconds: expected {} to {}",
+            INTERVAL_SECONDS.start(),
+            INTERVAL_SECONDS.end()
+        ));
+    }
     if let Some(task) = &heartbeat.current {
         check_gate("current", &task.repo, &task.sha, &task.recipe)?;
     }
     if let Some(result) = &heartbeat.last {
         check_gate("last", &result.repo, &result.sha, &result.recipe)?;
-        let (allowed, expected) = if is_reviewer(heartbeat) {
+        let (allowed, expected) = if is_automation(heartbeat) {
+            (AUTOMATION_CONCLUSIONS, AUTOMATION_CONCLUSIONS.join(", "))
+        } else if is_reviewer(heartbeat) {
             (REVIEW_CONCLUSIONS, REVIEW_CONCLUSIONS.join(", "))
         } else {
             (GATE_CONCLUSIONS, "success, failure or error".to_string())
@@ -245,16 +319,17 @@ mod tests {
             host: "xbabe2".to_string(),
             slot: 0,
             labels: vec!["pr-gate".to_string()],
+            interval_seconds: None,
             current: Some(GateRunnerTask {
                 repo: "veox/jain-web".to_string(),
-                pr: 13,
+                pr: Some(13),
                 sha: "abc30d78ca5eadc15694dd1434d9f8f99c44a0d3".to_string(),
                 recipe: "just required".to_string(),
                 started_at: Utc::now(),
             }),
             last: Some(GateRunnerResult {
                 repo: "veox/jain-deploy".to_string(),
-                pr: 31,
+                pr: Some(31),
                 sha: "3926cbd".to_string(),
                 recipe: "just required".to_string(),
                 conclusion: "success".to_string(),
@@ -267,10 +342,10 @@ mod tests {
     #[test]
     fn only_configured_reporters_may_report() {
         let store = GateRunnerStore::with_reporters(" gatebot , ci-bot,".split(','));
-        assert!(store.may_report("gatebot"));
-        assert!(store.may_report("ci-bot"));
-        assert!(!store.may_report("alton"));
-        assert!(!store.may_report(""));
+        assert!(store.may_report("gatebot", false));
+        assert!(store.may_report("ci-bot", false));
+        assert!(!store.may_report("alton", false));
+        assert!(!store.may_report("", false));
     }
 
     #[test]
@@ -345,9 +420,9 @@ mod tests {
     #[test]
     fn pragent_reports_by_default() {
         let store = GateRunnerStore::with_reporters(DEFAULT_REPORTERS.split(','));
-        assert!(store.may_report("pragent"));
-        assert!(store.may_report("gatebot"));
-        assert!(!store.may_report("alton"));
+        assert!(store.may_report("pragent", false));
+        assert!(store.may_report("gatebot", false));
+        assert!(!store.may_report("alton", false));
     }
 
     #[test]
@@ -369,6 +444,112 @@ mod tests {
             r#"{"repo":"veox/jain-web","pr":1,"sha":"abc30d78","recipe":"just required","conclusion":"success","seconds":9,"finishedAt":"2026-09-19T17:47:48Z"}"#,
         );
         assert!(camel.is_ok());
+    }
+
+    fn timer(runner_id: &str) -> GateRunnerHeartbeat {
+        serde_json::from_str(&format!(
+            r#"{{"runnerId":"{runner_id}","host":"xbabe0","slot":0,"labels":["automation"],
+                "intervalSeconds":300,
+                "last":{{"repo":"jeryu/jeryu-deploy","sha":"77dc3310aa","recipe":"auto-stage",
+                         "conclusion":"staged","seconds":0,"finishedAt":"2026-09-20T04:10:00Z"}}}}"#
+        ))
+        .expect("an automation beat without pr parses")
+    }
+
+    #[test]
+    fn automation_beats_need_no_pull_request() {
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let beat = timer("xbabe0/auto-stage");
+        assert!(is_automation(&beat));
+        assert_eq!(beat.last.as_ref().unwrap().pr, None);
+        let accepted = store.record(beat, "alton2", Utc::now()).unwrap();
+        assert_eq!(accepted.offline_after_seconds, 900);
+        assert_eq!(store.snapshot()[0].heartbeat.runner_id, "xbabe0/auto-stage");
+        // An explicit null is the same as leaving `pr` out, for every label.
+        let gate: GateRunnerTask = serde_json::from_str(
+            r#"{"repo":"veox/jain-web","pr":null,"sha":"abc30d78","recipe":"just required","startedAt":"2026-09-19T17:47:48Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(gate.pr, None);
+    }
+
+    #[test]
+    fn automation_beats_carry_their_own_conclusions() {
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let now = Utc::now();
+        let mut pin = timer("xbabe0/auto-pin");
+        for conclusion in AUTOMATION_CONCLUSIONS {
+            pin.last.as_mut().unwrap().conclusion = (*conclusion).to_string();
+            assert!(store.record(pin.clone(), "alton2", now).is_ok());
+        }
+        for conclusion in ["success", "approve", "done"] {
+            pin.last.as_mut().unwrap().conclusion = conclusion.to_string();
+            let refused = store.record(pin.clone(), "alton2", now).unwrap_err();
+            assert_eq!(
+                refused,
+                "last.conclusion: expected opened, staged, waiting, failed"
+            );
+        }
+        let mut gate = beat("xbabe2/slot0");
+        gate.last.as_mut().unwrap().conclusion = "staged".to_string();
+        assert!(store.record(gate, "gatebot", now).is_err());
+        let mut both = timer("xbabe0/auto-pin");
+        both.labels.push(REVIEWER_LABEL.to_string());
+        assert!(store.record(both, "alton2", now).is_err());
+    }
+
+    #[test]
+    fn interval_is_bounded() {
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let now = Utc::now();
+        for (interval, ok) in [(29, false), (30, true), (86_400, true), (86_401, false)] {
+            let mut beat = timer("xbabe0/auto-pin");
+            beat.interval_seconds = Some(interval);
+            let recorded = store.record(beat, "alton2", now);
+            assert_eq!(recorded.is_ok(), ok, "interval {interval}");
+            if let Err(reason) = recorded {
+                assert_eq!(reason, "intervalSeconds: expected 30 to 86400");
+            }
+        }
+        // A short interval never shortens the flat threshold.
+        let mut quick = timer("xbabe0/auto-pin");
+        quick.interval_seconds = Some(30);
+        assert_eq!(offline_after_secs(&quick), RUNNER_OFFLINE_AFTER_SECS);
+        assert_eq!(
+            offline_after_secs(&beat("xbabe2/slot0")),
+            RUNNER_OFFLINE_AFTER_SECS
+        );
+    }
+
+    #[test]
+    fn offline_threshold_honours_the_interval() {
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let then = Utc::now();
+        store
+            .record(timer("xbabe0/auto-pin"), "alton2", then)
+            .unwrap();
+        let record = &store.snapshot()[0];
+        assert!(is_online(record, then + Duration::seconds(181)));
+        assert!(is_online(record, then + Duration::seconds(900)));
+        assert!(!is_online(record, then + Duration::seconds(901)));
+    }
+
+    #[test]
+    fn a_timer_or_a_reviewer_is_not_a_gate_slot() {
+        // The inbox raises `gate_runner_down` when nothing that holds a gate
+        // slot is online: a beating timer must not hide a dead gate host.
+        assert!(holds_gate_slot(&beat("xbabe2/slot0")));
+        assert!(!holds_gate_slot(&timer("xbabe0/auto-pin")));
+        let mut review = beat("xbabe0/redteam");
+        review.labels = vec![REVIEWER_LABEL.to_string()];
+        assert!(!holds_gate_slot(&review));
+    }
+
+    #[test]
+    fn admins_report_without_being_named() {
+        let store = GateRunnerStore::with_reporters(DEFAULT_REPORTERS.split(','));
+        assert!(store.may_report("alton2", true));
+        assert!(!store.may_report("alton2", false));
     }
 
     #[test]

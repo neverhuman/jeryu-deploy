@@ -242,13 +242,19 @@ pub(crate) struct RunnerNodeSummary {
     /// The last gate this runner finished, for runners that report one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<RunnerLastActivity>,
+    /// Seconds of silence after which a heartbeat runner is offline
+    /// (`max(180, 3 * intervalSeconds)`); absent for workcell nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_after_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RunnerLastActivity {
     pub repo: String,
-    pub pr: u64,
+    /// `null` when the work had no pull request (a staged commit).
+    #[serde(default)]
+    pub pr: Option<u64>,
     pub sha: String,
     pub recipe: String,
     pub conclusion: String,

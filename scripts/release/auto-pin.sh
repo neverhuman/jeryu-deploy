@@ -21,8 +21,13 @@
 #      left alone. A newer head starts fresh. A branch pushed without its pull request (the API
 #      call failed) gets the pull request on the next tick, without rebuilding.
 #
+#   6. Every tick ends with one runner heartbeat (`<host>/auto-pin`, label `automation`), so
+#      /runners shows the timer alive and the last thing it did: opened a bump, is waiting behind
+#      one or for the web gate, or failed on a head. Best-effort: it never fails or delays a tick.
+#
 # State in $JERYU_AUTO_PIN_STATE (~/.local/state/jeryu-auto-pin): opened.tsv (web sha, PR, time),
-# failures/<web sha>, git caches, web-dist/ (build-web-dist.sh's OUT_ROOT), logs/ (newest 20).
+# failures/<web sha>, waiting (what the newest wait is for, and since when), git caches, web-dist/
+# (build-web-dist.sh's OUT_ROOT), logs/ (newest 20).
 #
 # Env: JERYU_DEPLOY_REMOTE, JERYU_WEB_REMOTE (git URLs; pushing uses this host's git credential);
 # JERYU_DEPLOY_REPO, JERYU_WEB_REPO (owner/name on the forge; default: from the remotes);
@@ -30,7 +35,8 @@
 # JERYU_PIN_TOKEN_FILE (the pull request author's token, also used for the status API and the
 # events; default ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat; a regular 0600 file);
 # JERYU_PIN_GIT_NAME / JERYU_PIN_GIT_EMAIL (alton2 / alton@veox.ai);
-# JERYU_AUTO_PIN_MAX_FAILURES (2); JERYU_AUTO_PIN_EVENTS=0 turns the events off.
+# JERYU_AUTO_PIN_MAX_FAILURES (2); JERYU_AUTO_PIN_EVENTS=0 turns the events off;
+# JERYU_AUTO_PIN_BEAT=0 turns the heartbeat off.
 set -euo pipefail
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
 web_remote="${JERYU_WEB_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-web.git}"
@@ -54,6 +60,57 @@ mkdir -p "$state/failures" "$state/logs"
 exec 9>"$state/lock"
 flock -n 9 || { say "another run holds the lock"; exit 0; }
 touch "$state/opened.tsv"
+
+# The token reaches curl through a 0600 config file, never through argv, and is never printed.
+# It is read here, before the idle exits, so that every tick can beat; a bad token file only stops
+# a tick where it always did, at the first forge request.
+work="$(mktemp -d)"; cfg="$work/curl.cfg"; : >"$cfg"; chmod 600 "$cfg"
+head="" beat_last="" token_problem=""
+trap 'beat || true; rm -rf "$work"' EXIT
+if [[ -f "$token_file" && ! -L "$token_file" && "$(stat -c '%a' "$token_file")" == 600 ]]; then
+  token="$(cat "$token_file")"
+  if [[ "$token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]]; then printf 'header = "Authorization: Bearer %s"\n' "$token" >"$cfg"
+  else token_problem="the token has an invalid bearer-token shape"; fi
+  unset token
+else
+  token_problem="the token must be a regular mode-0600 file"
+fi
+
+# did CONCLUSION PR SHA FINISHED_AT -> a heartbeat `last`: what this timer most recently did.
+did() {
+  jq -cn --arg conclusion "$1" --arg pr "$2" --arg sha "$3" --arg at "$4" --arg repo "$repo_path" '
+    {repo: $repo, sha: $sha, recipe: "auto-pin", conclusion: $conclusion, seconds: 0, finishedAt: $at}
+    + (if $pr != "" then {pr: ($pr | tonumber)} else {} end)'
+}
+# waiting_for PR: this head waits (behind bump #PR, or for its own gate when PR is empty). The
+# time the wait began is kept across ticks, so the row says since when and not "just now".
+waiting_for() {
+  local key="$head ${1:-gate}" since
+  since="$(awk -F'\t' -v key="$key" '$1 == key { print $2 }' "$state/waiting" 2>/dev/null)" || since=""
+  [ -n "$since" ] || { since="$(date -u +%FT%TZ)"; printf '%s\t%s\n' "$key" "$since" >"$state/waiting"; }
+  beat_last="$(did waiting "${1:-}" "$head" "$since")" || beat_last=""
+}
+# beat: one runner heartbeat (POST /api/v1/runners/heartbeat, docs/pipeline-events.md), sent by
+# the EXIT trap so idle ticks, early exits and finished work all report. `last` is a wait noted
+# this tick, else a failure recorded for the current head, else the newest opened bump; with no
+# history there is no `last`. Best-effort: at most one line, and never the tick's exit status.
+beat() {
+  [ "${JERYU_AUTO_PIN_BEAT:-1}" = 1 ] || return 0
+  [ -z "$token_problem" ] || { say "heartbeat: skipped ($token_problem)"; return 0; }
+  local host last="$beat_last" sha pr at body
+  host="$(hostname -s)" || return 0
+  if [ -z "$last" ] && [ -n "$head" ] && [ -s "$state/failures/$head" ]; then
+    last="$(did failed "" "$head" "$(date -u -r "$state/failures/$head" +%FT%TZ)")" || last=""
+  elif [ -z "$last" ] && IFS=$'\t' read -r sha pr at < <(tail -n 1 "$state/opened.tsv"); then
+    last="$(did opened "$pr" "$sha" "$at")" || last=""
+  fi
+  body="$(jq -cn --arg host "$host" --argjson last "${last:-null}" '
+    {runnerId: ($host + "/auto-pin"), host: $host, slot: 0, labels: ["automation"], intervalSeconds: 300}
+    + (if $last != null then {last: $last} else {} end)')" || { say "heartbeat: could not build (ignored)"; return 0; }
+  curl --silent --fail --max-time 10 --config "$cfg" -X POST -H 'Accept: application/json' \
+    -H 'Content-Type: application/json' --data-binary @- \
+    "$base/api/v1/runners/heartbeat" <<<"$body" >/dev/null 2>&1 || say "heartbeat: not accepted (ignored)"
+}
 
 main="$(git ls-remote "$remote" refs/heads/main | cut -f1)"
 head="$(git ls-remote "$web_remote" refs/heads/main | cut -f1)"
@@ -82,15 +139,7 @@ if (( failures >= max_failures )); then
   say "bumping to ${head:0:12} failed $failures times; leaving it for a human"; exit 0
 fi
 
-# The token reaches curl through a 0600 config file, never through argv, and is never printed.
-[[ -f "$token_file" && ! -L "$token_file" && "$(stat -c '%a' "$token_file")" == 600 ]] \
-  || { say "the token must be a regular mode-0600 file"; exit 2; }
-work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-cfg="$work/curl.cfg"; : >"$cfg"; chmod 600 "$cfg"
-token="$(cat "$token_file")"
-[[ "$token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || { say "the token has an invalid bearer-token shape"; exit 2; }
-printf 'header = "Authorization: Bearer %s"\n' "$token" >"$cfg"
-unset token
+[ -z "$token_problem" ] || { say "$token_problem"; exit 2; }
 api() { # METHOD PATH [JSON on stdin] -> body on stdout
   local method="$1" path="$2"; shift 2
   curl --silent --show-error --fail --max-time 60 --config "$cfg" -X "$method" \
@@ -124,12 +173,12 @@ jq -e 'type == "array"' <<<"$pulls" >/dev/null || { say "the pull request list i
 mine="$(jq -r --arg b "$branch" '[.[] | select(.head.ref == $b)][0].number // empty' <<<"$pulls")"
 if [ -n "$mine" ]; then exit 0; fi # this head already has its pull request, open or decided
 other="$(jq -r '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))][0].number // empty' <<<"$pulls")"
-if [ -n "$other" ]; then say "bump #$other is open; ${head:0:12} waits for it to land"; exit 0; fi
+if [ -n "$other" ]; then waiting_for "$other"; say "bump #$other is open; ${head:0:12} waits for it to land"; exit 0; fi
 
 pushed="$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
 if [ -z "$pushed" ]; then
   gate="$(api GET "/api/v3/repos/$web_path/commits/$head/status" | jq -r '.state // "unknown"')" || gate=unknown
-  if [ "$gate" != success ]; then say "jeryu-web ${head:0:12} gate is $gate; waiting"; exit 0; fi
+  if [ "$gate" != success ]; then waiting_for ""; say "jeryu-web ${head:0:12} gate is $gate; waiting"; exit 0; fi
 fi
 
 attempt=$((failures + 1))

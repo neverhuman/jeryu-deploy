@@ -37,8 +37,9 @@ Pull-request and merge-queue gates run on **xbabe2**, on gate-runner slots.
 - A slot that stops reporting is shown offline after 180 seconds rather than
   being dropped, and the attention inbox raises `gate_runner_down` when no slot
   is online while a pull request is open or the merge queue is building.
-- Only logins named in `JERYU_RUNNER_REPORTERS` (default `gatebot,pragent`) may
-  report, so an ordinary account cannot paint a fake runner.
+- Only logins named in `JERYU_RUNNER_REPORTERS` (default `gatebot,pragent`) and
+  forge admins may report, so an ordinary account cannot paint a fake runner.
+  The contract is in `docs/pipeline-events.md#runner-heartbeats`.
 - xbabe2 is also the release build host (`JERYU_BUILD_HOST`), which is what
   keeps the gate's build cache and the release build on the same toolchain and
   the same glibc.

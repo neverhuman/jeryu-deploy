@@ -27,17 +27,17 @@ pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFa
         .filter_map(|node| node.last_updated.as_ref())
         .max()
         .cloned();
-    // Reviewers are listed but hold no gate slot, so they stay out of the
-    // gate capacity figures.
+    // Reviewers and background timers are listed but hold no gate slot, so
+    // they stay out of the gate capacity figures.
+    let holds_slot =
+        |node: &&RunnerNodeSummary| ![REVIEWER_SOURCE, AUTOMATION_SOURCE].contains(&&*node.source);
     let online: Vec<&RunnerNodeSummary> = node_details
         .iter()
-        .filter(|node| node.state != "offline" && node.source != REVIEWER_SOURCE)
+        .filter(holds_slot)
+        .filter(|node| node.state != "offline")
         .collect();
     let online_runners = count(online.len());
-    let gate_nodes = node_details
-        .iter()
-        .filter(|node| node.source != REVIEWER_SOURCE)
-        .count();
+    let gate_nodes = node_details.iter().filter(holds_slot).count();
     let offline_runners = count(gate_nodes) - online_runners;
     let busy_runners = count(
         online
@@ -105,8 +105,20 @@ fn count(n: usize) -> u32 {
 /// `source` of a node reported by the pr-redteam reviewer.
 pub(crate) const REVIEWER_SOURCE: &str = "pr-redteam";
 
-/// One node per reporting gate runner slot, plus one per reviewer. A slot silent for longer than
-/// [`RUNNER_OFFLINE_AFTER_SECS`] is shown offline, with no running task.
+/// `source` of a node reported by a background timer (auto-pin, auto-stage).
+pub(crate) const AUTOMATION_SOURCE: &str = "automation";
+
+/// `repo#pr`, or `repo@sha` for work that has no pull request.
+pub(crate) fn work_label(repo: &str, pr: Option<u64>, sha: &str) -> String {
+    match pr {
+        Some(pr) => format!("{repo}#{pr}"),
+        None => format!("{repo}@{}", sha.get(..7).unwrap_or(sha)),
+    }
+}
+
+/// One node per reporting gate runner slot, plus one per reviewer and per
+/// background timer. A runner silent for longer than its offline threshold
+/// ([`offline_after_secs`]) is shown offline, with no running task.
 pub(crate) fn gate_runner_nodes(
     records: &[GateRunnerRecord],
     now: DateTime<Utc>,
@@ -117,6 +129,7 @@ pub(crate) fn gate_runner_nodes(
             let beat = &record.heartbeat;
             let online = is_online(record, now);
             let reviewer = is_reviewer(beat);
+            let automation = is_automation(beat);
             let received = record.received_at.to_rfc3339();
             let mut labels = vec![beat.host.clone(), format!("slot {}", beat.slot)];
             for label in &beat.labels {
@@ -130,11 +143,11 @@ pub(crate) fn gate_runner_nodes(
                 .filter(|_| online)
                 .map(|task| RunnerTaskSummary {
                     task_id: format!("{}@{}", beat.runner_id, task.sha),
-                    job_id: format!("{}#{}", task.repo, task.pr),
+                    job_id: work_label(&task.repo, task.pr, &task.sha),
                     agent_run_id: None,
                     workcell_id: None,
                     repo: Some(task.repo.clone()),
-                    label: format!("{}#{}", task.repo, task.pr),
+                    label: work_label(&task.repo, task.pr, &task.sha),
                     program: task.recipe.clone(),
                     state: "running".to_string(),
                     started_at: Some(task.started_at.to_rfc3339()),
@@ -147,17 +160,28 @@ pub(crate) fn gate_runner_nodes(
                 .collect();
             RunnerNodeSummary {
                 runner_id: beat.runner_id.clone(),
-                source: if reviewer {
+                source: if automation {
+                    AUTOMATION_SOURCE
+                } else if reviewer {
                     REVIEWER_SOURCE
                 } else {
                     "pr-gate-runner"
                 }
                 .to_string(),
                 state: if online { "active" } else { "offline" }.to_string(),
-                capacity: u32::from(!reviewer),
+                capacity: u32::from(!reviewer && !automation),
                 in_flight: count(active_tasks.len()),
                 labels,
-                classes: vec![if reviewer { "reviewer" } else { "pr-gate" }.to_string()],
+                classes: vec![
+                    if automation {
+                        "automation"
+                    } else if reviewer {
+                        "reviewer"
+                    } else {
+                        "pr-gate"
+                    }
+                    .to_string(),
+                ],
                 active_task_count: count(active_tasks.len()),
                 last_updated: Some(received),
                 active_tasks,
@@ -170,6 +194,7 @@ pub(crate) fn gate_runner_nodes(
                     seconds: last.seconds,
                     finished_at: last.finished_at.to_rfc3339(),
                 }),
+                offline_after_seconds: Some(offline_after_secs(beat)),
             }
         })
         .collect()
@@ -203,6 +228,7 @@ fn build_runner_nodes(
                 last_updated: None,
                 active_tasks: Vec::new(),
                 last_activity: None,
+                offline_after_seconds: None,
             });
     }
 
@@ -237,6 +263,7 @@ fn build_runner_nodes(
                 last_updated: None,
                 active_tasks: Vec::new(),
                 last_activity: None,
+                offline_after_seconds: None,
             });
         node.active_tasks.push(task);
     }

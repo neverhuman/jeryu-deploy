@@ -282,6 +282,38 @@ fn runner_fabric_reports_live_gate_runners() {
 }
 
 #[test]
+fn a_five_minute_timer_stays_online_between_ticks_and_holds_no_slot() {
+    let state = seeded_state();
+    let then = Utc::now();
+    let beat: GateRunnerHeartbeat = serde_json::from_value(json!({
+        "runnerId": "xbabe0/auto-pin", "host": "xbabe0", "slot": 0,
+        "labels": ["automation"], "intervalSeconds": 300,
+        "last": {
+            "repo": "jeryu/jeryu-deploy", "pr": 74, "sha": "ea04cac1",
+            "recipe": "auto-pin", "conclusion": "opened",
+            "seconds": 0, "finishedAt": then.to_rfc3339()
+        }
+    }))
+    .unwrap();
+    state.gate_runners.record(beat, "alton2", then).unwrap();
+    report(&state, "xbabe2/slot0", false, then);
+
+    let at = |seconds| runner_fabric_at(&state, then + chrono::Duration::seconds(seconds));
+    let timer = |fabric: &RunnerFabricResponse| fabric.local.node_details[0].clone();
+    let soon = at(181);
+    assert_eq!(timer(&soon).state, "active");
+    assert_eq!(timer(&soon).offline_after_seconds, Some(900));
+    assert_eq!(timer(&soon).last_activity.unwrap().pr, Some(74));
+    // The gate slot beside it keeps the flat 180 seconds.
+    assert_eq!(soon.local.node_details[1].state, "offline");
+    assert_eq!(soon.local.node_details[1].offline_after_seconds, Some(180));
+    assert_eq!(soon.local.total_slots, 1);
+    assert_eq!(soon.local.offline_runners, 1);
+    assert_eq!(timer(&at(900)).state, "active");
+    assert_eq!(timer(&at(901)).state, "offline");
+}
+
+#[test]
 fn mcp_facade_returns_limited_graph_jobs_and_blockers() {
     let state = seeded_state();
 

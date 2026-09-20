@@ -14,15 +14,22 @@
 #      (docs/pipeline-events.md), so the attention inbox can say "a release is staged and waiting
 #      for a deploy" with the command to run. Best-effort: a failed POST never fails staging.
 #
+#   6. Every tick ends with one runner heartbeat (`<host>/auto-stage`, label `automation`), so
+#      /runners shows the timer alive and the last thing it did: staged a commit, is waiting for
+#      main's gate, or failed to stage. Best-effort like the events.
+#
 # State in $JERYU_AUTO_STAGE_STATE (~/.local/state/jeryu-auto-stage): staged.tsv (sha, release,
-# time), failures/<sha> (attempt count), latest (the newest staged release id), a git cache,
-# logs/<sha12>-attempt<N>.log (the staging output, newest 20 kept).
+# time), failures/<sha> (attempt count), latest (the newest staged release id), waiting (the
+# commit whose gate is awaited, and since when), a git cache, logs/<sha12>-attempt<N>.log (the
+# staging output, newest 20 kept).
 #
 # Env: JERYU_DEPLOY_REMOTE, JERYU_BUILD_HOST, JERYU_FORGE_HOST (as stage-release.sh);
+# JERYU_DEPLOY_REPO (owner/name on the forge; default: from the remote);
 # JERYU_BASE (https://git.neverhuman.org); JERYU_STATUS_TOKEN_FILE (the token for the
 # commit-status API and for posting events, which needs a global admin or a
 # JERYU_EVENT_REPORTERS login; default ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat);
-# JERYU_AUTO_STAGE_MAX_FAILURES (2); JERYU_AUTO_STAGE_EVENTS=0 turns the events off.
+# JERYU_AUTO_STAGE_MAX_FAILURES (2); JERYU_AUTO_STAGE_EVENTS=0 turns the events off;
+# JERYU_AUTO_STAGE_BEAT=0 turns the heartbeat off.
 set -euo pipefail
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
 build_host="${JERYU_BUILD_HOST:-xbabe2}"
@@ -32,6 +39,7 @@ token_file="${JERYU_STATUS_TOKEN_FILE:-$HOME/.config/jeryu/credentials/git-never
 max_failures="${JERYU_AUTO_STAGE_MAX_FAILURES:-2}"
 state="${JERYU_AUTO_STAGE_STATE:-$HOME/.local/state/jeryu-auto-stage}"
 say() { echo "[auto-stage $(date -u +%H:%M:%S)] $*" >&2; }
+repo_path="${JERYU_DEPLOY_REPO:-$(sed -E 's#^https?://[^/]+/git/##; s#\.git$##' <<<"$remote")}"
 
 # emit KIND NEEDS_HUMAN EVENT_ID SUMMARY DETAIL_JSON [SECONDS] [REASON] [LOG_FILE]
 # Post one pipeline event. The token stays in the curl config file ($cfg) and is never printed.
@@ -55,10 +63,49 @@ emit() {
     || say "event: posting $kind failed (ignored)"
 }
 
+# did CONCLUSION SHA FINISHED_AT -> a heartbeat `last`: what this timer most recently did. A
+# staging is of a commit, so there is no `pr`.
+did() {
+  jq -cn --arg conclusion "$1" --arg sha "$2" --arg at "$3" --arg repo "$repo_path" \
+    '{repo: $repo, sha: $sha, recipe: "auto-stage", conclusion: $conclusion, seconds: 0, finishedAt: $at}'
+}
+# beat: one runner heartbeat (POST /api/v1/runners/heartbeat, docs/pipeline-events.md), sent by
+# the EXIT trap so idle ticks, early exits and finished work all report. `last` is a wait noted
+# this tick, else a failure recorded for main's tip, else the newest staged commit; with no
+# history (or a remote that names no owner/name repository) there is no `last`. The token stays
+# in $cfg. Best-effort: at most one line, and never the tick's exit status.
+beat() {
+  [ "${JERYU_AUTO_STAGE_BEAT:-1}" = 1 ] || return 0
+  [ -n "$cfg" ] || { say "heartbeat: skipped (status token $token_file is not readable)"; return 0; }
+  local host last="$beat_last" sha rel at body
+  host="$(hostname -s)" || return 0
+  if [ -z "$last" ] && [ -n "$main" ] && [ -s "$state/failures/$main" ]; then
+    last="$(did failed "$main" "$(date -u -r "$state/failures/$main" +%FT%TZ)")" || last=""
+  elif [ -z "$last" ] && IFS=$'\t' read -r sha rel at < <(tail -n 1 "$state/staged.tsv"); then
+    last="$(did staged "$sha" "$at")" || last=""
+  fi
+  [[ "$repo_path" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || last=""
+  body="$(jq -cn --arg host "$host" --argjson last "${last:-null}" '
+    {runnerId: ($host + "/auto-stage"), host: $host, slot: 0, labels: ["automation"], intervalSeconds: 300}
+    + (if $last != null then {last: $last} else {} end)')" || { say "heartbeat: could not build (ignored)"; return 0; }
+  curl --silent --fail --max-time 10 --config "$cfg" -X POST -H 'Content-Type: application/json' \
+    -H 'Accept: application/json' --data-binary @- \
+    "$base/api/v1/runners/heartbeat" <<<"$body" >/dev/null 2>&1 || say "heartbeat: not accepted (ignored)"
+}
+
 mkdir -p "$state/failures"
 exec 9>"$state/lock"
 flock -n 9 || { say "another run holds the lock"; exit 0; }
 touch "$state/staged.tsv"
+
+# The token is read here, before the idle exits, so that every tick can beat; an unreadable token
+# only stops a tick where it always did, at the status request.
+main="" beat_last="" cfg="" work=""
+trap 'beat || true; rm -f "$cfg"; rm -rf "$work"' EXIT
+if [ -r "$token_file" ]; then
+  cfg="$(mktemp)"; chmod 600 "$cfg"
+  printf 'header = "Authorization: Bearer %s"\n' "$(cat "$token_file")" >"$cfg"
+fi
 
 main="$(git ls-remote "$remote" refs/heads/main | cut -f1)"
 [[ "$main" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve main ($main)"; exit 1; }
@@ -75,18 +122,21 @@ if (( failures >= max_failures )); then
   say "main ${main:0:12} failed to stage $failures times; leaving it for a human"; exit 0
 fi
 
-[ -r "$token_file" ] || { say "status token $token_file is not readable"; exit 1; }
-cfg="$(mktemp)"; trap 'rm -f "$cfg"' EXIT; chmod 600 "$cfg"
-printf 'header = "Authorization: Bearer %s"\n' "$(cat "$token_file")" >"$cfg"
-repo_path="$(sed -E 's#^https?://[^/]+/git/##; s#\.git$##' <<<"$remote")"
+[ -n "$cfg" ] || { say "status token $token_file is not readable"; exit 1; }
 gate="$(curl --silent --show-error --max-time 60 --config "$cfg" -H 'Accept: application/json' \
   "$base/api/v3/repos/$repo_path/commits/$main/status" | jq -r '.state // "unknown"')"
-if [ "$gate" != success ]; then say "main ${main:0:12} gate is $gate; waiting"; exit 0; fi
+if [ "$gate" != success ]; then
+  # The time the wait began is kept across ticks, so the row says since when and not "just now".
+  since="$(awk -F'\t' -v sha="$main" '$1 == sha { print $2 }' "$state/waiting" 2>/dev/null)" || since=""
+  [ -n "$since" ] || { since="$(date -u +%FT%TZ)"; printf '%s\t%s\n' "$main" "$since" >"$state/waiting"; }
+  beat_last="$(did waiting "$main" "$since")" || beat_last=""
+  say "main ${main:0:12} gate is $gate; waiting"; exit 0
+fi
 
 cache="$state/jeryu-deploy.git"
 [ -d "$cache" ] || git clone -q --bare "$remote" "$cache"
 git -C "$cache" fetch -q origin "+refs/heads/main:refs/heads/main"
-work="$(mktemp -d)"; trap 'rm -f "$cfg"; rm -rf "$work"' EXIT
+work="$(mktemp -d)"
 git -C "$cache" archive "$main" scripts/release | tar -x -C "$work"
 
 # The staging output goes to the journal as before and to a per-attempt log file, whose tail
