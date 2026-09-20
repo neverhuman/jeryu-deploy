@@ -344,6 +344,14 @@ fn authorize_github_repo_request(
                 "branch-protection changes require repository-admin access",
             ))
         }
+        // `PATCH /repos/{owner}/{repo}` archives and unarchives. Admin-only,
+        // and deliberately stricter than the repository-write rule below:
+        // archiving makes a repository read-only for everyone, so it is a
+        // decision about the repository rather than a use of write access to
+        // it. This mirrors the same call's authz on `PATCH /api/v1/repos/:id`.
+        (Method::Patch, ["repos", _, _]) if account.role != UserRole::Admin => Some(
+            github_forbidden("repository settings changes require admin access"),
+        ),
         (_, ["repos", owner, repo, ..]) => {
             let allowed = match method {
                 Method::Get => {

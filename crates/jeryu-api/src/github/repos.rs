@@ -63,6 +63,46 @@ impl GithubRouter {
             Err(err) => error_response(err),
         }
     }
+
+    /// `PATCH /repos/{owner}/{repo}` — archive or unarchive, spelled the way
+    /// GitHub spells it, so `gh` and every GitHub client already know how to
+    /// ask. Admin-only; the edge refuses a non-admin before this runs.
+    ///
+    /// Only `archived` is accepted. Every other repository setting has its own
+    /// typed Jeryu route, and quietly ignoring an unknown key would let a
+    /// caller believe a setting moved when it did not, so an unrecognised body
+    /// is a validation error rather than a silent success.
+    ///
+    /// `actor` is bound by the edge from the authenticated principal before
+    /// this runs, so the audit trail names the caller, never the body.
+    pub(super) fn update_repo(&self, owner: &str, repo: &str, body: &str) -> Response {
+        let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(body) else {
+            return error_response(jeryu_core::ForgeError::Validation(
+                "body must be a JSON object".to_string(),
+            ));
+        };
+        let Some(archived) = fields.get("archived") else {
+            return error_response(jeryu_core::ForgeError::Validation(
+                "no supported field: this route accepts `archived` (a boolean)".to_string(),
+            ));
+        };
+        let Some(archived) = archived.as_bool() else {
+            return error_response(jeryu_core::ForgeError::Validation(
+                "archived must be a boolean".to_string(),
+            ));
+        };
+        let actor = fields
+            .get("actor")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        match self
+            .core
+            .set_repository_archived(actor, owner, repo, archived)
+        {
+            Ok(repo) => json_response(200, &repository_json(&repo)),
+            Err(err) => error_response(err),
+        }
+    }
 }
 
 pub(super) fn repository_json(repo: &Repository) -> Value {

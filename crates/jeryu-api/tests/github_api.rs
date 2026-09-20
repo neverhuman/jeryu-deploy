@@ -1192,3 +1192,85 @@ fn unsupported_graphql_returns_guided_repair_hint() {
             .starts_with("GET /repos")
     );
 }
+
+/// `PATCH /repos/{owner}/{repo}` archives and unarchives, spelled the way
+/// GitHub spells it, and the flag round-trips through `GET`. The route is
+/// reversible and deletes nothing, so the repository is still there and still
+/// readable afterwards.
+///
+/// Authorization is the edge's, not the router's: this path is admin-only in
+/// `authorize_github_repo_request`, which runs before the router sees it.
+#[test]
+fn patch_repository_archives_and_unarchives() {
+    let router = router_with_repo();
+    assert_eq!(body(&router.get("/repos/alice/jeryu"))["archived"], false);
+
+    let archived = router.handle(
+        Method::Patch,
+        "/repos/alice/jeryu",
+        r#"{"archived":true,"actor":"alice"}"#,
+    );
+    assert_eq!(archived.status, 200, "archive: {}", archived.body);
+    assert_eq!(body(&archived)["archived"], true);
+    assert_eq!(body(&archived)["full_name"], "alice/jeryu");
+
+    let read_back = router.get("/repos/alice/jeryu");
+    assert_eq!(read_back.status, 200);
+    assert_eq!(body(&read_back)["archived"], true);
+
+    let again = router.handle(
+        Method::Patch,
+        "/repos/alice/jeryu",
+        r#"{"archived":true,"actor":"alice"}"#,
+    );
+    assert_eq!(again.status, 200, "idempotent archive: {}", again.body);
+
+    let unarchived = router.handle(
+        Method::Patch,
+        "/repos/alice/jeryu",
+        r#"{"archived":false,"actor":"alice"}"#,
+    );
+    assert_eq!(unarchived.status, 200, "unarchive: {}", unarchived.body);
+    assert_eq!(body(&unarchived)["archived"], false);
+    assert_eq!(body(&router.get("/repos/alice/jeryu"))["archived"], false);
+
+    let enterprise = router.handle(
+        Method::Patch,
+        "/api/v3/repos/alice/jeryu",
+        r#"{"archived":true,"actor":"alice"}"#,
+    );
+    assert_eq!(enterprise.status, 200, "api/v3 patch: {}", enterprise.body);
+    assert_eq!(body(&enterprise)["archived"], true);
+}
+
+/// The archive route accepts `archived` and nothing else: a body with no
+/// supported field, a non-boolean, and a non-object are each a 422 rather than
+/// a silent success, and an unknown repository is still a 404.
+#[test]
+fn patch_repository_rejects_unsupported_bodies() {
+    let router = router_with_repo();
+
+    for body_text in [
+        r#"{"description":"renamed","actor":"alice"}"#,
+        r#"{"archived":"yes","actor":"alice"}"#,
+        r#"{"archived":1,"actor":"alice"}"#,
+        r#"["archived"]"#,
+        "not json",
+    ] {
+        let response = router.handle(Method::Patch, "/repos/alice/jeryu", body_text);
+        assert_eq!(
+            response.status, 422,
+            "expected 422 for {body_text}: {}",
+            response.body
+        );
+    }
+
+    assert_eq!(body(&router.get("/repos/alice/jeryu"))["archived"], false);
+
+    let missing = router.handle(
+        Method::Patch,
+        "/repos/alice/missing",
+        r#"{"archived":true,"actor":"alice"}"#,
+    );
+    assert_eq!(missing.status, 404, "unknown repo: {}", missing.body);
+}

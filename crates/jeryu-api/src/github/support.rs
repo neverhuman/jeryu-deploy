@@ -457,6 +457,7 @@ pub(super) fn not_found(status: u16) -> Response {
                 "GET /user",
                 "GET /repos",
                 "GET /repos/{owner}/{repo}",
+                "PATCH /repos/{owner}/{repo} (archived: bool; admin only)",
                 "GET /repos/{owner}/{repo}/pulls",
                 "GET /repos/{owner}/{repo}/issues",
                 "GET /repos/{owner}/{repo}/commits/{ref}/status",
