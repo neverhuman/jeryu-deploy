@@ -7,6 +7,7 @@ mod codegraph;
 mod control_plane;
 mod ecosystem;
 mod embedded_web;
+mod jankurai;
 mod markdown;
 mod merge_queue;
 pub(crate) use merge_queue::is_queue_owned_ref;
@@ -123,6 +124,8 @@ pub(crate) struct WebState {
     pub(crate) shift: shift::ShiftState,
     /// Pipeline event log (`<data_dir>/shift.sqlite`, table `pipeline_events`).
     pub(crate) events: pipeline::EventStore,
+    /// Quality-gate disputes (`<data_dir>/shift.sqlite`, `jankurai_disputes`).
+    pub(crate) disputes: jankurai::DisputeStore,
     /// The attention inbox's last answer (`GET /api/v1/attention`).
     pub(crate) attention: pipeline::attention::AttentionCache,
     /// What every deploy repo pins (`GET /api/v1/pins`), cached for a minute.
@@ -240,6 +243,8 @@ impl WebState {
         };
         let shift = shift::ShiftState::open(&shift_path);
         let events = pipeline::EventStore::open(&shift_path).expect("open pipeline event store");
+        let disputes =
+            jankurai::DisputeStore::open(&shift_path).expect("open jankurai dispute store");
         // Pre-warm the agent pool over the real CLI lifecycle. With the OCI gate
         // closed this only records planned cells (no daemon), so construction is
         // infallible in every environment the web edge boots in.
@@ -260,6 +265,7 @@ impl WebState {
             merge_queue: Arc::default(),
             shift,
             events,
+            disputes,
             attention: pipeline::attention::AttentionCache::default(),
             pins: pipeline::pins::PinsCache::default(),
             codegraph_store,
@@ -693,6 +699,22 @@ fn router(state: Arc<WebState>) -> AxumRouter {
             get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),
         )
         .route("/api/v1/fleet/tool-adoption", get(fleet_tool_adoption))
+        // Quality-gate visibility: how the jankurai/proof gate has behaved,
+        // before anyone makes it required. Reads need a login; filing a
+        // dispute is admin-only.
+        .route("/api/v1/jankurai/overview", get(jankurai::overview))
+        .route(
+            "/api/v1/jankurai/rules/:rule_id",
+            get(jankurai::rule_detail),
+        )
+        .route(
+            "/api/v1/jankurai/scores/:score_id",
+            get(jankurai::score_detail),
+        )
+        .route(
+            "/api/v1/jankurai/disputes",
+            get(jankurai::dispute_list).post(jankurai::dispute_create),
+        )
         .route(
             "/api/v1/tools/registry/summary",
             get(tool_registry::summary),

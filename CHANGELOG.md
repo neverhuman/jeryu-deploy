@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Quality-gate visibility before the `jankurai/proof` gate is made required:
+  `GET /api/v1/jankurai/overview?days=7|30&repo=` (pass/fail counts and rate in
+  daily buckets, per repo and overall, failures by cap or hard rule with the
+  repos each affects, score distribution, and the failing heads that merged
+  anyway), `GET /api/v1/jankurai/rules/:rule_id` (the heads one rule or cap
+  flagged, with repo, sha, pull request, score, floor and caps),
+  `GET /api/v1/jankurai/scores/:score_id` (score, raw score, floor, applied
+  caps, hard findings and every finding with rule id, path, line and evidence,
+  parsed from the report each score already stores), and admin-only
+  `POST /api/v1/jankurai/disputes` with a `GET` listing, persisted in
+  `<data_dir>/shift.sqlite` by `db/migrations/0003_jankurai_disputes.sql` and
+  counted per rule in the overview.
+
 - Attention inbox: `mirror_failing`, one item for the whole forge when GitHub mirror pushes fail (all eight configured mirrors on the hosted forge had never succeeded, and nothing said so).
 
 - API answers an agent can act on: an unmatched path under any `/api/` version is a JSON 404 (v3 paths still fell through to the web app's HTML with a 200); `GET /api/v1/shift/todos` and `/shift/shifts` answer `404 shift_family_not_found` for a family nobody hosts, not an empty list; `GET /api/v1/events?kind=` refuses a filter that is neither a kind nor a dotted prefix with `422 events_invalid_query`.

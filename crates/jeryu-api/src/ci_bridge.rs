@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 
 /// All-zero oid: a ref delete, which carries no commit to build.
 const ZERO_OID: &str = "0000000000000000000000000000000000000000";
-const HOST_JANKURAI_MINIMUM_SCORE: u32 = 85;
+pub(crate) const HOST_JANKURAI_MINIMUM_SCORE: u32 = 85;
 
 /// A branch ref whose tip a push moved to a new commit.
 pub(crate) struct RefUpdate {
