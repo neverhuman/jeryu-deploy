@@ -6645,6 +6645,79 @@ async fn repo_list_filters_apply_server_side() {
     assert_eq!(archived.total, 0, "no archived repos exist in this fixture");
 }
 
+/// The Repos table shows the last push when there is one, so the summary
+/// must carry `pushed_at` and the default ("recent_activity") sort must rank
+/// by it; a repo whose metadata was touched later but never pushed still
+/// falls back to `updated_at`.
+#[tokio::test]
+async fn repo_list_reports_pushed_at_and_sorts_activity_by_it() {
+    let core = ForgeCore::new();
+    for name in ["pushed-old", "pushed-new", "never-pushed"] {
+        core.create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: true,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    let old_push = chrono::Utc::now() - chrono::Duration::days(3);
+    let new_push = chrono::Utc::now() - chrono::Duration::days(1);
+    core.record_repository_push("jeryu", "pushed-old", old_push)
+        .unwrap();
+    core.record_repository_push("jeryu", "pushed-new", new_push)
+        .unwrap();
+
+    let state = Arc::new(WebState::new(core));
+    let account = Extension(AccountSummary {
+        login: "jeryu-admin".to_string(),
+        display_name: "Jeryu Admin".to_string(),
+        role: jeryu_core::UserRole::Admin,
+        status: AccountStatus::Active,
+        auth_epoch: 0,
+        must_change_password: false,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    });
+
+    let listed = repos(
+        State(state),
+        account,
+        Query(super::repositories::RepoListQuery::default()),
+    )
+    .await
+    .0;
+    let by_name = |name: &str| {
+        listed
+            .repositories
+            .iter()
+            .find(|repo| repo.id.name == name)
+            .unwrap_or_else(|| panic!("{name} must be listed"))
+            .clone()
+    };
+    assert_eq!(
+        by_name("pushed-new").pushed_at,
+        Some(new_push.to_rfc3339()),
+        "the recorded push time must reach the SPA"
+    );
+    assert_eq!(
+        by_name("never-pushed").pushed_at,
+        None,
+        "a repo with no push keeps pushed_at null"
+    );
+
+    let order: Vec<&str> = listed
+        .repositories
+        .iter()
+        .map(|repo| repo.id.name.as_str())
+        .collect();
+    // never-pushed was created last, so its updated_at is the newest key.
+    assert_eq!(order, vec!["never-pushed", "pushed-new", "pushed-old"]);
+}
+
 #[tokio::test]
 async fn tool_finder_scan_status_idle_busy_guard_and_snapshot_arm() {
     let core = ForgeCore::new();

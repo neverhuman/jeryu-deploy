@@ -118,6 +118,15 @@ pub(super) fn forge_error(err: ForgeError) -> AxumResponse {
             ][..],
             "route merges through the review flow, then retry the export if needed",
         ),
+        ForgeError::RepositoryArchived(_) => (
+            StatusCode::CONFLICT,
+            "forge_repository_archived",
+            &[
+                "unarchive the repository before exporting a workcell into it",
+                "export into an active repository instead",
+            ][..],
+            "unarchive the repository, then rerun cargo test -p jeryu-api --features web",
+        ),
         ForgeError::Storage(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "forge_storage",

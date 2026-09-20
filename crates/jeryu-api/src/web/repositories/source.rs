@@ -632,5 +632,22 @@ pub(in crate::web) async fn repo_readme_update(
                 ),
             },
         ),
+        Err(ForgeError::RepositoryArchived(err)) => api_error_with_hint(
+            axum::http::StatusCode::CONFLICT,
+            "repository_archived",
+            "repository is archived and read-only",
+            ApiErrorHint {
+                purpose: "persist repository README",
+                reason: "repository_archived",
+                common_fixes: &[
+                    "unarchive the repository before publishing a README",
+                    "publish the score for an active repository instead",
+                ],
+                docs_url: "docs/errors.md#policy-denied",
+                repair_hint: &format!(
+                    "unarchive the repository, then rerun bash ops/ci/publish-readme-score.sh --verify ({err})"
+                ),
+            },
+        ),
     }
 }

@@ -337,6 +337,11 @@ pub(super) fn error_response(err: ForgeError) -> Response {
             "jeryu.explain_blockers",
             "branch protection blocks this; ask jeryu to explain the blockers and required checks",
         ),
+        ForgeError::RepositoryArchived(_) => (
+            409,
+            "jeryu.get_system_snapshot",
+            "the repository is archived and read-only; unarchive it before writing",
+        ),
         ForgeError::Storage(_) => (
             500,
             "jeryu.get_system_snapshot",

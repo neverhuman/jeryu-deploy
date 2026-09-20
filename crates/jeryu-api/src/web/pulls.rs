@@ -918,6 +918,18 @@ fn core_error(error: ForgeError, purpose: &'static str) -> AxumResponse {
             PROOF_LANE,
             None,
         ),
+        ForgeError::RepositoryArchived(reason) => repair_error(
+            StatusCode::CONFLICT,
+            "repository_archived",
+            purpose,
+            &reason,
+            &[
+                "unarchive the repository before changing its pull requests",
+                "retry the flow against an active repository",
+            ],
+            PROOF_LANE,
+            None,
+        ),
         ForgeError::Storage(reason) => repair_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "storage_failed",

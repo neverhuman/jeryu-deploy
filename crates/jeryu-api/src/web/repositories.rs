@@ -506,8 +506,15 @@ pub(super) fn filtered_repo_list_response_for_user(
             repositories.sort_by_key(|repo| std::cmp::Reverse(repo.failing_checks));
         }
         // Default and "recent_activity": newest first (RFC3339 sorts
-        // lexicographically).
-        _ => repositories.sort_by(|a, b| b.updated_at.cmp(&a.updated_at)),
+        // lexicographically). Activity means the last push when the repo has
+        // one; `updated_at` also moves for metadata edits, so it is only the
+        // fallback for repos that have never been pushed to.
+        _ => repositories.sort_by(|a, b| {
+            let key = |repo: &RepositorySummary| {
+                repo.pushed_at.clone().unwrap_or_else(|| repo.updated_at.clone())
+            };
+            key(b).cmp(&key(a))
+        }),
     }
 
     RepositoryListResponse {
@@ -616,6 +623,7 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
         active_agents: 0,
         blocked_agents: 0,
         updated_at: repo.updated_at.to_rfc3339(),
+        pushed_at: repo.pushed_at.map(|pushed_at| pushed_at.to_rfc3339()),
         jankurai_score: latest_score.as_ref().and_then(|score| score.score),
         jankurai_decision: latest_score.as_ref().map(|score| score.decision.clone()),
         jankurai_scored_at: latest_score
