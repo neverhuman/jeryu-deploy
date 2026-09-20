@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Utc};
 
 use super::{
-    Draft, Item, QUEUE_LOOKBACK_HOURS, READY_TO_MERGE_MINUTES, Severity, parse_time, pull_href,
+    Draft, Hosts, Item, QUEUE_LOOKBACK_HOURS, READY_TO_MERGE_MINUTES, Severity, Shell, parse_time,
+    pull_href,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -201,6 +202,7 @@ pub(crate) fn runner_items(
     open_pulls: &BTreeSet<(String, u64)>,
     queue_building: bool,
     now: DateTime<Utc>,
+    hosts: &Hosts,
 ) -> Vec<Item> {
     let mut items = Vec::new();
     for record in runners.iter().filter(|r| is_reviewer(&r.heartbeat)) {
@@ -268,7 +270,10 @@ pub(crate) fn runner_items(
             ),
             href: "/runners".to_string(),
             label: "Check the gate runner timers on the gate host",
-            command: Some("systemctl --user list-timers 'pr-gate-runner@*'".to_string()),
+            command: Some(Shell {
+                line: "systemctl --user list-timers 'pr-gate-runner@*'".to_string(),
+                run_in: Hosts::anywhere(&hosts.gate),
+            }),
         }
         .build();
         item.since = last_seen.map(|seen| seen.to_rfc3339());
@@ -302,6 +307,7 @@ pub(crate) fn release_items(
     staged: Option<&Event>,
     stage_failed: Option<&Event>,
     production: &[ProductionFacts],
+    hosts: &Hosts,
 ) -> Vec<Item> {
     let mut items = Vec::new();
     if let Some(event) = staged {
@@ -323,7 +329,18 @@ pub(crate) fn release_items(
                 .detail
                 .as_ref()
                 .and_then(|detail| detail["deploy_command"].as_str())
-                .map(str::to_string);
+                .map(|line| Shell {
+                    line: line.to_string(),
+                    // The command is a path inside the repository that staged
+                    // the release, which the event names.
+                    run_in: match event.repo.as_deref() {
+                        Some(repo) => Hosts::checkout(&hosts.release, repo),
+                        None => format!(
+                            "{}, in a checkout of the repository that staged it",
+                            hosts.release
+                        ),
+                    },
+                });
             let mut item = Draft {
                 id: format!("release-staged:{release}"),
                 kind: "release_staged",

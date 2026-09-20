@@ -7,8 +7,9 @@
 //! items, which is what the tests drive.
 //!
 //! Each item names exactly one next step. `action.command` is set when the
-//! step is a shell command to run off-site; otherwise the step is to open
-//! `href` and do what `action.label` says. `next_step` spells that out in one
+//! step is a shell command to run off-site, and then `action.run_in` says on
+//! which machine and in which directory; otherwise the step is to open `href`
+//! and do what `action.label` says. `next_step` spells that out in one
 //! sentence for a reader, human or agent, with no other context.
 
 use std::collections::BTreeSet;
@@ -26,6 +27,7 @@ use super::super::merge_queue::QueueState;
 use super::super::shift::FamilySnapshot;
 
 mod flow;
+mod hosts;
 mod mirror;
 mod pins;
 mod work;
@@ -34,6 +36,7 @@ pub(crate) use flow::{
     LatestDeployment, ProductionFacts, PullFacts, pull_items, queue_items, release_items,
     runner_items,
 };
+pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorFailure, mirror_items};
 pub(crate) use pins::pin_items;
 pub(crate) use work::{shift_items, todo_items, worker_items};
@@ -63,6 +66,19 @@ pub(crate) struct Action {
     pub label: String,
     /// A copyable shell line when the step happens off-site.
     pub command: Option<String>,
+    /// Where `command` is run, as a short phrase naming the machine and the
+    /// directory ("xbabe0, any directory"). Set exactly when `command` is, and
+    /// left out of the JSON otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_in: Option<String>,
+}
+
+/// A shell line and where it is run. One value, so that no rule can offer a
+/// command without saying where.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Shell {
+    pub(super) line: String,
+    pub(super) run_in: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -108,15 +124,16 @@ pub(super) struct Draft<'a> {
     pub(super) reason: String,
     pub(super) href: String,
     pub(super) label: &'a str,
-    pub(super) command: Option<String>,
+    pub(super) command: Option<Shell>,
 }
 
 impl Draft<'_> {
     pub(super) fn build(self) -> Item {
         let next_step = match &self.command {
-            Some(command) => format!("{}: run `{command}`", self.label),
+            Some(shell) => format!("{}: on {}, run `{}`", self.label, shell.run_in, shell.line),
             None => format!("{}: open {}", self.label, self.href),
         };
+        let label = self.label.to_string();
         Item {
             id: self.id,
             kind: self.kind,
@@ -131,9 +148,17 @@ impl Draft<'_> {
             sha: None,
             shift: None,
             href: self.href,
-            action: Action {
-                label: self.label.to_string(),
-                command: self.command,
+            action: match self.command {
+                Some(shell) => Action {
+                    label,
+                    command: Some(shell.line),
+                    run_in: Some(shell.run_in),
+                },
+                None => Action {
+                    label,
+                    command: None,
+                    run_in: None,
+                },
             },
             next_step,
         }
@@ -229,6 +254,7 @@ fn production_facts(state: &WebState) -> Vec<ProductionFacts> {
 /// Everything waiting on a person right now, most urgent first.
 pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse {
     let mut items = Vec::new();
+    let hosts = Hosts::from_env();
     let families: Vec<FamilySnapshot> = super::super::shift::attention_snapshot(state, now);
     let mut waiting = Vec::new();
     for family in &families {
@@ -246,11 +272,17 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     items.extend(worker_items(
         &waiting,
         &super::super::shift::worker_rows(state, now),
+        &hosts,
     ));
-    items.extend(pin_items(&super::pins::snapshot(state).consumers));
-    items.extend(mirror_items(&super::super::repositories::mirror_failures(
-        state,
-    )));
+    items.extend(pin_items(
+        &super::pins::snapshot(state).consumers,
+        &hosts,
+        now,
+    ));
+    items.extend(mirror_items(
+        &super::super::repositories::mirror_failures(state),
+        &hosts,
+    ));
     let pulls = open_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
     items.extend(pull_items(&pulls, now));
@@ -262,6 +294,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         &open,
         building,
         now,
+        &hosts,
     ));
     let staged = state.events.newest_of_kind("release.staged").ok().flatten();
     let stage_failed = state
@@ -273,6 +306,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         staged.as_ref(),
         stage_failed.as_ref(),
         &production_facts(state),
+        &hosts,
     ));
     order(&mut items);
     let count = |severity| items.iter().filter(|i| i.severity == severity).count();

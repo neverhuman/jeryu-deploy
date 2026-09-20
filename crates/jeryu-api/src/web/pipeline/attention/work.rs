@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 
-use super::{Draft, Item, STUCK_CLAIM_MINUTES, Severity, parse_time, todo_href};
+use super::{Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, parse_time, todo_href};
 use crate::web::shift::{ShiftBranch, ShiftRepo, ShiftTodo, WorkerRow};
 
 /// When the todo last changed hands: its newest attempt's end, else filing.
@@ -206,7 +206,11 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
 }
 
 /// Families with queued work and no healthy worker slot to do it.
-pub(crate) fn worker_items(families: &[(String, usize)], workers: &[WorkerRow]) -> Vec<Item> {
+pub(crate) fn worker_items(
+    families: &[(String, usize)],
+    workers: &[WorkerRow],
+    hosts: &Hosts,
+) -> Vec<Item> {
     let mut items = Vec::new();
     for (family, waiting) in families.iter().filter(|(_, waiting)| *waiting > 0) {
         let slots: Vec<&WorkerRow> = workers
@@ -217,6 +221,13 @@ pub(crate) fn worker_items(families: &[(String, usize)], workers: &[WorkerRow]) 
             continue;
         }
         let last_seen = slots.iter().map(|w| w.last_seen.clone()).max();
+        // The family's own host, from whichever of its rows (the supervisor
+        // included) reported last; the release host when none ever did.
+        let host = workers
+            .iter()
+            .filter(|w| &w.heartbeat.family == family && !w.heartbeat.host.trim().is_empty())
+            .max_by(|a, b| a.last_seen.cmp(&b.last_seen))
+            .map_or(hosts.release.as_str(), |w| w.heartbeat.host.trim());
         let mut item = Draft {
             id: format!("workers-down:{family}"),
             kind: "workers_down",
@@ -233,7 +244,10 @@ pub(crate) fn worker_items(families: &[(String, usize)], workers: &[WorkerRow]) 
             ),
             href: "/work/shift/workers".to_string(),
             label: "Check the todoq supervisor on the worker host",
-            command: Some(format!("systemctl --user status todoq-supervisor@{family}")),
+            command: Some(Shell {
+                line: format!("systemctl --user status todoq-supervisor@{family}"),
+                run_in: Hosts::anywhere(host),
+            }),
         }
         .build();
         item.since = last_seen;

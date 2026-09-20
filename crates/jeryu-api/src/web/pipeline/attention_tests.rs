@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::attention::{
-    Draft, Item, LatestDeployment, MirrorFailure, ProductionFacts, PullFacts, Severity,
+    Draft, Hosts, Item, LatestDeployment, MirrorFailure, ProductionFacts, PullFacts, Severity,
     mirror_items, order, pull_items, queue_items, release_items, runner_items, shift_items,
     todo_items, worker_items,
 };
@@ -68,6 +68,44 @@ fn assert_actionable(item: &Item) {
         Some(command) => assert!(item.next_step.contains(command.as_str()), "{item:?}"),
         None => assert!(item.next_step.contains(item.href.as_str()), "{item:?}"),
     }
+    assert_says_where(item);
+}
+
+/// A command always says where it is run, and nothing else carries a place.
+/// `kinds` runs this over every rule's output in this file; the pins tests
+/// call it for theirs.
+pub(super) fn assert_says_where(item: &Item) {
+    assert_eq!(
+        item.action.command.is_some(),
+        item.action.run_in.is_some(),
+        "{item:?}"
+    );
+    if let Some(run_in) = &item.action.run_in {
+        assert!(!run_in.trim().is_empty(), "{item:?}");
+        // A reader of `next_step` alone hears where before what.
+        let command = item.action.command.as_deref().unwrap_or_default();
+        let place = item.next_step.find(run_in.as_str());
+        assert!(
+            place.is_some() && place < item.next_step.find(command),
+            "{item:?}"
+        );
+    }
+}
+
+/// The three roles on three distinct, non-default names, so a test proves the
+/// rule used the right role and not a literal.
+fn hosts() -> Hosts {
+    Hosts::from_lookup(|name| {
+        Some(
+            match name {
+                "JERYU_RELEASE_HOST" => "release-box",
+                "JERYU_GATE_HOST" => "gate-box",
+                "JERYU_FORGE_HOST" => "forge-box",
+                other => panic!("unexpected variable {other}"),
+            }
+            .to_string(),
+        )
+    })
 }
 
 fn kinds(items: &[Item]) -> Vec<&'static str> {
@@ -455,6 +493,7 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
         &open,
         false,
         now(),
+        &hosts(),
     );
     assert_eq!(kinds(&healthy), ["reviewer_stuck"]);
     assert!(
@@ -465,15 +504,25 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     assert_eq!(healthy[0].pr, Some(35));
 
     // Only a reviewer and a gate slot silent for ten minutes are left.
-    let down = runner_items(&[stuck, stale_gate.clone()], &open, false, now());
+    let down = runner_items(&[stuck, stale_gate.clone()], &open, false, now(), &hosts());
     assert_eq!(kinds(&down), ["reviewer_stuck", "gate_runner_down"]);
     assert_eq!(down[1].severity, Severity::Critical);
     assert!(down[1].action.command.is_some());
+    assert_eq!(
+        down[1].action.run_in.as_deref(),
+        Some("gate-box, any directory")
+    );
     // No open PR and nothing queued: a silent gate is nobody's problem yet.
     let only_stale = std::slice::from_ref(&stale_gate);
-    assert!(runner_items(only_stale, &BTreeSet::new(), false, now()).is_empty());
+    assert!(runner_items(only_stale, &BTreeSet::new(), false, now(), &hosts()).is_empty());
     assert_eq!(
-        kinds(&runner_items(only_stale, &BTreeSet::new(), true, now())),
+        kinds(&runner_items(
+            only_stale,
+            &BTreeSet::new(),
+            true,
+            now(),
+            &hosts()
+        )),
         ["gate_runner_down"],
         "the merge queue waiting on a gate counts"
     );
@@ -514,13 +563,50 @@ fn a_family_with_queued_work_and_no_healthy_worker() {
         worker("jain", "w1", true),
         worker("jain", "w1.", false),
     ];
-    let items = worker_items(&families, &workers);
+    let items = worker_items(&families, &workers, &hosts());
     assert_eq!(kinds(&items), ["workers_down"]);
     assert_eq!(items[0].family.as_deref(), Some("jeryu"));
     assert_eq!(items[0].severity, Severity::Critical);
     assert_eq!(
         items[0].action.command.as_deref(),
         Some("systemctl --user status todoq-supervisor@jeryu")
+    );
+    // The family's own rows say which machine its supervisor is on.
+    assert_eq!(
+        items[0].action.run_in.as_deref(),
+        Some("xbabe0, any directory")
+    );
+    assert_eq!(
+        items[0].next_step,
+        "Check the todoq supervisor on the worker host: on xbabe0, any directory, run \
+         `systemctl --user status todoq-supervisor@jeryu`"
+    );
+
+    // A family nobody ever reported for, and one whose rows name no host:
+    // the release host is where todoq runs.
+    let mut nameless = worker("jeryu", "w1", false);
+    nameless.heartbeat.host = " ".to_string();
+    for rows in [Vec::new(), vec![nameless]] {
+        let items = worker_items(&families[..1], &rows, &hosts());
+        assert_eq!(kinds(&items), ["workers_down"]);
+        assert_eq!(
+            items[0].action.run_in.as_deref(),
+            Some("release-box, any directory")
+        );
+    }
+
+    // Two machines have reported for the family: the newest report wins.
+    let mut moved = worker("jeryu", "supervisor", false);
+    moved.heartbeat.host = "xbabe3".to_string();
+    moved.last_seen = "2026-09-19T12:50:00Z".to_string();
+    let items = worker_items(
+        &families[..1],
+        &[worker("jeryu", "w1", false), moved],
+        &hosts(),
+    );
+    assert_eq!(
+        items[0].action.run_in.as_deref(),
+        Some("xbabe3, any directory")
     );
 }
 
@@ -582,6 +668,7 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
         Some(&staged),
         None,
         &[production(live, "2026-09-19T12:29:36Z", "success")],
+        &hosts(),
     );
     assert_eq!(kinds(&waiting), ["release_staged"]);
     assert_eq!(
@@ -590,13 +677,29 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
     );
     assert!(waiting[0].reason.contains("283416e282"));
     assert!(waiting[0].next_step.contains("deploy-release.sh"));
+    // The script is a path inside the repository the event names.
+    assert_eq!(
+        waiting[0].action.run_in.as_deref(),
+        Some("release-box, in a jeryu/jeryu-deploy checkout")
+    );
+
+    // An event that names no repository still says where, without inventing one.
+    let mut anonymous = staged.clone();
+    anonymous.repo = None;
+    let unnamed = release_items(Some(&anonymous), None, &[], &hosts());
+    assert_eq!(kinds(&unnamed), ["release_staged"]);
+    assert_eq!(
+        unnamed[0].action.run_in.as_deref(),
+        Some("release-box, in a checkout of the repository that staged it")
+    );
 
     // Deployed: the same sha is live, or something newer than the staging is.
     assert!(
         release_items(
             Some(&staged),
             None,
-            &[production(next, "2026-09-19T13:10:00Z", "success")]
+            &[production(next, "2026-09-19T13:10:00Z", "success")],
+            &hosts()
         )
         .is_empty()
     );
@@ -604,7 +707,8 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
         release_items(
             Some(&staged),
             None,
-            &[production(live, "2026-09-19T13:30:00Z", "success")]
+            &[production(live, "2026-09-19T13:30:00Z", "success")],
+            &hosts()
         )
         .is_empty()
     );
@@ -633,16 +737,22 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
     );
     let prod_ok = [production(next, "2026-09-19T13:10:00Z", "success")];
     assert_eq!(
-        kinds(&release_items(Some(&staged), Some(&gave_up), &prod_ok)),
+        kinds(&release_items(
+            Some(&staged),
+            Some(&gave_up),
+            &prod_ok,
+            &hosts()
+        )),
         ["release_stage_failed"]
     );
-    assert!(release_items(Some(&staged), Some(&retrying), &prod_ok).is_empty());
-    assert!(release_items(Some(&staged), Some(&older), &prod_ok).is_empty());
+    assert!(release_items(Some(&staged), Some(&retrying), &prod_ok, &hosts()).is_empty());
+    assert!(release_items(Some(&staged), Some(&older), &prod_ok, &hosts()).is_empty());
 
     let failed = release_items(
         None,
         None,
         &[production(live, "2026-09-19T12:29:36Z", "failure")],
+        &hosts(),
     );
     assert_eq!(kinds(&failed), ["deploy_failed"]);
     assert_eq!(failed[0].severity, Severity::Critical);
@@ -726,9 +836,23 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
             .unwrap()
             .contains("A human must cut tag split.7 first.")
     );
+    // A command item says where; an item without a command has no such key,
+    // so an older web build sees the action it always saw.
     assert_eq!(
-        of_kind("release_staged")["action"]["command"],
-        "scripts/release/deploy-release.sh prod-1"
+        of_kind("release_staged")["action"],
+        json!({
+            "label": "Deploy the staged release",
+            "command": "scripts/release/deploy-release.sh prod-1",
+            "run_in": "xbabe0, in a jeryu/jeryu-deploy checkout",
+        })
+    );
+    assert_eq!(
+        blocked["action"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["command", "label"]
     );
     assert_eq!(items[1]["shift"], "nightshift/2026-09-18");
 
@@ -806,7 +930,7 @@ fn items_order_by_instant_not_by_timestamp_spelling() {
 
 #[test]
 fn a_failing_mirror_is_one_item_however_many_repositories() {
-    assert!(mirror_items(&[]).is_empty());
+    assert!(mirror_items(&[], &hosts()).is_empty());
     let failure = |repo: &str, minutes_ago: i64, ever: bool| MirrorFailure {
         repo: repo.to_string(),
         failed_at: now() - Duration::minutes(minutes_ago),
@@ -828,7 +952,7 @@ fn a_failing_mirror_is_one_item_however_many_repositories() {
     .enumerate()
     .map(|(i, repo)| failure(repo, 10 + i as i64, false))
     .collect();
-    let items = mirror_items(&failures);
+    let items = mirror_items(&failures, &hosts());
     assert_eq!(kinds(&items), ["mirror_failing"]);
     let item = &items[0];
     assert_eq!(item.id, "mirror-failing");
@@ -852,6 +976,10 @@ fn a_failing_mirror_is_one_item_however_many_repositories() {
             .contains("No push has ever succeeded from this host.")
     );
     assert!(!item.reason.contains("x-access-token"));
+    assert_eq!(
+        item.action.run_in.as_deref(),
+        Some("forge-box, as the user the forge runs as")
+    );
     // The oldest failure dates the item.
     assert_eq!(item.repo.as_deref(), Some("jeryu/jeryu-cache"));
 
@@ -859,7 +987,7 @@ fn a_failing_mirror_is_one_item_however_many_repositories() {
         failure("jeryu/jeryu-web", 5, true),
         failure("jeryu/jeryu-core", 9, false),
     ];
-    let item = &mirror_items(&mixed)[0];
+    let item = &mirror_items(&mixed, &hosts())[0];
     assert_eq!(
         item.title,
         "The GitHub mirror is failing for 2 repositories"
@@ -867,5 +995,26 @@ fn a_failing_mirror_is_one_item_however_many_repositories() {
     assert!(
         item.reason
             .contains("1 of them have never had a successful push.")
+    );
+}
+
+#[test]
+fn hosts_default_to_the_three_machines_and_ignore_blank_overrides() {
+    let defaults = Hosts::default();
+    assert_eq!(
+        (
+            defaults.release.as_str(),
+            defaults.gate.as_str(),
+            defaults.forge.as_str()
+        ),
+        ("xbabe0", "xbabe2", "atomicsoul")
+    );
+    let blank = Hosts::from_lookup(|name| (name == "JERYU_GATE_HOST").then(|| "  ".to_string()));
+    assert_eq!(blank, defaults);
+    assert_eq!(hosts().gate, "gate-box");
+    assert_eq!(Hosts::anywhere("xbabe0"), "xbabe0, any directory");
+    assert_eq!(
+        Hosts::checkout("xbabe0", "jeryu/jeryu-deploy"),
+        "xbabe0, in a jeryu/jeryu-deploy checkout"
     );
 }

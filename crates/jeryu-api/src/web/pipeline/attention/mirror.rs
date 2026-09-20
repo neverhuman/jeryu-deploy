@@ -4,7 +4,7 @@
 
 use chrono::{DateTime, Utc};
 
-use super::{Draft, Item, Severity};
+use super::{Draft, Hosts, Item, Severity, Shell};
 
 /// A configured GitHub mirror whose newest push failed.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,7 +27,7 @@ fn cause(reason: &str) -> &str {
         .trim()
 }
 
-pub(crate) fn mirror_items(failures: &[MirrorFailure]) -> Vec<Item> {
+pub(crate) fn mirror_items(failures: &[MirrorFailure], hosts: &Hosts) -> Vec<Item> {
     let Some(oldest) = failures.iter().min_by_key(|failure| failure.failed_at) else {
         return Vec::new();
     };
@@ -70,7 +70,12 @@ pub(crate) fn mirror_items(failures: &[MirrorFailure]) -> Vec<Item> {
         ),
         href: "/repos".to_string(),
         label: "Set up the mirror's SSH rewrite and deploy key on the forge host",
-        command: Some("git config --global --get-regexp '^url\\..*insteadof'".to_string()),
+        command: Some(Shell {
+            line: "git config --global --get-regexp '^url\\..*insteadof'".to_string(),
+            // `--global` reads the home of whoever runs it, and the pushes are
+            // made by the forge's own user.
+            run_in: format!("{}, as the user the forge runs as", hosts.forge),
+        }),
     }
     .build();
     item.since = Some(

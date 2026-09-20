@@ -6,7 +6,10 @@ use axum::http::{Method as HttpMethod, StatusCode};
 use jeryu_core::{CreatePullRequestRequest, CreateRepositoryRequest, ForgeCore, UserRole};
 use tower::ServiceExt;
 
-use super::attention::{Severity, pin_items};
+use chrono::{DateTime, Duration, TimeZone, Utc};
+
+use super::attention::{Hosts, Item, Severity, pin_items as pin_rule};
+use super::attention_tests::assert_says_where;
 use super::pins::{BumpPr, Consumer, Pin, RawPin, Unreleased, classify, lock_pins, manifest_pins};
 use super::tests::{body_json, request};
 use crate::web::shift::tests::run_git;
@@ -143,6 +146,22 @@ fn pin(kind: &'static str, state: &'static str, bump: Option<u64>) -> Pin {
     }
 }
 
+/// Fifty minutes after the fixture's newest commit: well past auto-pin's grace.
+fn now() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 9, 19, 15, 30, 0).unwrap()
+}
+
+/// The rule, with every item it returns checked for "a command says where".
+fn pin_items_at(consumers: &[Consumer], now: DateTime<Utc>) -> Vec<Item> {
+    let items = pin_rule(consumers, &Hosts::default(), now);
+    items.iter().for_each(assert_says_where);
+    items
+}
+
+fn pin_items(consumers: &[Consumer]) -> Vec<Item> {
+    pin_items_at(consumers, now())
+}
+
 fn consumer(pins: Vec<Pin>) -> Vec<Consumer> {
     vec![Consumer {
         repo: "jeryu/jeryu-deploy".to_string(),
@@ -153,7 +172,7 @@ fn consumer(pins: Vec<Pin>) -> Vec<Consumer> {
 }
 
 #[test]
-fn commit_pin_behind_with_no_bump_open_asks_for_the_bump() {
+fn commit_pin_behind_with_no_bump_long_after_the_commit_asks_to_run_auto_pin() {
     let items = pin_items(&consumer(vec![pin("commit", "behind", None)]));
     let [item] = items.as_slice() else {
         panic!("one item: {items:?}")
@@ -164,21 +183,105 @@ fn commit_pin_behind_with_no_bump_open_asks_for_the_bump() {
         item.title,
         "9 merged commits of jeryu-web are not in jeryu-deploy's pin"
     );
+    // The fact leads; what is waiting follows.
+    assert!(
+        item.reason
+            .starts_with("The auto-pin timer should have opened this bump and has not."),
+        "{item:?}"
+    );
+    assert!(
+        item.reason
+            .contains("journalctl --user -u jeryu-auto-pin.service -n 30"),
+        "{item:?}"
+    );
     assert!(item.reason.contains("would not include them"), "{item:?}");
     assert!(item.reason.contains("the dock test brings its own Storage"));
     assert_eq!(item.href, "/unreleased");
+    assert_eq!(item.action.label, "Run auto-pin now");
     assert_eq!(
         item.action.command.as_deref(),
-        Some(
-            "scripts/release/build-web-dist.sh --commit \
-             427bebecb848d7b7bb37ecc71521d7461072694d /tmp/web-dist"
-        )
+        Some("systemctl --user start jeryu-auto-pin.service")
     );
-    assert!(item.next_step.contains("build-web-dist.sh"), "{item:?}");
+    assert_eq!(item.action.run_in.as_deref(), Some("xbabe0, any directory"));
+    assert_eq!(
+        item.next_step,
+        "Run auto-pin now: on xbabe0, any directory, run \
+         `systemctl --user start jeryu-auto-pin.service`"
+    );
     assert_eq!(item.repo.as_deref(), Some("jeryu/jeryu-deploy"));
     assert_eq!(item.family.as_deref(), Some("jeryu"));
     assert_eq!(item.sha.as_deref(), Some("427bebe"));
     assert_eq!(item.since.as_deref(), Some("2026-09-19T14:40:00+00:00"));
+}
+
+/// The fixture's newest commit is at 14:40: auto-pin has until 15:00.
+#[test]
+fn commit_pin_behind_is_only_watched_while_auto_pin_may_still_be_working() {
+    let committed = Utc.with_ymd_and_hms(2026, 9, 19, 14, 40, 0).unwrap();
+    let at = |minutes: i64, seconds: i64| {
+        let now = committed + Duration::minutes(minutes) + Duration::seconds(seconds);
+        let mut items = pin_items_at(&consumer(vec![pin("commit", "behind", None)]), now);
+        assert_eq!(items.len(), 1, "{items:?}");
+        items.remove(0)
+    };
+
+    let inside = at(19, 59);
+    assert_eq!(
+        (inside.kind, inside.severity),
+        ("pin_behind", Severity::Watch)
+    );
+    assert_eq!(inside.id, "pin-behind:jeryu/jeryu-deploy:jeryu/jeryu-web");
+    assert_eq!(
+        inside.title,
+        "9 merged commits of jeryu-web are being pinned by auto-pin"
+    );
+    assert!(inside.reason.contains("within a few minutes"), "{inside:?}");
+    assert_eq!(inside.action.label, "See what is waiting");
+    assert_eq!(
+        (&inside.action.command, &inside.action.run_in),
+        (&None, &None)
+    );
+    assert_eq!(inside.next_step, "See what is waiting: open /unreleased");
+    assert_eq!(at(0, 0).severity, Severity::Watch);
+
+    // Exactly twenty minutes is no longer "younger than twenty minutes".
+    let edge = at(20, 0);
+    assert_eq!(edge.severity, Severity::Action);
+    assert_eq!(edge.id, inside.id);
+    assert!(edge.action.command.is_some());
+    assert_eq!(at(45, 0).severity, Severity::Action);
+}
+
+#[test]
+fn a_commit_time_that_is_missing_or_unreadable_counts_as_old() {
+    // One second after the fixture's commit: only the timestamp differs.
+    let now = Utc.with_ymd_and_hms(2026, 9, 19, 14, 40, 1).unwrap();
+    for latest_at in [None, Some("yesterday"), Some("")] {
+        let mut behind = pin("commit", "behind", None);
+        behind.latest_at = latest_at.map(str::to_string);
+        let items = pin_items_at(&consumer(vec![behind]), now);
+        let [item] = items.as_slice() else {
+            panic!("one item: {items:?}")
+        };
+        assert_eq!(item.severity, Severity::Action, "{latest_at:?}");
+        assert_eq!(item.action.label, "Run auto-pin now");
+    }
+}
+
+#[test]
+fn the_release_host_is_configuration_not_a_literal() {
+    let hosts = Hosts::from_lookup(|name| {
+        (name == "JERYU_RELEASE_HOST").then(|| "release-box".to_string())
+    });
+    let items = pin_rule(
+        &consumer(vec![pin("commit", "behind", None)]),
+        &hosts,
+        now(),
+    );
+    assert_eq!(
+        items[0].action.run_in.as_deref(),
+        Some("release-box, any directory")
+    );
 }
 
 #[test]

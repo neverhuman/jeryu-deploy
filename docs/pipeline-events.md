@@ -164,11 +164,32 @@ Items are sorted by severity, then oldest first.
 | `since` | RFC 3339 or null |
 | `family`, `repo`, `pr`, `todo_id`, `sha`, `shift` | nullable join keys. `repo` is `owner/name`, except on `shift_without_pr`, which uses the family repo name as the Shift API does |
 | `href` | the in-app page where the step happens |
-| `action` | `{"label", "command"}`. `command` is a copyable shell line when the step happens off-site, else null |
-| `next_step` | the one next step as a sentence: `<label>: run \`<command>\`` or `<label>: open <href>` |
+| `action` | `{"label", "command", "run_in"}`. `command` is a copyable shell line when the step happens off-site, else null. `run_in` says where that line is run, as a short phrase naming the machine and the directory (`"xbabe0, any directory"`, `"xbabe0, in a jeryu/jeryu-deploy checkout"`); it is a string on every item whose `command` is set and the key is absent on every other item |
+| `next_step` | the one next step as a sentence: `<label>: on <run_in>, run \`<command>\`` or `<label>: open <href>` |
 
-Every item names exactly one next step: run `action.command` when it is set,
-otherwise open `href` and do what `action.label` says.
+Every item names exactly one next step: run `action.command` on the machine and
+in the directory `action.run_in` names when it is set, otherwise open `href`
+and do what `action.label` says. A command item's action:
+
+```json
+{"label": "Run auto-pin now",
+ "command": "systemctl --user start jeryu-auto-pin.service",
+ "run_in": "xbabe0, any directory"}
+```
+
+The machine in `run_in` is one of three roles, each named by an environment
+variable of the server (see [Operations](#operations)): the release host
+(auto-pin, auto-stage, `deploy-release.sh`, the todoq workers), the gate host
+(the `pr-gate-runner@` slots) and the forge host (the forge itself; mirror
+pushes leave from there).
+
+| Kind with a command | `run_in` |
+|---|---|
+| `gate_runner_down` | `<gate host>, any directory` |
+| `workers_down` | `<host>, any directory`, where the host is the one the family's newest worker or supervisor heartbeat named, else the release host |
+| `mirror_failing` | `<forge host>, as the user the forge runs as` (the command reads that user's global git config) |
+| `release_staged` | `<release host>, in a <owner/name> checkout`, the repository the `release.staged` event names |
+| `pin_behind` (`action`) | `<release host>, any directory` |
 
 | Kind | Severity | Meaning |
 |---|---|---|
@@ -188,7 +209,7 @@ otherwise open `href` and do what `action.label` says.
 | `release_staged` | action | the newest `release.staged` event names a commit production does not run and is newer than the live deployment; `action.command` is the event's `detail.deploy_command` |
 | `release_stage_failed` | critical | the newest `release.stage_failed` with `needs_human` is newer than the newest `release.staged` |
 | `deploy_failed` | critical | a repository's newest production deployment ended in `failure` or `error` |
-| `pin_behind` | action or watch | a deploy repo's pin misses green, merged work of a dependency (see [Pins](#pins)). A `commit` pin with no bump open is `action`, with the documented bump command; with a bump pull request open it is `watch` and `href` is that pull request; a `tag` pin is `watch`, because nothing cuts tags. Gone when the pin is current |
+| `pin_behind` | action or watch | a deploy repo's pin misses green, merged work of a dependency (see [Pins](#pins)). A `commit` pin with no bump open is `watch` with no command while the dependency's newest commit (`latest_at`) is younger than 20 minutes, because auto-pin is about to open the bump; after that, or when `latest_at` is missing or unreadable, it is `action` and the command starts auto-pin (`systemctl --user start jeryu-auto-pin.service`), which builds the web bundle, changes the two lock fields and opens the pull request. The id is the same on both sides of the line. With a bump pull request open it is `watch` and `href` is that pull request; a `tag` pin is `watch`, because nothing cuts tags. Gone when the pin is current |
 
 ## Pins
 
@@ -227,7 +248,9 @@ skipped, never an error.
 pull request once jeryu-web main is green: `release: pin jeryu-web <sha7>` from
 `auto/pin-web-<sha12>`, exactly the two lock fields, listing the commits it
 ships. It only proposes; review, the merge queue, auto-stage and a person's
-deploy follow as for any change. Tag pins have no automation: the item tells a
+deploy follow as for any change. A build takes about three minutes, so the
+inbox gives it 20 minutes from the dependency's newest commit before it asks a
+person to start `jeryu-auto-pin.service` by hand. Tag pins have no automation: the item tells a
 person that work is waiting for a tag.
 
 ## Todo truth
@@ -307,7 +330,14 @@ may be older than the client.
   not need to: an older binary checks only the migrations it knows, so a
   rollback runs against the migrated file unchanged.
 - **Environment.** `JERYU_EVENT_REPORTERS` (default `gatebot,pragent`). todoq
-  and `auto-stage.sh` post with an admin token and need no entry.
+  and `auto-stage.sh` post with an admin token and need no entry. The machine
+  names the inbox sends an operator to, read on each inbox computation:
+  `JERYU_RELEASE_HOST` (default `xbabe0`; auto-pin, auto-stage,
+  `deploy-release.sh` and the todoq workers), `JERYU_GATE_HOST` (default
+  `xbabe2`; the `pr-gate-runner@` slots) and `JERYU_FORGE_HOST` (default
+  `atomicsoul`; the forge itself, where mirror pushes are made by the user the
+  forge runs as). A blank value counts as unset. They only change the text of
+  `action.run_in`; nothing connects to these hosts.
 - **auto-stage.** After this lands on main, re-run
   `scripts/release/install-auto-stage.sh` on the release host so the installed
   copy posts `release.staged`; until then the inbox cannot know about a staged
