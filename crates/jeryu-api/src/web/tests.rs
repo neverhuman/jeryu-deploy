@@ -3076,22 +3076,15 @@ async fn readme_update_round_trips_through_the_local_api() {
     assert_eq!(readme["markdown"], markdown);
     assert!(readme["html"].as_str().unwrap().contains("Managed README"));
 
-    let blob = response_json(
-        repo_blob(
-            State(state.clone()),
-            AxumPath(repo.id.to_string()),
-            Query(super::repositories::SourceQuery::default()),
-        )
-        .await,
+    // The README is read through /readme; a blob read without a path is an
+    // input error rather than a silent README fallback.
+    let blob = repo_blob(
+        State(state.clone()),
+        AxumPath(repo.id.to_string()),
+        Query(super::repositories::SourceQuery::default()),
     )
     .await;
-    assert_eq!(blob["text"], markdown);
-    assert!(
-        blob["rendered_markdown"]["html"]
-            .as_str()
-            .unwrap()
-            .contains("Managed README")
-    );
+    assert_eq!(blob.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let raw = repo_raw(
         State(state),
@@ -4389,7 +4382,7 @@ async fn source_browser_answers_404_for_a_path_that_is_not_at_the_ref() {
         Query(super::repositories::SourceQuery {
             path: Some(path.to_string()),
             render: render.map(str::to_string),
-            ..Default::default()
+            ref_name: Some("main".to_string()),
         })
     };
     let id = || AxumPath("jeryu/jeryu-core".to_string());
@@ -7844,4 +7837,50 @@ fn capabilities_payload_explains_every_bootstrap_feature_flag() {
         notes["repo_create"].as_str().unwrap().contains("admin"),
         "the admin-only repository creation flag must say so"
     );
+}
+
+/// A blob read with a missing `path` or `ref` answered 200 with an empty
+/// file and `"sha":"unknown"`, so a typoed parameter looked like a real,
+/// empty file. Both are required and a miss names the missing one.
+#[tokio::test]
+async fn repo_blob_rejects_a_missing_path_or_ref() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu-core".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core));
+    let cases = [
+        (None, Some("main"), "path is required"),
+        (Some("  "), Some("main"), "path is required"),
+        (Some("src/lib.rs"), None, "ref is required"),
+        (Some("src/lib.rs"), Some(""), "ref is required"),
+        (None, None, "path is required"),
+    ];
+    for (path, ref_name, message) in cases {
+        let response = repo_blob(
+            State(state.clone()),
+            AxumPath("jeryu/jeryu-core".to_string()),
+            Query(super::repositories::SourceQuery {
+                path: path.map(str::to_string),
+                ref_name: ref_name.map(str::to_string),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "path={path:?} ref={ref_name:?}"
+        );
+        let body = response_json(response).await;
+        assert_eq!(body["code"], "invalid_input");
+        assert_eq!(body["message"], message);
+    }
 }

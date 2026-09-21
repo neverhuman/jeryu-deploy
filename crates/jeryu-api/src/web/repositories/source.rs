@@ -10,6 +10,20 @@ fn source_ref<'a>(repo: &'a Repository, query: &'a SourceQuery) -> &'a str {
         .unwrap_or(&repo.default_branch)
 }
 
+fn required_param(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+/// A blob read without a path or ref must not guess: an empty or README
+/// answer reads as a real file to a caller that typoed a parameter.
+fn missing_param_error(name: &str) -> AxumResponse {
+    api_error(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+        &format!("{name} is required"),
+    )
+}
+
 fn normalize_git_path(path: Option<&str>) -> SourceResult<String> {
     let raw = path.unwrap_or("");
     if raw.starts_with('/') || raw.contains('\0') {
@@ -446,30 +460,13 @@ pub(in crate::web) async fn repo_blob(
     let Some(repo) = find_repo(&state, &id) else {
         return api_error(StatusCode::NOT_FOUND, "not_found", "repository not found");
     };
-    let Some(path) = query.path.as_deref().filter(|path| !path.trim().is_empty()) else {
-        let readme = readme_markdown(&state, &repo);
-        return Json(BlobResponse {
-            repo: repo_id(&repo),
-            path: "README.md".to_string(),
-            ref_name: repo.default_branch,
-            sha: "unknown".to_string(),
-            size_bytes: readme.len() as u64,
-            mime: "text/markdown".to_string(),
-            encoding: BlobEncoding::Utf8,
-            text: Some(readme.clone()),
-            base64: None,
-            rendered_markdown: Some(render_markdown(&readme)),
-            is_binary: false,
-        })
-        .into_response();
+    let Some(path) = required_param(query.path.as_deref()) else {
+        return missing_param_error("path");
     };
-    match git_blob(
-        &state,
-        &repo,
-        source_ref(&repo, &query),
-        path,
-        query.render.as_deref(),
-    ) {
+    let Some(ref_name) = required_param(query.ref_name.as_deref()) else {
+        return missing_param_error("ref");
+    };
+    match git_blob(&state, &repo, ref_name, path, query.render.as_deref()) {
         Ok(blob) => Json(blob).into_response(),
         Err(response) => *response,
     }
