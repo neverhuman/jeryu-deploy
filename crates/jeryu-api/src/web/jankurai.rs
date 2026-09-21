@@ -10,8 +10,12 @@
 //! Reads need a login and are filtered to the repositories the caller can read.
 //! Filing a dispute is admin-only; disputes live in `<data_dir>/shift.sqlite`
 //! (`db/migrations/0003_jankurai_disputes.sql`).
+//!
+//! [`quality_gate`] serves the same data under `/api/v1/quality-gate/*` in the
+//! shape the web console's Quality gate pages read.
 
 mod disputes;
+pub(crate) mod quality_gate;
 #[cfg(test)]
 mod tests;
 

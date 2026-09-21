@@ -586,3 +586,102 @@ async fn empty_store_answers_every_route_with_zeroed_buckets() {
     let disputes = get_json(&router, "/api/v1/jankurai/disputes", &admin).await;
     assert!(disputes["disputes"].as_array().unwrap().is_empty());
 }
+
+/// The web console's contract: the Quality gate pages read these routes, so
+/// the overview, rule, head and dispute shapes are pinned here.
+#[tokio::test]
+async fn quality_gate_routes_serve_the_console_contract() {
+    let (core, admin, user) = forge();
+    core.record_jankurai_score(
+        "alice",
+        "jeryu",
+        score("main", "aaa", Some(96), &[], 0, "HLT-001"),
+    )
+    .unwrap();
+    core.record_jankurai_score(
+        "alice",
+        "jeryu",
+        score("wip", "ccc", Some(60), &[], 1, "HLT-008"),
+    )
+    .unwrap();
+    let router = router(core);
+
+    let overview = get_json(&router, "/api/v1/quality-gate/overview?days=30", &user).await;
+    assert_eq!(overview["schema_version"], 1);
+    assert_eq!(overview["window_days"], 30);
+    assert_eq!(overview["heads_scored"], 2);
+    assert_eq!(overview["heads_failed"], 1);
+    assert_eq!(overview["fail_rate"], 0.5);
+    assert_eq!(overview["disputes"], 0);
+    assert_eq!(overview["daily"].as_array().unwrap().len(), 30);
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let bucket = overview["daily"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|day| day["day"] == today.as_str())
+        .unwrap();
+    assert_eq!(
+        (bucket["passed"].clone(), bucket["failed"].clone()),
+        (json!(1), json!(1))
+    );
+    assert_eq!(overview["repos"][0]["repo"], "alice/jeryu");
+    assert_eq!(overview["repos"][0]["top_rule"], "HLT-008");
+    let rules = overview["rules"].as_array().unwrap();
+    assert!(
+        rules
+            .iter()
+            .any(|rule| rule["rule"] == "HLT-008" && rule["failures"] == 1)
+    );
+
+    let rule = get_json(&router, "/api/v1/quality-gate/rules/HLT-008?days=30", &user).await;
+    assert_eq!(rule["rule"], "HLT-008");
+    assert_eq!(rule["heads"][0]["sha"], "ccc");
+    assert_eq!(rule["heads"][0]["score"], 60);
+    assert_eq!(rule["heads"][0]["threshold"], 85);
+    assert_eq!(rule["heads"][0]["findings"], 1);
+
+    let head = get_json(&router, "/api/v1/quality-gate/heads/alice/jeryu/ccc", &user).await;
+    assert_eq!(head["passed"], false);
+    let finding = &head["findings"][0];
+    assert_eq!(finding["rule"], "HLT-008");
+    assert_eq!(finding["path"], "crates/jeryu-api/src/web.rs");
+    assert_eq!(finding["line"], 42);
+    assert_eq!(finding["disputed"], false);
+    let finding_id = finding["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/quality-gate/findings/{finding_id}/dispute");
+    let body = json!({ "reason": "quoted rule name" });
+
+    let denied = router
+        .clone()
+        .oneshot(request(HttpMethod::POST, &uri, &user, Some(body.clone())))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let filed = router
+        .clone()
+        .oneshot(request(HttpMethod::POST, &uri, &admin, Some(body)))
+        .await
+        .unwrap();
+    assert_eq!(filed.status(), StatusCode::CREATED);
+    let filed = body_json(filed).await;
+    assert_eq!(filed["finding"]["id"], finding_id.as_str());
+    assert_eq!(filed["finding"]["disputed_by"], "alice");
+
+    let head = get_json(&router, "/api/v1/quality-gate/heads/alice/jeryu/ccc", &user).await;
+    assert_eq!(head["findings"][0]["dispute_reason"], "quoted rule name");
+    let overview = get_json(&router, "/api/v1/quality-gate/overview?days=30", &user).await;
+    assert_eq!(overview["disputes"], 1);
+
+    for missing in [
+        "/api/v1/quality-gate/heads/alice/jeryu/zzz",
+        "/api/v1/quality-gate/rules/NOT-A-RULE",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(request(HttpMethod::GET, missing, &user, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "GET {missing}");
+    }
+}

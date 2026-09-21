@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The web console's Quality gate pages have their API: `GET /api/v1/quality-gate/overview?days=7|30`,
+  `GET /api/v1/quality-gate/rules/:rule?days=`, `GET /api/v1/quality-gate/heads/:owner/:name/:sha` and
+  admin-only `POST /api/v1/quality-gate/findings/:id/dispute` serve the stored jankurai scores and disputes
+  in the shape `/quality-gate` reads (a finding id is `<score_id>:<index>`). Until now the page's nav item
+  pointed at a 404.
+
 - `/runners` can show the release timers. `POST /api/v1/runners/heartbeat` accepts the `automation` label (`last.conclusion` of `opened`, `staged`, `waiting` or `failed`), an optional `pr` for every label (auto-stage stages a commit, not a pull request) and an optional `intervalSeconds` (30 to 86400): a runner is then offline after `max(180, 3 * intervalSeconds)`, returned per runner as `offlineAfterSeconds`. Forge admins may report as well as the `JERYU_RUNNER_REPORTERS` logins. Automation beats hold no gate slot, never count towards `gate_runner_down` and emit no `gate.*`/`review.*` events. `auto-pin.sh` and `auto-stage.sh` beat once per tick (`JERYU_AUTO_PIN_BEAT=0` / `JERYU_AUTO_STAGE_BEAT=0` turn it off). Contract: `docs/pipeline-events.md#runner-heartbeats`.
 
 - Repo graph v2 (`jeryu.repo_graph/v2`): `depends_on` edges between

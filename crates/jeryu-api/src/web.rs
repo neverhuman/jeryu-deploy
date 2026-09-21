@@ -821,6 +821,23 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/jankurai/disputes",
             get(jankurai::dispute_list).post(jankurai::dispute_create),
         ),
+        // The same data shaped for the web console's Quality gate pages.
+        (
+            "/api/v1/quality-gate/overview",
+            get(jankurai::quality_gate::overview),
+        ),
+        (
+            "/api/v1/quality-gate/rules/:rule",
+            get(jankurai::quality_gate::rule),
+        ),
+        (
+            "/api/v1/quality-gate/heads/:owner/:name/:sha",
+            get(jankurai::quality_gate::head),
+        ),
+        (
+            "/api/v1/quality-gate/findings/:id/dispute",
+            post(jankurai::quality_gate::dispute),
+        ),
         (
             "/api/v1/tools/registry/summary",
             get(tool_registry::summary),
