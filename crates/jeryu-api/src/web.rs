@@ -19,6 +19,7 @@ mod mcp_backend;
 mod permissions;
 mod pipeline;
 mod pulls;
+mod repo_address;
 mod repo_admin;
 mod repositories;
 mod request_id;
@@ -572,6 +573,16 @@ fn shared_state(mut state: WebState, spa_dir: &Path) -> Arc<WebState> {
 }
 
 fn router(state: Arc<WebState>) -> AxumRouter {
+    // `Router::layer` runs after routing, so the owner/name rewrite wraps the
+    // whole routed app as the fallback of an otherwise empty router.
+    let routed = routes(state.clone());
+    AxumRouter::new().fallback_service(tower::ServiceExt::map_request(
+        routed,
+        move |request: Request| repo_address::rewrite(&state, request),
+    ))
+}
+
+fn routes(state: Arc<WebState>) -> AxumRouter {
     let mcp_state = Arc::new(jeryu_mcp::McpHttpState::new(Arc::new(
         mcp_backend::WebMcpBackend::new(state.clone()),
     )));
@@ -1127,3 +1138,6 @@ mod paging_tests;
 
 #[cfg(test)]
 mod operator_resources_tests;
+
+#[cfg(test)]
+mod repo_address_tests;

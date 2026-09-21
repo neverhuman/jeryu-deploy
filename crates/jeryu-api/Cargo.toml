@@ -41,6 +41,7 @@ sha2 = { workspace = true, optional = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
 uuid = { workspace = true, optional = true }
+tower = { version = "0.5", default-features = false, features = ["util"], optional = true }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"], optional = true }
 
 [build-dependencies]
@@ -56,7 +57,7 @@ tower = "0.5"
 
 [features]
 default = []
-web = ["dep:axum", "dep:rusqlite", "dep:pulldown-cmark", "dep:base64", "dep:flate2", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:uuid"]
+web = ["dep:axum", "dep:rusqlite", "dep:pulldown-cmark", "dep:base64", "dep:flate2", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:tower", "dep:uuid"]
 
 [lints]
 workspace = true
