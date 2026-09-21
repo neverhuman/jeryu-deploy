@@ -485,6 +485,9 @@ async fn events_routes_enforce_reporter_and_admin_access() {
         // Every API version, not only v1.
         (HttpMethod::GET, "/api/v3/nope"),
         (HttpMethod::GET, "/api/nope"),
+        // Whatever the prefix case.
+        (HttpMethod::GET, "/API/V1/nope"),
+        (HttpMethod::GET, "/Api"),
     ] {
         let missing = call(method, uri, &admin, None).await.unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{uri}");

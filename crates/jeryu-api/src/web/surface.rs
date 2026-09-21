@@ -84,6 +84,8 @@ pub(super) async fn spa_fallback(
 /// the fallback there named a route this server does not have.
 fn is_unrouted_api_path(path: &str) -> bool {
     // Every API version: `/api/v3/nope` fell through to the web app as well.
+    // Case-blind: `/API/V1/nope` fell through to a 200 HTML page as well.
+    let path = path.to_ascii_lowercase();
     path == "/api" || path.starts_with("/api/")
 }
 
