@@ -7952,3 +7952,60 @@ async fn generated_at_is_stamped_at_serialization_time() {
         .expect("bootstrap generated_at");
     assert!(parse(stamped) >= before, "bootstrap is stale");
 }
+
+#[tokio::test]
+async fn capabilities_and_mcp_are_served_through_the_router() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/.jeryu/capabilities")
+                .header(header::USER_AGENT, "curl/8.5.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-jeryu-fast-path")
+            .and_then(|value| value.to_str().ok()),
+        Some("/.jeryu/capabilities")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-jeryu-api")
+            .and_then(|value| value.to_str().ok()),
+        Some("v4")
+    );
+    let parsed = response_json(response).await;
+    assert_eq!(parsed["mcp_endpoint"], "/mcp");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/mcp")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    assert!(response.headers().contains_key("x-jeryu-fast-path"));
+}

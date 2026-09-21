@@ -129,6 +129,23 @@ fn main() -> Result<()> {
             ctype_prefix: None,
         },
     );
+    // The steering manifest that the x-jeryu-fast-path header points agents at.
+    probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "capabilities",
+            method: "GET",
+            path: "/.jeryu/capabilities",
+            expected: 200,
+            body: None,
+            auth: None,
+            accept: Some("application/json"),
+            contains: Some("\"mcp_endpoint\":\"/mcp\""),
+            ctype_prefix: Some("application/json"),
+        },
+    );
     probe(
         &client,
         &base_url,
