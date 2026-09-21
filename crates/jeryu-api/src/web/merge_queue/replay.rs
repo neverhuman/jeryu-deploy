@@ -55,11 +55,21 @@ pub(super) struct Git<'a> {
 
 impl Git<'_> {
     fn run_in(&self, dir: &Path, args: &[&str]) -> Result<String, ReplayFailure> {
+        self.run_in_env(dir, args, &[])
+    }
+
+    fn run_in_env(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<String, ReplayFailure> {
         let out = Command::new(self.bin)
             .arg("-C")
             .arg(dir)
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
+            .envs(env.iter().copied())
             .output()
             .map_err(|err| ReplayFailure::Git(err.to_string()))?;
         if !out.status.success() {
@@ -158,10 +168,27 @@ impl Git<'_> {
             .collect()
     }
 
+    /// Committer time (unix seconds) of `sha`.
+    pub(super) fn committer_time(&self, sha: &str) -> Result<i64, ReplayFailure> {
+        let out = self.run(&["log", "-1", "--format=%ct", "--end-of-options", sha])?;
+        out.trim()
+            .parse()
+            .map_err(|_| ReplayFailure::Git(format!("no committer time for {sha}")))
+    }
+
     /// Replay `merge_base..pr_head` onto `base_tip` and return the new tip.
     /// When the PR already sits on the tip, the PR head itself is the queue
     /// commit (it was gated as the PR head).
-    pub(super) fn replay(&self, base_tip: &str, pr_head: &str) -> Result<String, ReplayFailure> {
+    ///
+    /// `committed_after` is a monotonic nonce: the replayed commits get a
+    /// committer time strictly later than it, so a rebuild on an unchanged tip
+    /// still yields a new sha without waiting for the clock.
+    pub(super) fn replay(
+        &self,
+        base_tip: &str,
+        pr_head: &str,
+        committed_after: Option<i64>,
+    ) -> Result<String, ReplayFailure> {
         if self.is_ancestor(base_tip, pr_head) {
             return Ok(pr_head.to_string());
         }
@@ -174,6 +201,17 @@ impl Git<'_> {
             return Err(ReplayFailure::MergeCommits);
         }
         let commits = self.run(&["rev-list", "--reverse", "--end-of-options", &range])?;
+        let committer_date = committed_after.map(|after| {
+            format!(
+                "@{} +0000",
+                committer_seconds(chrono::Utc::now().timestamp(), after)
+            )
+        });
+        let env: Vec<(&str, &str)> = committer_date
+            .as_deref()
+            .map(|date| ("GIT_COMMITTER_DATE", date))
+            .into_iter()
+            .collect();
 
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -187,7 +225,7 @@ impl Git<'_> {
         ])?;
         let result = (|| {
             for commit in commits.lines().filter(|line| is_sha(line)) {
-                if let Err(err) = self.run_in(
+                if let Err(err) = self.run_in_env(
                     &work,
                     &[
                         "-c",
@@ -202,6 +240,7 @@ impl Git<'_> {
                         "--keep-redundant-commits",
                         commit,
                     ],
+                    &env,
                 ) {
                     let conflicted = self
                         .run_in(&work, &["diff", "--name-only", "--diff-filter=U"])
@@ -309,6 +348,11 @@ impl Git<'_> {
     }
 }
 
+/// Committer time for a rebuild: the clock, but never at or before `after`.
+fn committer_seconds(now: i64, after: i64) -> i64 {
+    now.max(after.saturating_add(1))
+}
+
 pub(super) fn is_sha(value: &str) -> bool {
     value.len() == 40
         && value
@@ -319,4 +363,16 @@ pub(super) fn is_sha(value: &str) -> bool {
 /// Refs only the merge queue may write; pushes to them are refused.
 pub(crate) fn is_queue_owned_ref(name: &str) -> bool {
     name.starts_with("refs/queue/") || name.starts_with("refs/queue-meta/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::committer_seconds;
+
+    #[test]
+    fn committer_seconds_always_passes_the_previous_attempt() {
+        assert_eq!(committer_seconds(100, 100), 101);
+        assert_eq!(committer_seconds(100, 250), 251);
+        assert_eq!(committer_seconds(300, 100), 300);
+    }
 }

@@ -253,6 +253,18 @@ fn build(
     repo: &str,
     entry: &mut QueueEntry,
 ) -> Result<(), ReplayFailure> {
+    build_after(state, owner, repo, entry, None)
+}
+
+/// [`build`], with replayed commits committed strictly after `committed_after`
+/// (unix seconds).
+fn build_after(
+    state: &WebState,
+    owner: &str,
+    repo: &str,
+    entry: &mut QueueEntry,
+    committed_after: Option<i64>,
+) -> Result<(), ReplayFailure> {
     let resolved = state
         .repo_manager
         .open_parts(owner, repo)
@@ -261,7 +273,7 @@ fn build(
     let base_sha = git
         .resolve(&format!("refs/heads/{}", entry.base))
         .ok_or_else(|| ReplayFailure::Git(format!("refs/heads/{} does not resolve", entry.base)))?;
-    let queue_sha = git.replay(&base_sha, &entry.pr_head_sha)?;
+    let queue_sha = git.replay(&base_sha, &entry.pr_head_sha, committed_after)?;
     git.update_ref(&entry.queue_ref, &queue_sha)?;
     entry.base_sha = base_sha.clone();
     entry.queue_sha = queue_sha.clone();
@@ -711,16 +723,20 @@ fn advance(state: &WebState, owner: &str, repo: &str, number: u64, entry: &mut Q
 }
 
 /// A retry needs a new commit so the runner gates it afresh: rebuild on the
-/// current tip; if the tip has not moved, the new committer time still yields
-/// a new sha.
+/// current tip with a committer time past the previous attempt's, so even an
+/// unmoved tip yields a new sha.
 fn rebuild_fresh(
     state: &WebState,
     owner: &str,
     repo: &str,
     entry: &mut QueueEntry,
 ) -> Result<(), ReplayFailure> {
-    std::thread::sleep(std::time::Duration::from_millis(1100));
-    build(state, owner, repo, entry)
+    let resolved = state
+        .repo_manager
+        .open_parts(owner, repo)
+        .map_err(|err| ReplayFailure::Git(err.to_string()))?;
+    let previous = git_for(state, &resolved.path).committer_time(&entry.queue_sha)?;
+    build_after(state, owner, repo, entry, Some(previous))
 }
 
 fn land(state: &WebState, owner: &str, repo: &str, entry: &mut QueueEntry) {
