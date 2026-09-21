@@ -631,7 +631,7 @@ pub(super) fn filtered_repo_list_response_for_user(
     }
 
     RepositoryListResponse {
-        generated_at: state.tui.generated_at.to_rfc3339(),
+        generated_at: super::server_time(),
         total: repositories.len() as u64,
         repositories,
         facets: RepositoryFacets {

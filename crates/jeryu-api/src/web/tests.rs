@@ -7884,3 +7884,31 @@ async fn repo_blob_rejects_a_missing_path_or_ref() {
         assert_eq!(body["message"], message);
     }
 }
+
+/// `generated_at` is stamped when a response is built, not taken from the
+/// read model captured at process start.
+#[tokio::test]
+async fn generated_at_is_stamped_at_serialization_time() {
+    let mut state = WebState::new(ForgeCore::new());
+    let boot = chrono::Utc::now() - chrono::Duration::hours(31);
+    state.tui.generated_at = boot;
+    let state = Arc::new(state);
+    let before = chrono::Utc::now();
+
+    let parse = |value: &str| {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .expect("generated_at is RFC 3339")
+            .with_timezone(&chrono::Utc)
+    };
+    let served = bootstrap_tui(State(state.clone())).await.0;
+    assert!(served.generated_at >= before, "bootstrap.tui is stale");
+    let repos = repo_list_response(&state);
+    assert!(parse(&repos.generated_at) >= before, "repos is stale");
+    assert!(parse(&server_time()) >= before, "server_time is stale");
+    let bootstrap = bootstrap_payload(&state).expect("bootstrap payload");
+    let bootstrap = serde_json::to_value(bootstrap).expect("serialize bootstrap");
+    let stamped = bootstrap["generated_at"]
+        .as_str()
+        .expect("bootstrap generated_at");
+    assert!(parse(stamped) >= before, "bootstrap is stale");
+}

@@ -466,6 +466,7 @@ pub(super) fn live_tui(state: &WebState) -> TuiReadModel {
     tui.pool_activity = live.pool_activity;
     tui.system = live.system;
     tui.workcells = dashboard_from_manager(state);
+    tui.generated_at = chrono::Utc::now();
     tui
 }
 

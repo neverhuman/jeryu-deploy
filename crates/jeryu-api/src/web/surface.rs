@@ -526,7 +526,7 @@ fn bootstrap_payload_with_repos(
 ) -> Result<WebBootstrap, serde_json::Error> {
     let tui = serialize_payload(&super::workcells::live_tui(state))?;
     Ok(WebBootstrap {
-        generated_at: state.tui.generated_at.to_rfc3339(),
+        generated_at: super::server_time(),
         schema_version: "0.1.0-alpha".to_string(),
         viewer: Viewer {
             id: login.to_string(),

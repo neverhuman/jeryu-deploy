@@ -1066,10 +1066,10 @@ pub(super) fn server_time() -> String {
     chrono_like_now()
 }
 
+/// Wall-clock time at serialization. Never read this from a read-model
+/// default: that value is fixed when the process starts.
 fn chrono_like_now() -> String {
-    jeryu_readmodel::TuiReadModel::default()
-        .generated_at
-        .to_rfc3339()
+    chrono::Utc::now().to_rfc3339()
 }
 
 pub(super) fn api_error(status: StatusCode, code: &str, message: &str) -> AxumResponse {
