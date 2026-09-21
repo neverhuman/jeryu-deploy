@@ -3917,6 +3917,59 @@ async fn auth_rate_limit_returns_429_for_repeated_login_failures() {
 }
 
 #[tokio::test]
+async fn anonymous_git_read_follows_repository_visibility() {
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let storage = tempdir().unwrap();
+    let core = ForgeCore::new();
+    for (name, private) in [("open", false), ("closed", true)] {
+        core.create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    let app = app(
+        WebState::new_with_git_storage(core, storage.path().to_path_buf())
+            .with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let anonymous = |uri: &str| {
+        let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                [203, 0, 113, 7],
+                40000,
+            ))));
+        app.clone().oneshot(request)
+    };
+
+    let public_read = anonymous("/git/jeryu/open.git/info/refs?service=git-upload-pack")
+        .await
+        .unwrap();
+    assert_ne!(public_read.status(), StatusCode::UNAUTHORIZED);
+    assert!(public_read.headers().get("www-authenticate").is_none());
+
+    for uri in [
+        "/git/jeryu/open.git/info/refs?service=git-receive-pack",
+        "/git/jeryu/closed.git/info/refs?service=git-upload-pack",
+        "/git/jeryu/missing.git/info/refs?service=git-upload-pack",
+    ] {
+        let response = anonymous(uri).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn trust_local_dev_requires_loopback_peer() {
     use axum::body::Body;
     use axum::extract::ConnectInfo;

@@ -485,6 +485,17 @@ fn authorize_git_core(
     if !state.auth_required || (state.trust_local_dev && peer.ip().is_loopback()) {
         return Ok(());
     }
+    let logical_repo = logical_repo_name(repo);
+    // A public repository is readable by anyone, as the UI's PUBLIC chip and
+    // Clone button promise; writes always need a principal.
+    if !write
+        && state
+            .core
+            .get_repository(owner, logical_repo)
+            .is_ok_and(|found| !found.private)
+    {
+        return Ok(());
+    }
     let Some(auth) = crate::web::auth::authenticate_headers(state, headers) else {
         return Err(Box::new(gitd_to_axum_response(
             &GitHttpResponse::text(401, "Requires authentication\n")
@@ -492,7 +503,6 @@ fn authorize_git_core(
         )));
     };
     let account = auth.account;
-    let logical_repo = logical_repo_name(repo);
     let allowed = if write {
         state
             .core
