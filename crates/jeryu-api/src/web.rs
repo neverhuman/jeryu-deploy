@@ -23,6 +23,7 @@ mod repo_address;
 mod repo_admin;
 mod repositories;
 mod request_id;
+mod route_index;
 mod sessions;
 mod shift;
 mod surface;
@@ -48,7 +49,7 @@ use axum::extract::{DefaultBodyLimit, Extension, Path as AxumPath, Query, Reques
 use axum::http::{HeaderName, HeaderValue, Method as HttpMethod, StatusCode, header};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response as AxumResponse};
-use axum::routing::{any, get, post};
+use axum::routing::{MethodRouter, any, get, post};
 use axum::{Json, Router as AxumRouter};
 use jeryu_codegraph::CodeGraphStore;
 use jeryu_core::{AccountSummary, ForgeCore, UserRole};
@@ -590,248 +591,17 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
         .layer(from_fn(steer_headers))
         .layer(from_fn_with_state(state.clone(), auth::gate))
         .layer(from_fn(request_id::propagate));
-    AxumRouter::new()
+    api_v1_routes()
+        .into_iter()
+        .fold(AxumRouter::new(), |router, (path, handlers)| {
+            router.route(path, handlers)
+        })
         .route("/health", get(health))
         // Steering surface: advertises the faster jeryu/MCP path so external
         // agents stuck on bespoke `gh` commands can discover it.
         .route("/.jeryu/capabilities", get(capabilities))
-        .route("/api/v1/errors", get(error_envelope::catalog))
-        .route("/api/v1/bootstrap", get(bootstrap))
-        .route("/api/v1/bootstrap.tui", get(bootstrap_tui))
-        .route("/api/v1/work", get(work::list).post(work::create))
-        .route("/api/v1/work/:key", get(work::detail).patch(work::patch))
-        .route("/api/v1/work/:key/comments", post(work::comment))
-        .route("/api/v1/work/:key/links", post(work::link))
-        .route("/api/v1/auth/signup", post(auth::signup))
-        .route("/api/v1/auth/login", post(auth::login))
-        .route("/api/v1/auth/logout", post(auth::logout))
-        .route("/api/v1/auth/me", get(auth::me))
-        .route("/api/v1/auth/password", post(auth::change_password))
-        .route(
-            "/api/v1/auth/tokens",
-            get(auth::list_tokens).post(auth::create_token),
-        )
-        .route(
-            "/api/v1/auth/tokens/:id",
-            axum::routing::delete(auth::delete_token),
-        )
-        .route("/api/v1/admin/users", get(auth::admin_users))
-        .route(
-            "/api/v1/admin/users/:login/reset-password",
-            post(auth::admin_reset_password),
-        )
-        .route(
-            "/api/v1/admin/repos/:owner/:repo/grants",
-            get(auth::admin_repo_grants),
-        )
-        .route(
-            "/api/v1/admin/repos/:owner/:repo/grants/:login",
-            post(auth::admin_grant_repo).delete(auth::admin_revoke_repo),
-        )
-        .route(
-            "/api/v1/agent-runs",
-            get(agent_runs::list).post(agent_runs::start),
-        )
-        .route("/api/v1/agent-runs/:id", get(agent_runs::status))
-        .route("/api/v1/agent-runs/:id/events", get(agent_runs::events))
-        // Live raw-TTY push transport (Server-Sent Events). An outside service such
-        // as jpmc subscribes once and is streamed raw bytes as they publish, instead
-        // of cursor-polling agent_work.tail; it replays the retained ring on connect.
-        .route(
-            "/api/v1/agent-runs/:id/tty/stream",
-            get(agent_runs::tty_stream),
-        )
-        .route("/api/v1/agent-runs/:id/control", post(agent_runs::control))
-        .route("/api/v1/agent-runs/:id/shell", post(agent_runs::shell))
-        .route(
-            "/api/v1/agent-runs/:id/export_pr",
-            post(agent_runs::export_pr),
-        )
-        // Host-mediated publish: advance the session branch ref + open a PR. The
-        // agent never pushes; the ref move goes through the protected ref service.
-        .route("/api/v1/agent-runs/:id/publish", post(sessions::publish))
-        .route(
-            "/api/v1/workcells",
-            get(workcells::list).post(workcells::claim),
-        )
-        .route(
-            "/api/v1/workcells/repair_live",
-            post(workcells::repair_live),
-        )
-        .route("/api/v1/workcells/:id", get(workcells::status))
-        .route(
-            "/api/v1/workcells/:id/heartbeat",
-            post(workcells::heartbeat),
-        )
-        .route("/api/v1/workcells/:id/release", post(workcells::release))
-        .route(
-            "/api/v1/workcells/:id/run_agent",
-            post(workcells::run_agent),
-        )
-        .route(
-            "/api/v1/workcells/:id/export_pr",
-            post(workcells::export_pr),
-        )
-        .route("/api/v1/repos", get(repos))
-        .route("/api/v1/releases", get(operator_resources::releases))
-        .route("/api/v1/mirrors", get(operator_resources::mirrors))
-        .route("/api/v1/settings", get(operator_resources::settings))
-        .route("/api/v1/audit", get(operator_resources::audit))
-        .route(
-            "/api/v1/repos/:id",
-            get(repo_detail)
-                .patch(repo_update)
-                .delete(repo_admin::repo_delete),
-        )
-        // Repo-scoped agent sessions: launch a hardened session, and the live
-        // per-repo agent-runs list the web Active-Agents page consumes.
-        .route("/api/v1/repos/:id/sessions", post(sessions::create))
-        .route("/api/v1/repos/:id/agent-runs", get(sessions::list))
-        .route(
-            "/api/v1/repos/:id/work",
-            get(work::repo_list).post(work::repo_create),
-        )
-        .route("/api/v1/repos/:id/pulls", get(pulls::list))
-        .route("/api/v1/repos/:id/pulls/:number", get(pulls::detail))
-        .route("/api/v1/repos/:id/pulls/:number/diff", get(pulls::diff))
-        .route("/api/v1/repos/:id/pulls/:number/checks", get(pulls::checks))
-        .route(
-            "/api/v1/repos/:id/pulls/:number/threads",
-            get(pulls::threads),
-        )
-        .route(
-            "/api/v1/repos/:id/pulls/:number/reviews",
-            post(pulls::review),
-        )
-        .route(
-            "/api/v1/repos/:id/pulls/:number/comments",
-            post(pulls::comment),
-        )
-        .route(
-            "/api/v1/repos/:id/pulls/:number/approve",
-            post(pulls::approve),
-        )
-        .route("/api/v1/repos/:id/pulls/:number/merge", post(pulls::merge))
-        .route(
-            "/api/v1/repos/:id/pulls/:number/queue",
-            post(merge_queue::enqueue).delete(merge_queue::dequeue),
-        )
-        .route("/api/v1/repos/:id/merge-queue", get(merge_queue::list_repo))
-        .route("/api/v1/merge-queue", get(merge_queue::list_all))
-        .route(
-            "/api/v1/repos/:id/jankurai-scores",
-            get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),
-        )
-        .route("/api/v1/fleet/tool-adoption", get(fleet_tool_adoption))
-        // Quality-gate visibility: how the jankurai/proof gate has behaved,
-        // before anyone makes it required. Reads need a login; filing a
-        // dispute is admin-only.
-        .route("/api/v1/jankurai/overview", get(jankurai::overview))
-        .route(
-            "/api/v1/jankurai/rules/:rule_id",
-            get(jankurai::rule_detail),
-        )
-        .route(
-            "/api/v1/jankurai/scores/:score_id",
-            get(jankurai::score_detail),
-        )
-        .route(
-            "/api/v1/jankurai/disputes",
-            get(jankurai::dispute_list).post(jankurai::dispute_create),
-        )
-        .route(
-            "/api/v1/tools/registry/summary",
-            get(tool_registry::summary),
-        )
-        .route("/api/v1/repos/:id/refs", get(repo_refs))
-        .route("/api/v1/repos/:id/compare", get(repo_compare))
-        .route("/api/v1/repos/:id/release-tag", get(repo_release_tag))
-        .route("/api/v1/deployments", get(deployed_repositories))
-        .route("/api/v1/repos/:id/tree", get(repo_tree))
-        .route("/api/v1/repos/:id/blob", get(repo_blob))
-        .route("/api/v1/repos/:id/raw", get(repo_raw))
-        .route("/api/v1/repos/:id/codegraph/query", post(codegraph::query))
-        .route(
-            "/api/v1/codegraph/tool-build/status",
-            get(tool_build::status),
-        )
-        .route(
-            "/api/v1/codegraph/tool-build/clusters",
-            get(tool_build::clusters),
-        )
-        .route(
-            "/api/v1/codegraph/tool-build/clusters/:id/feedback",
-            post(tool_build::feedback),
-        )
-        // System-wide tool-finder: live scan trigger/status, the /tools
-        // pattern-family dashboard, and cluster -> registry proposal.
-        .route(
-            "/api/v1/tool-finder/scan",
-            get(tool_finder::scan_status).post(tool_finder::scan_start),
-        )
-        .route("/api/v1/tool-finder/source", get(tool_finder::source))
-        .route("/api/v1/tool-finder/dashboard", get(tool_finder::dashboard))
-        .route(
-            "/api/v1/tool-finder/propose/:cluster_id",
-            post(tool_finder::propose),
-        )
-        .route(
-            "/api/v1/tool-finder/proposals/:tool_id/decision",
-            post(tool_proposals::decide),
-        )
-        // Shift pages: todoq family queues, slot heartbeats, shift branches.
-        // Reads need a login; every POST is admin-only (auth::admin_only_request).
-        .route(
-            "/api/v1/events",
-            get(pipeline::list_events).post(pipeline::post_events),
-        )
-        .route("/api/v1/attention", get(pipeline::attention::attention))
-        .route("/api/v1/pins", get(pipeline::pins::pins))
-        .route("/api/v1/shift/families", get(shift::families))
-        .route(
-            "/api/v1/shift/todos",
-            get(shift::list_todos).post(shift::file_todos),
-        )
-        .route(
-            "/api/v1/shift/todos/:family/:id/action",
-            post(shift::todo_action),
-        )
-        .route("/api/v1/shift/heartbeat", post(shift::heartbeat))
-        .route("/api/v1/shift/workers", get(shift::workers))
-        .route("/api/v1/shift/workers/history", get(shift::workers_history))
-        .route("/api/v1/shift/shifts", get(shift::list_shifts))
-        .route(
-            "/api/v1/shift/shifts/:family/pr",
-            post(shift::open_shift_pr),
-        )
-        .route("/api/v1/control-plane/status", get(control_plane::status))
-        .route(
-            "/api/v1/control-plane/priorities",
-            get(control_plane::priorities),
-        )
-        .route(
-            "/api/v1/control-plane/repo-graph",
-            get(control_plane::repo_graph),
-        )
-        .route(
-            "/api/v1/control-plane/artifacts/latest",
-            get(control_plane::artifacts_latest),
-        )
-        .route("/api/v1/control-plane/runners", get(control_plane::runners))
-        .route(
-            "/api/v1/runners/heartbeat",
-            post(control_plane::runner_heartbeat),
-        )
-        .route(
-            "/api/v1/repos/:id/readme",
-            get(repo_readme).put(repo_readme_update),
-        )
-        // Read-only ecosystem surface for generic external clients: the live
-        // tool-graph and per-CI-run evidence. Additive, never mutating.
-        .route("/api/v1/ecosystem", get(ecosystem))
-        .route("/api/v1/ci/runs/:id/evidence", get(ci_run_evidence))
-        .route("/api/v1/markdown/render", post(markdown_render))
-        .route("/api/v1/ws", get(ws::ws))
+        .route("/api/v1", get(route_index::api_v1))
+        .route("/api/v1/", get(route_index::api_v1))
         .route("/graphql", post(graphql))
         // GitHub-compatible REST edge — every request is forwarded to the
         // in-process `GithubRouter`, so the real `gh` CLI and any GitHub client
@@ -900,6 +670,251 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
         .layer(from_fn(request_id::propagate))
         .with_state(state)
         .merge(mcp_router)
+}
+
+/// Every `/api/v1` route with its handlers. The router mounts this list and
+/// `GET /api/v1` indexes it, so the published index cannot drift from what is
+/// actually served.
+fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
+    vec![
+        ("/api/v1/errors", get(error_envelope::catalog)),
+        ("/api/v1/bootstrap", get(bootstrap)),
+        ("/api/v1/bootstrap.tui", get(bootstrap_tui)),
+        ("/api/v1/work", get(work::list).post(work::create)),
+        ("/api/v1/work/:key", get(work::detail).patch(work::patch)),
+        ("/api/v1/work/:key/comments", post(work::comment)),
+        ("/api/v1/work/:key/links", post(work::link)),
+        ("/api/v1/auth/signup", post(auth::signup)),
+        ("/api/v1/auth/login", post(auth::login)),
+        ("/api/v1/auth/logout", post(auth::logout)),
+        ("/api/v1/auth/me", get(auth::me)),
+        ("/api/v1/auth/password", post(auth::change_password)),
+        (
+            "/api/v1/auth/tokens",
+            get(auth::list_tokens).post(auth::create_token),
+        ),
+        (
+            "/api/v1/auth/tokens/:id",
+            axum::routing::delete(auth::delete_token),
+        ),
+        ("/api/v1/admin/users", get(auth::admin_users)),
+        (
+            "/api/v1/admin/users/:login/reset-password",
+            post(auth::admin_reset_password),
+        ),
+        (
+            "/api/v1/admin/repos/:owner/:repo/grants",
+            get(auth::admin_repo_grants),
+        ),
+        (
+            "/api/v1/admin/repos/:owner/:repo/grants/:login",
+            post(auth::admin_grant_repo).delete(auth::admin_revoke_repo),
+        ),
+        (
+            "/api/v1/agent-runs",
+            get(agent_runs::list).post(agent_runs::start),
+        ),
+        ("/api/v1/agent-runs/:id", get(agent_runs::status)),
+        ("/api/v1/agent-runs/:id/events", get(agent_runs::events)),
+        // Live raw-TTY push transport (Server-Sent Events). An outside service such
+        // as jpmc subscribes once and is streamed raw bytes as they publish, instead
+        // of cursor-polling agent_work.tail; it replays the retained ring on connect.
+        (
+            "/api/v1/agent-runs/:id/tty/stream",
+            get(agent_runs::tty_stream),
+        ),
+        ("/api/v1/agent-runs/:id/control", post(agent_runs::control)),
+        ("/api/v1/agent-runs/:id/shell", post(agent_runs::shell)),
+        (
+            "/api/v1/agent-runs/:id/export_pr",
+            post(agent_runs::export_pr),
+        ),
+        // Host-mediated publish: advance the session branch ref + open a PR. The
+        // agent never pushes; the ref move goes through the protected ref service.
+        ("/api/v1/agent-runs/:id/publish", post(sessions::publish)),
+        (
+            "/api/v1/workcells",
+            get(workcells::list).post(workcells::claim),
+        ),
+        (
+            "/api/v1/workcells/repair_live",
+            post(workcells::repair_live),
+        ),
+        ("/api/v1/workcells/:id", get(workcells::status)),
+        (
+            "/api/v1/workcells/:id/heartbeat",
+            post(workcells::heartbeat),
+        ),
+        ("/api/v1/workcells/:id/release", post(workcells::release)),
+        (
+            "/api/v1/workcells/:id/run_agent",
+            post(workcells::run_agent),
+        ),
+        (
+            "/api/v1/workcells/:id/export_pr",
+            post(workcells::export_pr),
+        ),
+        ("/api/v1/repos", get(repos)),
+        ("/api/v1/releases", get(operator_resources::releases)),
+        ("/api/v1/mirrors", get(operator_resources::mirrors)),
+        ("/api/v1/settings", get(operator_resources::settings)),
+        ("/api/v1/audit", get(operator_resources::audit)),
+        (
+            "/api/v1/repos/:id",
+            get(repo_detail)
+                .patch(repo_update)
+                .delete(repo_admin::repo_delete),
+        ),
+        // Repo-scoped agent sessions: launch a hardened session, and the live
+        // per-repo agent-runs list the web Active-Agents page consumes.
+        ("/api/v1/repos/:id/sessions", post(sessions::create)),
+        ("/api/v1/repos/:id/agent-runs", get(sessions::list)),
+        (
+            "/api/v1/repos/:id/work",
+            get(work::repo_list).post(work::repo_create),
+        ),
+        ("/api/v1/repos/:id/pulls", get(pulls::list)),
+        ("/api/v1/repos/:id/pulls/:number", get(pulls::detail)),
+        ("/api/v1/repos/:id/pulls/:number/diff", get(pulls::diff)),
+        ("/api/v1/repos/:id/pulls/:number/checks", get(pulls::checks)),
+        (
+            "/api/v1/repos/:id/pulls/:number/threads",
+            get(pulls::threads),
+        ),
+        (
+            "/api/v1/repos/:id/pulls/:number/reviews",
+            post(pulls::review),
+        ),
+        (
+            "/api/v1/repos/:id/pulls/:number/comments",
+            post(pulls::comment),
+        ),
+        (
+            "/api/v1/repos/:id/pulls/:number/approve",
+            post(pulls::approve),
+        ),
+        ("/api/v1/repos/:id/pulls/:number/merge", post(pulls::merge)),
+        (
+            "/api/v1/repos/:id/pulls/:number/queue",
+            post(merge_queue::enqueue).delete(merge_queue::dequeue),
+        ),
+        ("/api/v1/repos/:id/merge-queue", get(merge_queue::list_repo)),
+        ("/api/v1/merge-queue", get(merge_queue::list_all)),
+        (
+            "/api/v1/repos/:id/jankurai-scores",
+            get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),
+        ),
+        ("/api/v1/fleet/tool-adoption", get(fleet_tool_adoption)),
+        // Quality-gate visibility: how the jankurai/proof gate has behaved,
+        // before anyone makes it required. Reads need a login; filing a
+        // dispute is admin-only.
+        ("/api/v1/jankurai/overview", get(jankurai::overview)),
+        (
+            "/api/v1/jankurai/rules/:rule_id",
+            get(jankurai::rule_detail),
+        ),
+        (
+            "/api/v1/jankurai/scores/:score_id",
+            get(jankurai::score_detail),
+        ),
+        (
+            "/api/v1/jankurai/disputes",
+            get(jankurai::dispute_list).post(jankurai::dispute_create),
+        ),
+        (
+            "/api/v1/tools/registry/summary",
+            get(tool_registry::summary),
+        ),
+        ("/api/v1/repos/:id/refs", get(repo_refs)),
+        ("/api/v1/repos/:id/compare", get(repo_compare)),
+        ("/api/v1/repos/:id/release-tag", get(repo_release_tag)),
+        ("/api/v1/deployments", get(deployed_repositories)),
+        ("/api/v1/repos/:id/tree", get(repo_tree)),
+        ("/api/v1/repos/:id/blob", get(repo_blob)),
+        ("/api/v1/repos/:id/raw", get(repo_raw)),
+        ("/api/v1/repos/:id/codegraph/query", post(codegraph::query)),
+        (
+            "/api/v1/codegraph/tool-build/status",
+            get(tool_build::status),
+        ),
+        (
+            "/api/v1/codegraph/tool-build/clusters",
+            get(tool_build::clusters),
+        ),
+        (
+            "/api/v1/codegraph/tool-build/clusters/:id/feedback",
+            post(tool_build::feedback),
+        ),
+        // System-wide tool-finder: live scan trigger/status, the /tools
+        // pattern-family dashboard, and cluster -> registry proposal.
+        (
+            "/api/v1/tool-finder/scan",
+            get(tool_finder::scan_status).post(tool_finder::scan_start),
+        ),
+        ("/api/v1/tool-finder/source", get(tool_finder::source)),
+        ("/api/v1/tool-finder/dashboard", get(tool_finder::dashboard)),
+        (
+            "/api/v1/tool-finder/propose/:cluster_id",
+            post(tool_finder::propose),
+        ),
+        (
+            "/api/v1/tool-finder/proposals/:tool_id/decision",
+            post(tool_proposals::decide),
+        ),
+        // Shift pages: todoq family queues, slot heartbeats, shift branches.
+        // Reads need a login; every POST is admin-only (auth::admin_only_request).
+        (
+            "/api/v1/events",
+            get(pipeline::list_events).post(pipeline::post_events),
+        ),
+        ("/api/v1/attention", get(pipeline::attention::attention)),
+        ("/api/v1/pins", get(pipeline::pins::pins)),
+        ("/api/v1/shift/families", get(shift::families)),
+        (
+            "/api/v1/shift/todos",
+            get(shift::list_todos).post(shift::file_todos),
+        ),
+        (
+            "/api/v1/shift/todos/:family/:id/action",
+            post(shift::todo_action),
+        ),
+        ("/api/v1/shift/heartbeat", post(shift::heartbeat)),
+        ("/api/v1/shift/workers", get(shift::workers)),
+        ("/api/v1/shift/workers/history", get(shift::workers_history)),
+        ("/api/v1/shift/shifts", get(shift::list_shifts)),
+        (
+            "/api/v1/shift/shifts/:family/pr",
+            post(shift::open_shift_pr),
+        ),
+        ("/api/v1/control-plane/status", get(control_plane::status)),
+        (
+            "/api/v1/control-plane/priorities",
+            get(control_plane::priorities),
+        ),
+        (
+            "/api/v1/control-plane/repo-graph",
+            get(control_plane::repo_graph),
+        ),
+        (
+            "/api/v1/control-plane/artifacts/latest",
+            get(control_plane::artifacts_latest),
+        ),
+        ("/api/v1/control-plane/runners", get(control_plane::runners)),
+        (
+            "/api/v1/runners/heartbeat",
+            post(control_plane::runner_heartbeat),
+        ),
+        (
+            "/api/v1/repos/:id/readme",
+            get(repo_readme).put(repo_readme_update),
+        ),
+        // Read-only ecosystem surface for generic external clients: the live
+        // tool-graph and per-CI-run evidence. Additive, never mutating.
+        ("/api/v1/ecosystem", get(ecosystem)),
+        ("/api/v1/ci/runs/:id/evidence", get(ci_run_evidence)),
+        ("/api/v1/markdown/render", post(markdown_render)),
+        ("/api/v1/ws", get(ws::ws)),
+    ]
 }
 
 async fn health() -> Json<Value> {

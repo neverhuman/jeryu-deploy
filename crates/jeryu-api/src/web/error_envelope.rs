@@ -223,7 +223,7 @@ fn default_fixes(code: &str) -> &'static [&'static str] {
         ],
         "unsupported_media_type" => &["send the JSON body with Content-Type: application/json"],
         "invalid_path_parameter" => &[
-            "check each path segment against the route in docs/phase7-api.md",
+            "check each path segment against the route listed at GET /api/v1",
             "numeric ids must be digits only",
         ],
         "invalid_query" => &["check the query parameter names and value types"],
@@ -231,7 +231,7 @@ fn default_fixes(code: &str) -> &'static [&'static str] {
         "payload_too_large" => &["send a smaller request body"],
         _ => &[
             "look the code up at GET /api/v1/errors",
-            "check the request against docs/phase7-api.md",
+            "check the request against the route index at GET /api/v1",
         ],
     }
 }
@@ -501,5 +501,43 @@ mod tests {
                 .iter()
                 .any(|entry| entry["code"] == "api_route_not_found")
         );
+    }
+
+    #[tokio::test]
+    async fn api_v1_publishes_its_route_index_without_a_login() {
+        let mut state = open_state();
+        state.auth_required = true;
+        let (status, _, value) = send(state, "GET", "/api/v1", None, "").await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        let routes: Vec<&str> = value["jeryu_api_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|route| route.as_str().unwrap())
+            .collect();
+        for expected in [
+            "GET /api/v1",
+            "GET /api/v1/errors",
+            "GET /api/v1/work",
+            "POST /api/v1/work",
+            "PATCH /api/v1/work/{key}",
+            "DELETE /api/v1/repos/{id}",
+        ] {
+            assert!(routes.contains(&expected), "{expected} missing: {routes:?}");
+        }
+        assert!(routes.iter().all(|route| !route.starts_with("HEAD ")));
+        assert!(
+            routes.iter().all(|route| !route.contains(':')),
+            "{routes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_api_route_points_at_the_route_index() {
+        let (status, _, value) = send(open_state(), "GET", "/api/v1/nope", None, "").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_envelope(&value, "api_route_not_found");
+        assert_eq!(value["docs_url"], "/api/v1", "{value}");
+        assert!(!value.to_string().contains("docs/phase7-api.md"), "{value}");
     }
 }

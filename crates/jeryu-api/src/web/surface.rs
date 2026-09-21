@@ -133,11 +133,11 @@ fn unknown_api_route(path: &str) -> AxumResponse {
         purpose: "route a jeryu API request",
         reason: &format!("no API route matches {path}"),
         common_fixes: &[
-            "check the path and HTTP method against the API docs",
+            "check the path and HTTP method against the route index at GET /api/v1",
             "the server may be older than the client: compare /api/v1/bootstrap versions",
         ],
-        docs_url: "docs/phase7-api.md",
-        repair_hint: "list the available routes in docs/phase7-api.md and docs/pipeline-events.md",
+        docs_url: super::route_index::INDEX_PATH,
+        repair_hint: "list the available routes with GET /api/v1 and retry with one of them",
         message: "API route not found",
     })
 }
