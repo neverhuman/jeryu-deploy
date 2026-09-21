@@ -21,9 +21,12 @@ use super::repositories::repo_summaries;
 use super::repositories::repo_summaries_for_user;
 use crate::{Method, Response as GithubResponse};
 
+/// Body of `POST /api/v1/markdown/render`. Unknown fields are rejected and
+/// `markdown` is required, so a misspelled key fails with 422 instead of
+/// rendering empty output.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct MarkdownRequest {
-    #[serde(default)]
     markdown: String,
 }
 
@@ -735,5 +738,27 @@ mod authz_tests {
             .is_none(),
             "an admin may create a repository"
         );
+    }
+}
+
+#[cfg(test)]
+mod markdown_request_tests {
+    use super::MarkdownRequest;
+
+    #[test]
+    fn markdown_request_requires_markdown_and_rejects_unknown_fields() {
+        let ok: MarkdownRequest = serde_json::from_str(r#"{"markdown":"*hi*"}"#).unwrap();
+        assert_eq!(ok.markdown, "*hi*");
+
+        for body in [
+            r#"{}"#,
+            r#"{"markdwon":"*hi*"}"#,
+            r#"{"markdown":"x","extra":1}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<MarkdownRequest>(body).is_err(),
+                "{body} must be rejected"
+            );
+        }
     }
 }
