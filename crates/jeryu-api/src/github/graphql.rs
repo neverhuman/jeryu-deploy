@@ -160,7 +160,8 @@ fn unsupported_response(query: &str, operation_name: Option<&str>) -> Response {
             "jeryu_api_routes": [
                 "GET /repos",
                 "GET /repos/{owner}/{repo}",
-                "PATCH /repos/{owner}/{repo} (archived: bool; admin only)",
+                "PATCH /repos/{owner}/{repo} (archived: bool or name: string; admin only)",
+                "POST /repos/{owner}/{repo}/transfer (new_owner, optional new_name; admin only)",
                 "GET /repos/{owner}/{repo}/pulls",
                 "GET /repos/{owner}/{repo}/issues",
                 "GET /repos/{owner}/{repo}/commits/{ref}/status",

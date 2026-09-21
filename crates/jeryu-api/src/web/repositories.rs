@@ -148,6 +148,10 @@ impl RepoBranches for ManagedRepoBranches {
 /// (repository write access is not enough: the default branch decides what a
 /// clone checks out and which branch is auto-protected) and the branch must
 /// already exist in git storage.
+///
+/// `{"name": "new-name"}` renames and `{"owner": "org"}` transfers (both may
+/// be sent together). Admin-only, never combined with `archived` (a 422), and
+/// the old `owner/name` keeps resolving for API reads and git clones.
 pub(super) async fn repo_update(
     State(state): State<std::sync::Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
@@ -170,11 +174,19 @@ pub(super) async fn repo_update(
     let Some(fields) = parsed.as_object() else {
         return repo_update_invalid("body must be a JSON object");
     };
-    if let Some(unknown) = fields
-        .keys()
-        .find(|key| !matches!(key.as_str(), "family" | "default_branch" | "archived"))
-    {
+    if let Some(unknown) = fields.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "family" | "default_branch" | "archived" | "name" | "owner"
+        )
+    }) {
         return repo_update_invalid(&format!("unknown field: {unknown}"));
+    }
+    let moves = fields.contains_key("name") || fields.contains_key("owner");
+    if moves && fields.contains_key("archived") {
+        return repo_update_invalid(
+            "send archived or name/owner, not both: archive and rename are separate requests",
+        );
     }
     let mut updated = repo.clone();
     if let Some(family_value) = fields.get("family") {
@@ -287,6 +299,53 @@ pub(super) async fn repo_update(
         if repo.archived != updated.archived {
             super::pipeline::emit::repository_archived(&state, &updated, &account.login);
         }
+    }
+    if moves {
+        // Admin-only like `archived`: a rename or transfer moves every URL the
+        // repository is known by. The old slug keeps resolving afterwards.
+        if account.role != UserRole::Admin {
+            return api_error(
+                axum::http::StatusCode::FORBIDDEN,
+                "forbidden",
+                "admin role required to rename or transfer a repository",
+            );
+        }
+        let text = |key: &str| match fields.get(key) {
+            None => Ok(None),
+            Some(serde_json::Value::String(value)) => Ok(Some(value.as_str())),
+            Some(_) => Err(format!("{key} must be a string")),
+        };
+        let (new_name, new_owner) = match (text("name"), text("owner")) {
+            (Ok(name), Ok(owner)) => (name, owner),
+            (Err(reason), _) | (_, Err(reason)) => return repo_update_invalid(&reason),
+        };
+        updated = match state.github.core().rename_repository(
+            &account.login,
+            &updated.owner,
+            &updated.name,
+            new_owner.unwrap_or(&updated.owner),
+            new_name.unwrap_or(&updated.name),
+        ) {
+            Ok(repo) => repo,
+            Err(ForgeError::Validation(reason)) => {
+                return repo_update_invalid(&reason);
+            }
+            Err(ForgeError::NotFound(_)) => {
+                return api_error(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "not_found",
+                    "repository not found",
+                );
+            }
+            Err(error) => {
+                return api_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage_failed",
+                    &format!("repository update could not be persisted: {error}"),
+                );
+            }
+        };
+        super::pipeline::emit::repository_moved(&state, &repo.full_name, &updated, &account.login);
     }
     Json(repo_summary(&state, &updated)).into_response()
 }
@@ -735,6 +794,7 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
             .as_ref()
             .map(|(family, _)| family.clone())
             .or_else(|| repo.family.clone()),
+        archived: repo.archived,
         repo_role: split.map(|(_, role)| role),
         topics: Vec::new(),
         language: None,

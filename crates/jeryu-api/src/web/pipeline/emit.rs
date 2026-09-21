@@ -75,6 +75,31 @@ pub(crate) fn repository_archived(state: &WebState, repo: &Repository, actor: &s
     );
 }
 
+/// `repo.renamed` / `repo.transferred`: the repository now lives at `to`.
+/// The old slug keeps resolving (API reads and git clones) until a repository
+/// is created there, so neither is a warning -- the kind says which move it
+/// was, and `detail` carries `{from, to}` for the timeline.
+pub(crate) fn repository_moved(state: &WebState, from: &str, repo: &Repository, actor: &str) {
+    let from_owner = from.split_once('/').map_or(from, |(owner, _)| owner);
+    let kind = if from_owner == repo.owner {
+        "repo.renamed"
+    } else {
+        "repo.transferred"
+    };
+    let to = repo.full_name.clone();
+    emit(
+        state,
+        NewEvent {
+            actor: Some(actor.to_string()),
+            repo: Some(to.clone()),
+            outcome: Some("success".to_string()),
+            needs_human: false,
+            detail: Some(json!({ "from": from, "to": to })),
+            ..NewEvent::forge(kind, format!("{from} moved to {to}"))
+        },
+    );
+}
+
 fn pr_label(pr: &PullRequest) -> String {
     format!("{}/{}#{}", pr.owner, pr.repo, pr.number)
 }
@@ -195,7 +220,21 @@ pub(crate) fn github_edge(
         let number = number.parse::<u64>().ok()?;
         state.core.get_pull_request(owner, repo, number).ok()
     };
+    let moved = |owner: &str, repo: &str| {
+        let to = response["full_name"].as_str().unwrap_or_default();
+        let from = format!("{owner}/{repo}");
+        if to.is_empty() || to == from {
+            return;
+        }
+        if let Ok(current) = state.core.get_repository(owner, repo) {
+            repository_moved(state, &from, &current, actor);
+        }
+    };
     match segments.as_slice() {
+        // The only write on this path is `PATCH`; it moves the repository
+        // only when the body carried `name`.
+        ["repos", owner, repo] => moved(owner, repo),
+        ["repos", owner, repo, "transfer"] => moved(owner, repo),
         ["repos", owner, repo, "pulls"] => {
             let number = response["number"].as_u64().unwrap_or_default().to_string();
             if let Some(pr) = pull_request(owner, repo, &number) {

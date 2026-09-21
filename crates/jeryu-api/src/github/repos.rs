@@ -64,12 +64,15 @@ impl GithubRouter {
         }
     }
 
-    /// `PATCH /repos/{owner}/{repo}` — archive or unarchive, spelled the way
-    /// GitHub spells it, so `gh` and every GitHub client already know how to
-    /// ask. Admin-only; the edge refuses a non-admin before this runs.
+    /// `PATCH /repos/{owner}/{repo}` — archive, unarchive or rename, spelled
+    /// the way GitHub spells them (`archived`, `name`), so `gh` and every
+    /// GitHub client already know how to ask. Admin-only; the edge refuses a
+    /// non-admin before this runs.
     ///
-    /// Only `archived` is accepted. Every other repository setting has its own
-    /// typed Jeryu route, and quietly ignoring an unknown key would let a
+    /// Only `archived` and `name` are accepted, one per request: archiving and
+    /// renaming are separate decisions, and a rename of an archived repository
+    /// is refused by the core anyway. Every other repository setting has its
+    /// own typed Jeryu route, and quietly ignoring an unknown key would let a
     /// caller believe a setting moved when it did not, so an unrecognised body
     /// is a validation error rather than a silent success.
     ///
@@ -77,32 +80,93 @@ impl GithubRouter {
     /// this runs, so the audit trail names the caller, never the body.
     pub(super) fn update_repo(&self, owner: &str, repo: &str, body: &str) -> Response {
         let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(body) else {
-            return error_response(jeryu_core::ForgeError::Validation(
-                "body must be a JSON object".to_string(),
-            ));
-        };
-        let Some(archived) = fields.get("archived") else {
-            return error_response(jeryu_core::ForgeError::Validation(
-                "no supported field: this route accepts `archived` (a boolean)".to_string(),
-            ));
-        };
-        let Some(archived) = archived.as_bool() else {
-            return error_response(jeryu_core::ForgeError::Validation(
-                "archived must be a boolean".to_string(),
-            ));
+            return validation("body must be a JSON object");
         };
         let actor = fields
             .get("actor")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        match (fields.get("archived"), fields.get("name")) {
+            (Some(_), Some(_)) => validation(
+                "send `archived` or `name`, not both: archive and rename are separate requests",
+            ),
+            (Some(archived), None) => {
+                let Some(archived) = archived.as_bool() else {
+                    return validation("archived must be a boolean");
+                };
+                match self
+                    .core
+                    .set_repository_archived(actor, owner, repo, archived)
+                {
+                    Ok(repo) => json_response(200, &repository_json(&repo)),
+                    Err(err) => error_response(err),
+                }
+            }
+            (None, Some(name)) => {
+                let Some(name) = name.as_str() else {
+                    return validation("name must be a string");
+                };
+                self.move_repo(actor, owner, repo, None, Some(name), 200)
+            }
+            (None, None) => validation(
+                "no supported field: this route accepts `archived` (a boolean) or `name` (a string)",
+            ),
+        }
+    }
+
+    /// `POST /repos/{owner}/{repo}/transfer` — move the repository to
+    /// `new_owner`, optionally renaming it to `new_name`, in GitHub's request
+    /// shape. Admin-only; the edge refuses a non-admin before this runs.
+    /// Answers `202` like GitHub, although the move is already complete.
+    pub(super) fn transfer_repo(&self, owner: &str, repo: &str, body: &str) -> Response {
+        let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(body) else {
+            return validation("body must be a JSON object");
+        };
+        let Some(new_owner) = fields.get("new_owner").and_then(Value::as_str) else {
+            return validation("new_owner is required and must be a string");
+        };
+        let new_name = match fields.get("new_name") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) => Some(name.as_str()),
+            Some(_) => return validation("new_name must be a string"),
+        };
+        let actor = fields
+            .get("actor")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        self.move_repo(actor, owner, repo, Some(new_owner), new_name, 202)
+    }
+
+    /// Rename and/or transfer through the core. The path may name the
+    /// repository by an old slug, the way GitHub keeps a moved repository's
+    /// old URL working, so it is resolved to the current slug first.
+    fn move_repo(
+        &self,
+        actor: &str,
+        owner: &str,
+        repo: &str,
+        new_owner: Option<&str>,
+        new_name: Option<&str>,
+        status: u16,
+    ) -> Response {
+        let current = match self.core.get_repository(owner, repo) {
+            Ok(current) => current,
+            Err(err) => return error_response(err),
+        };
+        let new_owner = new_owner.unwrap_or(&current.owner);
+        let new_name = new_name.unwrap_or(&current.name);
         match self
             .core
-            .set_repository_archived(actor, owner, repo, archived)
+            .rename_repository(actor, &current.owner, &current.name, new_owner, new_name)
         {
-            Ok(repo) => json_response(200, &repository_json(&repo)),
+            Ok(repo) => json_response(status, &repository_json(&repo)),
             Err(err) => error_response(err),
         }
     }
+}
+
+fn validation(message: &str) -> Response {
+    error_response(jeryu_core::ForgeError::Validation(message.to_string()))
 }
 
 pub(super) fn repository_json(repo: &Repository) -> Value {

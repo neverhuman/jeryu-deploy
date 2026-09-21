@@ -1274,3 +1274,180 @@ fn patch_repository_rejects_unsupported_bodies() {
     );
     assert_eq!(missing.status, 404, "unknown repo: {}", missing.body);
 }
+
+/// `PATCH /repos/{owner}/{repo}` with `name` renames, the way GitHub spells
+/// it. The old slug keeps resolving by `GET` to the moved repository, and a
+/// rename to a taken name, of an archived repository, or of an unknown one is
+/// refused. Admin-only authorization is the edge's (`authorize_github_repo_request`,
+/// covered with the other admin-only arms and over the live edge in
+/// `web::repository_move_tests`), not the router's.
+#[test]
+fn patch_repository_name_renames_and_old_name_still_resolves() {
+    let router = router_with_repo();
+
+    let renamed = router.handle(
+        Method::Patch,
+        "/repos/alice/jeryu",
+        r#"{"name":"forge","actor":"alice"}"#,
+    );
+    assert_eq!(renamed.status, 200, "rename: {}", renamed.body);
+    assert_eq!(body(&renamed)["name"], "forge");
+    assert_eq!(body(&renamed)["full_name"], "alice/forge");
+
+    let current = router.get("/repos/alice/forge");
+    assert_eq!(current.status, 200);
+    assert_eq!(body(&current)["full_name"], "alice/forge");
+    let old = router.get("/repos/alice/jeryu");
+    assert_eq!(old.status, 200, "old name must still resolve: {}", old.body);
+    assert_eq!(body(&old)["full_name"], "alice/forge");
+
+    let missing = router.handle(
+        Method::Patch,
+        "/repos/alice/missing",
+        r#"{"name":"anything","actor":"alice"}"#,
+    );
+    assert_eq!(missing.status, 404, "unknown repo: {}", missing.body);
+
+    let taken = router.post(
+        "/repos",
+        r#"{"owner":"alice","name":"taken","private":false}"#,
+    );
+    assert_eq!(taken.status, 201, "{}", taken.body);
+    let collision = router.handle(
+        Method::Patch,
+        "/repos/alice/forge",
+        r#"{"name":"taken","actor":"alice"}"#,
+    );
+    assert_eq!(collision.status, 422, "name taken: {}", collision.body);
+
+    for body_text in [
+        r#"{"name":"x","archived":true,"actor":"alice"}"#,
+        r#"{"name":7,"actor":"alice"}"#,
+        r#"{"name":"not/a/slug","actor":"alice"}"#,
+    ] {
+        let response = router.handle(Method::Patch, "/repos/alice/forge", body_text);
+        assert_eq!(response.status, 422, "{body_text}: {}", response.body);
+    }
+
+    let archived = router.handle(
+        Method::Patch,
+        "/repos/alice/taken",
+        r#"{"archived":true,"actor":"alice"}"#,
+    );
+    assert_eq!(archived.status, 200, "{}", archived.body);
+    let archived_rename = router.handle(
+        Method::Patch,
+        "/repos/alice/taken",
+        r#"{"name":"moved","actor":"alice"}"#,
+    );
+    assert_eq!(
+        archived_rename.status, 422,
+        "archived source: {}",
+        archived_rename.body
+    );
+    assert_eq!(body(&router.get("/repos/alice/forge"))["archived"], false);
+}
+
+/// `POST /repos/{owner}/{repo}/transfer` in GitHub's shape: `new_owner`
+/// (an existing user or organization) and an optional `new_name`. Answers
+/// `202` like GitHub; the old slug keeps resolving afterwards.
+#[test]
+fn transfer_repository_moves_it_to_a_new_owner() {
+    let router = router_with_repo();
+    router
+        .core()
+        .create_organization(jeryu_core::CreateOrganizationRequest {
+            login: "veox".to_string(),
+            display_name: None,
+        })
+        .unwrap();
+
+    let moved = router.post(
+        "/repos/alice/jeryu/transfer",
+        r#"{"new_owner":"veox","actor":"alice"}"#,
+    );
+    assert_eq!(moved.status, 202, "transfer: {}", moved.body);
+    assert_eq!(body(&moved)["full_name"], "veox/jeryu");
+    assert_eq!(body(&moved)["owner"]["login"], "veox");
+    assert_eq!(
+        body(&router.get("/repos/alice/jeryu"))["full_name"],
+        "veox/jeryu"
+    );
+
+    let renamed = router.post(
+        "/api/v3/repos/veox/jeryu/transfer",
+        r#"{"new_owner":"veox","new_name":"forge","actor":"alice"}"#,
+    );
+    assert_eq!(renamed.status, 202, "{}", renamed.body);
+    assert_eq!(body(&renamed)["full_name"], "veox/forge");
+
+    let missing = router.post(
+        "/repos/alice/missing/transfer",
+        r#"{"new_owner":"veox","actor":"alice"}"#,
+    );
+    assert_eq!(missing.status, 404, "unknown repo: {}", missing.body);
+
+    let taken = router.post("/repos", r#"{"owner":"alice","name":"forge"}"#);
+    assert_eq!(taken.status, 201, "{}", taken.body);
+    let collision = router.post(
+        "/repos/alice/forge/transfer",
+        r#"{"new_owner":"veox","actor":"alice"}"#,
+    );
+    assert_eq!(collision.status, 422, "name taken: {}", collision.body);
+
+    for body_text in [
+        r#"{"actor":"alice"}"#,
+        r#"{"new_owner":"nobody-here","actor":"alice"}"#,
+        r#"{"new_owner":"veox","new_name":5,"actor":"alice"}"#,
+        "not json",
+    ] {
+        let response = router.post("/repos/alice/forge/transfer", body_text);
+        assert_eq!(response.status, 422, "{body_text}: {}", response.body);
+    }
+
+    let archived = router.handle(
+        Method::Patch,
+        "/repos/alice/forge",
+        r#"{"archived":true,"actor":"alice"}"#,
+    );
+    assert_eq!(archived.status, 200, "{}", archived.body);
+    let archived_move = router.post(
+        "/repos/alice/forge/transfer",
+        r#"{"new_owner":"veox","new_name":"other","actor":"alice"}"#,
+    );
+    assert_eq!(
+        archived_move.status, 422,
+        "archived source: {}",
+        archived_move.body
+    );
+}
+
+/// Both guided `jeryu_api_routes` listings (the REST 404 and the GraphQL
+/// fallback) advertise rename and transfer.
+#[test]
+fn guided_route_listings_advertise_rename_and_transfer() {
+    let router = GithubRouter::new();
+    let not_found = body(&router.get("/definitely/not/a/route"));
+    let graphql = body(&router.post("/graphql", r#"{"query":"mutation { x }"}"#));
+    for listing in [&not_found, &graphql] {
+        let routes: Vec<&str> = listing["jeryu_api_routes"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no route listing: {listing}"))
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            routes
+                .iter()
+                .any(|route| route.starts_with("PATCH /repos/{owner}/{repo} ")
+                    && route.contains("name")),
+            "{routes:?}"
+        );
+        assert!(
+            routes
+                .iter()
+                .any(|route| route.starts_with("POST /repos/{owner}/{repo}/transfer")),
+            "{routes:?}"
+        );
+    }
+}

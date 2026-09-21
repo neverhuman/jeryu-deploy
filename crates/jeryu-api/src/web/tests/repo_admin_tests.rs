@@ -49,7 +49,7 @@ async fn repo_update_sets_and_clears_family() {
 
     // Unknown fields, non-string family, and blank family are 422s.
     for body in [
-        br#"{"name": "nope"}"#.as_slice(),
+        br#"{"description": "nope"}"#.as_slice(),
         br#"{"family": 7}"#.as_slice(),
         br#"{"family": "  "}"#.as_slice(),
     ] {

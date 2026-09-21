@@ -7,8 +7,8 @@ web_artifact = "pinned"
 name = "jeryu-core"
 github_slug = "neverhuman/jeryu-core"
 local_path = "/home/ubuntu/jeryu-split/jeryu-core"
-tag = "jeryu-core-v5.0.0-split.7"
-commit = "64d1155e9e15266c20040e23a29facb617ffc0bd"
+tag = "jeryu-core-v5.0.0-split.9"
+commit = "31e7063b2bcba9d28694ed50e7eddf529f32a1dd"
 required_check = "jeryu-core/required"
 
 [[repo]]

@@ -778,3 +778,115 @@ async fn s4_real_git_client_negotiates_protocol_v2_over_http() {
     server.abort();
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// A rename over the GitHub edge moves the bare repository on disk, and a
+/// clone by the old URL still reaches it: the git transport follows the
+/// old-name alias the way GitHub redirects a renamed repository.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s4_clone_by_old_url_after_rename() {
+    if !git_available() {
+        eprintln!("git unavailable; skipping rename clone e2e");
+        return;
+    }
+
+    let base = std::env::temp_dir().join(format!("jeryu-s4-rename-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let git_root = base.join("git");
+    let spa_dir = base.join("spa");
+    let work = base.join("work");
+    write_spa_shell(&spa_dir);
+    std::fs::create_dir_all(&work).unwrap();
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+    let config = WebServerConfig {
+        bind: addr,
+        spa_dir,
+        data_dir: base.join("data"),
+        git_storage_root: git_root.clone(),
+        split_manifests: Vec::new(),
+        auth_required: false,
+        trust_local_dev: true,
+        secure_cookies: false,
+    };
+    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr, &mut server).await;
+
+    let client = reqwest::Client::new();
+    let created = client
+        .post(format!("http://{addr}/repos"))
+        .json(&serde_json::json!({ "name": "before" }))
+        .send()
+        .await
+        .expect("POST /repos");
+    assert_eq!(created.status().as_u16(), 201);
+
+    // Seed one commit so the clone has something to check out.
+    let seed = work.join("seed");
+    run_git(
+        &work,
+        &[
+            GIT_HTTP_GUARD,
+            &[
+                "clone",
+                &format!("http://{addr}/git/jeryu/before.git"),
+                "seed",
+            ],
+        ]
+        .concat(),
+    );
+    run_git(&seed, &["config", "user.email", "tester@example.com"]);
+    run_git(&seed, &["config", "user.name", "Tester"]);
+    std::fs::write(seed.join("README.md"), "renamed\n").unwrap();
+    run_git(&seed, &["add", "."]);
+    run_git(&seed, &["commit", "-m", "seed"]);
+    run_git(
+        &seed,
+        &[
+            GIT_HTTP_GUARD,
+            &["push", "origin", "HEAD:refs/heads/feature"],
+        ]
+        .concat(),
+    );
+
+    let renamed = client
+        .patch(format!("http://{addr}/repos/jeryu/before"))
+        .json(&serde_json::json!({ "name": "after" }))
+        .send()
+        .await
+        .expect("PATCH /repos/jeryu/before");
+    let status = renamed.status().as_u16();
+    let renamed_body = renamed.text().await.unwrap();
+    assert_eq!(status, 200, "rename: {renamed_body}");
+    assert!(
+        git_root
+            .join("jeryu")
+            .join("after.git")
+            .join("HEAD")
+            .is_file(),
+        "the bare repository moves with the rename"
+    );
+    assert!(
+        !git_root.join("jeryu").join("before.git").exists(),
+        "nothing is left at the old path"
+    );
+
+    for (url, dir) in [
+        (format!("http://{addr}/git/jeryu/before.git"), "by-old-url"),
+        (format!("http://{addr}/git/jeryu/after.git"), "by-new-url"),
+    ] {
+        run_git(
+            &work,
+            &[GIT_HTTP_GUARD, &["clone", "--branch", "feature", &url, dir]].concat(),
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join(dir).join("README.md")).unwrap(),
+            "renamed\n",
+            "clone of {url} must carry the pushed commit"
+        );
+    }
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}

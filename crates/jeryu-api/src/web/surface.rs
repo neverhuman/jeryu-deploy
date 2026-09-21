@@ -381,13 +381,19 @@ fn authorize_github_repo_request(
                 "branch-protection changes require repository-admin access",
             ))
         }
-        // `PATCH /repos/{owner}/{repo}` archives and unarchives. Admin-only,
-        // and deliberately stricter than the repository-write rule below:
-        // archiving makes a repository read-only for everyone, so it is a
-        // decision about the repository rather than a use of write access to
-        // it. This mirrors the same call's authz on `PATCH /api/v1/repos/:id`.
+        // `PATCH /repos/{owner}/{repo}` archives, unarchives and renames.
+        // Admin-only, and deliberately stricter than the repository-write rule
+        // below: archiving makes a repository read-only for everyone and a
+        // rename moves every URL it is known by, so each is a decision about
+        // the repository rather than a use of write access to it. This mirrors
+        // the same call's authz on `PATCH /api/v1/repos/:id`.
         (Method::Patch, ["repos", _, _]) if account.role != UserRole::Admin => Some(
             github_forbidden("repository settings changes require admin access"),
+        ),
+        // A transfer hands the repository to another owner: admin-only for the
+        // same reason as a rename.
+        (Method::Post, ["repos", _, _, "transfer"]) if account.role != UserRole::Admin => Some(
+            github_forbidden("repository transfer requires admin access"),
         ),
         (_, ["repos", owner, repo, ..]) => {
             let allowed = match method {
@@ -709,6 +715,41 @@ mod authz_tests {
                 &account("alice", UserRole::Admin),
             );
             assert!(allowed.is_none(), "an admin may PATCH {path}");
+        }
+    }
+
+    /// Renaming (`PATCH` with `name`) rides the same admin-only arm as
+    /// archiving, and a transfer has its own: both move every URL the
+    /// repository is known by, so a repository writer is not enough.
+    #[test]
+    fn rename_and_transfer_are_admin_only() {
+        let state = state();
+
+        for (method, path) in [
+            (Method::Patch, "/repos/alice/jeryu"),
+            (Method::Post, "/repos/alice/jeryu/transfer"),
+            (Method::Post, "/api/v3/repos/alice/jeryu/transfer"),
+        ] {
+            assert!(
+                authorize_github_repo_request(
+                    &state,
+                    method,
+                    path,
+                    &account("bob", UserRole::User)
+                )
+                .is_some(),
+                "a non-admin must be refused {method:?} {path}"
+            );
+            assert!(
+                authorize_github_repo_request(
+                    &state,
+                    method,
+                    path,
+                    &account("alice", UserRole::Admin)
+                )
+                .is_none(),
+                "an admin may {method:?} {path}"
+            );
         }
     }
 

@@ -63,7 +63,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::GithubRouter;
-use crate::git_materializer::GitMaterializer;
+use crate::git_materializer::{CoreRedirects, GitMaterializer};
 use crate::github::{
     GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_TOKEN_FILE, MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL,
 };
@@ -510,11 +510,17 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     // Share one RepoManager between the create-repo materializer (so a created
     // repo gets a bare repo on disk) and the smart-HTTP transport (so it can be
     // cloned/pushed) — both rooted at the same git storage root.
-    let repo_manager = Arc::new(RepoManager::new(GitdConfig::new(
-        config.git_storage_root.clone(),
-    )));
+    //
+    // The materializer's manager does not follow redirects: creating or moving
+    // a repository must act on the exact slug asked for. The transport's
+    // manager does, so a clone by a renamed repository's old URL still works.
+    let base_manager = RepoManager::new(GitdConfig::new(config.git_storage_root.clone()));
+    let materializer = Arc::new(GitMaterializer::new(Arc::new(base_manager.clone())));
     let core = ForgeCore::open_sqlite(db_path)?
-        .with_repo_materializer(Arc::new(GitMaterializer::new(repo_manager.clone())));
+        .with_repo_materializer(materializer.clone())
+        .with_repo_relocator(materializer);
+    let repo_manager =
+        Arc::new(base_manager.with_redirects(Arc::new(CoreRedirects::new(core.clone()))));
     let split_catalog = SplitCatalog::load(&config.split_manifests);
     let tool_registry_path = resolve_tool_registry_path(&config.split_manifests);
     // Merge-to-GitHub mirroring: targets come from the same manifest; with no
@@ -1166,6 +1172,9 @@ mod workcell_surface_tests;
 
 #[cfg(test)]
 mod deployment_surface_tests;
+
+#[cfg(test)]
+mod repository_move_tests;
 
 #[cfg(test)]
 mod merge_queue_tests;

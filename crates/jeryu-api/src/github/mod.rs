@@ -242,6 +242,7 @@ impl GithubRouter {
             (Post, ["repos"]) => Ok(self.create_repo(body)),
             (Get, ["repos", owner, repo]) => Ok(self.get_repo(owner, repo)),
             (Patch, ["repos", owner, repo]) => Ok(self.update_repo(owner, repo, body)),
+            (Post, ["repos", owner, repo, "transfer"]) => Ok(self.transfer_repo(owner, repo, body)),
 
             // Pull requests --------------------------------------------------
             (Get, ["repos", owner, repo, "pulls"]) => Ok(self.list_pulls(
