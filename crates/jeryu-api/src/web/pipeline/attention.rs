@@ -191,7 +191,12 @@ pub(super) fn pull_href(repo: &str, number: u64) -> String {
 
 fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     let mut pulls = Vec::new();
+    // An archived repository is read-only: nothing on it can be acted on, so
+    // it never asks for attention.
     for repo in state.core.list_repositories(None) {
+        if repo.archived {
+            continue;
+        }
         let Ok(listed) = state.core.list_pull_requests(&repo.owner, &repo.name, None) else {
             continue;
         };
@@ -216,6 +221,9 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
 fn production_facts(state: &WebState) -> Vec<ProductionFacts> {
     let mut all = Vec::new();
     for repo in state.core.list_repositories(None) {
+        if repo.archived {
+            continue;
+        }
         let Some(production) = state
             .core
             .deployment_environments(&repo.owner, &repo.name)

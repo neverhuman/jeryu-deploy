@@ -425,6 +425,63 @@ fn repo_health_counts_live_failures_and_ignores_mirror_checks() {
     assert_eq!(summary.running_jobs, 1, "stale in-progress run excluded");
 }
 
+/// An archived repository is read-only: a failing check on it never turns its
+/// health to warning and a failed mirror push on it never reaches the
+/// attention inbox. It stays listed under the Archived filter.
+#[test]
+fn archived_repo_is_ignored_by_health_and_the_attention_inbox() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "retired".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_pull_request(
+        "jeryu",
+        "retired",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some("live-sha".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    for name in ["jeryu/ci", "jeryu/github-mirror"] {
+        core.create_check_run(
+            "jeryu",
+            "retired",
+            CreateCheckRunRequest {
+                name: name.to_string(),
+                head_sha: "live-sha".to_string(),
+                conclusion: Some(CheckConclusion::Failure),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    }
+    let state = WebState::new(core.clone());
+    assert_eq!(repo_list_response(&state).repositories[0].health, "warning");
+    assert_eq!(crate::web::repositories::mirror_failures(&state).len(), 1);
+
+    core.set_repository_archived("alice", "jeryu", "retired", true)
+        .unwrap();
+    let summary = crate::web::repositories::repo_summary(
+        &state,
+        &core.get_repository("jeryu", "retired").unwrap(),
+    );
+    assert!(summary.archived);
+    assert_eq!(summary.health, "healthy");
+    assert!(crate::web::repositories::mirror_failures(&state).is_empty());
+}
+
 /// Score ingest → list → repo-summary badge join, plus mirror status derived
 /// from jeryu/github-mirror bookkeeping runs.
 #[tokio::test]

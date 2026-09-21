@@ -91,6 +91,14 @@ fn family_facts(state: &WebState, queue: &Queue) -> BTreeMap<String, RepoFacts> 
         let Some(owner) = hosted_owner(state, queue, &repo.name) else {
             continue;
         };
+        // An archived family repo is read-only: no shift lands on it.
+        if state
+            .core
+            .get_repository(&owner, &repo.name)
+            .is_ok_and(|hosted| hosted.archived)
+        {
+            continue;
+        }
         let Ok(resolved) = state.repo_manager.open_parts(&owner, &repo.name) else {
             continue;
         };

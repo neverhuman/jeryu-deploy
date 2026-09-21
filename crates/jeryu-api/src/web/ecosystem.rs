@@ -207,9 +207,14 @@ fn depends_on(name: &str, read_only: bool) -> Vec<String> {
 
 /// The first repository (sorted by full name) and its health, classified
 /// exactly as `web.rs`'s `repo_summary`: any failing check-run -> `"warning"`,
-/// otherwise `"healthy"`. Returns `(None, None)` for an empty server.
+/// otherwise `"healthy"`. Archived repositories are skipped. Returns
+/// `(None, None)` for a server with no unarchived repository.
 fn representative_repo(core: &ForgeCore) -> (Option<String>, Option<String>) {
-    let Some(repo) = core.list_repositories(None).into_iter().next() else {
+    let Some(repo) = core
+        .list_repositories(None)
+        .into_iter()
+        .find(|repo| !repo.archived)
+    else {
         return (None, None);
     };
     let failing = core

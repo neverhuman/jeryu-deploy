@@ -798,7 +798,9 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
         repo_role: split.map(|(_, role)| role),
         topics: Vec::new(),
         language: None,
-        health: if failing_checks > 0 {
+        // An archived repository is read-only, so a stale failing check on it
+        // is nothing anyone can fix: it never counts against health.
+        health: if failing_checks > 0 && !repo.archived {
             "warning".to_string()
         } else {
             "healthy".to_string()
@@ -911,13 +913,17 @@ fn current_check_runs<'a>(
 }
 
 /// Every repository whose newest mirror attempt failed, for the attention
-/// inbox. Repositories that were never mirrored have no attempts and are quiet.
+/// inbox. Repositories that were never mirrored have no attempts and are
+/// quiet; archived repositories are read-only and never ask for attention.
 pub(crate) fn mirror_failures(
     state: &WebState,
 ) -> Vec<crate::web::pipeline::attention::MirrorFailure> {
     let core = state.github.core();
     let mut failures = Vec::new();
     for repo in core.list_repositories(None) {
+        if repo.archived {
+            continue;
+        }
         let Ok(runs) = core.list_check_runs(&repo.owner, &repo.name, None) else {
             continue;
         };
