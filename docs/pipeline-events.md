@@ -120,7 +120,8 @@ event is stored, and a refusal names the entry (`events[1]: kind: ...`).
 
 ### `GET /api/v1/events`
 
-Query: `after_seq`, `before_seq`, `limit` (1 to 500, default 100), `family`,
+Query: `after_seq` (`since` is the same cursor under another name; sending
+both with different values is `422 events_invalid_query`), `before_seq`, `limit` (1 to 500, default 100), `family`,
 `repo`, `pr`, `todo_id`, `source`, `kind`, `needs_human`. `kind` matches exactly,
 or as a prefix when it ends with a dot (`kind=todo.`). Anything else (`kind=todo`,
 `kind=Not A Kind`) answers `422 events_invalid_query`: it could only ever match nothing, and an
@@ -136,10 +137,49 @@ empty page would read as "no such events".
 
 ### WebSocket
 
+`GET /api/v1/ws` (implementation: `crates/jeryu-api/src/web/ws.rs`) is one
+socket for every live scope; the event log is scope `pipeline`. It needs the
+same login as the API (session cookie or `Authorization: Bearer`). A request
+without `Upgrade: websocket` answers `426 websocket_upgrade_required` as a
+typed JSON error, and a non-integer cursor `422 ws_invalid_query`.
+
+Frames are JSON text, protocol `jeryu.ws.v1`, tagged by `type`:
+
+| Direction | `type` | Body |
+|---|---|---|
+| server | `hello` | `server_time`, `current_seq` (hub counter), `protocol`; sent on connect and in answer to a client `hello` |
+| client | `hello` or `subscribe` | `subscriptions: [{"scope": "pipeline", "filters": {"after_seq": 41}}]` |
+| client | `unsubscribe` | `scopes: ["pipeline"]` |
+| client / server | `ping` / `pong` | `nonce`, echoed with `server_time` |
+| server | `event` | `event`: a `WebEvent` (`seq`, `timestamp`, `scope`, `kind`, `entity`, `summary`, `payload`) |
+| server | `error` | `code`, `message`: `subscription_denied` (the scope is not yours; `pipeline` is admin-only), `unknown_message`, `events_store_failed` |
+
 Every stored event is published on scope `pipeline` as a `WebEvent` whose
-`payload` is the event object. The frame's own `seq` is the WebSocket hub's
-in-memory counter; the durable cursor is `payload.seq`. Treat a frame as a
-nudge and refetch with `after_seq`.
+`payload` is the event object and whose `kind`/`summary` are the event's. The
+frame's own `seq` is the hub's in-memory counter, reset on restart; the durable
+cursor is `payload.seq`.
+
+**Resuming.** Give the socket the same cursor as the HTTP route: connect to
+`/api/v1/ws?after_seq=<last payload.seq you saw>` (or `since=`), or put
+`"filters": {"after_seq": <seq>}` on the `pipeline` subscription (it wins over
+the URL). When `pipeline` is subscribed, the server first sends every stored
+event with `seq > after_seq`, oldest first, then live events. The URL cursor is
+used for the first `pipeline` subscription of the connection only. A replay
+holds at most 500 events: if you get 500, page the rest with
+`GET /api/v1/events?after_seq=`. An event stored while the replay is being read
+can arrive twice, so drop frames whose `payload.seq` you have already seen.
+Without a cursor there is no replay: only events stored after the subscription.
+
+```js
+const ws = new WebSocket(`wss://${forgeHost}/api/v1/ws?after_seq=${last}`);
+ws.onopen = () => ws.send(JSON.stringify({type: "subscribe", subscriptions: [{scope: "pipeline"}]}));
+ws.onmessage = ({data}) => {
+  const frame = JSON.parse(data);
+  if (frame.type === "event" && frame.event.scope === "pipeline" && frame.event.payload.seq > last) {
+    last = frame.event.payload.seq; // handle frame.event.payload
+  }
+};
+```
 
 ## Attention
 
@@ -372,8 +412,9 @@ deduplicated, so retrying those creates duplicates.
 **Follow the log.** Read `latest_seq` once, then poll
 `GET /api/v1/events?after_seq=<last seq you saw>` (oldest first) and advance
 the cursor to the last event's `seq`. Add `todo_id=`, `repo=&pr=` or `kind=todo.`
-to follow one thing. Or subscribe to the `pipeline` WebSocket scope and refetch
-on each frame.
+to follow one thing. Or subscribe to the `pipeline` WebSocket scope with
+`?after_seq=<last seq you saw>` and reconnect with the newest `payload.seq`
+(see [WebSocket](#websocket)).
 
 **Find out what needs a person.** `GET /api/v1/attention`, then for each item
 read `next_step`. When `action.command` is set the step is that shell command,

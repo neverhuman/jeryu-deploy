@@ -905,3 +905,102 @@ async fn automation_heartbeats_emit_no_events_and_a_gate_without_a_pr_still_does
         "xbabe2/slot0 gating jeryu/jeryu-deploy@77dc331"
     );
 }
+
+#[tokio::test]
+async fn since_is_after_seq_and_the_socket_refuses_plain_gets_with_json() {
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let state = WebState::new(core).with_auth(true, false, false);
+    let mut seqs = Vec::new();
+    for summary in ["one", "two", "three"] {
+        seqs.push(
+            super::record(&state, "alice", event("todo.claimed", summary))
+                .unwrap()
+                .event
+                .seq,
+        );
+    }
+    let router = app(state, Path::new("/tmp/jeryu-no-spa"));
+    let get = |uri: String| {
+        router
+            .clone()
+            .oneshot(request(HttpMethod::GET, &uri, &admin, None))
+    };
+
+    let tail = body_json(
+        get(format!("/api/v1/events?since={}", seqs[0]))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let got: Vec<i64> = tail["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(got, seqs[1..], "since is a cursor, oldest first");
+    let same = get(format!("/api/v1/events?since={0}&after_seq={0}", seqs[0]))
+        .await
+        .unwrap();
+    assert_eq!(same.status(), StatusCode::OK);
+    let clash = get(format!(
+        "/api/v1/events?since={}&after_seq={}",
+        seqs[0], seqs[1]
+    ))
+    .await
+    .unwrap();
+    assert_eq!(clash.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body_json(clash).await["code"], "events_invalid_query");
+
+    let plain = get("/api/v1/ws?after_seq=1".to_string()).await.unwrap();
+    assert_eq!(plain.status(), StatusCode::UPGRADE_REQUIRED);
+    assert!(
+        plain.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+    let plain = body_json(plain).await;
+    assert_eq!(plain["code"], "websocket_upgrade_required");
+    assert_eq!(plain["docs_url"], "docs/pipeline-events.md#websocket");
+    let bad = get("/api/v1/ws?after_seq=abc".to_string()).await.unwrap();
+    assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body_json(bad).await["code"], "ws_invalid_query");
+}
+
+#[test]
+fn socket_replay_sends_stored_events_after_the_cursor() {
+    let state = WebState::new(ForgeCore::new());
+    let seqs: Vec<i64> = ["a", "b", "c"]
+        .iter()
+        .map(|s| {
+            super::record(&state, "alice", event("todo.claimed", s))
+                .unwrap()
+                .event
+                .seq
+        })
+        .collect();
+    let frames = super::replay(&state, seqs[0]).unwrap();
+    let payload_seqs: Vec<i64> = frames
+        .iter()
+        .map(|f| f.payload["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(payload_seqs, seqs[1..]);
+    assert!(frames.iter().all(|f| f.scope == super::PIPELINE_SCOPE));
+    assert!(frames[0].seq < frames[1].seq, "hub seqs keep increasing");
+    assert!(super::replay(&state, seqs[2]).unwrap().is_empty());
+
+    let hello = json!({"type": "subscribe", "subscriptions": [
+        {"scope": "global.activity", "filters": {"after_seq": 9}},
+        {"scope": "pipeline", "filters": {"after_seq": 41}},
+    ]});
+    assert_eq!(crate::web::ws::pipeline_cursor(&hello), Some(41));
+    let bare = json!({"type": "subscribe", "subscriptions": [{"scope": "pipeline"}]});
+    assert_eq!(crate::web::ws::pipeline_cursor(&bare), None);
+}

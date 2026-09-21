@@ -1,27 +1,104 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use axum::extract::rejection::QueryRejection;
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, State};
-use axum::response::IntoResponse;
+use axum::extract::{Extension, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use jeryu_core::{AccountSummary, UserRole};
 use jeryu_readmodel::Bottleneck;
 use jeryu_readmodel::contracts::{ServerWsMessage, WebEvent};
 use serde_json::{Value, json};
 
+use super::pipeline::PIPELINE_SCOPE;
 use super::surface::serialize_payload;
+use super::workcells_support::{TypedError, typed_error};
 use super::{WebState, server_time, workcells};
 
-pub(super) async fn ws(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<WebState>>,
-    Extension(account): Extension<AccountSummary>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state, account))
+const DOCS: &str = "docs/pipeline-events.md#websocket";
+
+/// Connect-time cursor: `GET /api/v1/ws?after_seq=<seq>` (or `since=`) replays
+/// the stored pipeline events after `<seq>` when the `pipeline` scope is
+/// subscribed, so a reconnecting client misses nothing.
+#[derive(Debug, Default, serde::Deserialize)]
+pub(super) struct WsQuery {
+    after_seq: Option<i64>,
+    since: Option<i64>,
 }
 
-async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>, account: AccountSummary) {
+fn ws_error(status: StatusCode, code: &str, reason: &str, hint: &str) -> Response {
+    typed_error(TypedError {
+        status,
+        code,
+        purpose: "open the jeryu WebSocket",
+        reason,
+        common_fixes: &[
+            "connect with a WebSocket client (Upgrade: websocket), not a plain GET",
+            "pass the durable cursor as ?after_seq=<last payload.seq you saw>",
+        ],
+        docs_url: DOCS,
+        repair_hint: hint,
+        message: reason,
+    })
+}
+
+pub(super) async fn ws(
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+    query: Result<Query<WsQuery>, QueryRejection>,
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+) -> Response {
+    let query = match query {
+        Ok(Query(query)) => query,
+        Err(rejection) => {
+            return ws_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "ws_invalid_query",
+                &rejection.body_text(),
+                "after_seq and since are integers",
+            );
+        }
+    };
+    let cursor = match (query.after_seq, query.since) {
+        (Some(after), Some(since)) if after != since => {
+            return ws_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "ws_invalid_query",
+                &format!(
+                    "since ({since}) and after_seq ({after}) disagree; they name the same cursor"
+                ),
+                "send one cursor: after_seq=<last seq you saw>",
+            );
+        }
+        (after, since) => after.or(since),
+    };
+    let ws = match ws {
+        Ok(ws) => ws,
+        Err(rejection) => {
+            return ws_error(
+                StatusCode::UPGRADE_REQUIRED,
+                "websocket_upgrade_required",
+                &format!(
+                    "/api/v1/ws only speaks WebSocket: {}",
+                    rejection.body_text()
+                ),
+                "open it with a WebSocket client; for a plain HTTP read use GET /api/v1/events",
+            );
+        }
+    };
+    ws.on_upgrade(move |socket| handle_ws(socket, state, account, cursor))
+        .into_response()
+}
+
+async fn handle_ws(
+    mut socket: WebSocket,
+    state: Arc<WebState>,
+    account: AccountSummary,
+    mut connect_cursor: Option<i64>,
+) {
     // The hub queues producer events (`WsHub::publish`) onto this channel;
     // the select! loop below drains it onto the socket. One owner for every
     // write keeps snapshot-on-subscribe and pushed deltas strictly ordered.
@@ -74,6 +151,10 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>, account: Account
                             state.ws.set_scopes(conn_id, &scopes);
                             let _ = send_server_message(&mut socket, hello_message(&state)).await;
                             send_scope_snapshots(&mut socket, &state, &scopes).await;
+                            if scopes.contains(PIPELINE_SCOPE) {
+                                let cursor = pipeline_cursor(&value).or(connect_cursor.take());
+                                send_pipeline_replay(&mut socket, &state, cursor).await;
+                            }
                         }
                         Some("subscribe") => {
                             // Track the newly requested scopes and immediately push
@@ -93,6 +174,10 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<WebState>, account: Account
                             let snapshot_scopes: BTreeSet<String> =
                                 authorized.into_iter().collect();
                             send_scope_snapshots(&mut socket, &state, &snapshot_scopes).await;
+                            if snapshot_scopes.contains(PIPELINE_SCOPE) {
+                                let cursor = pipeline_cursor(&value).or(connect_cursor.take());
+                                send_pipeline_replay(&mut socket, &state, cursor).await;
+                            }
                         }
                         Some("unsubscribe") => {
                             let dropped = unsubscribe_scopes(&value);
@@ -135,6 +220,40 @@ pub(super) fn requested_scopes(value: &Value) -> Vec<String> {
             .map(str::to_string)
             .collect(),
         None => Vec::new(),
+    }
+}
+
+/// The `after_seq` filter of a `pipeline` subscription in a `hello`/`subscribe`
+/// frame: `{"scope": "pipeline", "filters": {"after_seq": 41}}`.
+pub(super) fn pipeline_cursor(value: &Value) -> Option<i64> {
+    value
+        .get("subscriptions")?
+        .as_array()?
+        .iter()
+        .filter(|spec| spec.get("scope").and_then(Value::as_str) == Some(PIPELINE_SCOPE))
+        .find_map(|spec| spec.get("filters")?.get("after_seq")?.as_i64())
+}
+
+/// Replay the stored pipeline events after `cursor`, oldest first. No cursor
+/// means no replay: the client only asked for new events.
+async fn send_pipeline_replay(socket: &mut WebSocket, state: &WebState, cursor: Option<i64>) {
+    let Some(cursor) = cursor else { return };
+    match super::pipeline::replay(state, cursor) {
+        Ok(events) => {
+            for event in events {
+                let _ = send_server_message(socket, ServerWsMessage::Event { event }).await;
+            }
+        }
+        Err(reason) => {
+            let _ = send_server_message(
+                socket,
+                ServerWsMessage::Error {
+                    code: "events_store_failed".to_string(),
+                    message: format!("pipeline replay failed: {reason}"),
+                },
+            )
+            .await;
+        }
     }
 }
 

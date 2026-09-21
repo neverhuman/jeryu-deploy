@@ -105,6 +105,8 @@ pub(crate) struct Event {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct EventsQuery {
     pub after_seq: Option<i64>,
+    /// Another name for `after_seq`, the spelling clients guess first.
+    pub since: Option<i64>,
     pub before_seq: Option<i64>,
     pub limit: Option<i64>,
     pub family: Option<String>,

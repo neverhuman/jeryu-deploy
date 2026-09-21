@@ -104,9 +104,36 @@ pub(crate) fn record(
 }
 
 fn publish(state: &WebState, event: &Event) {
-    let Ok(payload) = serde_json::to_value(event) else {
+    let Some(frame) = frame_parts(event) else {
         return;
     };
+    state.ws.publish(PIPELINE_SCOPE, frame);
+}
+
+/// The stored events after `after_seq`, oldest first and at most
+/// `REPLAY_LIMIT`, as `pipeline` frames stamped with fresh hub sequences: what
+/// a WebSocket client that connects with a cursor missed while it was away.
+pub(crate) fn replay(state: &WebState, after_seq: i64) -> Result<Vec<WebEvent>, String> {
+    let query = EventsQuery {
+        after_seq: Some(after_seq),
+        limit: Some(REPLAY_LIMIT),
+        ..EventsQuery::default()
+    };
+    Ok(state
+        .events
+        .query(&query)?
+        .iter()
+        .filter_map(frame_parts)
+        .map(|frame| frame(state.ws.next_seq()))
+        .collect())
+}
+
+/// Most events one WebSocket replay sends; a client that gets this many
+/// continues with `GET /api/v1/events?after_seq=`.
+pub(crate) const REPLAY_LIMIT: i64 = store::MAX_LIMIT;
+
+fn frame_parts(event: &Event) -> Option<impl FnOnce(u64) -> WebEvent + Send + 'static> {
+    let payload = serde_json::to_value(event).ok()?;
     let entity = event
         .todo_id
         .clone()
@@ -117,7 +144,7 @@ fn publish(state: &WebState, event: &Event) {
         })
         .unwrap_or_else(|| event.source.clone());
     let (kind, summary, timestamp) = (event.kind.clone(), event.summary.clone(), event.ts.clone());
-    state.ws.publish(PIPELINE_SCOPE, move |seq| WebEvent {
+    Some(move |seq| WebEvent {
         seq,
         timestamp,
         scope: PIPELINE_SCOPE.to_string(),
@@ -125,7 +152,7 @@ fn publish(state: &WebState, event: &Event) {
         entity,
         summary,
         payload,
-    });
+    })
 }
 
 /// Record a server-emitted event, best-effort: a full disk or a malformed
@@ -232,7 +259,7 @@ pub(crate) async fn list_events(
     State(state): State<Arc<WebState>>,
     query: Result<Query<EventsQuery>, QueryRejection>,
 ) -> AxumResponse {
-    let query = match query {
+    let mut query = match query {
         Ok(Query(query)) => query,
         Err(rejection) => {
             return events_error(
@@ -243,6 +270,20 @@ pub(crate) async fn list_events(
             );
         }
     };
+    match (query.after_seq, query.since) {
+        (Some(after), Some(since)) if after != since => {
+            return events_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "events_invalid_query",
+                &format!(
+                    "since ({since}) and after_seq ({after}) disagree; they name the same cursor"
+                ),
+                "send one cursor: after_seq=<last seq you saw>",
+            );
+        }
+        (None, since) => query.after_seq = since,
+        _ => {}
+    }
     let limit = query.limit.unwrap_or(store::DEFAULT_LIMIT);
     if !(1..=store::MAX_LIMIT).contains(&limit) {
         return events_error(
