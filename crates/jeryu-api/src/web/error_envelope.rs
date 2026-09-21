@@ -75,7 +75,14 @@ pub(super) async fn normalize(request: Request, next: Next) -> Response {
         return (parts.status, Json(envelope)).into_response();
     };
     let envelope = envelope_for(parts.status, &method, &bytes);
-    let body = serde_json::to_vec(&envelope).unwrap_or_default();
+    // An empty body would hide the original error: say what failed instead.
+    let body = match serde_json::to_vec(&envelope) {
+        Ok(body) => body,
+        Err(error) => {
+            let reason = format!("error envelope did not serialize: {error}");
+            return (parts.status, reason).into_response();
+        }
+    };
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.insert(
         header::CONTENT_TYPE,
@@ -136,13 +143,15 @@ fn from_json(status: StatusCode, mut object: Map<String, Value>) -> Value {
         })
         .unwrap_or_else(|| summary.to_string());
     let reason = text(&object, "reason").unwrap_or_else(|| message.clone());
-    let common_fixes = object
-        .get("common_fixes")
-        .or_else(|| hint.get("common_fixes"))
+    let supplied_fixes = [&object, &hint]
+        .into_iter()
+        .find_map(|source| source.get("common_fixes"))
         .and_then(Value::as_array)
-        .filter(|fixes| !fixes.is_empty() && fixes.iter().all(Value::is_string))
-        .cloned()
-        .map_or_else(|| json!(default_fixes(&code)), Value::Array);
+        .filter(|fixes| !fixes.is_empty() && fixes.iter().all(Value::is_string));
+    let common_fixes = match supplied_fixes {
+        Some(fixes) => Value::Array(fixes.clone()),
+        None => json!(default_fixes(&code)),
+    };
     let purpose = text(&object, "purpose").unwrap_or_else(|| DEFAULT_PURPOSE.to_string());
     let repair_hint =
         text(&object, "repair_hint").unwrap_or_else(|| DEFAULT_REPAIR_HINT.to_string());
