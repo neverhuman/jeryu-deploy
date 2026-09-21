@@ -12,6 +12,7 @@ use super::attention::{Hosts, Item, Severity, pin_items as pin_rule};
 use super::attention_tests::assert_says_where;
 use super::pins::{BumpPr, Consumer, Pin, RawPin, Unreleased, classify, lock_pins, manifest_pins};
 use super::tests::{body_json, request};
+use super::types::Event;
 use crate::web::shift::tests::run_git;
 use crate::web::{WebState, app};
 
@@ -153,7 +154,7 @@ fn now() -> DateTime<Utc> {
 
 /// The rule, with every item it returns checked for "a command says where".
 fn pin_items_at(consumers: &[Consumer], now: DateTime<Utc>) -> Vec<Item> {
-    let items = pin_rule(consumers, &Hosts::default(), now);
+    let items = pin_rule(consumers, &[], &Hosts::default(), now);
     items.iter().for_each(assert_says_where);
     items
 }
@@ -275,6 +276,7 @@ fn the_release_host_is_configuration_not_a_literal() {
     });
     let items = pin_rule(
         &consumer(vec![pin("commit", "behind", None)]),
+        &[],
         &hosts,
         now(),
     );
@@ -295,6 +297,122 @@ fn commit_pin_with_a_bump_open_only_points_at_that_pull_request() {
     assert_eq!(item.pr, Some(53));
     assert_eq!(item.action.command, None);
     assert!(item.next_step.contains(&item.href), "{item:?}");
+}
+
+const HEAD: &str = "427bebecb848d7b7bb37ecc71521d7461072694d";
+
+/// auto-pin's give-up for `sha`, as `give_up` in auto-pin.sh posts it.
+fn gave_up(seq: i64, sha: &str) -> Event {
+    Event {
+        seq,
+        ts: "2026-09-19T14:50:00Z".to_string(),
+        event_id: Some(format!("auto-pin:failed:{}:2", &sha[..12])),
+        source: "auto-pin".to_string(),
+        kind: "pin.bump_failed".to_string(),
+        reporter: "alton".to_string(),
+        actor: Some("jeryu-auto-pin".to_string()),
+        family: None,
+        repo: Some("jeryu/jeryu-deploy".to_string()),
+        pr: None,
+        sha: Some(sha.to_string()),
+        todo_id: None,
+        shift: None,
+        outcome: None,
+        needs_human: true,
+        summary: "bumping the jeryu-web pin failed (attempt 2 of 2)".to_string(),
+        reason: Some(
+            "  the lock edit is not exactly the two pin fields;\n no further attempt will be made \
+             for this commit "
+                .to_string(),
+        ),
+        cost_usd: None,
+        seconds: None,
+        log_tail: Some("building\nvite exploded\n".to_string()),
+        log_url: None,
+        detail: None,
+    }
+}
+
+fn pin_items_given_up(pins: Vec<Pin>, events: &[Event], now: DateTime<Utc>) -> Vec<Item> {
+    let items = pin_rule(&consumer(pins), events, &Hosts::default(), now);
+    items.iter().for_each(assert_says_where);
+    items
+}
+
+#[test]
+fn a_give_up_for_the_current_head_is_an_action_at_once_with_its_reason() {
+    // One minute after the commit: well inside auto-pin's grace.
+    let now = Utc.with_ymd_and_hms(2026, 9, 19, 14, 41, 0).unwrap();
+    let items = pin_items_given_up(
+        vec![pin("commit", "behind", None)],
+        &[gave_up(7, HEAD)],
+        now,
+    );
+    let [item] = items.as_slice() else {
+        panic!("one item: {items:?}")
+    };
+    assert_eq!((item.kind, item.severity), ("pin_behind", Severity::Action));
+    assert_eq!(item.id, "pin-behind:jeryu/jeryu-deploy:jeryu/jeryu-web");
+    assert_eq!(item.title, "auto-pin gave up on jeryu-web 427bebe");
+    assert!(
+        item.reason.starts_with(
+            "the lock edit is not exactly the two pin fields; no further attempt will be made \
+             for this commit. auto-pin stopped retrying"
+        ),
+        "{item:?}"
+    );
+    assert!(item.reason.contains("would not include them"), "{item:?}");
+    assert_eq!(
+        item.action.command.as_deref(),
+        Some(
+            "rm -f ~/.local/state/jeryu-auto-pin/failures/427bebecb848d7b7bb37ecc71521d7461072694d \
+             && systemctl --user start jeryu-auto-pin.service"
+        )
+    );
+    assert_eq!(item.action.run_in.as_deref(), Some("xbabe0, any directory"));
+    assert_eq!(item.sha.as_deref(), Some("427bebe"));
+
+    // With no reason the last line of the log tail speaks.
+    let mut quiet = gave_up(7, HEAD);
+    quiet.reason = None;
+    let items = pin_items_given_up(vec![pin("commit", "behind", None)], &[quiet], now);
+    assert!(items[0].reason.starts_with("vite exploded. "), "{items:?}");
+}
+
+#[test]
+fn a_give_up_for_an_older_head_or_without_needs_human_is_ignored() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 19, 14, 41, 0).unwrap();
+    let mut first_try = gave_up(8, HEAD);
+    first_try.needs_human = false;
+    let items = pin_items_given_up(
+        vec![pin("commit", "behind", None)],
+        &[first_try, gave_up(7, WEB_PIN)],
+        now,
+    );
+    let [item] = items.as_slice() else {
+        panic!("one item: {items:?}")
+    };
+    assert_eq!(item.severity, Severity::Watch);
+    assert_eq!(
+        item.title,
+        "9 merged commits of jeryu-web are being pinned by auto-pin"
+    );
+    assert_eq!(item.action.command, None);
+}
+
+#[test]
+fn an_open_bump_wins_over_a_give_up() {
+    let items = pin_items_given_up(
+        vec![pin("commit", "behind", Some(53))],
+        &[gave_up(7, HEAD)],
+        now(),
+    );
+    let [item] = items.as_slice() else {
+        panic!("one item: {items:?}")
+    };
+    assert_eq!(item.severity, Severity::Watch);
+    assert_eq!(item.href, "/repos/jeryu/jeryu/jeryu-deploy/pulls/53");
+    assert_eq!(item.action.command, None);
 }
 
 #[test]

@@ -5,6 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use super::super::pins::{Consumer, Pin};
 use super::{Draft, Hosts, Item, Severity, Shell, parse_time};
+use crate::web::pipeline::Event;
 
 const UNRELEASED_HREF: &str = "/unreleased";
 /// How long auto-pin gets before a missing bump is somebody's problem: its
@@ -12,6 +13,39 @@ const UNRELEASED_HREF: &str = "/unreleased";
 /// had several whole turns.
 const AUTO_PIN_GRACE_MINUTES: i64 = 20;
 const AUTO_PIN_UNIT: &str = "jeryu-auto-pin.service";
+/// Where auto-pin counts failures per dependency commit; a file there at the
+/// limit is its give-up marker for that commit.
+const AUTO_PIN_FAILURES: &str = "~/.local/state/jeryu-auto-pin/failures";
+
+/// The newest give-up (`pin.bump_failed` with `needs_human`) for the
+/// dependency's current head. `gave_up` is newest first; a give-up for an
+/// older head says nothing about this one.
+fn gave_up_on<'a>(pin: &Pin, gave_up: &'a [Event]) -> Option<&'a Event> {
+    let head = pin.latest_sha.as_deref()?;
+    gave_up.iter().find(|event| {
+        event.kind == "pin.bump_failed" && event.needs_human && event.sha.as_deref() == Some(head)
+    })
+}
+
+/// What went wrong, as one trimmed line: the event's reason, else a string
+/// `reason` in its detail, else the last non-blank line of its log tail.
+fn failure_text(event: &Event) -> Option<String> {
+    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let detail = event
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("reason"))
+        .and_then(|reason| reason.as_str());
+    let tail = event
+        .log_tail
+        .as_deref()
+        .and_then(|tail| tail.lines().rev().find(|line| !line.trim().is_empty()));
+    [event.reason.as_deref(), detail, tail]
+        .into_iter()
+        .flatten()
+        .map(one_line)
+        .find(|text| !text.is_empty())
+}
 
 /// Whether the dependency's newest commit is recent enough that auto-pin may
 /// simply not have finished. An unknown commit time counts as old: asking for
@@ -52,7 +86,13 @@ fn preview(pin: &Pin) -> String {
     }
 }
 
-fn pin_item(consumer: &Consumer, pin: &Pin, hosts: &Hosts, now: DateTime<Utc>) -> Item {
+fn pin_item(
+    consumer: &Consumer,
+    pin: &Pin,
+    gave_up: &[Event],
+    hosts: &Hosts,
+    now: DateTime<Utc>,
+) -> Item {
     let dependency = name_of(&pin.dependency);
     let deploy = name_of(&consumer.repo);
     let id = format!("pin-behind:{}:{}", consumer.repo, pin.dependency);
@@ -62,6 +102,7 @@ fn pin_item(consumer: &Consumer, pin: &Pin, hosts: &Hosts, now: DateTime<Utc>) -
         commits(pin.behind),
         preview(pin)
     );
+    let gave_up = gave_up_on(pin, gave_up);
     let draft = match (pin.kind, &pin.bump_pr) {
         ("tag", _) => Draft {
             id,
@@ -99,6 +140,30 @@ fn pin_item(consumer: &Consumer, pin: &Pin, hosts: &Hosts, now: DateTime<Utc>) -
             label: "Follow the pin bump pull request",
             command: None,
         },
+        (_, None) if let (Some(event), Some(head)) = (gave_up, pin.latest_sha.as_deref()) => {
+            let failure =
+                failure_text(event).unwrap_or_else(|| "auto-pin recorded no reason".to_string());
+            let head7 = short(head);
+            Draft {
+                id,
+                kind: "pin_behind",
+                severity: Severity::Action,
+                title: format!("auto-pin gave up on {dependency} {head7}"),
+                reason: format!(
+                    "{failure}. auto-pin stopped retrying {dependency} {head7}, so no bump pull \
+                     request comes until its give-up marker is cleared; its log is \
+                     `journalctl --user -u {AUTO_PIN_UNIT} -n 30`. {waiting}"
+                ),
+                href: UNRELEASED_HREF.to_string(),
+                label: "Clear the give-up and retry auto-pin",
+                command: Some(Shell {
+                    line: format!(
+                        "rm -f {AUTO_PIN_FAILURES}/{head} && systemctl --user start {AUTO_PIN_UNIT}"
+                    ),
+                    run_in: Hosts::anywhere(&hosts.release),
+                }),
+            }
+        }
         (_, None) if auto_pin_may_still_be_working(pin, now) => Draft {
             id,
             kind: "pin_behind",
@@ -148,7 +213,14 @@ fn pin_item(consumer: &Consumer, pin: &Pin, hosts: &Hosts, now: DateTime<Utc>) -
 }
 
 /// One item per pin whose dependency has green, merged work it does not reach.
-pub(crate) fn pin_items(consumers: &[Consumer], hosts: &Hosts, now: DateTime<Utc>) -> Vec<Item> {
+/// `gave_up` is auto-pin's `pin.bump_failed` events with `needs_human`,
+/// newest first.
+pub(crate) fn pin_items(
+    consumers: &[Consumer],
+    gave_up: &[Event],
+    hosts: &Hosts,
+    now: DateTime<Utc>,
+) -> Vec<Item> {
     consumers
         .iter()
         .flat_map(|consumer| {
@@ -156,7 +228,7 @@ pub(crate) fn pin_items(consumers: &[Consumer], hosts: &Hosts, now: DateTime<Utc
                 .pins
                 .iter()
                 .filter(|pin| pin.state == "behind")
-                .map(move |pin| pin_item(consumer, pin, hosts, now))
+                .map(move |pin| pin_item(consumer, pin, gave_up, hosts, now))
         })
         .collect()
 }

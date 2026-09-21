@@ -274,8 +274,18 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         &super::super::shift::worker_rows(state, now),
         &hosts,
     ));
+    let gave_up = state
+        .events
+        .query(&super::types::EventsQuery {
+            kind: Some("pin.bump_failed".to_string()),
+            needs_human: Some(true),
+            limit: Some(20),
+            ..Default::default()
+        })
+        .unwrap_or_default();
     items.extend(pin_items(
         &super::pins::snapshot(state).consumers,
+        &gave_up,
         &hosts,
         now,
     ));
