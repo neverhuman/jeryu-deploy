@@ -53,7 +53,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `api_route_not_found` | 404 | no API route matches the request path |
 | `attention_collect_failed` | 500 | the attention inbox could not be collected |
 | `bad_head` | 409 | the pull request head does not match the queued head |
-| `bad_request` | 400 | the request was rejected before it reached a handler |
+| `bad_request` | 422 | the request was rejected before it reached a handler |
 | `blob_too_large` | 413 | the requested blob is too large to render |
 | `ci_run_id_required` | 422 | a CI run id is required |
 | `codegraph_index_failed` | 500 | the codegraph index could not be built |
@@ -79,10 +79,10 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_branch` | 422 | the branch name is not valid |
 | `invalid_compare` | 422 | the compare range is not valid |
 | `invalid_input` | 422 | the request failed boundary validation |
-| `invalid_json_body` | 400 | the request body is not valid JSON for this route |
+| `invalid_json_body` | 422 | the request body is not valid JSON for this route |
 | `invalid_page_parameter` | 422 | limit, per_page or page is outside the accepted range |
-| `invalid_path_parameter` | 400 | a path parameter has the wrong shape for this route |
-| `invalid_query` | 400 | the query string does not match this route |
+| `invalid_path_parameter` | 422 | a path parameter has the wrong shape for this route |
+| `invalid_query` | 422 | the query string does not match this route |
 | `invalid_ref` | 422 | the git ref is not valid |
 | `invalid_session_id` | 422 | an agent_id or run_id has a character a ref may not carry |
 | `merge_blocked` | 409 | merge policy blocks this pull request |
@@ -93,6 +93,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `merge_unprocessable` | 422 | the merge request could not be processed |
 | `method_not_allowed` | 405 | the route exists but not for this HTTP method |
 | `not_a_file` | 422 | the path names a directory, not a file |
+| `not_acceptable` | 406 | the Accept header excludes the JSON this route answers |
 | `not_found` | 404 | the requested entity was not found |
 | `not_open` | 409 | the pull request is not open |
 | `not_queued` | 409 | the pull request is not in the merge queue |

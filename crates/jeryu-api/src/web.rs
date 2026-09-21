@@ -23,6 +23,7 @@ mod repo_address;
 mod repo_admin;
 mod repositories;
 mod request_id;
+mod request_rules;
 mod route_index;
 mod sessions;
 mod shift;
@@ -579,7 +580,9 @@ fn router(state: Arc<WebState>) -> AxumRouter {
     let routed = routes(state.clone());
     AxumRouter::new().fallback_service(tower::ServiceExt::map_request(
         routed,
-        move |request: Request| repo_address::rewrite(&state, request),
+        move |request: Request| {
+            repo_address::rewrite(&state, request_rules::trim_trailing_slash(request))
+        },
     ))
 }
 
@@ -665,6 +668,8 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
         // headers (and a per-route MCP tool hint for gh/automation UAs).
         .layer(from_fn(steer_headers))
         .layer(from_fn_with_state(state.clone(), auth::gate))
+        // Preflight and Accept answer before the auth gate, inside the envelope.
+        .layer(from_fn(request_rules::apply))
         // Outside the auth gate so its 401/403 answers take the envelope too.
         .layer(from_fn(error_envelope::normalize))
         .layer(from_fn(request_id::propagate))

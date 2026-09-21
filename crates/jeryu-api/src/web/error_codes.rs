@@ -90,7 +90,7 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry(
         "bad_request",
-        400,
+        422,
         "the request was rejected before it reached a handler",
     ),
     entry(
@@ -188,7 +188,7 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry(
         "invalid_json_body",
-        400,
+        422,
         "the request body is not valid JSON for this route",
     ),
     entry(
@@ -198,12 +198,12 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry(
         "invalid_path_parameter",
-        400,
+        422,
         "a path parameter has the wrong shape for this route",
     ),
     entry(
         "invalid_query",
-        400,
+        422,
         "the query string does not match this route",
     ),
     entry("invalid_ref", 422, "the git ref is not valid"),
@@ -244,6 +244,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the route exists but not for this HTTP method",
     ),
     entry("not_a_file", 422, "the path names a directory, not a file"),
+    entry(
+        "not_acceptable",
+        406,
+        "the Accept header excludes the JSON this route answers",
+    ),
     entry("not_found", 404, "the requested entity was not found"),
     entry("not_open", 409, "the pull request is not open"),
     entry(
@@ -628,6 +633,7 @@ pub(crate) fn for_status(status: u16) -> &'static str {
         403 => "forbidden",
         404 => "not_found",
         405 => "method_not_allowed",
+        406 => "not_acceptable",
         409 => "conflict",
         413 => "payload_too_large",
         415 => "unsupported_media_type",

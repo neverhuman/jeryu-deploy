@@ -64,6 +64,12 @@ pub(super) async fn normalize(request: Request, next: Next) -> Response {
         return response;
     }
     let (mut parts, body) = response.into_parts();
+    // One status for unreadable input, whichever layer noticed it: axum
+    // answers 400 for malformed JSON, a query or a path segment but 422 for a
+    // well-formed body of the wrong shape, and handlers had copied both.
+    if parts.status == StatusCode::BAD_REQUEST {
+        parts.status = StatusCode::UNPROCESSABLE_ENTITY;
+    }
     let Ok(bytes) = to_bytes(body, MAX_ERROR_BODY).await else {
         let envelope = envelope_for(parts.status, &method, &[]);
         return (parts.status, Json(envelope)).into_response();
@@ -471,6 +477,105 @@ mod tests {
             if code == "invalid_path_parameter" {
                 assert!(!value.to_string().contains("u64"), "{value}");
             }
+        }
+    }
+
+    async fn send_with(
+        state: crate::web::WebState,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> axum::response::Response {
+        use tower::ServiceExt;
+        let app = crate::web::app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
+        let mut request = axum::http::Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        app.oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unreadable_input_answers_422_from_every_layer() {
+        let json = Some("application/json");
+        for (method, uri, content_type, body) in [
+            ("POST", "/api/v1/work", json, "{not json"),
+            ("POST", "/api/v1/work", json, "{\"title\": 7}"),
+            ("GET", "/api/v1/repos/r/pulls/abc", None, ""),
+        ] {
+            let (status, _, value) = send(open_state(), method, uri, content_type, body).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{uri}: {value}");
+        }
+        for code in [
+            "invalid_json_body",
+            "invalid_path_parameter",
+            "invalid_query",
+        ] {
+            assert_eq!(lookup(code).unwrap().status, 422, "{code}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trailing_slash_reaches_the_same_route() {
+        let (status, _, _) = send(open_state(), "GET", "/api/v1/work/", None, "").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = send(open_state(), "GET", "/api/v1/errors/?x=1", None, "").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn preflight_needs_no_login() {
+        let mut state = open_state();
+        state.auth_required = true;
+        let response = send_with(
+            state,
+            "OPTIONS",
+            "/api/v1/bootstrap",
+            &[
+                ("origin", "http://localhost:5173"),
+                ("access-control-request-method", "POST"),
+                ("access-control-request-headers", "content-type"),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let headers = response.headers();
+        assert!(headers.contains_key(header::ACCESS_CONTROL_ALLOW_METHODS));
+        assert_eq!(
+            headers[header::ACCESS_CONTROL_ALLOW_HEADERS],
+            "content-type"
+        );
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+    }
+
+    #[tokio::test]
+    async fn an_accept_header_that_rules_out_json_answers_406() {
+        let response = send_with(
+            open_state(),
+            "GET",
+            "/api/v1/errors",
+            &[("accept", "text/html")],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_envelope(&serde_json::from_slice(&bytes).unwrap(), "not_acceptable");
+
+        let response = send_with(
+            open_state(),
+            "POST",
+            "/api/v1/work",
+            &[("accept", "text/plain")],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+
+        for accept in ["application/json", "text/html,*/*;q=0.8"] {
+            let response =
+                send_with(open_state(), "GET", "/api/v1/errors", &[("accept", accept)]).await;
+            assert_eq!(response.status(), StatusCode::OK, "{accept}");
         }
     }
 

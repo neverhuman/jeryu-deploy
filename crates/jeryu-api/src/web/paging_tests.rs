@@ -103,7 +103,7 @@ async fn big_collections_page_and_refuse_out_of_range_values() {
     let (_, open) = get(&router, &format!("{pulls}?state=open"), &token).await;
     assert_eq!(open["total"], 3);
     let (status, bad) = get(&router, &format!("{pulls}?state=bogus"), &token).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(bad["code"], "invalid_query");
 
     // The control-plane snapshot pages each collection it carries.

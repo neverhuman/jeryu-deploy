@@ -72,6 +72,23 @@ A collection returns one shape:
   `server_version` is the running build. A resource's optimistic-concurrency
   counter is `revision`. The bare key `version` is not used.
 
+## Status codes and request handling
+
+One rule per class, applied in front of the handlers rather than per route:
+
+- Input that cannot be read or fails validation (malformed JSON, a body of the
+  wrong shape, a bad query string, a path segment of the wrong type) answers
+  **422** with the error envelope. A 400 from any layer is rewritten to 422.
+- A well-formed id that names nothing answers **404**; an unknown route answers
+  404 `api_route_not_found`.
+- A trailing slash names the same route: `/api/v1/work/` is `/api/v1/work`.
+- An `Accept` header that admits no JSON (`*/*`, `application/*`,
+  `application/json`, `*+json`) answers **406** `not_acceptable`. Writes are
+  refused before they run; reads that stream text (raw files, logs, SSE) still
+  answer their own media type.
+- `OPTIONS` is a CORS preflight and answers **204** without a login. No origin
+  is granted, so cross-origin browser calls stay blocked.
+
 ## Known deviations
 
 - `control_plane`, `auth`, `ecosystem` and `ci_evidence` types still serialise

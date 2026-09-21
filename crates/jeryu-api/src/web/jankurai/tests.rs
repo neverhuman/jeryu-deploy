@@ -248,7 +248,7 @@ async fn overview_aggregates_pass_rate_failures_and_would_have_blocked() {
         ))
         .await
         .unwrap();
-    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 /// `?repo=` narrows the overview, and a user only ever sees repositories they
