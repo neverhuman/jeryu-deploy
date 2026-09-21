@@ -439,6 +439,9 @@ pub(super) async fn admin_repo_grants(
         .list_repo_access_checked(&account.login, &owner, &repo)
     {
         Ok(grants) => Json(grants).into_response(),
+        // Core's *_checked access calls reuse BranchProtection for "caller is
+        // not a repo admin", so these routes answer 403, unlike the 405 the
+        // GitHub-compat `error_response` uses for real protection blocks.
         Err(ForgeError::BranchProtection(_)) => forbidden("repo admin access required"),
         Err(ForgeError::NotFound(_)) => {
             api_error(StatusCode::NOT_FOUND, "not_found", "repository not found")

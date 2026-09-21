@@ -332,6 +332,10 @@ pub(super) fn error_response(err: ForgeError) -> Response {
             "jeryu.propose_patch",
             "the request failed validation; the typed MCP tool builds a valid request for you",
         ),
+        // 405 matches GitHub's "not mergeable / protected branch" answer and the
+        // explicit 405s in `pulls.rs`. The web admin routes (`web/auth.rs`) map
+        // the same variant to 403 on purpose: core reuses it there to mean
+        // "caller lacks repo admin", which is an authorization failure.
         ForgeError::BranchProtection(_) => (
             405,
             "jeryu.explain_blockers",
@@ -538,5 +542,56 @@ mod web_url_tests {
             web_url_with_origin(Some("https://x.example"), "https://y.example/p"),
             "https://y.example/p"
         );
+    }
+}
+
+#[cfg(test)]
+mod error_response_tests {
+    use super::error_response;
+    use jeryu_core::ForgeError;
+    use serde_json::Value;
+
+    #[test]
+    fn maps_every_forge_error_to_its_pinned_status() {
+        let table: [(ForgeError, u16, &str); 6] = [
+            (
+                ForgeError::NotFound("x".into()),
+                404,
+                "jeryu.get_system_snapshot",
+            ),
+            (ForgeError::Conflict("x".into()), 422, "jeryu.propose_patch"),
+            (
+                ForgeError::Validation("x".into()),
+                422,
+                "jeryu.propose_patch",
+            ),
+            (
+                ForgeError::BranchProtection("x".into()),
+                405,
+                "jeryu.explain_blockers",
+            ),
+            (
+                ForgeError::RepositoryArchived("x".into()),
+                409,
+                "jeryu.get_system_snapshot",
+            ),
+            (
+                ForgeError::Storage("x".into()),
+                500,
+                "jeryu.get_system_snapshot",
+            ),
+        ];
+        for (err, status, tool) in table {
+            let message = err.to_string();
+            let response = error_response(err);
+            assert_eq!(response.status, status, "status for {message}");
+            let body: Value = serde_json::from_str(&response.body).expect("json body");
+            assert_eq!(body["message"], message);
+            assert!(body["documentation_url"].is_string());
+            assert!(
+                body["jeryu_steering"].to_string().contains(tool),
+                "steering for {message} names {tool}"
+            );
+        }
     }
 }
