@@ -9,9 +9,7 @@ use serde_json::{Value, json};
 use crate::routes::Response;
 
 use super::GithubRouter;
-#[cfg(feature = "web")]
-use super::support::docs_url;
-use super::support::{Pagination, error_response, json_response, paginate, parse_body};
+use super::support::{Pagination, docs_url, error_response, json_response, paginate, parse_body};
 
 impl GithubRouter {
     pub(super) fn list_check_runs(
@@ -111,11 +109,45 @@ impl GithubRouter {
             Ok(value) => value,
             Err(response) => return response,
         };
+        if let Some(problem) = req.details_url.as_deref().and_then(details_url_problem) {
+            return json_response(
+                422,
+                &json!({
+                    "message": format!("details_url {problem}"),
+                    "documentation_url": docs_url(),
+                }),
+            );
+        }
         match self.core.create_check_run(owner, repo, req) {
             Ok(run) => json_response(201, &check_run_json(&run)),
             Err(err) => error_response(err),
         }
     }
+}
+
+/// Why `url` cannot be a check run's `details_url`, if it cannot. The link is
+/// what a reader clicks from the PR page to learn why a check failed, so it
+/// must be a human web page served over https, never a raw `/api/` JSON route.
+pub(crate) fn details_url_problem(url: &str) -> Option<&'static str> {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return Some("must be an https:// web page");
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let path = rest.find('/').map_or("", |start| &rest[start..]);
+    if path == "/api" || path.starts_with("/api/") {
+        return Some("must be a web page, not an /api/ route");
+    }
+    None
+}
+
+/// The https web page at `path` on the forge `base` (`http://host` or
+/// `https://host`) points at: check links are always served over https.
+pub(crate) fn web_page_url(base: &str, path: &str) -> String {
+    let host = base
+        .trim_end_matches('/')
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    format!("https://{host}/{}", path.trim_start_matches('/'))
 }
 
 fn check_run_status(status: &CheckRunStatus) -> &'static str {
@@ -155,4 +187,38 @@ fn check_run_json(run: &CheckRun) -> Value {
         "started_at": run.started_at,
         "completed_at": run.completed_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{details_url_problem, web_page_url};
+
+    #[test]
+    fn details_url_rejects_api_routes_and_plain_http() {
+        assert!(
+            details_url_problem("https://forge.test/api/v1/repos/1f2e/jankurai-scores?sha=abc")
+                .is_some()
+        );
+        assert!(details_url_problem("https://forge.test/api").is_some());
+        assert!(details_url_problem("http://forge.test/quality-gate").is_some());
+        assert!(details_url_problem("/quality-gate").is_some());
+        assert_eq!(
+            details_url_problem("https://forge.test/quality-gate/heads/a/b/abc"),
+            None
+        );
+        assert_eq!(details_url_problem("https://forge.test/apis/docs"), None);
+        assert_eq!(details_url_problem("https://forge.test?x=/api/"), None);
+    }
+
+    #[test]
+    fn web_page_url_is_always_https() {
+        assert_eq!(
+            web_page_url("http://forge.test/", "/quality-gate"),
+            "https://forge.test/quality-gate"
+        );
+        assert_eq!(
+            web_page_url("https://forge.test", "quality-gate"),
+            "https://forge.test/quality-gate"
+        );
+    }
 }

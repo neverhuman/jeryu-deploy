@@ -18,7 +18,7 @@
 
 mod actions;
 mod branch_protection;
-mod check_runs;
+pub(crate) mod check_runs;
 mod commit_status;
 mod deployments;
 mod graphql;

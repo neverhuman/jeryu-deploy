@@ -555,7 +555,7 @@ pub(super) fn record_authoritative_jankurai_score_with<F>(
             head_sha: update.new_oid.clone(),
             status: Some(CheckRunStatus::Completed),
             conclusion: Some(conclusion),
-            details_url: jankurai_score_details_url(core, origin_base_url, owner, repo, update),
+            details_url: jankurai_score_details_url(origin_base_url, owner, repo, update),
             output: Some(output),
         },
     );
@@ -563,20 +563,21 @@ pub(super) fn record_authoritative_jankurai_score_with<F>(
     let _ = std::fs::remove_dir_all(&sandbox);
 }
 
-/// Link the proof check at the stored score so a red check explains itself.
+/// Link the proof check at the Quality gate page of this head, where each
+/// applied cap is listed with what it means and how to clear it. A web page
+/// over https, never the raw score JSON under `/api/`.
 fn jankurai_score_details_url(
-    core: &ForgeCore,
     origin_base_url: &str,
     owner: &str,
     repo: &str,
     update: &RefUpdate,
 ) -> Option<String> {
-    let repository = core.get_repository(owner, repo).ok()?;
-    Some(format!(
-        "{}/api/v1/repos/{}/jankurai-scores?sha={}",
-        origin_base_url.trim_end_matches('/'),
-        repository.id,
-        update.new_oid
+    if origin_base_url.trim().is_empty() {
+        return None;
+    }
+    Some(crate::github::check_runs::web_page_url(
+        origin_base_url,
+        &format!("/quality-gate/heads/{owner}/{repo}/{}", update.new_oid),
     ))
 }
 

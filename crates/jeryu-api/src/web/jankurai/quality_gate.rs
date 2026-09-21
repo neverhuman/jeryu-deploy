@@ -119,7 +119,19 @@ struct HeadDetail {
     score: u32,
     threshold: u32,
     passed: bool,
+    /// Every cap the auditor applied to this head, explained.
+    caps: Vec<AppliedCap>,
     findings: Vec<Finding>,
+}
+
+/// One applied cap: what it means and what clears it, so a red
+/// `jankurai/proof` reads without the raw report.
+#[derive(Debug, Serialize)]
+struct AppliedCap {
+    id: String,
+    meaning: String,
+    how_to_clear: String,
+    findings: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,6 +360,7 @@ pub(crate) async fn head(
         score: head.score.score.unwrap_or(0),
         threshold: head.floor,
         passed: head.passed,
+        caps: applied_caps(&head),
         findings: head
             .findings()
             .into_iter()
@@ -356,6 +369,68 @@ pub(crate) async fn head(
             .collect(),
     })
     .into_response()
+}
+
+fn applied_caps(head: &ScoredHead) -> Vec<AppliedCap> {
+    let findings = head.findings();
+    head.score
+        .caps_applied
+        .iter()
+        .map(|cap| {
+            let matching: Vec<_> = findings
+                .iter()
+                .filter(|finding| {
+                    finding.rule_id == *cap || finding.check_id.as_deref() == Some(cap.as_str())
+                })
+                .collect();
+            let (meaning, how_to_clear) = cap_explanation(cap, matching.len());
+            let meaning = match matching
+                .iter()
+                .find_map(|finding| finding.problem.as_deref())
+            {
+                Some(problem) => format!("{meaning} On this head: {problem}"),
+                None => meaning,
+            };
+            AppliedCap {
+                id: cap.clone(),
+                meaning,
+                how_to_clear,
+                findings: count(matching.len()),
+            }
+        })
+        .collect()
+}
+
+/// What a cap means and how to clear it. Caps the gate sees often have their
+/// own wording; any other cap gets the general rule, which is still exact:
+/// the score is held under a ceiling until the next scored push no longer
+/// applies the cap.
+fn cap_explanation(cap: &str, findings: usize) -> (String, String) {
+    let meaning = match cap {
+        "dead-language" => "Product code or tests use words the auditor reads as marking \
+                            dead or superseded code; the score is held under a ceiling \
+                            while they remain; rename or remove them."
+            .to_string(),
+        "tool-failure" => "The auditor did not produce a valid report, so the proof fails \
+                           closed."
+            .to_string(),
+        _ => format!(
+            "The auditor applied the `{cap}` cap: the score is held under a ceiling while \
+             what `{cap}` checks for remains, whatever the rest of the head scores."
+        ),
+    };
+    let how_to_clear = if findings > 0 {
+        format!(
+            "Fix the {findings} `{cap}` finding(s) listed below (or dispute one that is \
+             wrong) and push; the cap lifts when the next score no longer applies it."
+        )
+    } else {
+        format!(
+            "Remove what `{cap}` flags (run `jankurai diff-audit` locally to see it) and \
+             push; the cap lifts when the next score no longer applies it."
+        )
+    };
+    (meaning, how_to_clear)
 }
 
 /// POST /api/v1/quality-gate/findings/:id/dispute — admin-only, like the

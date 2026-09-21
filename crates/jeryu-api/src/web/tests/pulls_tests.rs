@@ -1405,3 +1405,104 @@ async fn attention_posture_separates_required_from_optional_failing_checks() {
     assert_eq!(posture.failing, ["jeryu/required"]);
     assert_eq!(posture.failing_optional, ["jankurai/proof"]);
 }
+
+#[tokio::test]
+async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "jeryu".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "jeryu",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["jeryu/required".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "jeryu",
+            "alice",
+            CreatePullRequestRequest {
+                title: "feature".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("deadbeef".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jankurai/proof".to_string(),
+            head_sha: "deadbeef".to_string(),
+            status: Some(jeryu_core::CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::Failure),
+            output: Some(jeryu_core::CheckRunOutput {
+                title: "score 42 < floor 85".to_string(),
+                summary: "- score: 42\n- caps applied: dead-language".to_string(),
+                text: None,
+            }),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_commit_status(
+        "alice",
+        "jeryu",
+        "deadbeef",
+        "gatebot",
+        CreateCommitStatusRequest {
+            state: CommitStatusState::Failure,
+            context: "jeryu/required".to_string(),
+            description: Some("cargo test failed".to_string()),
+            target_url: Some("https://forge.invalid/gate/runs/7".to_string()),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core));
+    let checks = response_json(
+        crate::web::pulls::checks(State(state), AxumPath((repo.id.to_string(), pr.number))).await,
+    )
+    .await;
+    assert_eq!(checks["failing"], 2, "{checks}");
+    let row = |name: &str| {
+        checks["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} row in {checks}"))
+    };
+
+    let proof = row("jankurai/proof");
+    assert_eq!(proof["kind"], "check_run");
+    assert_eq!(proof["title"], "score 42 < floor 85");
+    assert_eq!(proof["required"], false);
+    assert_eq!(proof["advisory"]["label"], "advisory - shadow mode");
+    assert_eq!(proof["advisory"]["url"], "/quality-gate");
+    assert_eq!(proof["web_url"], "/quality-gate/heads/alice/jeryu/deadbeef");
+
+    let gate = row("jeryu/required");
+    assert_eq!(gate["kind"], "status");
+    assert_eq!(gate["status"], "failure");
+    assert_eq!(gate["required"], true);
+    assert!(gate["advisory"].is_null());
+    assert_eq!(gate["description"], "cargo test failed");
+    assert_eq!(gate["web_url"], "https://forge.invalid/gate/runs/7");
+}

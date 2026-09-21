@@ -14,7 +14,7 @@ use axum::extract::{Extension, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use jeryu_core::{
-    AccountSummary, CheckConclusion, CheckRun, CheckRunStatus, CommitStatusState,
+    AccountSummary, CheckConclusion, CheckRun, CheckRunStatus, CommitStatus, CommitStatusState,
     CreateReviewRequest, ForgeError, MergeBlocker,
     MergePullRequestRequest as CoreMergePullRequestRequest, PullRequest, ReviewCommentInput,
     ReviewState, check_conclusion_wire_value, effective_reviews_for_head,
@@ -99,12 +99,33 @@ struct PullRequestChecks {
 struct PullRequestCheck {
     id: String,
     name: String,
+    /// `check_run` or `status` (a commit status such as `<repo>/required`).
+    kind: &'static str,
     status: String,
     conclusion: Option<String>,
     details_url: Option<String>,
+    /// The check run's `output.title`; `None` for commit statuses.
+    title: Option<String>,
+    /// The check run's `output.summary`, or the commit status description.
     description: Option<String>,
+    /// The human page that explains this check: the Quality gate head view for
+    /// `jankurai/proof`, the gate run log (`target_url`) for a status.
+    web_url: Option<String>,
+    /// Whether the base branch requires this context before a merge.
+    required: bool,
+    /// Why a check is not required, said on its row (`None` when required).
+    advisory: Option<CheckAdvisory>,
     started_at: Option<String>,
     completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CheckAdvisory {
+    label: String,
+    reason: String,
+    /// A web path that says more; `None` when the reader should look at the
+    /// branch protection of the repository.
+    url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

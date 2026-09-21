@@ -685,3 +685,49 @@ async fn quality_gate_routes_serve_the_console_contract() {
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "GET {missing}");
     }
 }
+
+#[tokio::test]
+async fn quality_gate_head_explains_each_applied_cap() {
+    let (core, _admin, user) = forge();
+    core.record_jankurai_score(
+        "alice",
+        "jeryu",
+        score(
+            "wip",
+            "ccc",
+            Some(60),
+            &["dead-language", "HLT-008"],
+            1,
+            "HLT-008",
+        ),
+    )
+    .unwrap();
+    let router = router(core);
+
+    let head = get_json(&router, "/api/v1/quality-gate/heads/alice/jeryu/ccc", &user).await;
+    let caps = head["caps"].as_array().unwrap();
+    assert_eq!(caps.len(), 2, "{head}");
+    assert_eq!(caps[0]["id"], "dead-language");
+    assert_eq!(caps[0]["findings"], 0);
+    assert!(
+        caps[0]["meaning"]
+            .as_str()
+            .unwrap()
+            .contains("dead or superseded code")
+    );
+    assert!(caps[0]["how_to_clear"].as_str().unwrap().contains("push"));
+    assert_eq!(caps[1]["id"], "HLT-008");
+    assert_eq!(caps[1]["findings"], 1);
+    assert!(
+        caps[1]["meaning"]
+            .as_str()
+            .unwrap()
+            .contains("the head names a dead marker")
+    );
+    assert!(
+        caps[1]["how_to_clear"]
+            .as_str()
+            .unwrap()
+            .contains("1 `HLT-008` finding")
+    );
+}

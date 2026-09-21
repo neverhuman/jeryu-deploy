@@ -318,47 +318,159 @@ pub(in crate::web) fn audit_merge_enforced_value(value: Option<&str>) -> bool {
 }
 
 pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestChecks {
-    let runs = match state
-        .github
-        .core()
-        .list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha))
-    {
+    let core = state.github.core();
+    let runs = match core.list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha)) {
         Ok(list) => latest_check_runs_by_name(list.check_runs),
         Err(_) => Vec::new(),
     };
+    let statuses = match core.combined_status(&pr.owner, &pr.repo, &pr.head.sha) {
+        Ok(combined) => latest_statuses_by_context(combined.statuses),
+        Err(_) => Vec::new(),
+    };
+    let required = required_context_names(state, pr);
     let mut passing = 0;
     let mut failing = 0;
     let mut pending = 0;
     let mut skipped = 0;
-    let checks = runs
-        .iter()
-        .map(|run| {
-            match check_bucket(run) {
-                "success" => passing += 1,
-                "failure" => failing += 1,
-                "pending" => pending += 1,
-                "skipped" => skipped += 1,
-                _ => {}
-            }
-            PullRequestCheck {
-                id: run.id.to_string(),
-                name: run.name.clone(),
-                status: check_status(run).to_string(),
-                conclusion: run.conclusion.as_ref().map(conclusion),
-                details_url: run.details_url.clone(),
-                description: run.output.as_ref().map(|output| output.summary.clone()),
-                started_at: Some(run.started_at.to_rfc3339()),
-                completed_at: run.completed_at.map(|at| at.to_rfc3339()),
-            }
-        })
-        .collect();
+    let mut count = |bucket: &str| match bucket {
+        "success" => passing += 1,
+        "failure" => failing += 1,
+        "pending" => pending += 1,
+        "skipped" => skipped += 1,
+        _ => {}
+    };
+    let mut checks = Vec::with_capacity(runs.len() + statuses.len());
+    for run in &runs {
+        count(check_bucket(run));
+        let is_required = required.contains(&run.name);
+        checks.push(PullRequestCheck {
+            id: run.id.to_string(),
+            name: run.name.clone(),
+            kind: "check_run",
+            status: check_status(run).to_string(),
+            conclusion: run.conclusion.as_ref().map(conclusion),
+            details_url: run.details_url.clone(),
+            title: run.output.as_ref().map(|output| output.title.clone()),
+            description: run.output.as_ref().map(|output| output.summary.clone()),
+            web_url: check_web_url(pr, &run.name, run.details_url.as_deref()),
+            required: is_required,
+            advisory: (!is_required).then(|| check_advisory(pr, &run.name)),
+            started_at: Some(run.started_at.to_rfc3339()),
+            completed_at: run.completed_at.map(|at| at.to_rfc3339()),
+        });
+    }
+    for status in &statuses {
+        let bucket = status_bucket(&status.state);
+        count(bucket);
+        let is_required = required.contains(&status.context);
+        checks.push(PullRequestCheck {
+            id: status.id.to_string(),
+            name: status.context.clone(),
+            kind: "status",
+            status: bucket.to_string(),
+            conclusion: None,
+            details_url: status.target_url.clone(),
+            title: None,
+            description: status.description.clone(),
+            web_url: status.target_url.clone(),
+            required: is_required,
+            advisory: (!is_required).then(|| check_advisory(pr, &status.context)),
+            started_at: Some(status.created_at.to_rfc3339()),
+            completed_at: Some(status.updated_at.to_rfc3339()),
+        });
+    }
     PullRequestChecks {
-        total: runs.len() as u32,
+        total: u32::try_from(checks.len()).unwrap_or(u32::MAX),
         passing,
         failing,
         pending,
         skipped,
         checks,
+    }
+}
+
+/// The contexts the base branch waits for: its protection rule's required
+/// checks, plus `jankurai/proof` when the rule or the merge enforcement asks.
+fn required_context_names(state: &WebState, pr: &PullRequest) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    if let Ok(rule) =
+        state
+            .github
+            .core()
+            .get_branch_protection(&pr.owner, &pr.repo, &pr.base.ref_name)
+    {
+        names.extend(rule.required_status_checks);
+        if rule.require_jankurai_proof {
+            names.insert(JANKURAI_PROOF.to_string());
+        }
+    }
+    if audit_merge_enforced() {
+        names.insert(JANKURAI_PROOF.to_string());
+    }
+    names
+}
+
+const JANKURAI_PROOF: &str = "jankurai/proof";
+
+/// Why a check that is not required does not block the merge.
+fn check_advisory(pr: &PullRequest, name: &str) -> CheckAdvisory {
+    if name == JANKURAI_PROOF {
+        return CheckAdvisory {
+            label: "advisory - shadow mode".to_string(),
+            reason: "jankurai/proof runs in shadow mode by owner decision: it is not \
+                     required until the Quality gate view has about a week of data."
+                .to_string(),
+            url: Some("/quality-gate".to_string()),
+        };
+    }
+    CheckAdvisory {
+        label: "advisory - not in branch protection".to_string(),
+        reason: format!(
+            "The protection rule of `{}` does not list `{name}` as a required check.",
+            pr.base.ref_name
+        ),
+        url: None,
+    }
+}
+
+/// The human page behind a check row. `jankurai/proof` always has one (its
+/// Quality gate head view); any other check links its `details_url` when that
+/// is a web page rather than an `/api/` route.
+fn check_web_url(pr: &PullRequest, name: &str, details_url: Option<&str>) -> Option<String> {
+    if name == JANKURAI_PROOF {
+        return Some(format!(
+            "/quality-gate/heads/{}/{}/{}",
+            pr.owner, pr.repo, pr.head.sha
+        ));
+    }
+    details_url
+        .filter(|url| crate::github::check_runs::details_url_problem(url).is_none())
+        .map(str::to_string)
+}
+
+fn latest_statuses_by_context(statuses: Vec<CommitStatus>) -> Vec<CommitStatus> {
+    let mut latest = BTreeMap::<String, CommitStatus>::new();
+    for status in statuses {
+        match latest.entry(status.context.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(status);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry)
+                if status.updated_at >= entry.get().updated_at =>
+            {
+                entry.insert(status);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+    latest.into_values().collect()
+}
+
+fn status_bucket(state: &CommitStatusState) -> &'static str {
+    match state {
+        CommitStatusState::Success => "success",
+        CommitStatusState::Pending => "pending",
+        CommitStatusState::Error | CommitStatusState::Failure => "failure",
     }
 }
 

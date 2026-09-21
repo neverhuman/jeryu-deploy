@@ -509,12 +509,9 @@ printf '%s\n' '{{"score":92,"caps_applied":[],"decision":{{"hard_findings":0,"mi
         .unwrap();
     assert_eq!(latest.name, "jankurai/proof");
     assert_eq!(latest.conclusion, Some(CheckConclusion::Success));
-    let repo_id = core.get_repository("jeryu", "demo").unwrap().id;
     assert_eq!(
         latest.details_url.as_deref(),
-        Some(
-            format!("http://forge.test/api/v1/repos/{repo_id}/jankurai-scores?sha={head}").as_str()
-        )
+        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str())
     );
     let output = latest.output.as_ref().expect("proof check carries output");
     assert_eq!(output.title, "score 92 >= floor 85");
@@ -565,17 +562,16 @@ printf '%s\n' '{"score":78,"caps_applied":["dead-language"],"decision":{"hard_fi
     fs::set_permissions(&auditor, fs::Permissions::from_mode(0o755)).unwrap();
 
     let core = ForgeCore::new();
-    let repository = core
-        .create_repository(
-            "jeryu",
-            CreateRepositoryRequest {
-                name: "demo".to_string(),
-                private: true,
-                description: None,
-                default_branch: Some("main".to_string()),
-            },
-        )
-        .unwrap();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "demo".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
 
     record_authoritative_jankurai_score_with(
         &core,
@@ -599,13 +595,11 @@ printf '%s\n' '{"score":78,"caps_applied":["dead-language"],"decision":{"hard_fi
     assert_eq!(proof.conclusion, Some(CheckConclusion::Failure));
     assert_eq!(
         proof.details_url.as_deref(),
-        Some(
-            format!(
-                "http://forge.test/api/v1/repos/{}/jankurai-scores?sha={head}",
-                repository.id
-            )
-            .as_str()
-        )
+        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str())
+    );
+    assert_eq!(
+        crate::github::check_runs::details_url_problem(proof.details_url.as_deref().unwrap()),
+        None
     );
     let output = proof.output.as_ref().expect("proof check carries output");
     assert_eq!(output.title, "score 78 < floor 85");

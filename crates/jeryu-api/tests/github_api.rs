@@ -1451,3 +1451,25 @@ fn guided_route_listings_advertise_rename_and_transfer() {
         );
     }
 }
+
+#[test]
+fn check_run_details_url_must_be_an_https_web_page() {
+    let router = router_with_repo();
+    for details_url in [
+        "https://forge.test/api/v1/repos/1f2e/jankurai-scores?sha=deadbeef",
+        "http://forge.test/quality-gate/heads/alice/jeryu/deadbeef",
+    ] {
+        let rejected = router.post(
+            "/repos/alice/jeryu/check-runs",
+            &format!(
+                r#"{{"name":"jankurai/proof","head_sha":"deadbeef","details_url":"{details_url}"}}"#
+            ),
+        );
+        assert_eq!(rejected.status, 422, "{details_url}: {}", rejected.body);
+    }
+    let accepted = router.post(
+        "/repos/alice/jeryu/check-runs",
+        r#"{"name":"jankurai/proof","head_sha":"deadbeef","details_url":"https://forge.test/quality-gate/heads/alice/jeryu/deadbeef"}"#,
+    );
+    assert_eq!(accepted.status, 201, "{}", accepted.body);
+}
