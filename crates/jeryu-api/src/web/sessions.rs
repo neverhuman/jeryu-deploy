@@ -739,10 +739,21 @@ fn gitd_error(err: GitdError) -> AxumResponse {
 }
 
 fn runner_error(err: jeryu_runner_core::error::RunnerError) -> AxumResponse {
-    let message = err.message().to_string();
+    // The runner's codes are an open set owned by another crate: the two the
+    // session planner answers are published as-is, anything else answers one
+    // published code with the runner's own code kept in the reason.
+    let code = match err.code() {
+        code @ ("invalid_session_id" | "runner_policy_denied") => code,
+        _ => "session_runner_rejected",
+    };
+    let message = if code == err.code() {
+        err.message().to_string()
+    } else {
+        format!("{}: {}", err.code(), err.message())
+    };
     typed_error(TypedError {
         status: StatusCode::UNPROCESSABLE_ENTITY,
-        code: err.code(),
+        code,
         purpose: "plan and launch a hardened agent session",
         reason: &message,
         common_fixes: &[

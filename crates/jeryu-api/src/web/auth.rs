@@ -675,7 +675,10 @@ fn auth_applies(path: &str) -> bool {
     path == "/mcp"
         || path.starts_with("/mcp/")
         || (path.starts_with("/api/v1/")
-            && !matches!(path, "/api/v1/auth/signup" | "/api/v1/auth/login"))
+            && !matches!(
+                path,
+                "/api/v1/auth/signup" | "/api/v1/auth/login" | "/api/v1/errors"
+            ))
 }
 
 fn password_change_allowed_path(path: &str) -> bool {

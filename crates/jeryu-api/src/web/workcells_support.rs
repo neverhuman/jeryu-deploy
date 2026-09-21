@@ -57,20 +57,22 @@ pub(super) fn parse_json_body<T: DeserializeOwned>(
 }
 
 pub(super) fn workcell_error(err: WorkcellError) -> AxumResponse {
-    let status = match err.reason {
-        "workcell_tar_path_denied" => StatusCode::UNPROCESSABLE_ENTITY,
-        "workcell_epoch_fenced" => StatusCode::CONFLICT,
-        "workcell_repair_state_denied" => StatusCode::CONFLICT,
-        "workcell_startup_rebase_failed" => StatusCode::CONFLICT,
-        "workcell_branch_budget_denied" => StatusCode::CONFLICT,
-        "workcell_claim_denied" => StatusCode::CONFLICT,
-        "workcell_merge_denied" => StatusCode::FORBIDDEN,
-        "workcell_delete_denied" => StatusCode::FORBIDDEN,
-        _ => StatusCode::BAD_REQUEST,
+    let (status, code) = match err.reason {
+        code @ "workcell_tar_path_denied" => (StatusCode::UNPROCESSABLE_ENTITY, code),
+        code @ ("workcell_epoch_fenced"
+        | "workcell_repair_state_denied"
+        | "workcell_startup_rebase_failed"
+        | "workcell_branch_budget_denied"
+        | "workcell_claim_denied") => (StatusCode::CONFLICT, code),
+        code @ ("workcell_merge_denied" | "workcell_delete_denied") => {
+            (StatusCode::FORBIDDEN, code)
+        }
+        // Any reason the runner adds later still answers a published code.
+        _ => (StatusCode::BAD_REQUEST, "workcell_request_denied"),
     };
     typed_error(TypedError {
         status,
-        code: err.reason,
+        code,
         purpose: err.purpose,
         reason: err.message(),
         common_fixes: err.common_fixes,

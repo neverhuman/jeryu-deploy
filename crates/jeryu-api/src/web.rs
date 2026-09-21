@@ -7,6 +7,8 @@ mod codegraph;
 mod control_plane;
 mod ecosystem;
 mod embedded_web;
+mod error_codes;
+mod error_envelope;
 mod jankurai;
 mod markdown;
 mod merge_queue;
@@ -580,6 +582,7 @@ fn router(state: Arc<WebState>) -> AxumRouter {
         // Steering surface: advertises the faster jeryu/MCP path so external
         // agents stuck on bespoke `gh` commands can discover it.
         .route("/.jeryu/capabilities", get(capabilities))
+        .route("/api/v1/errors", get(error_envelope::catalog))
         .route("/api/v1/bootstrap", get(bootstrap))
         .route("/api/v1/bootstrap.tui", get(bootstrap_tui))
         .route("/api/v1/work", get(work::list).post(work::create))
@@ -875,6 +878,8 @@ fn router(state: Arc<WebState>) -> AxumRouter {
         // headers (and a per-route MCP tool hint for gh/automation UAs).
         .layer(from_fn(steer_headers))
         .layer(from_fn_with_state(state.clone(), auth::gate))
+        // Outside the auth gate so its 401/403 answers take the envelope too.
+        .layer(from_fn(error_envelope::normalize))
         .layer(from_fn(request_id::propagate))
         .with_state(state)
         .merge(mcp_router)
