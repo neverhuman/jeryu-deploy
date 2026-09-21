@@ -20,6 +20,21 @@ use jeryu_core::{CreateCommentRequest, PullRequest, ReviewState};
 mod replay;
 
 pub(crate) use replay::is_queue_owned_ref;
+
+/// Replay `pr_head` onto `base_tip` in the bare repository at `bare`, the way
+/// the queue builds its commits, so a direct merge on a linear-history base
+/// can land as a fast-forward. Returns the replayed tip (or `pr_head` itself
+/// when it already sits on the tip), or why the replay could not be built.
+pub(crate) fn rebase_onto(
+    git_bin: &str,
+    bare: &std::path::Path,
+    base_tip: &str,
+    pr_head: &str,
+) -> Result<String, String> {
+    Git { bin: git_bin, bare }
+        .replay(base_tip, pr_head, None)
+        .map_err(|err| err.to_string())
+}
 use replay::{Git, ReplayFailure, is_sha};
 
 /// Identities whose approvals count as automation, not a person.

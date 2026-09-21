@@ -14,7 +14,7 @@ mod markdown;
 mod merge_queue;
 mod operator_resources;
 mod paging;
-pub(crate) use merge_queue::is_queue_owned_ref;
+pub(crate) use merge_queue::{is_queue_owned_ref, rebase_onto};
 mod mcp_backend;
 mod permissions;
 mod pipeline;

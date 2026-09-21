@@ -482,6 +482,36 @@ impl GithubRouter {
             }
         }
 
+        // A linear-history base only accepts fast-forwards. Replay the PR onto
+        // the live base tip first (as the merge queue does) so a clean PR that
+        // readiness reports as mergeable actually lands; a replay that cannot
+        // be built is refused with its reason instead of a bare non-ff error.
+        let head_oid = if ready.require_linear_history {
+            match crate::web::rebase_onto(
+                &rm.config().git_bin,
+                &resolved.path,
+                &base_oid,
+                &head_oid,
+            ) {
+                Ok(rebased) => rebased,
+                Err(reason) => {
+                    return json_response(
+                        409,
+                        &json!({
+                            "message": format!(
+                                "{} requires linear history and the pull request could not be \
+                                 rebased onto it: {reason}",
+                                ready.base_ref
+                            ),
+                            "documentation_url": docs_url(),
+                        }),
+                    );
+                }
+            }
+        } else {
+            head_oid
+        };
+
         let message = merge_message(ready.number, ready.req);
         let outcome = match refs.merge_pull(
             &resolved,

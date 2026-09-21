@@ -496,15 +496,22 @@ fn blocked_pr_does_not_move_main() {
     fixture.cleanup();
 }
 
-#[test]
-fn linear_history_base_refuses_true_merge_and_main_unchanged() {
-    if !git_available() {
-        return;
-    }
-    // Diverged head + required_linear_history=true => the real merge primitive
-    // refuses the non-fast-forward merge (409) and main must not move.
-    let root = temp_dir("jeryu-merge-linear-root");
-    let work = temp_dir("jeryu-merge-linear-work");
+/// Build a bare `acme/demo` whose main advanced past the seed, plus a
+/// `feature` branch cut from the seed that writes `feature_file`. Returns
+/// (root, work, manager, repo, new_base, head_oid).
+fn diverged_fixture(
+    tag: &str,
+    feature_file: &str,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    Arc<RepoManager>,
+    jeryu_gitd::repo::Repository,
+    String,
+    String,
+) {
+    let root = temp_dir(&format!("jeryu-merge-{tag}-root"));
+    let work = temp_dir(&format!("jeryu-merge-{tag}-work"));
     let manager = Arc::new(RepoManager::new(GitdConfig::new(&root)));
     let id = RepoId::new("acme", "demo").unwrap();
     let repo = manager.create_bare(&id).expect("create bare");
@@ -537,15 +544,15 @@ fn linear_history_base_refuses_true_merge_and_main_unchanged() {
     );
     let new_base = rev_parse_head(&work);
 
-    // Diverged head off the original seed, touching a different file (clean).
+    // Diverged head off the original seed.
     run_git(
         &work,
         &["checkout", "--detach", &seed_oid],
         "checkout detach",
     );
-    std::fs::write(work.join("NOTES.md"), "note\n").expect("write");
-    run_git(&work, &["add", "NOTES.md"], "git add");
-    run_git(&work, &["commit", "-m", "note"], "git commit");
+    std::fs::write(work.join(feature_file), "feature\n").expect("write");
+    run_git(&work, &["add", feature_file], "git add");
+    run_git(&work, &["commit", "-m", "feature"], "git commit");
     run_git(
         &work,
         &[
@@ -556,7 +563,15 @@ fn linear_history_base_refuses_true_merge_and_main_unchanged() {
         "push feature",
     );
     let head_oid = rev_parse_head(&work);
+    (root, work, manager, repo, new_base, head_oid)
+}
 
+/// Open the diverged PR on a linear-history main and press merge.
+fn merge_diverged_on_linear_main(
+    manager: &Arc<RepoManager>,
+    new_base: &str,
+    head_oid: &str,
+) -> (GithubRouter, u64, jeryu_api::Response) {
     let core = ForgeCore::new();
     let router = GithubRouter::with_core(core).with_repo_manager(manager.clone());
     let created = router.post(
@@ -572,32 +587,84 @@ fn linear_history_base_refuses_true_merge_and_main_unchanged() {
     );
     assert_eq!(opened.status, 201, "open pr: {}", opened.body);
     let number = body(&opened)["number"].as_u64().expect("pr number");
-
-    // Protect main with linear history (and no review requirement so only the
-    // FF-only rule blocks the merge).
+    // Linear history and no review requirement, so only the FF rule applies.
     let protect = router.put(
         "/repos/acme/demo/branches/main/protection",
         r#"{"required_linear_history":true}"#,
     );
     assert_eq!(protect.status, 200, "set protection: {}", protect.body);
-
     let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
-    assert_eq!(
-        merged.status, 409,
-        "non-ff merge on linear base must be refused: {}",
-        merged.body
-    );
+    (router, number, merged)
+}
 
-    // Main did NOT move off the new base.
-    let main_now = RefService::new((*manager).clone())
-        .list_refs(&repo)
+fn main_oid(manager: &Arc<RepoManager>, repo: &jeryu_gitd::repo::Repository) -> String {
+    RefService::new((**manager).clone())
+        .list_refs(repo)
         .unwrap()
         .into_iter()
         .find(|r| r.name == "refs/heads/main")
         .map(|r| r.oid)
-        .expect("main ref present");
-    assert_eq!(main_now, new_base, "main must NOT advance");
+        .expect("main ref present")
+}
 
+#[test]
+fn linear_history_base_rebases_diverged_head_and_main_advances() {
+    if !git_available() {
+        return;
+    }
+    // Diverged head + required_linear_history=true => the PR is replayed onto
+    // main and lands as a fast-forward: main moves to a new linear commit.
+    let (root, work, manager, repo, new_base, head_oid) = diverged_fixture("linear", "NOTES.md");
+    let (router, number, merged) = merge_diverged_on_linear_main(&manager, &new_base, &head_oid);
+    assert_eq!(merged.status, 200, "rebased merge: {}", merged.body);
+
+    let main_now = main_oid(&manager, &repo);
+    assert_ne!(main_now, new_base, "main must advance");
+    assert_ne!(
+        main_now, head_oid,
+        "main holds the rebased commit, not the head"
+    );
+    let parents = Command::new("git")
+        .arg("-C")
+        .arg(&repo.path)
+        .args(["rev-list", "--parents", "-n", "1", &main_now])
+        .output()
+        .expect("rev-list");
+    let parents = String::from_utf8_lossy(&parents.stdout).trim().to_string();
+    assert_eq!(
+        parents,
+        format!("{main_now} {new_base}"),
+        "linear: one parent, the old main"
+    );
+    assert_eq!(body(&merged)["sha"], main_now.as_str());
+
+    let after = router.get(&format!("/repos/acme/demo/pulls/{number}"));
+    assert_eq!(body(&after)["merged"], true);
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[test]
+fn linear_history_base_refuses_conflicting_head_with_reason_and_main_unchanged() {
+    if !git_available() {
+        return;
+    }
+    // The feature rewrites README.md, which main also changed: the replay
+    // conflicts, so the merge is refused (409) naming the path, main stays.
+    let (root, work, manager, repo, new_base, head_oid) =
+        diverged_fixture("linear-conflict", "README.md");
+    let (router, number, merged) = merge_diverged_on_linear_main(&manager, &new_base, &head_oid);
+    assert_eq!(merged.status, 409, "conflicting replay: {}", merged.body);
+    let message = body(&merged)["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        message.contains("linear history") && message.contains("README.md"),
+        "refusal names the reason: {message}"
+    );
+    assert_eq!(main_oid(&manager, &repo), new_base, "main must NOT advance");
     let after = router.get(&format!("/repos/acme/demo/pulls/{number}"));
     assert_eq!(body(&after)["merged"], false);
 
