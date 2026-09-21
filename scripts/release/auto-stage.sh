@@ -30,6 +30,8 @@
 # JERYU_EVENT_REPORTERS login; default ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat);
 # JERYU_AUTO_STAGE_MAX_FAILURES (2); JERYU_AUTO_STAGE_EVENTS=0 turns the events off;
 # JERYU_AUTO_STAGE_BEAT=0 turns the heartbeat off.
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
 build_host="${JERYU_BUILD_HOST:-xbabe2}"

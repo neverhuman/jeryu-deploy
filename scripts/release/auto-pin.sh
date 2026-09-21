@@ -37,6 +37,8 @@
 # JERYU_PIN_GIT_NAME / JERYU_PIN_GIT_EMAIL (alton2 / alton@veox.ai);
 # JERYU_AUTO_PIN_MAX_FAILURES (2); JERYU_AUTO_PIN_EVENTS=0 turns the events off;
 # JERYU_AUTO_PIN_BEAT=0 turns the heartbeat off.
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
 web_remote="${JERYU_WEB_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-web.git}"

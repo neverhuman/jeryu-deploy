@@ -19,6 +19,8 @@
 # ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat). It is read into a
 # 0600 curl config, never put on argv. Env: JERYU_BUILD_HOST (xbabe2),
 # JERYU_FORGE_HOST (atomicsoul), JERYU_FORGE_URL (https://git.neverhuman.org).
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 rel="${1:?usage: deploy-release.sh RELEASE_ID}"
 [[ "$rel" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+-unsigned$ ]] || { echo "not a release id: $rel" >&2; exit 1; }

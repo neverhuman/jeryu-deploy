@@ -23,6 +23,8 @@
 # Env: JERYU_WEB_SRC (OUT_ROOT/src/jeryu-web), JERYU_WEB_REMOTE
 # (https://git.neverhuman.org/git/jeryu/jeryu-web.git), JERYU_WEB_NODE_IMAGE
 # (node 20.20.1 by digest), JERYU_SPLIT_LOCK (the lock next to this script).
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 lock="${JERYU_SPLIT_LOCK:-$here/../../jeryu-split.lock.toml}"

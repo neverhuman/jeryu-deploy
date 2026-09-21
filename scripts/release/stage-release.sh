@@ -28,6 +28,8 @@
 # scripts/release/builder.Dockerfile on the build host when missing), JERYU_MAX_GLIBC (2.35),
 # JERYU_DEPLOY_REMOTE (https://git.neverhuman.org/git/jeryu/jeryu-deploy.git).
 # jeryu-web is cloned on the build host from build-web-dist.sh's default remote.
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 build_host="${JERYU_BUILD_HOST:-xbabe2}"
 forge_host="${JERYU_FORGE_HOST:-atomicsoul}"

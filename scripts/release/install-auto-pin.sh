@@ -3,6 +3,8 @@
 # Copies auto-pin.sh to ~/.local/share/jeryu-auto-pin/ (the build recipe itself is always taken
 # from jeryu-deploy main) and enables jeryu-auto-pin.timer. To turn it off again:
 #   systemctl --user disable --now jeryu-auto-pin.timer
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 dest="$HOME/.local/share/jeryu-auto-pin"

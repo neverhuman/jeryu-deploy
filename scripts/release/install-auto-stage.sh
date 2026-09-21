@@ -2,6 +2,8 @@
 # install-auto-stage.sh — install the auto-stage timer for the current user on the release host.
 # Copies auto-stage.sh to ~/.local/share/jeryu-auto-stage/ (the staging recipe itself is always
 # taken from the commit being staged) and enables jeryu-auto-stage.timer.
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 dest="$HOME/.local/share/jeryu-auto-stage"

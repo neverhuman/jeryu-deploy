@@ -4,6 +4,8 @@
 # (so /proc/<pid>/exe resolves to the installed release), a stand-in systemctl
 # that runs it, and a file:// health URL. Then auto-stage.sh against a local bare
 # repo with stand-in ssh and curl, and auto-pin.sh against two. No service, network or credential.
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 T="$(mktemp -d)"
@@ -333,5 +335,21 @@ grep -qx "commit = \"$h3\"" <<<"$lock_now" && grep -qx "web_dist_sha256 = \"$dis
 git -C "$P/deploy.git" log -1 --format=%B "$b3" | grep -q "byte-identical" || fail "the same-bundle bump does not say the bundle is unchanged"
 jq -es '.[0] | .kind == "pin.bump_opened"' "$P/events.jsonl" >/dev/null || fail "the same-bundle bump posted no event"
 ok "auto-pin pins a head whose bundle is unchanged by moving the commit only"
+
+# -h and --help on every release script print its header and exit 0 without running anything:
+# the network, git, docker, service and file tools on PATH are tripwires.
+mkdir -p "$T/tripwire"
+for c in ssh scp curl git mkdir install docker systemctl; do
+  printf '#!/bin/sh\necho "tripwire: %s ran" >&2; exit 97\n' "$c" >"$T/tripwire/$c"; chmod +x "$T/tripwire/$c"
+done
+for s in "$here"/*.sh; do
+  n="$(basename "$s")"
+  for flag in -h --help; do
+    out="$(PATH="$T/tripwire:$PATH" bash "$s" "$flag" 2>&1)" || fail "$n $flag exited non-zero: $out"
+    [[ "$(head -1 <<<"$out")" == "$n"* ]] || fail "$n $flag did not print its header: $out"
+    [[ "$out" != *tripwire* ]] || fail "$n $flag ran a command: $out"
+  done
+done
+ok "every release script answers -h and --help with its header and runs nothing"
 
 echo "release scripts: $pass passed"
