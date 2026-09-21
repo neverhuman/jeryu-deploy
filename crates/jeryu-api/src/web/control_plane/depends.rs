@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use jeryu_core::Repository;
 
 use crate::web::WebState;
-use crate::web::pipeline::pins::manifest_pins;
+use crate::web::pipeline::pins::{manifest_pins, resolve_pin};
 use crate::web::shift::run_git as git;
 
 /// The manifest reads are bounded by this, not by the request rate.
@@ -48,6 +48,13 @@ pub(crate) struct DependsEdge {
     /// Whether [`Self::pinned_ref`] is that newest tag. `None` when the pin is
     /// a `rev`, or the dependency publishes no tag of that shape.
     pub pin_is_newest: Option<bool>,
+    /// The pin compared against the dependency's default branch, by the same
+    /// resolver `GET /api/v1/pins` uses: `current`, `behind`,
+    /// `behind_not_green`, `diverged` or `unknown`.
+    pub pin_state: &'static str,
+    /// Commits on the dependency's default branch the pin does not reach;
+    /// `None` when the pin could not be compared.
+    pub behind: Option<u64>,
 }
 
 fn text_of(bytes: Vec<u8>) -> String {
@@ -169,6 +176,7 @@ fn repo_edges(state: &WebState, repos: &[Repository], consumer: &Repository) -> 
                 "tag" => newest_of(state, dependency, &pin.pinned_ref),
                 _ => (None, None),
             };
+            let resolved = resolve_pin(state, consumer, dependency, &manifest, &pin);
             edges.push(DependsEdge {
                 consumer: consumer.full_name.clone(),
                 dependency: dependency.full_name.clone(),
@@ -177,6 +185,8 @@ fn repo_edges(state: &WebState, repos: &[Repository], consumer: &Repository) -> 
                 pinned_ref: pin.pinned_ref.clone(),
                 newest_ref,
                 pin_is_newest,
+                pin_state: resolved.state,
+                behind: (resolved.state != "unknown").then_some(resolved.behind),
             });
         }
     }
@@ -246,6 +256,7 @@ pub(crate) fn edge_metadata(edge: &DependsEdge) -> BTreeMap<String, String> {
     let mut metadata = BTreeMap::from([
         ("pinKind".to_string(), edge.kind.to_string()),
         ("pinnedRef".to_string(), edge.pinned_ref.clone()),
+        ("pinState".to_string(), edge.pin_state.to_string()),
         ("source".to_string(), edge.source.clone()),
     ]);
     if let Some(newest) = &edge.newest_ref {
@@ -253,6 +264,9 @@ pub(crate) fn edge_metadata(edge: &DependsEdge) -> BTreeMap<String, String> {
     }
     if let Some(is_newest) = edge.pin_is_newest {
         metadata.insert("pinIsNewest".to_string(), is_newest.to_string());
+    }
+    if let Some(behind) = edge.behind {
+        metadata.insert("behind".to_string(), behind.to_string());
     }
     metadata
 }

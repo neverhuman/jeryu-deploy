@@ -299,7 +299,10 @@ fn latest_green(state: &WebState, dependency: &Repository, sha: &str) -> Option<
     (combined.total_count > 0).then_some(combined.state == CommitStatusState::Success)
 }
 
-fn resolve_pin(
+/// One pin compared against its dependency's default branch. The repo graph's
+/// `depends_on` edges resolve through this too, so Dependencies and Releases
+/// never disagree about a pin.
+pub(crate) fn resolve_pin(
     state: &WebState,
     consumer: &Repository,
     dependency: &Repository,

@@ -200,6 +200,8 @@ async fn depends_on_edges_are_opt_in_and_carry_the_pin_and_its_staleness() {
             "pinnedRef": "jeryu-core-v5.0.0-split.6",
             "newestRef": "jeryu-core-v5.0.0-split.7",
             "pinIsNewest": "false",
+            "pinState": "behind",
+            "behind": "1",
             "source": "crates/jeryu-api/Cargo.toml",
         }),
         "the newer unrelated tag line is not the newest of this series"
@@ -213,6 +215,14 @@ async fn depends_on_edges_are_opt_in_and_carry_the_pin_and_its_staleness() {
     );
     assert_eq!(web_edge["metadata"]["pinnedRef"], web_head.as_str());
     assert_eq!(web_edge["metadata"]["pinIsNewest"], Value::Null);
+    assert_eq!(
+        (
+            &web_edge["metadata"]["pinState"],
+            &web_edge["metadata"]["behind"]
+        ),
+        (&"current".into(), &"0".into()),
+        "a rev pin is still compared, by the resolver /api/v1/pins uses"
+    );
 
     // Containment edges keep the shape they always had.
     let has_pr_or_check = graph["edges"]
