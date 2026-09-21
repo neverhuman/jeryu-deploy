@@ -12,6 +12,7 @@ mod error_envelope;
 mod jankurai;
 mod markdown;
 mod merge_queue;
+mod operator_resources;
 mod paging;
 pub(crate) use merge_queue::is_queue_owned_ref;
 mod mcp_backend;
@@ -661,6 +662,10 @@ fn router(state: Arc<WebState>) -> AxumRouter {
             post(workcells::export_pr),
         )
         .route("/api/v1/repos", get(repos))
+        .route("/api/v1/releases", get(operator_resources::releases))
+        .route("/api/v1/mirrors", get(operator_resources::mirrors))
+        .route("/api/v1/settings", get(operator_resources::settings))
+        .route("/api/v1/audit", get(operator_resources::audit))
         .route(
             "/api/v1/repos/:id",
             get(repo_detail)
@@ -1119,3 +1124,6 @@ mod merge_queue_tests;
 
 #[cfg(test)]
 mod paging_tests;
+
+#[cfg(test)]
+mod operator_resources_tests;

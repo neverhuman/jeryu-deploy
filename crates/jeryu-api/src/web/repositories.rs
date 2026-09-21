@@ -523,7 +523,7 @@ mod source;
 
 pub(super) use compare::repo_compare;
 pub(super) use deployed::deployed_repositories;
-pub(super) use release_tag::repo_release_tag;
+pub(super) use release_tag::{TagLookupMiss, nearest_release_tag, repo_release_tag};
 pub(super) use source::{
     repo_blob, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree,
 };
@@ -894,7 +894,7 @@ pub(crate) fn mirror_failures(
 /// Offsite mirror posture derived from `jeryu/github-mirror` bookkeeping
 /// runs over the FULL check-run history (not sha-scoped — the newest mirror
 /// attempt is meaningful regardless of which commit it pushed).
-fn mirror_status(checks: &[CheckRun]) -> Option<RepositoryMirrorStatus> {
+pub(super) fn mirror_status(checks: &[CheckRun]) -> Option<RepositoryMirrorStatus> {
     let newer = |a: &CheckRun, b: &CheckRun| {
         (a.started_at, a.completed_at) >= (b.started_at, b.completed_at)
     };

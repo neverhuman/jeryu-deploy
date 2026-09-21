@@ -45,12 +45,57 @@ pub(in crate::web) async fn repo_release_tag(
             "branch must be a branch name or commit sha",
         );
     }
+    let released = match nearest_release_tag(&state, &repo, &branch) {
+        Ok(released) => released,
+        Err(TagLookupMiss::NoGitData) => {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "repository has no git data",
+            );
+        }
+        Err(TagLookupMiss::NoBranch) => {
+            return api_error(StatusCode::NOT_FOUND, "not_found", "branch not found");
+        }
+    };
+    let (tag, sha, tagged_at) = match released {
+        Some(released) => (Some(released.tag), released.sha, released.tagged_at),
+        None => (None, None, None),
+    };
+    Json(ReleaseTagResponse {
+        branch,
+        tag,
+        sha,
+        tagged_at,
+    })
+    .into_response()
+}
+
+/// The newest tag reachable from a branch, as `describe --tags` sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::web) struct ReleasedTag {
+    pub(in crate::web) tag: String,
+    pub(in crate::web) sha: Option<String>,
+    pub(in crate::web) tagged_at: Option<String>,
+}
+
+/// Why no tag lookup could run at all (as opposed to "no tag reachable").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::web) enum TagLookupMiss {
+    NoGitData,
+    NoBranch,
+}
+
+/// Resolve the newest tag reachable from `branch`. `Ok(None)` means the
+/// branch exists but carries no tag: nothing has been released from it.
+/// `branch` must already have passed `is_revision`.
+pub(in crate::web) fn nearest_release_tag(
+    state: &WebState,
+    repo: &Repository,
+    branch: &str,
+) -> Result<Option<ReleasedTag>, TagLookupMiss> {
     let Ok(resolved) = state.repo_manager.resolve_parts(&repo.owner, &repo.name) else {
-        return api_error(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "repository has no git data",
-        );
+        return Err(TagLookupMiss::NoGitData);
     };
     let git = |args: &[&str]| -> Option<String> {
         let out = Command::new(&state.repo_manager.config().git_bin)
@@ -73,7 +118,7 @@ pub(in crate::web) async fn repo_release_tag(
     ])
     .is_none()
     {
-        return api_error(StatusCode::NOT_FOUND, "not_found", "branch not found");
+        return Err(TagLookupMiss::NoBranch);
     }
     // `describe` fails when no tag is reachable: that is "never released".
     let tag = git(&[
@@ -93,13 +138,11 @@ pub(in crate::web) async fn repo_release_tag(
         }
         None => (None, None),
     };
-    Json(ReleaseTagResponse {
-        branch,
+    Ok(tag.map(|tag| ReleasedTag {
         tag,
         sha,
         tagged_at,
-    })
-    .into_response()
+    }))
 }
 
 #[cfg(test)]

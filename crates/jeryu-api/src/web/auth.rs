@@ -720,6 +720,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || (pipeline_events_path(path) && !unsafe_method(method))
         || attention_path(path)
         || pins_path(path)
+        || audit_path(path)
 }
 
 /// Reading the pipeline event log is admin-only: events carry todo titles,
@@ -750,6 +751,12 @@ fn admin_only_path(path: &str) -> bool {
         || path.starts_with("/api/v1/fleet/")
         || path.starts_with("/api/v1/codegraph/tool-build/")
         || path.starts_with("/api/v1/tool-finder/")
+}
+
+/// The forge audit trail names privileged mutations across every repository,
+/// private ones included, so like the event log it is for global admins only.
+fn audit_path(path: &str) -> bool {
+    path == "/api/v1/audit" || path == "/api/v1/audit/"
 }
 
 fn auth_rate_limit_exceeded(
