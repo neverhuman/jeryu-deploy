@@ -494,6 +494,25 @@ async fn events_routes_enforce_reporter_and_admin_access() {
         assert_eq!(body_json(missing).await["code"], "api_route_not_found");
     }
 
+    // A git URL outside `/git/` is a plain 404 naming the working URL, not
+    // the web app's HTML shell that git reports as "not a git repository".
+    for uri in [
+        "/alton/jeryu.git/info/refs?service=git-upload-pack",
+        "/alton/jeryu/info/refs?service=git-receive-pack",
+        "/alton/jeryu.git/git-upload-pack",
+        "/alton/jeryu.git/git-receive-pack",
+    ] {
+        let missing = call(HttpMethod::GET, uri, &admin, None).await.unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{uri}");
+        let content_type = missing.headers()[header::CONTENT_TYPE].to_str().unwrap();
+        assert!(content_type.starts_with("text/plain"), "{uri}");
+        let body = axum::body::to_bytes(missing.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("/git/alton/jeryu"), "{uri}: {body}");
+    }
+
     // Every refusal is a typed JSON error an agent can act on, never HTML.
     let bad_query = call(
         HttpMethod::GET,

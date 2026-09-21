@@ -77,6 +77,9 @@ pub(super) async fn spa_fallback(
     if is_unrouted_api_path(uri.path()) {
         return unknown_api_route(uri.path());
     }
+    if let Some(git_path) = misplaced_git_path(uri.path()) {
+        return misplaced_git_route(&git_path);
+    }
     spa_response(&state.spa_dir, uri.path()).await
 }
 
@@ -87,6 +90,35 @@ fn is_unrouted_api_path(path: &str) -> bool {
     // Case-blind: `/API/V1/nope` fell through to a 200 HTML page as well.
     let path = path.to_ascii_lowercase();
     path == "/api" || path.starts_with("/api/")
+}
+
+/// Git smart-HTTP endpoints live only under `/git/`. A git client that asks
+/// for `/<owner>/<repo>.git/info/refs` (the GitHub URL shape) would otherwise
+/// get the web app's HTML with a 200 and report "not a git repository", the
+/// same message as a typo. Returns the `/git/`-prefixed path to suggest.
+fn misplaced_git_path(path: &str) -> Option<String> {
+    const GIT_SUFFIXES: [&str; 3] = ["/info/refs", "/git-upload-pack", "/git-receive-pack"];
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("/git/") {
+        return None;
+    }
+    GIT_SUFFIXES
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+        .then(|| format!("/git{path}"))
+}
+
+/// A git request outside `/git/` answers a plain-text 404 that names the
+/// working URL, so git prints "not found" instead of "not a git repository".
+fn misplaced_git_route(git_path: &str) -> AxumResponse {
+    let body =
+        format!("not found: git repositories are served under /git/, for example {git_path}\n");
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        body,
+    )
+        .into_response()
 }
 
 /// A missing API route answers a JSON 404. Serving the web app's HTML shell
