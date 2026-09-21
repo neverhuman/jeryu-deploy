@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::web::paging::{PageInfo, PageParams};
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FamiliesResponse {
     pub families: Vec<FamilySummary>,
@@ -42,6 +44,7 @@ pub(crate) struct FamilyRepo {
 pub(crate) struct TodosResponse {
     pub generated_at: String,
     pub todos: Vec<ShiftTodo>,
+    pub page: PageInfo,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -115,6 +118,8 @@ pub(crate) struct TodosQuery {
     pub requested_by: Option<String>,
     pub worked_by: Option<String>,
     pub shift: Option<String>,
+    #[serde(flatten)]
+    pub paging: PageParams,
 }
 
 /// `POST /api/v1/shift/todos`: one todo (`text`) or many (`texts`).

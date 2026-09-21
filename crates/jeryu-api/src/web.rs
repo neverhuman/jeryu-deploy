@@ -12,6 +12,7 @@ mod error_envelope;
 mod jankurai;
 mod markdown;
 mod merge_queue;
+mod paging;
 pub(crate) use merge_queue::is_queue_owned_ref;
 mod mcp_backend;
 mod permissions;
@@ -1115,3 +1116,6 @@ mod deployment_surface_tests;
 
 #[cfg(test)]
 mod merge_queue_tests;
+
+#[cfg(test)]
+mod paging_tests;

@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::markdown::render_markdown;
+use super::paging::{PageInfo, PageParams, PageRejection};
 use super::{WebState, api_error};
 
 #[derive(Debug, Deserialize)]
@@ -66,18 +67,30 @@ pub(super) struct RepoListQuery {
     pub(super) family: Option<String>,
     pub(super) archived: Option<String>,
     pub(super) sort: Option<String>,
+    #[serde(flatten)]
+    pub(super) paging: PageParams,
+}
+
+/// `GET /api/v1/repos`: the filtered listing cut to the requested page. The
+/// top-level `total` counts every matching repository; `page` says what was
+/// applied.
+#[derive(Debug, Serialize)]
+pub(super) struct RepositoryPage {
+    #[serde(flatten)]
+    pub(super) list: RepositoryListResponse,
+    pub(super) page: PageInfo,
 }
 
 pub(super) async fn repos(
     State(state): State<std::sync::Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
     Query(query): Query<RepoListQuery>,
-) -> Json<RepositoryListResponse> {
-    Json(filtered_repo_list_response_for_user(
-        &state,
-        &query,
-        Some(&account),
-    ))
+) -> Result<Json<RepositoryPage>, PageRejection> {
+    let page = query.paging.page()?;
+    let mut list = filtered_repo_list_response_for_user(&state, &query, Some(&account));
+    let (repositories, page) = page.apply(std::mem::take(&mut list.repositories));
+    list.repositories = repositories;
+    Ok(Json(RepositoryPage { list, page }))
 }
 
 pub(super) async fn repo_detail(

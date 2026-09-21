@@ -18,8 +18,8 @@ use super::types::{Event, EventsQuery, NewEvent};
 
 pub(crate) const RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const PRUNE_EVERY_MS: i64 = 60 * 60 * 1000;
-const DEFAULT_LIMIT: i64 = 100;
-const MAX_LIMIT: i64 = 500;
+pub(crate) const DEFAULT_LIMIT: i64 = 100;
+pub(crate) const MAX_LIMIT: i64 = 500;
 
 const COLUMNS: &str = "seq, ts_ms, event_id, source, kind, reporter, actor, family, repo, pr, sha, todo_id,
     shift, outcome, needs_human, summary, reason, cost_usd, seconds, log_tail, log_url, detail_json";

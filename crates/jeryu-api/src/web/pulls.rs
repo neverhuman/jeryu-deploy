@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::paging::{PageInfo, PageParams};
 use super::repositories::{find_repo, repo_id};
 use super::{WebState, server_time};
 
@@ -39,12 +40,19 @@ const PROOF_LANE: &str = "rerun cargo test -p jeryu-api --features web --jobs 40
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct PullListQuery {
     pub state: Option<String>,
+    #[serde(flatten)]
+    pub paging: PageParams,
 }
+
+/// The `state` filter values `GET /api/v1/repos/:id/pulls` understands.
+const PULL_STATES: &[&str] = &["open", "closed", "merged", "all"];
 
 #[derive(Debug, Clone, Serialize)]
 struct PullRequestListResponse {
     items: Vec<PullRequestSummary>,
+    /// Pull requests matching the filter before paging.
     total: usize,
+    page: PageInfo,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -160,6 +168,28 @@ pub(super) async fn list(
     AxumPath(id): AxumPath<String>,
     Query(query): Query<PullListQuery>,
 ) -> AxumResponse {
+    let page = match query.paging.page() {
+        Ok(page) => page,
+        Err(rejection) => return rejection.into_response(),
+    };
+    let filter = query
+        .state
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(filter) = filter
+        && !PULL_STATES.contains(&filter)
+    {
+        return repair_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_query",
+            "load repository pull requests",
+            &format!("state must be one of {PULL_STATES:?}, got {filter:?}"),
+            &["send state=open, closed, merged or all, or omit it"],
+            PROOF_LANE,
+            None,
+        );
+    }
     let Some(repo) = find_repo(&state, &id) else {
         return not_found("load repository pull requests", "repository not found");
     };
@@ -173,13 +203,15 @@ pub(super) async fn list(
     };
     let mut items: Vec<_> = pulls
         .iter()
-        .filter(|pr| state_matches(pr, query.state.as_deref()))
+        .filter(|pr| state_matches(pr, filter))
         .map(|pr| summary(&state, pr))
         .collect();
     items.sort_by_key(|pr| pr.number);
+    let (items, page) = page.apply(items);
     Json(PullRequestListResponse {
-        total: items.len(),
+        total: page.total,
         items,
+        page,
     })
     .into_response()
 }
@@ -583,7 +615,7 @@ fn state_matches(pr: &PullRequest, filter: Option<&str>) -> bool {
         }
         "closed" => matches!(pr.state, jeryu_core::PullRequestState::Closed),
         "merged" => pr.merged || matches!(pr.state, jeryu_core::PullRequestState::Merged),
-        "all" => true,
+        // `list` refuses any other value before filtering.
         _ => true,
     }
 }

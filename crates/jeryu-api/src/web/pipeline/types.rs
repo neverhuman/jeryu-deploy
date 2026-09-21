@@ -121,6 +121,8 @@ pub(crate) struct EventsResponse {
     pub schema_version: &'static str,
     pub events: Vec<Event>,
     pub latest_seq: i64,
+    /// The row limit this page was read with.
+    pub limit: i64,
 }
 
 fn is_lower(c: char) -> bool {

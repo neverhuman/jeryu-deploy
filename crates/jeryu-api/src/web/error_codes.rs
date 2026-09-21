@@ -192,6 +192,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the request body is not valid JSON for this route",
     ),
     entry(
+        "invalid_page_parameter",
+        422,
+        "limit, per_page or page is outside the accepted range",
+    ),
+    entry(
         "invalid_path_parameter",
         400,
         "a path parameter has the wrong shape for this route",

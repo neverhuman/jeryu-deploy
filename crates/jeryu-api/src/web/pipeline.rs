@@ -243,6 +243,18 @@ pub(crate) async fn list_events(
             );
         }
     };
+    let limit = query.limit.unwrap_or(store::DEFAULT_LIMIT);
+    if !(1..=store::MAX_LIMIT).contains(&limit) {
+        return events_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "events_invalid_query",
+            &format!(
+                "limit must be from 1 to {}, got {limit}; it is not clamped",
+                store::MAX_LIMIT
+            ),
+            "send a limit from 1 to 500, or omit it for 100",
+        );
+    }
     if let Some(kind) = query.kind.as_deref().filter(|kind| !kind.is_empty())
         && !types::valid_kind_filter(kind)
     {
@@ -262,6 +274,7 @@ pub(crate) async fn list_events(
             schema_version: EVENTS_SCHEMA,
             events,
             latest_seq,
+            limit,
         })
         .into_response(),
         Err(reason) => events_error(

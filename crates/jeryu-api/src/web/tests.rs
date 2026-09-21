@@ -615,7 +615,10 @@ async fn pulls_routes_return_live_pr_detail_diff_checks_and_threads() {
         super::pulls::list(
             State(state.clone()),
             AxumPath(repo.id.to_string()),
-            Query(super::pulls::PullListQuery { state: None }),
+            Query(super::pulls::PullListQuery {
+                state: None,
+                paging: Default::default(),
+            }),
         )
         .await,
     )
@@ -870,7 +873,10 @@ async fn pulls_mutations_return_typed_repair_errors() {
     let missing_repo = super::pulls::list(
         State(state.clone()),
         AxumPath("repo-missing".to_string()),
-        Query(super::pulls::PullListQuery { state: None }),
+        Query(super::pulls::PullListQuery {
+            state: None,
+            paging: Default::default(),
+        }),
     )
     .await;
     assert_eq!(missing_repo.status(), StatusCode::NOT_FOUND);
@@ -1848,7 +1854,11 @@ async fn control_plane_status_priorities_and_absence_states_are_live() {
     .unwrap();
     let state = Arc::new(WebState::new(core));
 
-    let status = super::control_plane::status(State(state.clone())).await.0;
+    let status = super::control_plane::status(State(state.clone()), Query(Default::default()))
+        .await
+        .unwrap()
+        .0
+        .snapshot;
     assert_eq!(status.schema_version, "jeryu.control_plane/v1");
     assert_eq!(status.summary.repo_count, 1);
     assert_eq!(status.summary.draft_pr_count, 1);
@@ -6776,7 +6786,9 @@ async fn repo_list_filters_apply_server_side() {
         }),
     )
     .await
-    .0;
+    .unwrap()
+    .0
+    .list;
     let names: Vec<&str> = family_only
         .repositories
         .iter()
@@ -6802,7 +6814,9 @@ async fn repo_list_filters_apply_server_side() {
         }),
     )
     .await
-    .0;
+    .unwrap()
+    .0
+    .list;
     assert_eq!(searched.total, 1);
     assert_eq!(searched.repositories[0].id.name, "veox-nht");
 
@@ -6815,7 +6829,9 @@ async fn repo_list_filters_apply_server_side() {
         }),
     )
     .await
-    .0;
+    .unwrap()
+    .0
+    .list;
     let sorted_names: Vec<&str> = sorted
         .repositories
         .iter()
@@ -6836,7 +6852,9 @@ async fn repo_list_filters_apply_server_side() {
         }),
     )
     .await
-    .0;
+    .unwrap()
+    .0
+    .list;
     assert_eq!(archived.total, 0, "no archived repos exist in this fixture");
 }
 
@@ -6884,7 +6902,9 @@ async fn repo_list_reports_pushed_at_and_sorts_activity_by_it() {
         Query(super::repositories::RepoListQuery::default()),
     )
     .await
-    .0;
+    .unwrap()
+    .0
+    .list;
     let by_name = |name: &str| {
         listed
             .repositories

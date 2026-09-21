@@ -614,6 +614,41 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
     .unwrap();
     assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
+    // The listing is paged: the applied limit comes back, and a limit out of
+    // range is refused rather than clamped.
+    let get = |uri: String| {
+        let call = &call;
+        let user = &user;
+        async move {
+            let response = call(HttpMethod::GET, &uri, user, None).await.unwrap();
+            (response.status(), body_json(response).await)
+        }
+    };
+    let (_, all) = get("/api/v1/shift/todos".to_string()).await;
+    assert_eq!(all["page"]["limit"], 100);
+    assert_eq!(all["page"]["has_more"], false);
+    let total = all["todos"].as_array().unwrap().len();
+    assert!(total >= 4, "{all}");
+    let (_, first) = get("/api/v1/shift/todos?limit=2".to_string()).await;
+    assert_eq!(first["todos"].as_array().unwrap().len(), 2);
+    assert_eq!(first["page"]["limit"], 2);
+    assert_eq!(first["page"]["total"], total);
+    assert_eq!(first["page"]["has_more"], true);
+    let (_, second) = get("/api/v1/shift/todos?per_page=2&page=2".to_string()).await;
+    assert_eq!(second["page"]["page"], 2);
+    assert_eq!(second["todos"][0]["id"], all["todos"][2]["id"]);
+    for query in [
+        "limit=0",
+        "limit=501",
+        "per_page=abc",
+        "page=0",
+        "limit=2&per_page=3",
+    ] {
+        let (status, body) = get(format!("/api/v1/shift/todos?{query}")).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}");
+        assert_eq!(body["code"], "invalid_page_parameter", "{query}");
+    }
+
     let acted = body_json(
         call(
             HttpMethod::POST,

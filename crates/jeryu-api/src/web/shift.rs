@@ -238,6 +238,10 @@ pub(crate) async fn list_todos(
     State(state): State<Arc<WebState>>,
     Query(query): Query<TodosQuery>,
 ) -> AxumResponse {
+    let page = match query.paging.page() {
+        Ok(page) => page,
+        Err(rejection) => return rejection.into_response(),
+    };
     // A family nobody hosts is a mistake in the request, not an empty queue.
     if let Some(family) = query.family.as_deref().filter(|f| !f.is_empty())
         && let Err(resp) = find_queue(&state, family)
@@ -272,9 +276,11 @@ pub(crate) async fn list_todos(
         todos.extend(family_todos);
     }
     todos.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
+    let (todos, page) = page.apply(todos);
     Json(TodosResponse {
         generated_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         todos,
+        page,
     })
     .into_response()
 }

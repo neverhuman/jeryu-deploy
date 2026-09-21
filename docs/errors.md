@@ -80,6 +80,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_compare` | 422 | the compare range is not valid |
 | `invalid_input` | 422 | the request failed boundary validation |
 | `invalid_json_body` | 400 | the request body is not valid JSON for this route |
+| `invalid_page_parameter` | 422 | limit, per_page or page is outside the accepted range |
 | `invalid_path_parameter` | 400 | a path parameter has the wrong shape for this route |
 | `invalid_query` | 400 | the query string does not match this route |
 | `invalid_ref` | 422 | the git ref is not valid |
@@ -264,3 +265,14 @@ return `not_found`; malformed bodies return `invalid_input`; unresolved refs
 return `invalid_ref`; checkout or index failures return codegraph-specific
 repair messages. Use `docs/codegraph-oracle.md` for the route contract and
 `docs/testing.md#codegraph-oracle` for rerun commands.
+
+## Invalid Page Parameter
+
+`GET /api/v1/repos`, `/api/v1/repos/:id/pulls`, `/api/v1/shift/todos` and
+`/api/v1/control-plane/status` page their collections. `limit` (alias
+`per_page`) must be 1 to 500 and defaults to 100; `page` is 1-based. Each
+response carries a `page` object with the applied `limit`, `page`, the
+pre-paging `total` and `has_more`. A value out of range is refused with
+`invalid_page_parameter` (422), never clamped. `GET /api/v1/events` refuses a
+`limit` outside 1 to 500 with `events_invalid_query` and echoes the applied
+`limit`.
