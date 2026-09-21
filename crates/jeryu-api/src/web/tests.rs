@@ -1956,6 +1956,21 @@ fn write_exec_script(label: &str, contents: &str) -> std::path::PathBuf {
     path
 }
 
+/// A host that must prove the workcell path sets `JERYU_REQUIRE_SANDBOX=1`, so a
+/// missing sandbox fails the test instead of reporting a silent green skip.
+fn sandbox_is_required(value: Option<&str>) -> bool {
+    value.is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes"))
+}
+
+#[test]
+fn require_sandbox_env_turns_unavailable_sandbox_into_a_failure() {
+    assert!(!sandbox_is_required(None));
+    assert!(!sandbox_is_required(Some("")));
+    assert!(!sandbox_is_required(Some("0")));
+    assert!(sandbox_is_required(Some("1")));
+    assert!(sandbox_is_required(Some("true")));
+}
+
 fn run_or_skip(
     driver: &AgentDriver,
     workspace: &std::path::Path,
@@ -1965,7 +1980,12 @@ fn run_or_skip(
     match driver.run(workspace, spec, sink) {
         Ok(result) => Some(result),
         Err(jeryu_agentbridge::driver::DriverError::SandboxUnavailable(reason)) => {
-            eprintln!("SKIP: sandbox unavailable (cannot fail closed): {reason}");
+            if sandbox_is_required(std::env::var("JERYU_REQUIRE_SANDBOX").ok().as_deref()) {
+                panic!("JERYU_REQUIRE_SANDBOX=1 but the sandbox is unavailable: {reason}");
+            }
+            eprintln!(
+                "SKIP: sandbox unavailable (set JERYU_REQUIRE_SANDBOX=1 to fail closed): {reason}"
+            );
             None
         }
         Err(other) => panic!("driver run failed unexpectedly: {other}"),

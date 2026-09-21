@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 source "${ROOT}/ops/ci/hosted-git-env.sh"
+source "${ROOT}/ops/ci/host-ci-skips.sh"
 
 overlay="${ROOT}/.cargo/hosted-gitconfig"
 pin_policy="${ROOT}/.cargo/hosted-pin-refs.tsv"
@@ -213,7 +214,7 @@ done
 cargo deny check sources
 # Same package selection as pr-ci.sh's workspace test run, so this reuses its
 # build instead of recompiling jeryu-api for `-p`'s narrower feature resolution.
-cargo test --locked --workspace --exclude jeryu-sandbox-linux --features jeryu-api/web \
+cargo test --locked --workspace "${HOST_CI_EXCLUDE_PACKAGES[@]}" --features jeryu-api/web \
   --test hosted_dependency_transport -- \
   --test-threads=1
 if [[ "$(sha256sum "${active_global}" | awk '{print $1}')" != "${active_global_sha256}" ]]; then

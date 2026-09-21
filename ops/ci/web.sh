@@ -9,6 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 source "${ROOT}/ops/ci/common.sh"
+source "${ROOT}/ops/ci/host-ci-skips.sh"
 
 if [ -e package.json ] || [ -e apps/web/package.json ]; then
   echo "web gate: unexpected npm source manifest in Deploy; jeryu-web owns buildable source" >&2
@@ -27,7 +28,7 @@ echo "web gate: jeryu-web pin in jeryu-split.lock.toml is well formed"
 # it recompiled jeryu-api twice here to run tests that were already built. With
 # the same selection both runs reuse those binaries; jeryu-api/web is named
 # explicitly so the lane still proves the web build when run on its own.
-web_test=(cargo test --locked --workspace --exclude jeryu-sandbox-linux --features jeryu-api/web
+web_test=(cargo test --locked --workspace "${HOST_CI_EXCLUDE_PACKAGES[@]}" --features jeryu-api/web
   --jobs "${JERYU_CI_JOBS}")
 "${web_test[@]}" --test web_dist_pin
 echo "web gate: a tampered, stale or missing web dist fails the build"

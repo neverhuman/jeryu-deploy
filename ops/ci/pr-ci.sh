@@ -86,7 +86,7 @@ cargo clippy --locked --workspace --all-targets --jobs "$JOBS" -- -D warnings
 # environment and fail under host-ci's systemd-managed poll cgroup
 # (cgroup_create EEXIST / clone EOPNOTSUPP). They run on the dedicated GitHub-mirror
 # runners (full caps). Exclude exactly those here; the remaining workspace tests run.
-echo "[pr-ci] cargo test (excl. jeryu-sandbox-linux + agentbridge sandbox-runtime tests)" >&2
+echo "[pr-ci] cargo test (excl. the host-ci-skips.sh list)" >&2
 # --test-threads uses the separately governed process cap: libtest defaults to
 # ncpu, and an oversubscribed host starves the live agent-stream tests'
 # 30s polling deadlines (await_tty) into false failures. The web::sessions
@@ -100,26 +100,12 @@ echo "[pr-ci] cargo test (excl. jeryu-sandbox-linux + agentbridge sandbox-runtim
 # host's governed jankurai for ~10 s per push. Those tests assert refs and merge
 # gating, never the advisory jankurai/proof verdict; the lib tests already skip it
 # under cfg(test) and prove the audit path with a scripted auditor.
+# The exclude/skip lists live in ops/ci/host-ci-skips.sh, one place with reasons.
+source ops/ci/host-ci-skips.sh
+mapfile -t host_ci_skip_args < <(host_ci_skip_args)
 JERYU_JANKURAI_BIN=/nonexistent/jankurai \
-  cargo test --locked --workspace --exclude jeryu-sandbox-linux --jobs "$JOBS" --no-fail-fast -- \
-  --test-threads "$TEST_THREADS" \
-  --skip same_write_path_succeeds_inside_and_is_blocked_outside \
-  --skip unsandboxed_control_can_write_outside_proving_landlock_is_the_blocker \
-  --skip budget_kill_is_live_and_truncates \
-  --skip watchdog_kill_is_live \
-  --skip require_cgroup_driver_fails_closed_without_delegated_subtree \
-  --skip opt_out_driver_runs_on_this_no_delegation_host \
-  --skip editbot_writes_inside_the_cell \
-  --skip editbot_writing_outside_the_cell_is_denied_by_landlock \
-  --skip watchdog_kills_a_runaway_editbot \
-  --skip output_budget_exceeded_kills_the_child \
-  --skip streams_terminal_output_to_the_sink \
-  --skip control_input_reaches_the_agent_stdin \
-  --skip terminate_stops_a_runaway_agent \
-  --skip create_session_spawns_agent_and_streams_its_tty_output \
-  --skip create_session_agent_runs_in_workspace_with_branch_env \
-  --skip create_session_docker_runtime_streams_live_and_carries_hardened_flags \
-  --skip create_session_native_runtime_uses_native_path
+  cargo test --locked --workspace "${HOST_CI_EXCLUDE_PACKAGES[@]}" --jobs "$JOBS" --no-fail-fast -- \
+  --test-threads "$TEST_THREADS" "${host_ci_skip_args[@]}"
 
 echo "[pr-ci] immutable web-bundle integration" >&2
 bash "${repo_root}/ops/ci/web.sh"
