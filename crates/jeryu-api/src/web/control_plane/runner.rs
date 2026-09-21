@@ -20,7 +20,13 @@ pub(crate) fn runner_fabric(state: &WebState) -> RunnerFabricResponse {
 pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFabricResponse {
     let workcells = manager(state).workcells();
     let agent_runs = state.agent_runs.list();
-    let seed = gate_runner_nodes(&state.gate_runners.snapshot(), now);
+    let mut seed = gate_runner_nodes(&state.gate_runners.snapshot(), now);
+    for node in seed
+        .iter_mut()
+        .filter(|node| node.source == REVIEWER_SOURCE)
+    {
+        with_merge_outcome(state, node);
+    }
     let node_details = build_runner_nodes(seed, &workcells, &agent_runs);
     let last_updated = node_details
         .iter()
@@ -193,11 +199,37 @@ pub(crate) fn gate_runner_nodes(
                     conclusion: last.conclusion.clone(),
                     seconds: last.seconds,
                     finished_at: last.finished_at.to_rfc3339(),
+                    merge_attempt: None,
                 }),
                 offline_after_seconds: Some(offline_after_secs(beat)),
+                merge_grant_gaps: Vec::new(),
             }
         })
         .collect()
+}
+
+/// A reviewer's approval is only half the story: attach the forge's answer to
+/// the last merge attempt on the PR it last reviewed, and flag every repository
+/// it is looking at where the merge identity has no grant, so `/runners` says
+/// "approved - merge blocked" instead of a plain "approved".
+fn with_merge_outcome(state: &WebState, node: &mut RunnerNodeSummary) {
+    let mut repos: Vec<String> = node
+        .active_tasks
+        .iter()
+        .filter_map(|task| task.repo.clone())
+        .collect();
+    if let Some(last) = node.last_activity.as_mut() {
+        repos.push(last.repo.clone());
+        last.merge_attempt = last
+            .pr
+            .and_then(|pr| state.merge_attempts.last(&last.repo, pr));
+    }
+    repos.sort();
+    repos.dedup();
+    node.merge_grant_gaps = repos
+        .iter()
+        .filter_map(|repo| crate::web::merge_attempts::grant_gap(state, repo))
+        .collect();
 }
 
 fn build_runner_nodes(
@@ -229,6 +261,7 @@ fn build_runner_nodes(
                 active_tasks: Vec::new(),
                 last_activity: None,
                 offline_after_seconds: None,
+                merge_grant_gaps: Vec::new(),
             });
     }
 
@@ -264,6 +297,7 @@ fn build_runner_nodes(
                 active_tasks: Vec::new(),
                 last_activity: None,
                 offline_after_seconds: None,
+                merge_grant_gaps: Vec::new(),
             });
         node.active_tasks.push(task);
     }

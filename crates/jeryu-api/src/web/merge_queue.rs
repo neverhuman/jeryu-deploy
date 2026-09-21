@@ -245,7 +245,7 @@ fn emit_queue(
     );
 }
 
-fn approvers(state: &WebState, pr: &PullRequest) -> Vec<Approver> {
+pub(super) fn approvers(state: &WebState, pr: &PullRequest) -> Vec<Approver> {
     let automation = automation_identities();
     let reviews = state
         .core

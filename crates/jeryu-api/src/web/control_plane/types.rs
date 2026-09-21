@@ -246,6 +246,11 @@ pub(crate) struct RunnerNodeSummary {
     /// (`max(180, 3 * intervalSeconds)`); absent for workcell nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offline_after_seconds: Option<i64>,
+    /// Reviewer only: repositories of the PRs it is reviewing or last reviewed
+    /// where the merge identity has no write grant, so an approval there
+    /// cannot land.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merge_grant_gaps: Vec<crate::web::merge_attempts::MergeGrantGap>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -260,6 +265,10 @@ pub(crate) struct RunnerLastActivity {
     pub conclusion: String,
     pub seconds: u64,
     pub finished_at: String,
+    /// Reviewer only: the forge's answer to the last attempt to merge this PR,
+    /// so an approval the merger could not land says why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_attempt: Option<crate::web::merge_attempts::MergeAttempt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

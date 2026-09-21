@@ -11,6 +11,7 @@ mod error_codes;
 mod error_envelope;
 mod jankurai;
 mod markdown;
+mod merge_attempts;
 mod merge_queue;
 mod operator_resources;
 mod paging;
@@ -127,6 +128,8 @@ pub(crate) struct WebState {
     pub(crate) gate_runners: control_plane::GateRunnerStore,
     /// Merge queue index; the queue itself lives in `refs/queue*` of each repo.
     pub(crate) merge_queue: Arc<merge_queue::MergeQueue>,
+    /// The last merge attempt per PR and its forge answer (`merge_attempts`).
+    pub(crate) merge_attempts: merge_attempts::MergeAttemptStore,
     /// todoq shift heartbeats (`<data_dir>/shift.sqlite`) and PR author.
     pub(crate) shift: shift::ShiftState,
     /// Pipeline event log (`<data_dir>/shift.sqlite`, table `pipeline_events`).
@@ -273,6 +276,7 @@ impl WebState {
             agent_runs: agent_runs::AgentRunStore::new(),
             gate_runners: control_plane::GateRunnerStore::from_env(),
             merge_queue: Arc::default(),
+            merge_attempts: merge_attempts::MergeAttemptStore::default(),
             shift,
             events,
             disputes,
@@ -674,6 +678,8 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
         // headers (and a per-route MCP tool hint for gh/automation UAs).
         .layer(from_fn(steer_headers))
         .layer(from_fn_with_state(state.clone(), auth::gate))
+        // Outside the auth gate so a merge refused there is recorded too.
+        .layer(from_fn_with_state(state.clone(), merge_attempts::observe))
         // Preflight and Accept answer before the auth gate, inside the envelope.
         .layer(from_fn(request_rules::apply))
         // Outside the auth gate so its 401/403 answers take the envelope too.
@@ -808,6 +814,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         (
             "/api/v1/repos/:id/pulls/:number/queue",
             post(merge_queue::enqueue).delete(merge_queue::dequeue),
+        ),
+        (
+            "/api/v1/repos/:id/pulls/:number/merge-attempt",
+            get(merge_attempts::show),
         ),
         ("/api/v1/repos/:id/merge-queue", get(merge_queue::list_repo)),
         ("/api/v1/merge-queue", get(merge_queue::list_all)),

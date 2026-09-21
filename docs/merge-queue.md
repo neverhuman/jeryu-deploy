@@ -84,6 +84,15 @@ A setting per protected branch decides who may enqueue:
 - `DELETE …/queue` dequeues. `GET /api/v1/repos/:id/merge-queue` shows the queue.
 - Merging a PR that already fast-forwards still merges directly. The queue is
   only needed when the base has moved.
+- `GET /api/v1/repos/:id/pulls/:number/merge-attempt` answers the last merge or
+  enqueue attempt on the PR (`result`, HTTP `status`, forge `code` and
+  `message`, `actor`, `at`), a `blockedReason` line when it was refused, who
+  approved the head, and a `grantGap` when the merge identity
+  (`JERYU_MERGE_IDENTITY`, default `jain-merge-bot`) has no write grant on the
+  repository. The forge records every answer, including the auth gate's 403,
+  so a refusal no longer lives only in the merger's journal. `/runners` joins
+  the same record onto the reviewer's last approval (`lastActivity.mergeAttempt`)
+  and lists `mergeGrantGaps` for the repositories it is reviewing.
 
 ## Scope of the first cut
 

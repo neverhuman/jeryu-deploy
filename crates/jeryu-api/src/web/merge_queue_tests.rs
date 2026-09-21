@@ -54,6 +54,16 @@ struct Fixture {
 
 impl Fixture {
     fn new(feature_file: &str, feature_body: &str) -> Self {
+        Self::build(feature_file, feature_body, false)
+    }
+
+    /// As [`Fixture::new`], but the feature branch also merges a `side` branch,
+    /// so the PR range carries a merge commit the queue cannot replay.
+    fn with_merge_commit(feature_file: &str, feature_body: &str) -> Self {
+        Self::build(feature_file, feature_body, true)
+    }
+
+    fn build(feature_file: &str, feature_body: &str, merge_side: bool) -> Self {
         let storage = tempfile::tempdir().expect("storage");
         let bare = storage.path().join("alice").join("jeryu.git");
         let work = storage.path().join("work");
@@ -67,6 +77,17 @@ impl Fixture {
         std::fs::write(work.join(feature_file), feature_body).unwrap();
         git(&work, &["add", "."]);
         git(&work, &["commit", "--quiet", "-m", "feature"]);
+        if merge_side {
+            git(&work, &["checkout", "--quiet", "-b", "side", &base]);
+            std::fs::write(work.join("side.txt"), "side\n").unwrap();
+            git(&work, &["add", "."]);
+            git(&work, &["commit", "--quiet", "-m", "side"]);
+            git(&work, &["checkout", "--quiet", "feature"]);
+            git(
+                &work,
+                &["merge", "--quiet", "--no-ff", "-m", "merge side", "side"],
+            );
+        }
         let head = git(&work, &["rev-parse", "HEAD"]);
         git(&work, &["checkout", "--quiet", "main"]);
         std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
@@ -489,4 +510,150 @@ async fn a_replay_never_borrows_the_head_result() {
     }
     assert_eq!(fx.entry().state, merge_queue::QueueState::Building);
     assert_eq!(fx.main(), moved, "a green head does not land a new commit");
+}
+
+/// Both ways an approved PR failed to land on veox-ai/ai-veox-app#6, through
+/// the real router: the merge identity had no grant (403 from the auth gate),
+/// then the queue refused the PR's merge commits. Each answer is recorded, the
+/// PR page's merge-attempt route states it, and the grant gap is flagged
+/// before any merge is tried.
+#[tokio::test]
+async fn refused_merges_are_recorded_and_the_missing_grant_is_flagged() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let fx = Fixture::with_merge_commit("feature.txt", "feature\n");
+    fx.advance_main("other.txt", "other\n");
+    let core = &fx.state.core;
+    core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("jain-merge-bot", "merge-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "test", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, merger) = (token("jeryu-admin"), token("jain-merge-bot"));
+    let app = app(
+        (*fx.state).clone().with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let call = |token: String, method: &'static str, path: String| {
+        let app = app.clone();
+        async move {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::ACCEPT, "application/json")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let attempt_path = format!(
+        "/api/v1/repos/alice/jeryu/pulls/{}/merge-attempt",
+        fx.number
+    );
+    let queue_path = format!("/api/v1/repos/alice/jeryu/pulls/{}/queue", fx.number);
+
+    // No attempt yet, but the grant gap is already visible.
+    let (status, page) = call(admin.clone(), "GET", attempt_path.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page["attempt"].is_null(), "{page}");
+    assert_eq!(page["approvedBy"], json!(["pragent"]), "{page}");
+    assert_eq!(page["grantGap"]["identity"], "jain-merge-bot", "{page}");
+
+    // 1. The merge identity has no grant: the auth gate answers 403.
+    let (status, _) = call(merger.clone(), "POST", queue_path.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (_, page) = call(admin.clone(), "GET", attempt_path.clone()).await;
+    assert_eq!(page["attempt"]["result"], "refused", "{page}");
+    assert_eq!(page["attempt"]["status"], 403, "{page}");
+    assert_eq!(page["attempt"]["actor"], "jain-merge-bot", "{page}");
+    assert_eq!(
+        page["blockedReason"], "permission_denied - repository access denied",
+        "{page}"
+    );
+
+    // 2. Granted, the queue refuses the merge commits.
+    core.grant_repo_access(
+        "jeryu-admin",
+        "jain-merge-bot",
+        "alice",
+        "jeryu",
+        jeryu_core::RepoAccessLevel::Write,
+    )
+    .unwrap();
+    let (status, body) = call(merger, "POST", queue_path).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (_, page) = call(admin, "GET", attempt_path).await;
+    assert_eq!(page["attempt"]["code"], "queue_merge_commits", "{page}");
+    assert!(
+        page["blockedReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("queue_merge_commits - "),
+        "{page}"
+    );
+    assert!(page["grantGap"].is_null(), "granted now: {page}");
+
+    // /runners joins the refusal onto the reviewer's approval of this PR.
+    let beat: crate::web::control_plane::GateRunnerHeartbeat = serde_json::from_value(json!({
+        "runnerId": "xbabe0/redteam", "host": "xbabe0", "slot": 0, "labels": ["redteam"],
+        "last": {
+            "repo": "alice/jeryu", "pr": fx.number, "sha": fx.head.clone(),
+            "recipe": "redteam-review", "conclusion": "approve",
+            "seconds": 14, "finished_at": chrono::Utc::now().to_rfc3339()
+        }
+    }))
+    .unwrap();
+    fx.state
+        .gate_runners
+        .record(beat, "pragent", chrono::Utc::now())
+        .unwrap();
+    let fabric = crate::web::control_plane::runner_fabric(&fx.state);
+    let reviewer = &fabric.local.node_details[0];
+    let merge = reviewer
+        .last_activity
+        .as_ref()
+        .and_then(|last| last.merge_attempt.as_ref())
+        .expect("merge attempt on the reviewer row");
+    assert_eq!(merge.code.as_deref(), Some("queue_merge_commits"));
+}
+
+#[test]
+fn a_reviewer_row_flags_a_repo_the_merge_identity_cannot_write() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    fx.state
+        .core
+        .create_account("jain-merge-bot", "merge-password", UserRole::User)
+        .unwrap();
+    let beat: crate::web::control_plane::GateRunnerHeartbeat = serde_json::from_value(json!({
+        "runnerId": "xbabe0/redteam", "host": "xbabe0", "slot": 0, "labels": ["redteam"],
+        "current": {
+            "repo": "alice/jeryu", "pr": fx.number, "sha": fx.head.clone(),
+            "recipe": "redteam-review", "started_at": chrono::Utc::now().to_rfc3339()
+        }
+    }))
+    .unwrap();
+    fx.state
+        .gate_runners
+        .record(beat, "pragent", chrono::Utc::now())
+        .unwrap();
+    let fabric = crate::web::control_plane::runner_fabric(&fx.state);
+    let gaps = &fabric.local.node_details[0].merge_grant_gaps;
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert_eq!(gaps[0].repo, "alice/jeryu");
+    assert_eq!(gaps[0].identity, "jain-merge-bot");
 }

@@ -183,6 +183,14 @@ async fn github_forward_request(
         .map_or_else(|| uri.path().to_string(), ToString::to_string);
     if let Some(response) = authorize_github_repo_request(&state, method, &path_and_query, &account)
     {
+        super::merge_attempts::record_edge(
+            &state,
+            method != Method::Get,
+            normalize_github_edge_path(&path_and_query),
+            &account.login,
+            response.status().as_u16(),
+            r#"{"code":"permission_denied","message":"repository access denied"}"#,
+        );
         return response;
     }
     if github_repo_list_path(&path_and_query) && method == Method::Get {
@@ -211,6 +219,14 @@ async fn github_forward_request(
     let body = bind_authenticated_actor(body, &account.login);
     let response = state.github.handle(method, &path_and_query, &body);
     let normalized = normalize_github_edge_path(&path_and_query);
+    super::merge_attempts::record_edge(
+        &state,
+        method != Method::Get,
+        normalized,
+        &account.login,
+        response.status,
+        &response.body,
+    );
     super::pipeline::emit::github_edge(
         &state,
         method != Method::Get,
