@@ -364,12 +364,15 @@ fn build_commit(
                     )?;
                 }
                 None => {
+                    // `--force-remove` needs a work tree; a zero-mode
+                    // `--index-info` record removes the path in a bare repo.
+                    let record = format!("0 {}\t{path}\n", "0".repeat(40));
                     git(
                         git_bin,
                         dir,
-                        &["update-index", "--force-remove", path],
+                        &["update-index", "--index-info"],
                         &env,
-                        None,
+                        Some(record.as_bytes()),
                     )?;
                 }
             }
@@ -395,3 +398,6 @@ fn build_commit(
     let _ = std::fs::remove_file(&index);
     result
 }
+
+#[cfg(test)]
+mod tests;

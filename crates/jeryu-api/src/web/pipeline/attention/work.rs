@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::{Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, parse_time, todo_href};
-use crate::web::shift::{ShiftBranch, ShiftRepo, ShiftTodo, WorkerRow};
+use crate::web::shift::{ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 
 /// When the todo last changed hands: its newest attempt's end, else filing.
 fn todo_since(todo: &ShiftTodo) -> Option<String> {
@@ -43,8 +43,8 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
             label,
             command: None,
         };
-        let drafted = match todo.status.as_str() {
-            "blocked" => Some(draft(
+        let drafted = match todo.status {
+            TodoStatus::Blocked => Some(draft(
                 "todo_blocked",
                 Severity::Action,
                 format!("Blocked: {}", todo.title),
@@ -64,7 +64,7 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                 },
                 "Release the todo",
             )),
-            "handoff" => Some(draft(
+            TodoStatus::Handoff => Some(draft(
                 "todo_handoff",
                 Severity::Action,
                 format!("Handed to a person: {}", todo.title),
@@ -78,7 +78,7 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                 },
                 "Finish the work by hand or release the todo back to the workers",
             )),
-            "claimed" => {
+            TodoStatus::Claimed => {
                 let dead_for = parse_time(&todo.lease_until).map(|lease| now - lease);
                 dead_for
                     .filter(|gone| !todo.lease_live && gone.num_minutes() >= STUCK_CLAIM_MINUTES)
@@ -98,7 +98,7 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                         )
                     })
             }
-            "open" if !todo.triaged => Some(draft(
+            TodoStatus::Open if !todo.triaged => Some(draft(
                 "todo_untriaged",
                 Severity::Action,
                 format!("Needs triage: {}", todo.title),
@@ -108,22 +108,24 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                 ),
                 "Set the todo's title and repos so a worker can claim it",
             )),
-            "open" => todo
+            TodoStatus::Open => todo
                 .blocked_by
                 .iter()
                 .filter_map(|id| by_id.get(id.as_str()))
-                .find_map(|blocker| match blocker.status.as_str() {
-                    "blocked" | "handoff" => Some(format!(
+                .find_map(|blocker| match blocker.status {
+                    TodoStatus::Blocked | TodoStatus::Handoff => Some(format!(
                         "It waits on \"{}\" ({}), which is {} and will not move without a \
                          person.",
-                        blocker.title, blocker.id, blocker.status
+                        blocker.title,
+                        blocker.id,
+                        blocker.status.as_str()
                     )),
-                    "done" if !blocker.merged => Some(format!(
+                    TodoStatus::Done if !blocker.merged => Some(format!(
                         "It waits on \"{}\" ({}), which is done but not merged to the base \
                          branch yet. Merging that shift's pull request unblocks it.",
                         blocker.title, blocker.id
                     )),
-                    _ => None,
+                    TodoStatus::Done | TodoStatus::Open | TodoStatus::Claimed => None,
                 })
                 .map(|why| {
                     draft(
@@ -134,7 +136,7 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                         "Clear the blocker it names",
                     )
                 }),
-            _ => None,
+            TodoStatus::Done => None,
         };
         if let Some(draft) = drafted {
             let mut item = draft.build();

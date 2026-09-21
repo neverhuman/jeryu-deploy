@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use super::super::WebState;
 use super::queue::{Queue, git, resolve};
 use super::shifts::{find_pr, pr_summary};
-use super::types::{ShiftTodo, TodoPr};
+use super::types::{ShiftTodo, TodoPr, TodoStatus};
 
 /// How far back the base branch is searched for `Todo:` trailers.
 const TRAILER_SCAN_COMMITS: &str = "500";
@@ -199,7 +199,7 @@ impl TruthCache {
                     .collect();
                 todo.pr = todo.prs.first().cloned();
             }
-            if todo.status != "done" || todo.commits.is_empty() {
+            if todo.status != TodoStatus::Done || todo.commits.is_empty() {
                 continue;
             }
             let derived = derive(&mut inner, &git_bin, &facts, todo);
@@ -286,3 +286,6 @@ fn derive(
     inner.todos.insert(todo.id.clone(), derived.clone());
     derived
 }
+
+#[cfg(test)]
+mod tests;

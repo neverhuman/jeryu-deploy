@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use super::heartbeats::{HeartbeatStore, StoredHeartbeat, build_history};
 use super::queue::{QUEUE_REF, WriteError, commit_change, discover, read_todos, resolve};
 use super::todo_file::{TodoFile, slugify};
-use super::types::Heartbeat;
+use super::types::{Heartbeat, TodoStatus};
 use crate::web::{WebState, app};
 
 const PRE_SHIFT_TODO: &str = r#"+++
@@ -131,7 +131,7 @@ fn bad_files_are_refused_and_lease_liveness_is_time_based() {
     assert!(TodoFile::parse("+++\nid = \"x\"\n").is_err());
     assert!(TodoFile::parse("+++\nid = \"x\"\nstatus = \"weird\"\n+++\n").is_err());
     let mut todo = TodoFile::parse(PRE_SHIFT_TODO).unwrap();
-    todo.status = "claimed".to_string();
+    todo.status = TodoStatus::Claimed;
     todo.lease_until = "2026-09-19T02:00:00Z".to_string();
     let before = Utc.with_ymd_and_hms(2026, 9, 19, 1, 0, 0).unwrap();
     let after = Utc.with_ymd_and_hms(2026, 9, 19, 3, 0, 0).unwrap();
@@ -683,6 +683,19 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
     .await
     .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    // The fixture's done todo cannot be reopened: the queue is not rewritten.
+    let queue_path = dir.path().join("jeryu/jeryu-todo.git");
+    let head_before = resolve("git", &queue_path, QUEUE_REF);
+    let reopen = call(
+        HttpMethod::POST,
+        "/api/v1/shift/todos/jeryu/20260919-010000-abcdef/action",
+        &admin,
+        Some(json!({"action": "release"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopen.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(resolve("git", &queue_path, QUEUE_REF), head_before);
     let all = body_json(
         call(HttpMethod::GET, "/api/v1/shift/todos", &user, None)
             .await

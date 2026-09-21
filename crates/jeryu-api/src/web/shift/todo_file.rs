@@ -8,10 +8,9 @@
 use chrono::{DateTime, Utc};
 use toml_edit::{DocumentMut, Value};
 
-use super::types::{Attempt, ShiftTodo};
+use super::types::{Attempt, ShiftTodo, TodoStatus};
 
 pub(crate) const FENCE: &str = "+++";
-pub(crate) const STATUSES: &[&str] = &["open", "claimed", "done", "blocked", "handoff"];
 pub(crate) const MODES: &[&str] = &["now", "night"];
 
 /// todoq's `_ORDER`: the fixed field order `dump` writes.
@@ -49,7 +48,7 @@ pub(crate) struct TodoFile {
     pub mode: String,
     pub priority: i64,
     pub blocked_by: Vec<String>,
-    pub status: String,
+    pub status: TodoStatus,
     pub attempts: i64,
     pub requested_by: String,
     pub filed_at: String,
@@ -78,7 +77,7 @@ impl TodoFile {
             mode: "night".to_string(),
             priority: 3,
             blocked_by: Vec::new(),
-            status: "open".to_string(),
+            status: TodoStatus::Open,
             attempts: 0,
             requested_by: String::new(),
             filed_at: String::new(),
@@ -151,7 +150,8 @@ impl TodoFile {
         todo.priority = take("priority").and_then(Value::as_integer).unwrap_or(3);
         todo.blocked_by = list_of("blocked_by");
         if let Some(status) = take("status").and_then(Value::as_str) {
-            todo.status = status.to_string();
+            todo.status =
+                TodoStatus::parse(status).ok_or_else(|| format!("unknown status {status:?}"))?;
         }
         todo.attempts = take("attempts").and_then(Value::as_integer).unwrap_or(0);
         todo.requested_by = text_of("requested_by");
@@ -180,9 +180,6 @@ impl TodoFile {
             .into_iter()
             .filter(|(k, _)| !ORDER.contains(&k.as_str()))
             .collect();
-        if !STATUSES.contains(&todo.status.as_str()) {
-            return Err(format!("unknown status {:?}", todo.status));
-        }
         if !MODES.contains(&todo.mode.as_str()) {
             return Err(format!("unknown mode {:?}", todo.mode));
         }
@@ -227,7 +224,7 @@ impl TodoFile {
             ("mode", quote(&self.mode)),
             ("priority", self.priority.to_string()),
             ("blocked_by", strings(&self.blocked_by)),
-            ("status", quote(&self.status)),
+            ("status", quote(self.status.as_str())),
             ("attempts", self.attempts.to_string()),
             ("requested_by", quote(&self.requested_by)),
             ("filed_at", quote(&self.filed_at)),
@@ -259,7 +256,7 @@ impl TodoFile {
 
     /// `status == claimed` with a lease that has not run out.
     pub(crate) fn lease_live(&self, now: DateTime<Utc>) -> bool {
-        self.status == "claimed"
+        self.status == TodoStatus::Claimed
             && DateTime::parse_from_rfc3339(&self.lease_until)
                 .map(|until| until.with_timezone(&Utc) > now)
                 .unwrap_or(false)
@@ -279,7 +276,7 @@ impl TodoFile {
             mode: self.mode.clone(),
             priority: self.priority,
             blocked_by: self.blocked_by.clone(),
-            status: self.status.clone(),
+            status: self.status,
             attempts: self.attempts,
             requested_by: self.requested_by.clone(),
             filed_at: self.filed_at.clone(),

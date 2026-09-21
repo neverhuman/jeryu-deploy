@@ -14,6 +14,8 @@ mod types;
 mod visibility;
 
 #[cfg(test)]
+mod lifecycle_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 use std::path::Path;
@@ -39,13 +41,12 @@ use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;
 #[cfg(test)]
 pub(crate) use types::{Heartbeat, ShiftPr};
-pub(crate) use types::{ShiftBranch, ShiftRepo, ShiftTodo, WorkerRow};
+pub(crate) use types::{ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 use visibility::stage_event;
 pub(crate) use visibility::{FamilySnapshot, attention_snapshot, shift_context, worker_rows};
 
 const PR_AUTHOR_ENV: &str = "JERYU_SHIFT_PR_AUTHOR";
 const DEFAULT_PR_AUTHOR: &str = "alton2";
-const STATES: &[&str] = &["idle", "working", "stopping", "paused"];
 const STAGES: &[&str] = &["prepare", "agent", "gate", "land", "record"];
 const DOCS: &str = "docs/architecture.md";
 
@@ -214,7 +215,7 @@ fn matches(todo: &ShiftTodo, query: &TodosQuery) -> bool {
                     .iter()
                     .any(|a| a.by == w || a.by.starts_with(&format!("{w}/")))
         });
-    eq(&query.status, &todo.status)
+    eq(&query.status, todo.status.as_str())
         && eq(&query.mode, &todo.mode)
         && eq(&query.requested_by, &todo.requested_by)
         && eq(&query.shift, &todo.shift)
@@ -446,9 +447,23 @@ pub(crate) fn apply_action(todo: &mut TodoFile, request: &TodoActionRequest) -> 
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty());
+    let target = match request.action.as_str() {
+        "release" => Some(TodoStatus::Open),
+        "block" => Some(TodoStatus::Blocked),
+        _ => None,
+    };
+    if let Some(target) = target
+        && !todo.status.allows(target)
+    {
+        return Err(format!(
+            "cannot {} a {} todo",
+            request.action,
+            todo.status.as_str()
+        ));
+    }
     match request.action.as_str() {
         "release" => {
-            todo.status = "open".to_string();
+            todo.status = TodoStatus::Open;
             todo.lease_until.clear();
             todo.attempts = 0;
             if let Some(note) = note {
@@ -456,7 +471,7 @@ pub(crate) fn apply_action(todo: &mut TodoFile, request: &TodoActionRequest) -> 
             }
         }
         "block" => {
-            todo.status = "blocked".to_string();
+            todo.status = TodoStatus::Blocked;
             todo.lease_until.clear();
             let reason = note.or_else(|| request.value.as_ref().and_then(Value::as_str));
             if let Some(reason) = reason {
@@ -579,8 +594,9 @@ fn heartbeat_from(request: HeartbeatRequest) -> Result<Heartbeat, String> {
     if slot.trim().is_empty() {
         return Err("slot must not be empty".to_string());
     }
-    if !STATES.contains(&request.state.as_str()) {
-        return Err(format!("state must be one of {STATES:?}"));
+    if WorkerState::parse(&request.state).is_none() {
+        let states = WorkerState::ALL.map(WorkerState::as_str);
+        return Err(format!("state must be one of {states:?}"));
     }
     if let Some(stage) = &request.stage
         && !stage.is_empty()

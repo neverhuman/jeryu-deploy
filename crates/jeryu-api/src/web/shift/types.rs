@@ -57,7 +57,7 @@ pub(crate) struct ShiftTodo {
     pub mode: String,
     pub priority: i64,
     pub blocked_by: Vec<String>,
-    pub status: String,
+    pub status: TodoStatus,
     pub attempts: i64,
     pub requested_by: String,
     pub filed_at: String,
@@ -311,4 +311,81 @@ pub(crate) struct CreatedPr {
     pub number: u64,
     pub url: String,
     pub created: bool,
+}
+
+/// Where a todo is in its lifecycle, spelled as todoq writes it.
+///
+/// `open -> claimed -> done | blocked | handoff`; an admin `release` returns
+/// unfinished work to `open` and `block` parks it. `done` is final: the server
+/// never moves a todo out of it (see [`TodoStatus::allows`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum TodoStatus {
+    #[default]
+    Open,
+    Claimed,
+    Done,
+    Blocked,
+    Handoff,
+}
+
+impl TodoStatus {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Open,
+        Self::Claimed,
+        Self::Done,
+        Self::Blocked,
+        Self::Handoff,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Claimed => "claimed",
+            Self::Done => "done",
+            Self::Blocked => "blocked",
+            Self::Handoff => "handoff",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.as_str() == text)
+    }
+
+    /// Whether the server may move a todo from `self` to `next`. Staying put
+    /// is allowed (a repeated block updates the note); nothing leaves `done`,
+    /// because landed work reopened would be worked and landed twice.
+    pub(crate) fn allows(self, next: Self) -> bool {
+        match (self, next) {
+            (from, to) if from == to => true,
+            (Self::Done, _) => false,
+            (Self::Open | Self::Claimed | Self::Blocked | Self::Handoff, _) => true,
+        }
+    }
+}
+
+/// What a worker slot reports it is doing in a heartbeat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkerState {
+    Idle,
+    Working,
+    Stopping,
+    Paused,
+}
+
+impl WorkerState {
+    pub(crate) const ALL: [Self; 4] = [Self::Idle, Self::Working, Self::Stopping, Self::Paused];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Stopping => "stopping",
+            Self::Paused => "paused",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.as_str() == text)
+    }
 }

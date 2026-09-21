@@ -18,7 +18,9 @@ use super::types::Event;
 use crate::web::control_plane::{GateRunnerHeartbeat, GateRunnerRecord, GateRunnerResult};
 use crate::web::merge_queue::{QueueEntry, QueueState};
 use crate::web::pulls::PullPosture;
-use crate::web::shift::{Heartbeat, ShiftBranch, ShiftPr, ShiftRepo, ShiftTodo, WorkerRow};
+use crate::web::shift::{
+    Heartbeat, ShiftBranch, ShiftPr, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow,
+};
 use crate::web::{WebState, app};
 
 fn now() -> DateTime<Utc> {
@@ -35,7 +37,7 @@ fn todo(id: &str, status: &str) -> ShiftTodo {
         mode: "now".to_string(),
         priority: 2,
         blocked_by: Vec::new(),
-        status: status.to_string(),
+        status: TodoStatus::parse(status).expect("known status"),
         attempts: 0,
         requested_by: "alton".to_string(),
         filed_at: "2026-09-19T12:00:00Z".to_string(),
