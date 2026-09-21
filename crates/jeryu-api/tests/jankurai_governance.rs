@@ -61,7 +61,7 @@ fn proptest_equivalent_generated_jankurai_consumers_share_one_closed_identity() 
         "CHANGELOG.md",
         "agent/native-cli-manifest.toml",
         "crates/jeryu-api/src/ci_bridge.rs",
-        "docs/release.md",
+        "docs/governed-jankurai.md",
         "images/agent-sandbox/Dockerfile",
         "images/agent-sandbox/README.md",
         "images/agent-sandbox/jankurai-installation-receipt.json",

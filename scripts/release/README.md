@@ -1,4 +1,7 @@
-# Releasing the forge
+# Releasing the forge: run every release command on xbabe0 only
+
+**Run releases on xbabe0 only.** It is the release host: these scripts reach xbabe2 (build) and
+atomicsoul (forge) from there, and the auto-stage and auto-pin timers run there.
 
 Production is `jeryu serve` on atomicsoul (systemd user unit `jeryu.service`),
 reached through xbabe2. Releases are unsigned (owner decision) and built from a

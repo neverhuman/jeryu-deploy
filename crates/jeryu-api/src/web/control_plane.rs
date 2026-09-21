@@ -33,7 +33,7 @@ mod tests;
 const SCHEMA_VERSION: &str = "jeryu.control_plane/v1";
 const RULES_VERSION: &str = "rules-v1";
 const MIRROR_DOCS: &str = "docs/agent-native-standard.md";
-const ARTIFACT_DOCS: &str = "docs/release.md#release-receipt";
+const ARTIFACT_DOCS: &str = "scripts/release/README.md";
 const FLEET_BASELINE_DOCS: &str = "docs/fleet-health-baseline.md";
 /// How many repeated failure shapes the summary carries. Enough to tell "one
 /// lane" from "many" without turning the summary into the check-run list.

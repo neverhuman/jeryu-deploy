@@ -544,7 +544,7 @@ pub(in crate::web) async fn repo_readme_update(
                         "send JSON with a markdown string field",
                         "regenerate the managed README block from the fresh Jankurai artifact",
                     ],
-                    docs_url: "docs/release-process.md#required-local-gates",
+                    docs_url: "docs/release.md",
                     repair_hint: &format!(
                         "rerun bash ops/ci/publish-readme-score.sh --verify (body parse error: {error})"
                     ),
@@ -572,7 +572,7 @@ pub(in crate::web) async fn repo_readme_update(
                     "check the SQLite database path and write permissions",
                     "reopen the local forge store and rerun the publish helper",
                 ],
-                docs_url: "docs/release-process.md#required-local-gates",
+                docs_url: "docs/release.md",
                 repair_hint: &format!(
                     "rerun bash ops/ci/publish-readme-score.sh --verify (storage error: {err})"
                 ),
@@ -589,7 +589,7 @@ pub(in crate::web) async fn repo_readme_update(
                     "refresh the local repo state before retrying the publish helper",
                     "replay the update against the latest README content",
                 ],
-                docs_url: "docs/release-process.md#required-local-gates",
+                docs_url: "docs/release.md",
                 repair_hint: &format!(
                     "rerun bash ops/ci/publish-readme-score.sh --verify (conflict: {err})"
                 ),
@@ -606,7 +606,7 @@ pub(in crate::web) async fn repo_readme_update(
                     "send a JSON body with a markdown string field",
                     "regenerate the managed score block from target/jankurai/repo-score.json",
                 ],
-                docs_url: "docs/release-process.md#required-local-gates",
+                docs_url: "docs/release.md",
                 repair_hint: &format!(
                     "rerun bash ops/ci/publish-readme-score.sh --verify (validation error: {err})"
                 ),

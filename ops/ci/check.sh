@@ -23,7 +23,7 @@ if [[ -f repos.manifest.toml ]]; then
   cargo run --locked --offline --quiet -p jeryu-split-tool --bin jeryu-split -- \
     manifest --manifest repos.manifest.toml >/dev/null
 fi
-for script in scripts/*.sh ops/ci/*.sh ops/deploy/*.sh; do
+for script in scripts/*.sh ops/ci/*.sh; do
   [[ -e "$script" ]] || continue
   bash -n "$script"
 done

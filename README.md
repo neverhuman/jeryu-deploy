@@ -21,7 +21,7 @@ authority. Durable detail is intentionally routed rather than duplicated:
 - Ownership and generated files: `agent/owner-map.json`,
   `agent/generated-zones.toml`, and `docs/generated-zones.md`.
 - Audit and release controls: `agent/audit-policy.toml`, `docs/audit-rubric.md`,
-  `docs/release.md`, and `docs/release-process.md`.
+  and `scripts/release/README.md` (the release procedure; run it on xbabe0 only).
 - Tool-finder scheduled scan and proposal decisions: `docs/tool-finder.md`.
 - Pipeline event log, attention inbox and their agent guide:
   `docs/pipeline-events.md`.
@@ -73,11 +73,8 @@ standalone Deploy proof.
 - `just security-network`
 - `just artifact-support`
 
-For an approved atomicsoul deployment, follow
-[`docs/release-process.md`](docs/release-process.md#atomicsoul-autonomous-deploy-handoff).
-The deploy helper stages artifacts by default. `--restart` explicitly restarts
-the service and verifies the active process against the signed binary digest;
-application and data-preservation checks remain part of the release gate.
+To release, follow [`scripts/release/README.md`](scripts/release/README.md) on
+xbabe0: `stage-release.sh` stages, `deploy-release.sh` switches.
 
 Rust-native split transition checks are available through
 `cargo run --locked --offline -p jeryu-split-tool --bin jeryu-split --
@@ -98,7 +95,7 @@ workflow-parity, release-receipt-contract, score, security, and doctor gates.
 ## Quick Start
 
 Prerequisites are Rust 1.95 and the governed Jankurai binary described in
-`docs/release.md#governed-jankurai-identity`. From a canonical checkout:
+`docs/governed-jankurai.md`. From a canonical checkout:
 
 ```bash
 bash ops/ci/ensure-jankurai.sh

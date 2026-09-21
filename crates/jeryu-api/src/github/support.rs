@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::routes::Response;
 
 /// Public origin of the web UI, e.g. `https://git.neverhuman.org`. The
-/// production unit sets it (ops/deploy/sign-and-push-atomicsoul.sh).
+/// production unit sets it.
 const PUBLIC_ORIGIN_ENV: &str = "JERYU_PRODUCTION_ORIGIN";
 
 /// `html_url` for a web UI path. GitHub clients expect an absolute URL, so a

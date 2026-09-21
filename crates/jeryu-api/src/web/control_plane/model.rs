@@ -95,8 +95,8 @@ pub(crate) fn artifacts(_state: &Arc<WebState>) -> ArtifactLatestResponse {
                 "releases are read-only compatibility responses and not durable domain state yet"
                     .to_string(),
             source_links: vec![SourceLink {
-                label: "release receipt".to_string(),
-                url: "docs/release.md#release-receipt".to_string(),
+                label: "release procedure".to_string(),
+                url: ARTIFACT_DOCS.to_string(),
             }],
         },
         mirror_artifacts: ArtifactEvidence {
@@ -375,7 +375,7 @@ fn releases() -> ControlReleaseSummary {
         latest_release: None,
         release_count: 0,
         reason: "release persistence is not yet durable in the local forge domain".to_string(),
-        docs_url: "docs/release.md".to_string(),
+        docs_url: ARTIFACT_DOCS.to_string(),
     }
 }
 

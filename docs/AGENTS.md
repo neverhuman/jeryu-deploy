@@ -4,7 +4,7 @@ Owns:
 - Architecture (`docs/architecture.md`), testing (`docs/testing.md`), error
   repair (`docs/errors.md`), boundary (`docs/boundaries.md`), generated-zone
   (`docs/generated-zones.md`), audit (`docs/audit-rubric.md`), and
-  release-control (`docs/release.md`, `docs/release-process.md`) documentation,
+  release-control (`docs/release.md`, a pointer to `scripts/release/README.md`) documentation,
   all routed from root `AGENTS.md`.
 - Architecture decision records (`docs/adr/`): the convention in
   `docs/adr/README.md`, the cross-cutting family decisions numbered under it,

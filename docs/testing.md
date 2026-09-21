@@ -268,8 +268,7 @@ Repair evidence:
   and `repair_hint` so the next rerun is local and agent-readable.
 - Structured repair receipts should point at the lane transcript, the local
   artifact path, and the owning doc or proof lane for the rerun. For release
-  and provenance failures, link back to `docs/release.md` and
-  `docs/release-process.md` so the commit, rollback target, and gate evidence
+  and provenance failures, link back to `scripts/release/README.md` so the commit, rollback target, and gate evidence
   stay explicit.
 - Observability-related failures should use the same `AgentRepairHint` contract
   documented in [docs/errors.md#missing-receipt](errors.md#missing-receipt).
@@ -353,7 +352,7 @@ Launch-gate evidence:
   log for repository metadata, artifacts, and service state.
 - Monitoring: operators must attach the metrics/log receipt for the release
   candidate and the rollback alert route before rollout.
-- Rollback: `docs/release.md` is the rollback control surface; each release
-  receipt must name the previous signed artifact and checksum.
+- Rollback: the staged `rollback.sh` described in `scripts/release/README.md`
+  restores the previous release and its pre-switch database snapshot.
 - Abuse controls: agent, runner, and token-scope gates must pass before any
   hosted or remote deployment path is enabled.
