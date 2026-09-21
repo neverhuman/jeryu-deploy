@@ -699,7 +699,9 @@ pub(super) fn dashboard_payload(
     // Persisted-scan provenance: every cluster row carries the report's
     // scanned_at; the in-memory state adds repo/file counters when this
     // process ran the scan.
-    let scanned_at = scan_created_at(state);
+    let scanned_at = scan_created_at(state)
+        .as_deref()
+        .and_then(scanned_at_rfc3339);
     let status = state.tool_finder_scan.snapshot();
     let scan = ToolFinderScanMeta {
         scanned_at,
@@ -724,6 +726,15 @@ pub(super) fn scan_created_at(state: &WebState) -> Option<String> {
         .tool_build_scanned_at(SYSTEM_REPO_ID)
         .ok()
         .flatten()
+}
+
+/// The persisted unix-millis `created_at` as the RFC 3339 UTC text every
+/// `/api/v1` timestamp uses (docs/phase7-api.md). Unparseable rows are
+/// omitted rather than leaked in their storage form.
+pub(super) fn scanned_at_rfc3339(millis: &str) -> Option<String> {
+    let ms: i64 = millis.trim().parse().ok()?;
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 #[derive(Debug, Default, Deserialize)]

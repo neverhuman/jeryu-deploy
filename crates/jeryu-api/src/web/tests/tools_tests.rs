@@ -715,7 +715,13 @@ pub fn alpha(input: &str) -> Result<String, String> {
     assert!(cluster["suggested_kind"].as_str().is_some());
     assert!(cluster["anticipated_loc_saved"].as_u64().is_some());
     assert_eq!(cluster["occurrences"][0]["repo_id"], "repo-a");
-    assert!(dashboard["scan"]["scanned_at"].as_str().is_some());
+    let scanned_at = dashboard["scan"]["scanned_at"]
+        .as_str()
+        .expect("scanned_at");
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(scanned_at).is_ok(),
+        "scanned_at must be RFC 3339, got {scanned_at}"
+    );
 
     // Propose: files a registry entry + build task, idempotent on re-post.
     let receipt = response_json(
@@ -769,4 +775,14 @@ pub fn alpha(input: &str) -> Result<String, String> {
     )
     .await;
     assert_eq!(missing["code"], "tool_finder_cluster_not_found");
+}
+
+#[test]
+fn scanned_at_is_rfc3339_utc_not_epoch_millis() {
+    use crate::web::tool_finder::scanned_at_rfc3339;
+    assert_eq!(
+        scanned_at_rfc3339("1758412800123").as_deref(),
+        Some("2025-09-21T00:00:00.123Z")
+    );
+    assert_eq!(scanned_at_rfc3339("2026-09-18"), None);
 }
