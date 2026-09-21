@@ -353,9 +353,26 @@ async fn rule_and_score_detail_expose_findings_caps_and_the_pull_request() {
     // A cap is addressable by its own name too.
     let by_cap = get_json(&router, "/api/v1/jankurai/rules/dead-language", &admin).await;
     assert_eq!(by_cap["heads"][0]["matched_as"], "cap");
-    // A rule nothing broke answers empty rather than 404.
-    let unused = get_json(&router, "/api/v1/jankurai/rules/HLT-999", &admin).await;
-    assert!(unused["heads"].as_array().unwrap().is_empty());
+    // A known rule outside the filter answers empty rather than 404.
+    let filtered = get_json(
+        &router,
+        "/api/v1/jankurai/rules/HLT-001-DEAD-MARKER?repo=alice/other",
+        &admin,
+    )
+    .await;
+    assert!(filtered["heads"].as_array().unwrap().is_empty());
+    // A rule id no score ever carried is not a resource.
+    let unknown = router
+        .clone()
+        .oneshot(request(
+            HttpMethod::GET,
+            "/api/v1/jankurai/rules/HLT-999",
+            &admin,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
 
     let score_id = head["score_id"].as_str().unwrap().to_string();
     let detail = get_json(
@@ -555,9 +572,17 @@ async fn empty_store_answers_every_route_with_zeroed_buckets() {
     );
     assert_eq!(overview["score_distribution"].as_array().unwrap().len(), 11);
 
-    let rule = get_json(&router, "/api/v1/jankurai/rules/HLT-001", &admin).await;
-    assert!(rule["heads"].as_array().unwrap().is_empty());
-    assert!(rule["disputes"].as_array().unwrap().is_empty());
+    let rule = router
+        .clone()
+        .oneshot(request(
+            HttpMethod::GET,
+            "/api/v1/jankurai/rules/HLT-001",
+            &admin,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rule.status(), StatusCode::NOT_FOUND);
     let disputes = get_json(&router, "/api/v1/jankurai/disputes", &admin).await;
     assert!(disputes["disputes"].as_array().unwrap().is_empty());
 }

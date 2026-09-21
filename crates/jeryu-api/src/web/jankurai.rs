@@ -465,15 +465,21 @@ pub(crate) async fn rule_detail(
                 pull_request: pull_request_link(&state, &head.repo, &head.score.commit_sha),
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let disputes = state
+        .disputes
+        .list(None, Some(&rule_id))
+        .unwrap_or_default();
+    // An empty window is only an answer for a rule jankurai has actually
+    // reported: an id no visible score ever carried is not a resource.
+    if flagged.is_empty() && disputes.is_empty() && !rule_known(&state, &account, &rule_id) {
+        return rule_not_found();
+    }
     Json(RuleResponse {
         rule_id: rule_id.clone(),
         days,
         heads: flagged,
-        disputes: state
-            .disputes
-            .list(None, Some(&rule_id))
-            .unwrap_or_default(),
+        disputes,
     })
     .into_response()
 }
@@ -600,6 +606,22 @@ fn dispute_invalid(reason: &str) -> AxumResponse {
         StatusCode::UNPROCESSABLE_ENTITY,
         "invalid_input",
         &format!("jankurai dispute failed validation: {reason}"),
+    )
+}
+
+/// Whether any score the account can read, at any time, in any repo,
+/// flagged `rule_id` as a cap or a finding.
+fn rule_known(state: &WebState, account: &AccountSummary, rule_id: &str) -> bool {
+    collect_heads(state, account, None, None)
+        .iter()
+        .any(|head| matched_as(head, rule_id).is_some())
+}
+
+fn rule_not_found() -> AxumResponse {
+    api_error(
+        StatusCode::NOT_FOUND,
+        "not_found",
+        "jankurai rule not found",
     )
 }
 
