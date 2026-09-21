@@ -2,7 +2,7 @@
 //! did into a [`NewEvent`] and hands it to [`super::emit`], which is
 //! best-effort: none of these can fail the request they ride on.
 
-use jeryu_core::{PullRequest, Repository};
+use jeryu_core::{PullRequest, PullRequestState, Repository};
 use serde_json::{Value, json};
 
 use super::super::WebState;
@@ -302,6 +302,23 @@ fn event_pr(pr: Option<u64>) -> Option<i64> {
         .filter(|pr| *pr > 0)
 }
 
+/// The number of the open pull request in `repo` (`owner/name`) whose head is
+/// `sha`, if there is one.
+fn open_pr_at_head(state: &WebState, repo: &str, sha: &str) -> Option<i64> {
+    let (owner, name) = repo.split_once('/')?;
+    let prs = state.core.list_pull_requests(owner, name, None).ok()?;
+    prs.into_iter()
+        .find(|pr| {
+            !pr.merged
+                && !matches!(
+                    pr.state,
+                    PullRequestState::Closed | PullRequestState::Merged
+                )
+                && pr.head.sha == sha
+        })
+        .and_then(|pr| i64::try_from(pr.number).ok())
+}
+
 /// `gate.started` / `gate.finished` (or `review.*` for pr-redteam) when a
 /// runner's heartbeat shows a new `current` task or a new `last` result.
 /// Runners beat every minute, so an unchanged beat emits nothing.
@@ -327,12 +344,15 @@ pub(crate) fn runner_heartbeat(
     if let Some(task) = &current.current
         && previous.and_then(|p| p.current.as_ref()) != Some(task)
     {
+        // A runner may start before it knows the PR number (it sends 0), so
+        // fall back to the open pull request whose head is the gated sha.
+        let pr = event_pr(task.pr).or_else(|| open_pr_at_head(state, &task.repo, &task.sha));
         emit(
             state,
             NewEvent {
                 actor: Some(current.runner_id.clone()),
                 repo: Some(task.repo.clone()),
-                pr: event_pr(task.pr),
+                pr,
                 sha: Some(task.sha.clone()),
                 detail: Some(source_detail(&task.recipe)),
                 ..NewEvent::forge(
@@ -340,7 +360,11 @@ pub(crate) fn runner_heartbeat(
                     format!(
                         "{} {verb} {}",
                         current.runner_id,
-                        work_label(&task.repo, task.pr, &task.sha)
+                        work_label(
+                            &task.repo,
+                            pr.and_then(|pr| u64::try_from(pr).ok()),
+                            &task.sha
+                        )
                     ),
                 )
             },

@@ -1004,3 +1004,69 @@ fn socket_replay_sends_stored_events_after_the_cursor() {
     let bare = json!({"type": "subscribe", "subscriptions": [{"scope": "pipeline"}]});
     assert_eq!(crate::web::ws::pipeline_cursor(&bare), None);
 }
+
+#[tokio::test]
+async fn a_gate_started_without_a_pr_number_names_the_open_pr_at_its_head() {
+    let core = ForgeCore::new();
+    core.create_account("alton2", "alton2-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("gatebot", "gatebot-password", UserRole::User)
+        .unwrap();
+    core.create_repository(
+        "jeryu",
+        jeryu_core::CreateRepositoryRequest {
+            name: "jeryu-deploy".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let sha = "81dc3310aa5eadc15694dd1434d9f8f99c44a0d3";
+    let pr = core
+        .create_pull_request(
+            "jeryu",
+            "jeryu-deploy",
+            "alton2",
+            jeryu_core::CreatePullRequestRequest {
+                title: "shift".to_string(),
+                head: "nightshift/2026-09-20".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(sha.to_string()),
+                ..jeryu_core::CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "t", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, gatebot) = (token("alton2"), token("gatebot"));
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    // The runner reports 0 while it has not yet resolved the PR.
+    let task = json!({"repo": "jeryu/jeryu-deploy", "pr": 0, "sha": sha,
+                      "recipe": "ops/ci/pr-ci.sh", "startedAt": "2026-09-20T04:11:00Z"});
+    let response = router
+        .clone()
+        .oneshot(request(
+            HttpMethod::POST,
+            "/api/v1/runners/heartbeat",
+            &gatebot,
+            Some(runner_beat(&["pr-gate"], Some(task), None)),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let events = events_of(&router, &admin, "repo=jeryu/jeryu-deploy").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["kind"], "gate.started");
+    assert_eq!(events[0]["pr"], pr.number);
+    assert_eq!(
+        events[0]["summary"],
+        format!("xbabe2/slot0 gating jeryu/jeryu-deploy#{}", pr.number)
+    );
+}
