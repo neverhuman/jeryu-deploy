@@ -759,11 +759,20 @@ fn auth_rate_limit_exceeded(
     let ip = client_ip(peer.map(|connect| connect.0), headers);
     let login = login.trim().to_ascii_lowercase();
     let key = format!("{action}:{ip}:{login}");
-    let now = Utc::now();
     let mut limits = state
         .auth_rate_limits
         .lock()
         .expect("auth rate-limit mutex poisoned");
+    rate_limit_hit(&mut limits, key, Utc::now())
+}
+
+/// Counts one attempt against `key` at `now`, opening a fresh window once the
+/// previous one has elapsed.
+fn rate_limit_hit(
+    limits: &mut std::collections::BTreeMap<String, RateLimitBucket>,
+    key: String,
+    now: DateTime<Utc>,
+) -> bool {
     let bucket = limits.entry(key).or_insert_with(|| RateLimitBucket {
         attempts: 0,
         reset_at: now + chrono::Duration::seconds(AUTH_LIMIT_WINDOW_SECS),
@@ -785,10 +794,15 @@ fn rate_limited() -> AxumResponse {
 }
 
 fn client_ip(peer: Option<SocketAddr>, headers: &HeaderMap) -> IpAddr {
+    client_ip_with(peer, headers, &trusted_proxy_ips())
+}
+
+/// Believes `X-Forwarded-For` only when the direct peer is a trusted proxy.
+fn client_ip_with(peer: Option<SocketAddr>, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAddr {
     let peer_ip = peer
         .map(|addr| addr.ip())
         .unwrap_or(IpAddr::from([0, 0, 0, 0]));
-    if !trusted_proxy_ips().contains(&peer_ip) {
+    if !trusted.contains(&peer_ip) {
         return peer_ip;
     }
     headers
@@ -801,15 +815,15 @@ fn client_ip(peer: Option<SocketAddr>, headers: &HeaderMap) -> IpAddr {
 
 fn trusted_proxy_ips() -> Vec<IpAddr> {
     std::env::var("JERYU_TRUSTED_PROXIES")
-        .ok()
-        .into_iter()
-        .flat_map(|raw| {
-            raw.split(',')
-                .map(str::trim)
-                .filter(|part| !part.is_empty())
-                .filter_map(|part| part.parse::<IpAddr>().ok())
-                .collect::<Vec<_>>()
-        })
+        .map(|raw| parse_trusted_proxies(&raw))
+        .unwrap_or_default()
+}
+
+fn parse_trusted_proxies(raw: &str) -> Vec<IpAddr> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<IpAddr>().ok())
         .collect()
 }
 
@@ -898,6 +912,9 @@ fn expired_cookie_header(
 
 #[allow(dead_code)]
 fn _grant_wire(_grant: &RepoAccessGrant) {}
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod gate_status_publisher_tests {
