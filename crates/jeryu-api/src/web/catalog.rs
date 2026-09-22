@@ -84,7 +84,33 @@ impl SplitCatalog {
         if catalog.entries.is_empty() {
             Self::builtin()
         } else {
+            catalog.add_tool_companions();
             catalog
+        }
+    }
+
+    /// The tool control plane (`<portal>-tool`) and its discovery arm
+    /// (`<portal>-tool-finder`) are hosted beside the split family but are not
+    /// split out of the monorepo, so the split manifest does not list them.
+    /// File them under their portal's family and owners; an explicit manifest
+    /// entry still wins.
+    fn add_tool_companions(&mut self) {
+        let portals: Vec<(String, String)> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.role == RepositoryRole::PublicPortal)
+            .map(|(slug, entry)| (slug.clone(), entry.family.clone()))
+            .collect();
+        for (slug, family) in portals {
+            for (suffix, role) in [
+                ("-tool", RepositoryRole::ToolControlPlane),
+                ("-tool-finder", RepositoryRole::SplitMember),
+            ] {
+                let companion = format!("{slug}{suffix}");
+                if !self.entries.contains_key(&companion) {
+                    self.insert(&companion, &family, role);
+                }
+            }
         }
     }
 

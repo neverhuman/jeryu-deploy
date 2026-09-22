@@ -167,6 +167,45 @@ profile = "public-portal"
 }
 
 #[test]
+fn split_catalog_files_unlisted_tool_repos_under_the_portal_family() {
+    // The live manifest lists only the split members; the tool repos are
+    // hosted beside them and must still land in the portal's family rather
+    // than whatever family the forge database carries.
+    let root = tempdir().expect("split manifests dir");
+    write_file(
+        root.path(),
+        "jeryu.toml",
+        r#"
+repo_family = "jeryu-split"
+
+[[repo]]
+name = "jeryu"
+github_slug = "neverhuman/jeryu"
+jeryu_slug = "jeryu/jeryu"
+profile = "public-portal"
+
+[[repo]]
+name = "jeryu-core"
+github_slug = "neverhuman/jeryu-core"
+jeryu_slug = "jeryu/jeryu-core"
+profile = "rust-workspace"
+"#,
+    );
+    let catalog = SplitCatalog::load(&[root.path().join("jeryu.toml")]);
+    for owner in ["jeryu", "neverhuman"] {
+        assert_eq!(
+            catalog.classify(owner, "jeryu-tool"),
+            Some(("jeryu-split".to_string(), RepositoryRole::ToolControlPlane))
+        );
+        assert_eq!(
+            catalog.classify(owner, "jeryu-tool-finder"),
+            Some(("jeryu-split".to_string(), RepositoryRole::SplitMember))
+        );
+    }
+    assert_eq!(catalog.classify("jeryu", "jeryu-core-tool"), None);
+}
+
+#[test]
 fn repo_list_family_filter_uses_multi_manifest_catalog() {
     let manifest_root = tempdir().expect("split manifests dir");
     write_file(
