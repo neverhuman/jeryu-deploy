@@ -9,7 +9,13 @@
 # Refuses unless PREV is what is live, the staged checksums hold, and no
 # snapshot for REL exists yet. rollback.sh (staged beside it) undoes it.
 #
-# Overridable for tests: JERYU_HOME, JERYU_DATA, JERYU_SYSTEMCTL, JERYU_HEALTH_URL.
+# After starting REL it polls JERYU_HEALTH_URL (default
+# http://172.19.0.1:8787/health, the forge's local health endpoint) once a second,
+# JERYU_HEALTH_TRIES times (default 30). If it never answers, the switch fails
+# (exit 1) with REL installed and live, so run rollback.sh.
+#
+# Overridable for tests: JERYU_HOME, JERYU_DATA, JERYU_SYSTEMCTL, JERYU_HEALTH_URL,
+# JERYU_HEALTH_TRIES.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
@@ -22,6 +28,8 @@ J="${JERYU_HOME:-$HOME/.jeryu}"
 DATA="${JERYU_DATA:-$HOME/.local/share/jeryu}"
 SYSTEMCTL="${JERYU_SYSTEMCTL:-systemctl}"
 HEALTH="${JERYU_HEALTH_URL:-http://172.19.0.1:8787/health}"
+TRIES="${JERYU_HEALTH_TRIES:-30}"
+[[ "$TRIES" =~ ^[1-9][0-9]*$ ]] || { echo "JERYU_HEALTH_TRIES must be a positive integer, got '$TRIES'" >&2; exit 1; }
 IN="$J/incoming/$REL" OUT="$J/releases/$REL" SNAP="$J/backups/pre-$REL"
 
 [[ "$(readlink "$J/bin/jeryu")" == "jeryu-$PREV" ]] || { echo "live binary is not $PREV; refusing" >&2; exit 1; }
@@ -52,7 +60,12 @@ ln -sfn "web-dist-$REL" "$J/share/web-dist"
 
 echo "[switch] starting jeryu.service"
 $SYSTEMCTL --user start jeryu.service
-for _ in $(seq 30); do curl -fsS -o /dev/null "$HEALTH" && break; sleep 1; done
+healthy=0
+for ((i = 1; i <= TRIES; i++)); do
+  curl -fsS -o /dev/null "$HEALTH" 2>/dev/null && { healthy=1; break; }
+  ((i == TRIES)) || sleep 1
+done
+((healthy)) || { echo "health check timed out: $HEALTH never answered in $TRIES tries; REL is live, roll back with: bash $OUT/rollback.sh" >&2; exit 1; }
 pid="$($SYSTEMCTL --user show jeryu.service -p MainPID --value)"
 exe="$(readlink "/proc/$pid/exe")" want="$J/bin/jeryu-$REL"
 [[ "$exe" == "$want" ]] || { echo "running exe $exe is not $want" >&2; exit 1; }

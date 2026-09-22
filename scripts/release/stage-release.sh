@@ -27,13 +27,17 @@
 # --json prints exactly one JSON line on stdout instead (everything else goes to
 # stderr): {"release","commit","previous_release","dry_run"} on success, or the
 # API's error envelope {"code","message","exit_code"} on a refusal.
+# --prev RELEASE (or --prev=RELEASE) accepts a live release whose name is not in
+# the usual prod-<UTC stamp>-<sha7>-unsigned form (a hand-installed build, say),
+# which staging otherwise refuses. RELEASE must still name exactly what is live.
 # Exit codes: 0 staged, 64 usage (bad argument or env value), 65 state (the
 # live release or the commit is not what staging expects), 69 unreachable (a
 # host or the remote did not answer), 70 build (the binary needs a newer glibc),
 # 1 anything else.
 #
 # Env: JERYU_BUILD_HOST (xbabe2), JERYU_FORGE_HOST (atomicsoul, reached through
-# the build host), JERYU_BUILD_ROOT (~/jeryu-release-build on the build host),
+# the build host), JERYU_BUILD_ROOT (jeryu-release-build under the build host's
+# $HOME; an absolute path, or one starting with ~/ for the build host's home),
 # JERYU_BUILDER_IMAGE (jeryu-builder:rust1.95-glibc2.35-r2, built from
 # scripts/release/builder.Dockerfile on the build host when missing), JERYU_MAX_GLIBC (2.35),
 # JERYU_DEPLOY_REMOTE (https://git.neverhuman.org/git/jeryu/jeryu-deploy.git).
@@ -41,7 +45,7 @@
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
-json=0; dry_run=0; args=()
+json=0; dry_run=0; prev_override=""; args=()
 [[ " $* " != *" --json "* ]] || json=1
 exec 3>&1
 refuse() { # CLASS MESSAGE — exit with the class's code; under --json also print the error envelope
@@ -51,20 +55,27 @@ refuse() { # CLASS MESSAGE — exit with the class's code; under --json also pri
   [[ $json == 0 ]] || jq -cn --arg c "$1" --arg m "$2" --argjson e "$code" '{code:$c, message:$m, exit_code:$e}' >&3
   exit "$code"
 }
-for a in "$@"; do
-  case "$a" in
+while (($#)); do
+  case "$1" in
     --json) ;;
     --dry-run) dry_run=1 ;;
-    -*) refuse usage "unknown option '$a'" ;;
-    *) args+=("$a") ;;
+    --prev=*) prev_override="${1#--prev=}" ;;
+    --prev) (($# >= 2)) || refuse usage "--prev needs a release name"; prev_override="$2"; shift ;;
+    -*) refuse usage "unknown option '$1'" ;;
+    *) args+=("$1") ;;
   esac
+  shift
 done
 set -- ${args[@]+"${args[@]}"}
-(($# <= 1)) || refuse usage "usage: stage-release.sh [--json] [--dry-run] [COMMIT]"
+(($# <= 1)) || refuse usage "usage: stage-release.sh [--json] [--dry-run] [--prev RELEASE] [COMMIT]"
+[[ -z "$prev_override" || "$prev_override" =~ ^[A-Za-z0-9._-]+$ ]] || refuse usage "bad --prev '$prev_override'"
 [[ $json == 0 ]] || exec 1>&2
 build_host="${JERYU_BUILD_HOST:-xbabe2}"
 forge_host="${JERYU_FORGE_HOST:-atomicsoul}"
-build_root="${JERYU_BUILD_ROOT:-~/jeryu-release-build}"
+# Expanded by the build host's shell, never here: the default and a leading ~/ become its $HOME.
+build_root="${JERYU_BUILD_ROOT:-\$HOME/jeryu-release-build}"
+[[ "$build_root" != "~/"* ]] || build_root="\$HOME/${build_root#"~/"}"
+[[ "$build_root" =~ ^(/|\$HOME/)[A-Za-z0-9._/-]+$ ]] || refuse usage "JERYU_BUILD_ROOT must be absolute or start with ~/, got '${JERYU_BUILD_ROOT:-}'"
 image="${JERYU_BUILDER_IMAGE:-jeryu-builder:rust1.95-glibc2.35-r2}"
 [[ "$image" =~ ^[a-z0-9._/-]+:[A-Za-z0-9._-]+$ ]] || refuse usage "bad builder image '$image'"
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -79,7 +90,12 @@ fi
 prev="$(ssh "$build_host" "ssh -n $forge_host 'readlink ~/.jeryu/bin/jeryu'")" \
   || refuse unreachable "cannot read the live release on $forge_host through $build_host"
 prev="${prev#jeryu-}"
-[[ "$prev" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+-unsigned$ ]] || refuse state "unexpected live release '$prev'; refusing"
+if [[ -n "$prev_override" ]]; then
+  [[ "$prev" == "$prev_override" ]] || refuse state "--prev '$prev_override' is not the live release '$prev'; refusing"
+else
+  [[ "$prev" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+-unsigned$ ]] \
+    || refuse state "unexpected live release '$prev'; refusing (pass --prev '$prev' if it is the intended rollback target)"
+fi
 rel="prod-$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:7}-unsigned"
 done_json() { # the one success line under --json
   [[ $json == 0 ]] || jq -cn --arg rel "$rel" --arg commit "$commit" --arg prev "$prev" --argjson dry "$dry_run" \
@@ -104,7 +120,7 @@ set +e
 # shellcheck disable=SC2087 # expand locally on purpose: every value is validated above
 ssh "$build_host" bash -s <<EOF
 set -euo pipefail
-root=$build_root; mkdir -p "\$root"
+root="$build_root"; mkdir -p "\$root"
 [[ -d "\$root/jeryu-deploy/.git" ]] || git clone -q "$remote" "\$root/jeryu-deploy"
 cd "\$root/jeryu-deploy"
 git fetch -q origin

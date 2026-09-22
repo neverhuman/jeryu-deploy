@@ -84,6 +84,18 @@ rm -rf "$JERYU_HOME/backups/pre-$REL"
 if bash "$JERYU_HOME/releases/$REL/rollback.sh" >/dev/null 2>&1; then fail "rollback ran without a snapshot"; fi
 ok "rollback refuses without a pre-switch snapshot"
 
+# A REL that never answers its health check must fail the switch, not report success.
+REL_OK="$REL"; REL=prod-20260103T000000Z-ccccccc-unsigned
+stage
+rc=0; JERYU_HEALTH_URL="file://$T/no-such-health.json" JERYU_HEALTH_TRIES=2 \
+  bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-unhealthy.log" 2>&1 || rc=$?
+[[ $rc != 0 ]] || fail "switch reported success though its health check never passed"
+grep -q "health check timed out" "$T/switch-unhealthy.log" || fail "an unhealthy switch did not say its health check timed out"
+bash "$JERYU_HOME/releases/$REL/rollback.sh" >/dev/null 2>&1 || fail "rollback after an unhealthy switch failed"
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "rollback after an unhealthy switch did not restore PREV"
+REL="$REL_OK"
+ok "switch fails when its health check never passes, and rollback recovers"
+
 # --- auto-stage.sh: stage once, tell the forge, never let a failed event POST fail staging ---
 # Stand-ins: a local bare repo as the remote (its stage-release.sh is a stub that stages or fails
 # on demand), ssh that names the live release, curl that answers the status API and records every
@@ -428,7 +440,7 @@ cat >"$S/bin/ssh" <<EOF
 case "\$*" in
   *readlink*) cat "$S/live" ;;
   *"image inspect"*) exit 0 ;;
-  *"bash -s"*) cat >/dev/null; exit "\$(cat "$S/remote-rc")" ;;
+  *"bash -s"*) cat >"$S/remote-script"; exit "\$(cat "$S/remote-rc")" ;;
 esac
 EOF
 chmod +x "$S/bin/git" "$S/bin/ssh"
@@ -451,7 +463,18 @@ echo "jeryu-something-else" >"$S/live"
 rc=0; out="$(stage_release --json "$S_SHA")" || rc=$?
 [[ $rc == 65 ]] && jq -e '.code == "state" and (.message | contains("something-else"))' <<<"$out" >/dev/null \
   || fail "an unexpected live release is not a state refusal ($rc): $out"
-ok "stage-release --json prints one line, --dry-run builds nothing, and each refusal has its own exit code"
+out="$(stage_release --json --dry-run --prev something-else "$S_SHA")" || fail "--prev did not accept the named live release"
+jq -e '.previous_release == "something-else"' <<<"$out" >/dev/null || fail "--prev did not become the rollback target: $out"
+rc=0; out="$(stage_release --json --dry-run --prev=other "$S_SHA")" || rc=$?
+[[ $rc == 65 ]] && jq -e '.code == "state"' <<<"$out" >/dev/null || fail "--prev naming a release that is not live is not a state refusal ($rc): $out"
+echo "jeryu-$PREV" >"$S/live"
+rc=0; out="$(JERYU_BUILD_ROOT=relative/dir stage_release --json --dry-run)" || rc=$?
+[[ $rc == 64 ]] || fail "a relative JERYU_BUILD_ROOT is not a usage refusal ($rc): $out"
+JERYU_BUILD_ROOT="~/rb" stage_release >/dev/null || fail "a stage with JERYU_BUILD_ROOT=~/rb failed"
+grep -qxF 'root="$HOME/rb"; mkdir -p "$root"' "$S/remote-script" || fail "~/ in JERYU_BUILD_ROOT is not the build host's home"
+stage_release >/dev/null || fail "a default stage failed"
+grep -qxF 'root="$HOME/jeryu-release-build"; mkdir -p "$root"' "$S/remote-script" || fail "the default build root is not under the build host's home"
+ok "stage-release --json prints one line, --dry-run builds nothing, --prev overrides the live-name check, and the build root is the build host's"
 
 # -h and --help on every release script print its header and exit 0 without running anything:
 # the network, git, docker, service and file tools on PATH are tripwires.

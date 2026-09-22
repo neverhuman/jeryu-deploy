@@ -18,7 +18,8 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
   first through `.cargo/hosted-gitconfig`), refuses a binary needing a newer glibc
   than the forge host has, and stages `bundle/jeryu`, the web dist,
   `RELEASE.txt` (with the jeryu-web commit and dist hash), `RELEASE.env` (`REL`,
-  and `PREV` read from the live symlink),
+  and `PREV` read from the live symlink; a live name not in `prod-…-unsigned` form
+  is refused unless `--prev <that name>` confirms it),
   `switch.sh`, `rollback.sh` and `SHA256SUMS` in `~/.jeryu/incoming/<release>/` on
   atomicsoul. It changes nothing else there.
 - **`deploy-release.sh RELEASE`** records a `production` deployment of
@@ -29,6 +30,9 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
   hold and no snapshot exists yet; then stops, snapshots `forge`/`work`/`codegraph`
   with SQLite's backup API, installs, repoints `~/.jeryu/bin/jeryu` and
   `~/.jeryu/share/web-dist`, starts, and proves the running binary is the staged one.
+  It polls `JERYU_HEALTH_URL` (default `http://172.19.0.1:8787/health`) once a
+  second, `JERYU_HEALTH_TRIES` times (default 30), and fails if it never answers:
+  the new release is then live but unhealthy, so run `rollback.sh`.
 - **`rollback.sh`** (in `~/.jeryu/releases/<release>/`) restores `PREV` and the
   pre-switch snapshot, keeping the post-switch databases in
   `~/.jeryu/backups/post-<release>-<time>/`.
