@@ -303,6 +303,31 @@ pub(crate) struct LatestDeployment {
     pub created_at: DateTime<Utc>,
 }
 
+/// " The last deploy of `release` failed: <why>." when the newest production
+/// deployment is a failed attempt at this release, else empty. The deploy
+/// script puts the log's last meaningful line in the status description.
+fn failed_attempt(facts: Option<&ProductionFacts>, release: &str) -> String {
+    facts
+        .and_then(|facts| facts.latest.as_ref())
+        .filter(|latest| {
+            matches!(latest.state.as_deref(), Some("failure" | "error"))
+                && latest.release.as_deref() == Some(release)
+        })
+        .map(|latest| {
+            let why = latest
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or("no reason recorded");
+            format!(
+                " The last deploy of it failed: {}.",
+                why.trim_end_matches('.')
+            )
+        })
+        .unwrap_or_default()
+}
+
 /// A staged release nobody deployed, a staging that gave up, a failed deploy.
 pub(crate) fn release_items(
     staged: Option<&Event>,
@@ -350,11 +375,12 @@ pub(crate) fn release_items(
                 reason: format!(
                     "Production still runs {}. This release is built from a commit whose \
                      gate is green and is already on the production host; nothing switches \
-                     until the deploy command is run.",
+                     until the deploy command is run.{}",
                     live.map_or_else(
                         || "an earlier build".to_string(),
                         |(sha, _)| sha.chars().take(10).collect()
-                    )
+                    ),
+                    failed_attempt(facts, release)
                 ),
                 href: "/releases".to_string(),
                 label: "Deploy the staged release",

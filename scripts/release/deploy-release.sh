@@ -10,6 +10,13 @@
 #   3. Append success, or failure (switch.sh prints its own rollback command).
 #      The forge's auto_inactive retires the previous production deployment.
 #
+# Everything switch.sh prints is shown live and kept in
+# ~/.local/state/jeryu-release/logs/<release>-<UTC stamp>.log (0600, newest 30;
+# JERYU_RELEASE_LOG_DIR overrides the directory). Both statuses carry the log's
+# path (log_path); a failure's description adds the log's last meaningful line
+# and the status carries its last 20 lines (log_tail), which the forge puts in
+# the deploy.status event's detail.
+#
 # The record never decides the deploy. If the forge that is live before the
 # switch cannot record it (for instance the release that introduces the
 # deployments API), it is recorded right after the switch instead; if it still
@@ -65,25 +72,45 @@ record() {
   }
   echo "[receipt] deployment $deployment_id recorded for $rel at ${sha:0:12}"
 }
-status() { # STATE DESCRIPTION
+status() { # STATE DESCRIPTION [LOG_PATH [LOG_TAIL]]
   [[ -n "$deployment_id" ]] || return 0
-  jq -n --arg s "$1" --arg d "$2" --arg url "$forge" \
-    '{state:$s, description:$d, environment_url:$url}' >"$tmp/status.json"
+  jq -n --arg s "$1" --arg d "$2" --arg url "$forge" --arg path "${3:-}" --arg tail "${4:-}" \
+    '{state:$s, description:$d, environment_url:$url}
+     + (if $path != "" then {log_path:$path} else {} end)
+     + (if $tail != "" then {log_tail:$tail} else {} end)' >"$tmp/status.json"
   api POST "$repo/deployments/$deployment_id/statuses" "$tmp/status.json" \
     | jq -r '"[receipt] status \(.state // "not recorded: \(.message // "?")")"'
+}
+
+log_dir="${JERYU_RELEASE_LOG_DIR:-$HOME/.local/state/jeryu-release/logs}"
+mkdir -p "$log_dir"; chmod 700 "$log_dir"
+log="$log_dir/$rel-$(date -u +%Y%m%dT%H%M%SZ).log"
+: >"$log"; chmod 600 "$log"
+find "$log_dir" -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\n' | sort -rn | tail -n +31 \
+  | cut -d' ' -f2- | xargs -r rm -f --
+# The log without colour codes or blank lines, and never the deploy token.
+clean_log() {
+  local text
+  text="$(sed -E $'s/\x1b\\[[0-9;?]*[A-Za-z]//g; s/\r//g' "$log" | grep -v '^[[:space:]]*$' || true)"
+  printf '%s\n' "${text//"$(cat "$token_file")"/[redacted]}"
 }
 
 deployment_id=""
 record
 status in_progress "switching $forge_host to $rel"
-if ssh "$build_host" "ssh $forge_host 'bash ~/.jeryu/incoming/$rel/switch.sh'"; then
+set +e
+ssh "$build_host" "ssh $forge_host 'bash ~/.jeryu/incoming/$rel/switch.sh'" 2>&1 | tee -a "$log"
+rc=${PIPESTATUS[0]}
+set -e
+echo "[receipt] switch output kept in $log"
+if [[ $rc == 0 ]]; then
   if [[ -z "$deployment_id" ]]; then
     echo "[receipt] retrying against the forge that just started"
     record
   fi
-  status success "live on $forge_host"
+  status success "live on $forge_host" "$log"
 else
-  rc=$?
-  status failure "switch.sh exited $rc; see its output for the rollback command"
+  why="$(clean_log | grep -v 'rollback: bash ' | tail -n 1 | cut -c1-300)"
+  status failure "switch.sh exited $rc${why:+: $why}" "$log" "$(clean_log | tail -n 20)"
   exit "$rc"
 fi

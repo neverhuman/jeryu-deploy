@@ -228,3 +228,70 @@ async fn readers_see_deployments_and_environments() {
         SHA
     );
 }
+
+#[tokio::test]
+async fn a_failure_status_carries_its_log_into_the_event_and_its_line_into_environments() {
+    let forge = forge();
+    let (_, created) = call(
+        &forge,
+        &forge.admin,
+        HttpMethod::POST,
+        "/repos/alice/jeryu/deployments",
+        serde_json::json!({"sha": SHA, "environment": "production", "payload": {"release": "r1"}}),
+    )
+    .await;
+    let id = created["id"].as_u64().unwrap();
+    let why = "switch.sh exited 3: error: health check timed out";
+    let log_path = "/home/op/.local/state/jeryu-release/logs/r1-20260920T140800Z.log";
+    let tail: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+    let (status, appended) = call(
+        &forge,
+        &forge.admin,
+        HttpMethod::POST,
+        &format!("/repos/alice/jeryu/deployments/{id}/statuses"),
+        serde_json::json!({
+            "state": "failure",
+            "description": why,
+            "log_path": log_path,
+            "log_tail": tail.join("\n"),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{appended}");
+    assert!(
+        appended.get("log_tail").is_none(),
+        "the status keeps GitHub's shape"
+    );
+
+    let (_, page) = call(
+        &forge,
+        &forge.admin,
+        HttpMethod::GET,
+        "/api/v1/events?after_seq=0&kind=deploy.status",
+        serde_json::Value::Null,
+    )
+    .await;
+    let event = &page["events"][0];
+    assert_eq!(event["reason"], why, "{page}");
+    assert_eq!(event["needs_human"], true);
+    assert_eq!(event["detail"]["log_path"], log_path);
+    let kept = event["detail"]["log_tail"].as_str().unwrap();
+    assert_eq!(kept.lines().count(), 20, "{kept}");
+    assert!(
+        kept.starts_with("line 6\n") && kept.ends_with("line 25"),
+        "{kept}"
+    );
+
+    let (_, environments) = call(
+        &forge,
+        &forge.reader,
+        HttpMethod::GET,
+        "/repos/alice/jeryu/environments",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        environments["environments"][0]["latest"]["status"]["description"], why,
+        "{environments}"
+    );
+}

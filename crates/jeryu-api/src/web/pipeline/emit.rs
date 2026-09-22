@@ -274,21 +274,38 @@ pub(crate) fn github_edge(
                 "environment": deployment_record.environment,
                 "payload": deployment_record.payload,
             });
-            deployment(state, owner, repo, actor, &record, Some(&response));
+            let request: Value = serde_json::from_str(request_body).unwrap_or(Value::Null);
+            deployment(
+                state,
+                owner,
+                repo,
+                actor,
+                &record,
+                Some((&response, &request)),
+            );
         }
         _ => {}
     }
 }
 
-/// `deploy.created`, or `deploy.status` when `status` is the posted status.
+/// `deploy.created`, or `deploy.status` when `posted` is the stored status
+/// with the request that posted it. The Deployments API keeps only GitHub's
+/// status fields; the request's `log_path` and `log_tail` (what
+/// `deploy-release.sh` saw switch.sh print) go into the event's `detail`.
 fn deployment(
     state: &WebState,
     owner: &str,
     repo: &str,
     actor: &str,
     deployment: &Value,
-    status: Option<&Value>,
+    posted: Option<(&Value, &Value)>,
 ) {
+    let status = posted.map(|(status, _)| status);
+    let request_text = |key: &str| {
+        posted
+            .and_then(|(_, request)| request[key].as_str())
+            .filter(|text| !text.trim().is_empty())
+    };
     let environment = deployment["environment"].as_str().unwrap_or("production");
     let release = deployment["payload"]["release"].as_str();
     let what = release.map_or_else(
@@ -329,10 +346,23 @@ fn deployment(
                 "environment": environment,
                 "release": release,
                 "previous_release": deployment["payload"]["previous_release"],
+                "log_path": request_text("log_path"),
+                "log_tail": request_text("log_tail").map(tail_lines),
             })),
             ..NewEvent::forge(kind, summary)
         },
     );
+}
+
+/// At most the last 20 lines and 12000 bytes of a posted log tail.
+fn tail_lines(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let kept = lines[lines.len().saturating_sub(20)..].join("\n");
+    let mut start = kept.len().saturating_sub(12_000);
+    while !kept.is_char_boundary(start) {
+        start += 1;
+    }
+    kept[start..].to_string()
 }
 
 /// A heartbeat's optional pull request number as an event's: none stays none.

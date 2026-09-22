@@ -336,6 +336,64 @@ git -C "$P/deploy.git" log -1 --format=%B "$b3" | grep -q "byte-identical" || fa
 jq -es '.[0] | .kind == "pin.bump_opened"' "$P/events.jsonl" >/dev/null || fail "the same-bundle bump posted no event"
 ok "auto-pin pins a head whose bundle is unchanged by moving the commit only"
 
+# --- deploy-release.sh: keep switch.sh's output, and say in the failure status why it failed ---
+# Stand-ins: ssh that answers the staged metadata and runs a switch that prints and exits 3 (or 0),
+# curl that records every posted body. The operator's home is a throwaway directory.
+D="$T/deploy"; mkdir -p "$D/bin" "$D/home"
+D_REL=prod-20260920T135912Z-4f7d883-unsigned
+cat >"$D/bin/ssh" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *RELEASE.txt*) printf 'jeryu_deploy_commit=%s x\nrollback_target=%s\nbinary_sha256=%s\nlive=jeryu-%s\n' \
+    "$(printf 4%.0s {1..40})" "$PREV" "$(printf e%.0s {1..64})" "$PREV" ;;
+  *)
+    echo "[switch] stopping jeryu.service"
+    [ -e "$D/succeed" ] && { echo "[switch] rollback: bash ~/.jeryu/releases/x/rollback.sh"; exit 0; }
+    printf '\033[31merror: health check timed out after 30s\033[0m\n' >&2
+    echo "[switch] rollback: bash ~/.jeryu/releases/x/rollback.sh"
+    echo; exit 3 ;;
+esac
+EOF
+cat >"$D/bin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$D/curl-args"
+data=""; prev=""
+for arg in "\$@"; do [ "\$prev" = --data ] && data="\${arg#@}"; prev="\$arg"; done
+case "\${!#}" in
+  */statuses) jq -c . "\$data" >>"$D/statuses.jsonl"; jq -c '{state}' "\$data" ;;
+  */deployments) echo '{"id":5}' ;;
+esac
+EOF
+chmod +x "$D/bin/ssh" "$D/bin/curl"
+echo "not-a-real-deploy-token" >"$D/token"
+deploy_release() {
+  PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bash "$here/deploy-release.sh" "$D_REL"
+}
+logs="$D/home/.local/state/jeryu-release/logs"
+rc=0; deploy_release >"$D/run.log" 2>&1 || rc=$?
+[[ $rc == 3 ]] || { cat "$D/run.log" >&2; fail "a failed switch did not fail the deploy with its exit code"; }
+grep -q "health check timed out" "$D/run.log" || fail "switch output is no longer shown to the operator"
+failure="$(jq -sc '.[-1]' "$D/statuses.jsonl")"
+jq -e '.state == "failure" and .description == "switch.sh exited 3: error: health check timed out after 30s"' <<<"$failure" >/dev/null \
+  || fail "the failure status does not say why: $failure"
+jq -e '(.log_tail | contains("health check timed out")) and (.log_tail | contains("\u001b") | not)' <<<"$failure" >/dev/null \
+  || fail "the failure status lacks a clean log tail: $failure"
+log="$(jq -r .log_path <<<"$failure")"
+[[ "$log" == "$logs/$D_REL-"*Z.log && -s "$log" ]] || fail "the failure status does not name the kept log: $log"
+[[ "$(stat -c %a "$log")" == 600 ]] || fail "the switch log is not 0600"
+grep -q "health check timed out" "$log" || fail "the switch log lacks switch's stderr"
+if grep -rq "not-a-real-deploy-token" "$logs" "$D/statuses.jsonl" "$D/run.log" "$D/curl-args"; then fail "the deploy token leaked"; fi
+ok "deploy-release keeps switch's output in a 0600 log and puts its last error line in the failure status"
+
+for n in $(seq 1 31); do : >"$logs/prod-20200101T000000Z-aaaaaaa-unsigned-$n.log"; touch -d "2020-01-01 +$n min" "$logs/prod-20200101T000000Z-aaaaaaa-unsigned-$n.log"; done
+touch "$D/succeed"; : >"$D/statuses.jsonl"
+deploy_release >"$D/run.log" 2>&1 || { cat "$D/run.log" >&2; fail "a successful switch failed the deploy"; }
+jq -se '.[-1] | .state == "success" and (.log_path | endswith(".log")) and (has("log_tail") | not)' "$D/statuses.jsonl" >/dev/null \
+  || fail "the success status does not name the log"
+[[ -s "$(jq -sr '.[-1].log_path' "$D/statuses.jsonl")" ]] || fail "the success log is empty"
+[[ "$(find "$logs" -name '*.log' | wc -l)" == 30 ]] || fail "the switch logs are not pruned to the newest 30"
+ok "deploy-release records the log path on success and keeps the newest 30 logs"
+
 # -h and --help on every release script print its header and exit 0 without running anything:
 # the network, git, docker, service and file tools on PATH are tripwires.
 mkdir -p "$T/tripwire"

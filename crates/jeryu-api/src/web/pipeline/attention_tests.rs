@@ -679,6 +679,27 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
         Some("scripts/release/deploy-release.sh prod-20260919T130210Z-01dfe68-unsigned")
     );
     assert!(waiting[0].reason.contains("283416e282"));
+    assert!(
+        !waiting[0].reason.contains("failed"),
+        "{}",
+        waiting[0].reason
+    );
+
+    // A failed attempt at this very release says why, from the status description.
+    let mut attempt = production(live, "2026-09-19T12:29:36Z", "failure");
+    if let Some(latest) = attempt.latest.as_mut() {
+        latest.release = Some("prod-20260919T130210Z-01dfe68-unsigned".to_string());
+        latest.description = Some("switch.sh exited 1: health check timed out".to_string());
+    }
+    let retry = release_items(Some(&staged), None, &[attempt], &hosts());
+    assert_eq!(kinds(&retry), ["release_staged", "deploy_failed"]);
+    assert!(
+        retry[0]
+            .reason
+            .ends_with("The last deploy of it failed: switch.sh exited 1: health check timed out."),
+        "{}",
+        retry[0].reason
+    );
     assert!(waiting[0].next_step.contains("deploy-release.sh"));
     // The script is a path inside the repository the event names.
     assert_eq!(
