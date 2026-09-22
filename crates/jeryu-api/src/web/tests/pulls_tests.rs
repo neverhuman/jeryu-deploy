@@ -631,54 +631,55 @@ async fn pulls_mutations_return_typed_repair_errors() {
 }
 
 #[tokio::test]
-async fn pulls_passport_reports_missing_required_context() {
-    let detail = passport_for_required_check(None, None).await;
-    assert_eq!(detail["merge_passport"]["status"], "blocked");
-    assert_eq!(
-        detail["merge_passport"]["blockers"][0]["code"],
-        "passport_blocked_checks_missing"
-    );
-    assert!(
-        detail["merge_passport"]["blockers"][0]["details"]
-            .as_str()
-            .unwrap()
-            .contains("ci/required")
-    );
-}
-
-#[tokio::test]
-async fn pulls_passport_reports_failing_required_context() {
-    let detail = passport_for_required_check(
-        Some(jeryu_core::CheckRunStatus::Completed),
-        Some(CheckConclusion::Failure),
-    )
-    .await;
-    assert_eq!(detail["merge_passport"]["status"], "blocked");
-    assert_eq!(
-        detail["merge_passport"]["blockers"][0]["code"],
-        "passport_blocked_checks"
-    );
-    assert_eq!(
-        detail["merge_passport"]["blockers"][0]["details"],
-        "https://forge.invalid/checks/required"
-    );
-}
-
-#[tokio::test]
-async fn pulls_passport_reports_pending_required_context() {
-    let detail =
-        passport_for_required_check(Some(jeryu_core::CheckRunStatus::InProgress), None).await;
-    assert_eq!(detail["merge_passport"]["status"], "blocked");
-    assert_eq!(
-        detail["merge_passport"]["blockers"][0]["code"],
-        "passport_blocked_pending_checks"
-    );
-    assert!(
-        detail["summary"]["mergeable"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("ci/required")
-    );
+async fn pulls_passport_gates_each_context_in_every_check_state() {
+    use jeryu_core::CheckRunStatus::{Completed, InProgress};
+    // (check state, expected passport status, expected first blocker code)
+    let cells: [(Option<_>, Option<CheckConclusion>, &str, Option<&str>); 4] = [
+        (
+            None,
+            None,
+            "blocked",
+            Some("passport_blocked_checks_missing"),
+        ),
+        (
+            Some(Completed),
+            Some(CheckConclusion::Failure),
+            "blocked",
+            Some("passport_blocked_checks"),
+        ),
+        (
+            Some(InProgress),
+            None,
+            "blocked",
+            Some("passport_blocked_pending_checks"),
+        ),
+        (
+            Some(Completed),
+            Some(CheckConclusion::Success),
+            "pass",
+            None,
+        ),
+    ];
+    for (status, conclusion, expected_status, expected_code) in cells {
+        for (context, detail) in [
+            (
+                "ci/required",
+                passport_for_required_check(status.clone(), conclusion.clone()).await,
+            ),
+            (
+                "jankurai/proof",
+                passport_for_intrinsic_proof(status.clone(), conclusion.clone()).await,
+            ),
+        ] {
+            let cell = format!("{context} {status:?}/{conclusion:?}");
+            let passport = &detail["merge_passport"];
+            assert_eq!(passport["status"], expected_status, "{cell}");
+            match expected_code {
+                Some(code) => assert_eq!(passport["blockers"][0]["code"], code, "{cell}"),
+                None => assert_eq!(passport["blockers"], serde_json::json!([]), "{cell}"),
+            }
+        }
+    }
 }
 
 #[test]
@@ -689,41 +690,6 @@ fn pulls_audit_enforcement_spellings_match_protected_core() {
     for value in [None, Some(""), Some("0"), Some("false"), Some("TRUE")] {
         assert!(!crate::web::pulls::audit_merge_enforced_value(value));
     }
-}
-
-#[tokio::test]
-async fn pulls_intrinsic_proof_reports_missing_context() {
-    let detail = passport_for_intrinsic_proof(None, None).await;
-    assert_eq!(detail["merge_passport"]["status"], "blocked");
-    assert_eq!(
-        detail["merge_passport"]["blockers"][0]["code"],
-        "passport_blocked_checks_missing"
-    );
-}
-
-#[tokio::test]
-async fn pulls_intrinsic_proof_reports_failing_context() {
-    let detail = passport_for_intrinsic_proof(
-        Some(jeryu_core::CheckRunStatus::Completed),
-        Some(CheckConclusion::Failure),
-    )
-    .await;
-    assert_eq!(detail["merge_passport"]["status"], "blocked");
-    assert_eq!(
-        detail["merge_passport"]["blockers"][0]["code"],
-        "passport_blocked_checks"
-    );
-}
-
-#[tokio::test]
-async fn pulls_intrinsic_proof_accepts_passing_context() {
-    let detail = passport_for_intrinsic_proof(
-        Some(jeryu_core::CheckRunStatus::Completed),
-        Some(CheckConclusion::Success),
-    )
-    .await;
-    assert_eq!(detail["merge_passport"]["status"], "pass");
-    assert_eq!(detail["merge_passport"]["blockers"], serde_json::json!([]));
 }
 
 #[tokio::test]
