@@ -16,6 +16,8 @@ mod types;
 #[cfg(test)]
 mod attention_tests;
 #[cfg(test)]
+mod emit_tests;
+#[cfg(test)]
 mod pins_tests;
 #[cfg(test)]
 pub(crate) mod tests;

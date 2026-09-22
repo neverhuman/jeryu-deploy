@@ -354,13 +354,28 @@ fn deployment(
     );
 }
 
-/// At most the last 20 lines and 12000 bytes of a posted log tail.
+/// JSON bytes a deploy event's `log_tail` may take, leaving room in the
+/// 8 KiB of `detail` (`MAX_DETAIL_BYTES`) for the rest: a tail over that limit
+/// would drop the whole event, and a failed deploy is the one with the
+/// longest tail.
+const LOG_TAIL_JSON_BYTES: usize = 6_000;
+
+/// The last 20 lines of a posted log tail, cut from the front so the tail
+/// takes at most [`LOG_TAIL_JSON_BYTES`] once encoded as a JSON string.
 fn tail_lines(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let kept = lines[lines.len().saturating_sub(20)..].join("\n");
-    let mut start = kept.len().saturating_sub(12_000);
-    while !kept.is_char_boundary(start) {
-        start += 1;
+    let mut used = 0;
+    let mut start = kept.len();
+    for (index, ch) in kept.char_indices().rev() {
+        let mut buffer = [0; 4];
+        // The escaped length, less the two quotes.
+        let encoded = Value::from(&*ch.encode_utf8(&mut buffer)).to_string().len() - 2;
+        if used + encoded > LOG_TAIL_JSON_BYTES {
+            break;
+        }
+        used += encoded;
+        start = index;
     }
     kept[start..].to_string()
 }
