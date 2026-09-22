@@ -122,7 +122,9 @@ adds a live driver registry for real agents. Requests default to
 `io_mode: "pty"` and may set `io_mode: "pipe"` for noninteractive capture.
 
 The production route currently accepts `source.kind: "workcell"` with
-`workcell_id` and `runner_epoch`. The workcell must be held or repairing after a
+`workcell_id` and `runner_epoch`. There is one way to start a repository agent
+run: `POST /api/v1/repos/{id}/sessions`. A `source.kind: "repo"` request here is
+refused with `agent_run_repo_source_use_sessions` (422), naming that route. The workcell must be held or repairing after a
 failed CI run; stale epochs, missing repo roots, and programs outside the
 claimed repo-root slice return typed repair bodies. The launch remains
 fail-closed on cgroup-v2 resource caps, so a host without the required delegated

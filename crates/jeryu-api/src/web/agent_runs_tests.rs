@@ -156,7 +156,7 @@ async fn agent_runs_unavailable_sources_and_invalid_requests_are_typed() {
     let cases = [
         (
             json!({"source": {"kind": "repo", "repo": "alice/jeryu"}, "program": "agent.sh"}),
-            "agent_run_repo_source_unavailable",
+            "agent_run_repo_source_use_sessions",
         ),
         (
             json!({"source": {"kind": "local_path", "local_path": "/tmp/jeryu"}, "program": "agent.sh"}),

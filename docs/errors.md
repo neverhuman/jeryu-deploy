@@ -49,6 +49,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `agent_run_invalid_request` | 422 | the agent run request body failed validation |
 | `agent_run_not_finished` | 409 | the agent run has not finished yet |
 | `agent_run_path_denied` | 403 | the agent run path is outside the allowed slice |
+| `agent_run_repo_source_use_sessions` | 422 | repository agent runs start through the repo sessions route |
 | `agent_run_workcell_state_denied` | 409 | the workcell state does not allow this agent run step |
 | `api_route_not_found` | 404 | no API route matches the request path |
 | `attention_collect_failed` | 500 | the attention inbox could not be collected |

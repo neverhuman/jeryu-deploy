@@ -644,6 +644,7 @@ fn guided_github_edge_response(
                 "GET /repos/{owner}/{repo}",
                 "GET /repos/{owner}/{repo}/pulls",
                 "GET /repos/{owner}/{repo}/issues",
+                "GET /repos/{owner}/{repo}/commits",
                 "GET /repos/{owner}/{repo}/commits/{ref}/status",
                 "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
                 "POST /graphql"

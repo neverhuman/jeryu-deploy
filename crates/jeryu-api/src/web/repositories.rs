@@ -575,11 +575,13 @@ fn score_ingest_invalid(reason: &str) -> AxumResponse {
     )
 }
 
+mod commits;
 mod compare;
 mod deployed;
 mod release_tag;
 mod source;
 
+pub(super) use commits::repo_commits;
 pub(super) use compare::repo_compare;
 pub(super) use deployed::deployed_repositories;
 pub(super) use release_tag::{TagLookupMiss, nearest_release_tag, repo_release_tag};

@@ -149,7 +149,7 @@ pub(super) fn is_revision(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
 }
 
-fn parse_log(log: &str) -> Vec<CompareCommit> {
+pub(super) fn parse_log(log: &str) -> Vec<CompareCommit> {
     log.lines()
         .filter_map(|line| {
             let mut parts = line.split('\u{1f}');

@@ -20,6 +20,7 @@ mod actions;
 mod branch_protection;
 pub(crate) mod check_runs;
 mod commit_status;
+mod commits;
 mod deployments;
 mod graphql;
 mod hooks;
@@ -279,6 +280,11 @@ impl GithubRouter {
             }
             (Post, ["repos", owner, repo, "issues", number, "comments"]) => {
                 Ok(self.create_comment(owner, repo, number, body))
+            }
+
+            // Commit history -------------------------------------------------
+            (Get, ["repos", owner, repo, "commits"]) => {
+                Ok(self.list_commits(owner, repo, path, page, query))
             }
 
             // Commit status --------------------------------------------------

@@ -69,6 +69,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the agent run path is outside the allowed slice",
     ),
     entry(
+        "agent_run_repo_source_use_sessions",
+        422,
+        "repository agent runs start through the repo sessions route",
+    ),
+    entry(
         "agent_run_workcell_state_denied",
         409,
         "the workcell state does not allow this agent run step",

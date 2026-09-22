@@ -178,11 +178,18 @@ where
 /// Builds the RFC 5988 `Link` header value. Emits `next`/`last` while more
 /// pages remain and `prev`/`first` once past page 1; returns `None` for a
 /// single-page result (GitHub omits the header entirely in that case).
-fn link_header(base_path: &str, per_page: usize, page: usize, last_page: usize) -> Option<String> {
+pub(super) fn link_header(
+    base_path: &str,
+    per_page: usize,
+    page: usize,
+    last_page: usize,
+) -> Option<String> {
     if last_page <= 1 {
         return None;
     }
-    let url = |target: usize| format!("{base_path}?per_page={per_page}&page={target}");
+    // A base that already carries a query (`?sha=`) keeps it on every link.
+    let sep = if base_path.contains('?') { '&' } else { '?' };
+    let url = |target: usize| format!("{base_path}{sep}per_page={per_page}&page={target}");
     let mut parts: Vec<String> = Vec::new();
     if page < last_page {
         parts.push(format!("<{}>; rel=\"next\"", url(page + 1)));
@@ -465,6 +472,7 @@ pub(super) fn not_found(status: u16) -> Response {
                 "POST /repos/{owner}/{repo}/transfer (new_owner, optional new_name; admin only)",
                 "GET /repos/{owner}/{repo}/pulls",
                 "GET /repos/{owner}/{repo}/issues",
+                "GET /repos/{owner}/{repo}/commits",
                 "GET /repos/{owner}/{repo}/commits/{ref}/status",
                 "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
                 "GET /repos/{owner}/{repo}/actions/runs",

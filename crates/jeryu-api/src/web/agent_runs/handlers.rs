@@ -582,12 +582,22 @@ fn resolve_agent_run_source(
             workcell_id,
             runner_epoch,
         } => resolve_workcell_source(state, request, workcell_id, *runner_epoch),
+        // One way to start a repository agent run: the repo-scoped session
+        // launch. This route keeps the workcell repair runs only.
         AgentRunSource::Repo { repo } => {
-            let reason = format!("repo source {repo} needs a checkout allocator before launch");
-            Err(agent_run_unavailable(
-                "agent_run_repo_source_unavailable",
+            let reason = format!(
+                "repository runs start through POST /api/v1/repos/{repo}/sessions, not this route"
+            );
+            Err(boxed_agent_run_typed_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "agent_run_repo_source_use_sessions",
                 "start an agent run from a repository",
                 &reason,
+                &[
+                    "POST /api/v1/repos/{id}/sessions with an agent_id to launch a repository session",
+                    "send a workcell source here for a failed-CI repair run",
+                ],
+                AGENT_RUN_RERUN,
             ))
         }
         AgentRunSource::LocalPath { local_path } => {
