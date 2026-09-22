@@ -620,6 +620,7 @@ pub(super) fn filtered_repo_list_response_for_user(
         .filter(|repo| {
             account.is_none_or(|account| {
                 account.role == UserRole::Admin
+                    || !repo.private
                     || state.github.core().user_can_read_repo(
                         &account.login,
                         &repo.owner,
@@ -734,6 +735,7 @@ pub(super) fn repo_summaries_for_user(
         .filter(|repo| {
             account.is_none_or(|account| {
                 account.role == UserRole::Admin
+                    || !repo.private
                     || state.github.core().user_can_read_repo(
                         &account.login,
                         &repo.owner,

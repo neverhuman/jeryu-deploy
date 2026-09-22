@@ -1209,4 +1209,6 @@ mod paging_tests;
 mod operator_resources_tests;
 
 #[cfg(test)]
+mod anonymous_read_tests;
+#[cfg(test)]
 mod repo_address_tests;

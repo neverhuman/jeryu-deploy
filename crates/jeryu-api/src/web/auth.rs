@@ -566,6 +566,9 @@ pub(super) async fn gate(
                         Utc::now(),
                         request_limits::bad_tokens_per_window(),
                     );
+                } else if anonymous_read_allowed(&state, request.method(), request.uri().path()) {
+                    request.extensions_mut().insert(anonymous_account());
+                    return next.run(request).await;
                 }
                 return api_error(StatusCode::UNAUTHORIZED, "unauthorized", "login required");
             }
@@ -603,6 +606,7 @@ pub(super) async fn gate(
         let allowed = match *request.method() {
             Method::GET | Method::HEAD => {
                 account.role == UserRole::Admin
+                    || !repo.private
                     || state
                         .core
                         .user_can_read_repo(&account.login, &repo.owner, &repo.name)
@@ -871,6 +875,68 @@ fn parse_trusted_proxies(raw: &str) -> Vec<IpAddr> {
         .filter(|part| !part.is_empty())
         .filter_map(|part| part.parse::<IpAddr>().ok())
         .collect()
+}
+
+/// Login carried by a visitor with no credential. Core rejects it as an
+/// account name (`(` is not a login byte), so it can never hold a grant.
+pub(crate) const ANONYMOUS_LOGIN: &str = "(anonymous)";
+
+/// Repository sub-resources a visitor without credentials may read on a
+/// public repository: what the repository page shows. Settings, agent runs
+/// and sessions stay behind a login.
+const ANONYMOUS_REPO_READS: &[&str] = &[
+    "refs",
+    "tree",
+    "blob",
+    "raw",
+    "readme",
+    "compare",
+    "release-tag",
+    "pulls",
+];
+
+/// A public repository is readable without an account, as its PUBLIC chip and
+/// Clone button promise: the repository list (narrowed to public ones by the
+/// list handler) and the read routes of one public repository.
+fn anonymous_read_allowed(state: &WebState, method: &Method, path: &str) -> bool {
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return false;
+    }
+    if path == "/api/v1/repos" {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("/api/v1/repos/") else {
+        return false;
+    };
+    // The repository is addressed by one (possibly percent-encoded) segment,
+    // UUID or `owner%2Fname`, or by a bare `owner/name` pair.
+    let segments: Vec<&str> = rest.split('/').collect();
+    let (repo, sub) = match find_repo(state, &percent_decode(segments[0])) {
+        Some(repo) => (repo, segments.get(1)),
+        None => match segments.get(1).and_then(|name| {
+            find_repo(
+                state,
+                &format!("{}/{}", percent_decode(segments[0]), percent_decode(name)),
+            )
+        }) {
+            Some(repo) => (repo, segments.get(2)),
+            None => return false,
+        },
+    };
+    !repo.private && sub.is_none_or(|sub| ANONYMOUS_REPO_READS.contains(sub))
+}
+
+fn anonymous_account() -> AccountSummary {
+    AccountSummary {
+        login: ANONYMOUS_LOGIN.to_string(),
+        display_name: "Anonymous".to_string(),
+        role: UserRole::User,
+        status: AccountStatus::Active,
+        auth_epoch: 0,
+        must_change_password: false,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
 }
 
 fn repo_id_from_path(path: &str) -> Option<String> {
