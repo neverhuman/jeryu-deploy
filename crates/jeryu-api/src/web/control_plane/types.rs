@@ -58,7 +58,13 @@ pub(crate) struct LocalAuthority {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ControlPlaneSummary {
+    /// Non-archived repositories: the same active set `/api/v1/repos` lists
+    /// by default, so an admin sees one number in both places.
     pub repo_count: usize,
+    /// Archived repositories, reported apart so they stay visible without
+    /// inflating `repo_count`.
+    #[serde(default)]
+    pub archived_repo_count: usize,
     pub open_pr_count: usize,
     pub draft_pr_count: usize,
     pub queued_check_count: usize,

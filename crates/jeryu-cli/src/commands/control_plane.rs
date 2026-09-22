@@ -17,8 +17,9 @@ pub(crate) fn run_status(
     let value = api(api_url)?.get("/api/v1/control-plane/status")?;
     let summary = value.get("summary").unwrap_or(&Value::Null);
     let human = format!(
-        "control plane: repos={} priorities={} mirror={} artifacts={} runners={}\nfailing checks: {}{}",
+        "control plane: repos={} archived={} priorities={} mirror={} artifacts={} runners={}\nfailing checks: {}{}",
         number(summary, "repoCount"),
+        number(summary, "archivedRepoCount"),
         number(summary, "priorityCount"),
         text(summary, "mirrorState"),
         text(summary, "artifactState"),

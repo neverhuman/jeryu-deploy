@@ -571,3 +571,40 @@ async fn gate_identity_publishes_statuses_without_admin_but_cannot_protect() {
         );
     }
 }
+
+#[tokio::test]
+async fn control_plane_repo_count_excludes_archived_and_reports_them_apart() {
+    let core = ForgeCore::new();
+    for name in ["live-a", "live-b", "old-a", "old-b", "old-c"] {
+        core.create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    for name in ["old-a", "old-b", "old-c"] {
+        core.set_repository_archived("alice", "alice", name, true)
+            .unwrap();
+    }
+    let state = Arc::new(WebState::new(core));
+
+    let summary = crate::web::control_plane::status(State(state), Query(Default::default()))
+        .await
+        .unwrap()
+        .0
+        .snapshot
+        .summary;
+    assert_eq!(
+        summary.repo_count, 2,
+        "active repos, as /api/v1/repos lists"
+    );
+    assert_eq!(summary.archived_repo_count, 3);
+    let json = serde_json::to_value(&summary).unwrap();
+    assert_eq!(json["repoCount"], 2);
+    assert_eq!(json["archivedRepoCount"], 3);
+}

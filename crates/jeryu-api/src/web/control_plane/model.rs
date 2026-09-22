@@ -483,7 +483,8 @@ fn summary(
     mirror: &RemoteStatusResponse,
 ) -> ControlPlaneSummary {
     ControlPlaneSummary {
-        repo_count: repos.len(),
+        repo_count: repos.iter().filter(|repo| !repo.archived).count(),
+        archived_repo_count: repos.iter().filter(|repo| repo.archived).count(),
         open_pr_count: prs.len(),
         draft_pr_count: prs.iter().filter(|pr| pr.draft).count(),
         queued_check_count: checks
