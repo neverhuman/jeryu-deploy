@@ -61,6 +61,16 @@ standalone Deploy proof.
 
 ## Local Commands
 
+Run the gate locally with one command:
+
+```bash
+bash ops/ci/pr-ci.sh
+```
+
+This is the same entry point the protected `jeryu-deploy/required` check runs.
+`just gate`, `just required` and `scripts/ci-local.sh` are aliases for it.
+The commands below are narrower loops for iteration, not the gate:
+
 - `just fast`
 - `just check`
 - `just check-api`
@@ -103,7 +113,7 @@ just fast
 ```
 
 The verifier is read-only and never installs a tool. `just fast` is the
-deterministic affected lane; use `just check`, then `just security`, before
+deterministic affected lane; run `bash ops/ci/pr-ci.sh` (the gate) before
 requesting protected review. Test ownership and narrower reruns are mapped in
 `agent/test-map.json` and `docs/testing.md`.
 

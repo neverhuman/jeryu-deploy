@@ -51,6 +51,11 @@ profile:
 build-release:
   source ops/ci/web-dist-env.sh; source ops/ci/hosted-git-env.sh; cargo build --locked --release -p jeryu-cli --jobs {{jobs}}
 
-# Entry point for the protected jeryu-deploy/required check: the existing lane, unchanged.
+# The local gate. ops/ci/pr-ci.sh is the single documented entry point; `gate`,
+# `required` and scripts/ci-local.sh are aliases for it.
+gate:
+  bash ops/ci/pr-ci.sh
+
+# Entry point for the protected jeryu-deploy/required check (alias of `gate`).
 required:
   bash ops/ci/pr-ci.sh

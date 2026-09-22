@@ -47,6 +47,8 @@ Primary lanes:
   block through the local API, and writes
   `target/jankurai/readme-publish-receipt.json`. Use `--dry-run --verify` to
   validate the block render without mutating the worktree.
+- `bash ops/ci/pr-ci.sh`: the local gate and single documented entry point
+  (`just gate`, `just required` and `scripts/ci-local.sh` are aliases).
 - `just fast`: deterministic fast lane for agent iteration.
 - `just agent-runs`: narrow REST/MCP/session/TTY regression loop for changes
   under `crates/jeryu-api/src/web/agent_runs/`.
