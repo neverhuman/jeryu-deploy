@@ -24,7 +24,8 @@ const HOST_SESSION_COOKIE: &str = "__Host-jeryu-session";
 const LOCAL_SESSION_COOKIE: &str = "jeryu-session";
 const CSRF_HEADER: &str = "x-jeryu-csrf";
 const AUTH_LIMIT_MAX: u32 = 10;
-const AUTH_LIMIT_WINDOW_SECS: i64 = 60;
+#[cfg(test)]
+const AUTH_LIMIT_WINDOW_SECS: i64 = request_limits::LIMIT_WINDOW_SECS;
 const REMEMBER_ME_MAX_AGE_SECS: i64 = 60 * 60 * 24 * 30;
 
 #[derive(Debug, Deserialize)]
@@ -519,9 +520,53 @@ pub(super) async fn gate(
             source: AuthSource::LocalDev,
         }
     } else {
+        let ip = client_ip(peer, request.headers());
+        let bad_key = format!("bad-credential:{ip}");
+        let credential = request_limits::credential_key(request.headers());
+        if credential.is_some()
+            && request_limits::exceeded(
+                &state
+                    .auth_rate_limits
+                    .lock()
+                    .expect("auth rate-limit mutex poisoned"),
+                &bad_key,
+                Utc::now(),
+                request_limits::bad_tokens_per_window(),
+            )
+        {
+            return request_limits::too_many("too many failed credentials from this client");
+        }
         match authenticate_headers(&state, request.headers()) {
-            Some(auth) => auth,
+            Some(auth) => {
+                let read = matches!(*request.method(), Method::GET | Method::HEAD);
+                if read
+                    && let Some(credential) = credential
+                    && request_limits::hit(
+                        &mut state
+                            .auth_rate_limits
+                            .lock()
+                            .expect("auth rate-limit mutex poisoned"),
+                        format!("read:{credential}"),
+                        Utc::now(),
+                        request_limits::reads_per_window(),
+                    )
+                {
+                    return request_limits::too_many("too many reads with this credential");
+                }
+                auth
+            }
             None => {
+                if credential.is_some() {
+                    request_limits::hit(
+                        &mut state
+                            .auth_rate_limits
+                            .lock()
+                            .expect("auth rate-limit mutex poisoned"),
+                        bad_key,
+                        Utc::now(),
+                        request_limits::bad_tokens_per_window(),
+                    );
+                }
                 return api_error(StatusCode::UNAUTHORIZED, "unauthorized", "login required");
             }
         }
@@ -783,16 +828,7 @@ fn rate_limit_hit(
     key: String,
     now: DateTime<Utc>,
 ) -> bool {
-    let bucket = limits.entry(key).or_insert_with(|| RateLimitBucket {
-        attempts: 0,
-        reset_at: now + chrono::Duration::seconds(AUTH_LIMIT_WINDOW_SECS),
-    });
-    if bucket.reset_at <= now {
-        bucket.attempts = 0;
-        bucket.reset_at = now + chrono::Duration::seconds(AUTH_LIMIT_WINDOW_SECS);
-    }
-    bucket.attempts = bucket.attempts.saturating_add(1);
-    bucket.attempts > AUTH_LIMIT_MAX
+    request_limits::hit(limits, key, now, AUTH_LIMIT_MAX)
 }
 
 fn rate_limited() -> AxumResponse {
@@ -922,6 +958,8 @@ fn expired_cookie_header(
 
 #[allow(dead_code)]
 fn _grant_wire(_grant: &RepoAccessGrant) {}
+
+mod request_limits;
 
 #[cfg(test)]
 mod tests;

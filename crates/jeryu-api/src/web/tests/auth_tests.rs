@@ -724,3 +724,32 @@ async fn trust_local_dev_requires_loopback_peer() {
     let loopback = app.oneshot(request).await.unwrap();
     assert_eq!(loopback.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn repeated_bad_tokens_answer_429_with_retry_after() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let send = |app: axum::Router| async move {
+        app.oneshot(
+            Request::builder()
+                .uri("/api/v1/work")
+                .header(header::AUTHORIZATION, "Bearer not-a-real-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    };
+    for _ in 0..20 {
+        assert_eq!(send(app.clone()).await.status(), StatusCode::UNAUTHORIZED);
+    }
+    let limited = send(app.clone()).await;
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.headers()[header::RETRY_AFTER], "60");
+}

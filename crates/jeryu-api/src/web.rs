@@ -4,6 +4,7 @@ mod agent_runs;
 pub(crate) mod auth;
 mod ci_evidence;
 mod codegraph;
+mod conditional;
 mod control_plane;
 mod ecosystem;
 mod embedded_web;
@@ -676,6 +677,8 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
         .fallback(surface::spa_fallback)
         // Response middleware that stamps every reply with advisory steering
         // headers (and a per-route MCP tool hint for gh/automation UAs).
+        // Inside the auth gate: a 304 only answers a caller allowed the body.
+        .layer(from_fn(conditional::etag))
         .layer(from_fn(steer_headers))
         .layer(from_fn_with_state(state.clone(), auth::gate))
         // Outside the auth gate so a merge refused there is recorded too.
