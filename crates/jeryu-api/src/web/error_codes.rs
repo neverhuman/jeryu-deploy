@@ -180,6 +180,16 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "reading repository source from git failed",
     ),
     entry(
+        "idempotency_key_in_flight",
+        409,
+        "a request with this Idempotency-Key is still running",
+    ),
+    entry(
+        "idempotency_key_reused",
+        422,
+        "the Idempotency-Key was already used for a different request",
+    ),
+    entry(
         "internal_error",
         500,
         "the server failed while handling the request",

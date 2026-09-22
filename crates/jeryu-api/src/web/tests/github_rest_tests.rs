@@ -992,3 +992,63 @@ async fn mcp_endpoint_requires_configured_authentication() {
         .unwrap();
     assert_eq!(authenticated.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
+
+#[tokio::test]
+async fn issue_create_with_idempotency_key_replays_instead_of_filing_twice() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let token = core
+        .create_personal_access_token("alice", "test", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let file = |key: Option<&str>| {
+        let mut request = Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/repos/alice/jeryu/issues")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(key) = key {
+            request = request.header("idempotency-key", key);
+        }
+        router.clone().oneshot(
+            request
+                .body(Body::from(r#"{"title":"retried create"}"#))
+                .unwrap(),
+        )
+    };
+
+    let first = file(Some("create-1")).await.unwrap();
+    assert_eq!(first.status(), StatusCode::CREATED);
+    assert!(first.headers().get("idempotent-replayed").is_none());
+    let first = response_json(first).await;
+
+    let replay = file(Some("create-1")).await.unwrap();
+    assert_eq!(replay.status(), StatusCode::CREATED);
+    assert_eq!(replay.headers()["idempotent-replayed"], "true");
+    assert_eq!(response_json(replay).await["number"], first["number"]);
+    assert_eq!(core.list_issues("alice", "jeryu", None).unwrap().len(), 1);
+
+    // No key: an ordinary second write.
+    let fresh = response_json(file(None).await.unwrap()).await;
+    assert_ne!(fresh["number"], first["number"]);
+    assert_eq!(core.list_issues("alice", "jeryu", None).unwrap().len(), 2);
+}

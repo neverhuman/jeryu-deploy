@@ -10,6 +10,7 @@ mod ecosystem;
 mod embedded_web;
 mod error_codes;
 mod error_envelope;
+mod idempotency;
 mod jankurai;
 mod markdown;
 mod merge_attempts;
@@ -131,6 +132,8 @@ pub(crate) struct WebState {
     pub(crate) merge_queue: Arc<merge_queue::MergeQueue>,
     /// The last merge attempt per PR and its forge answer (`merge_attempts`).
     pub(crate) merge_attempts: merge_attempts::MergeAttemptStore,
+    /// Kept answers to `POST` writes that carried an `Idempotency-Key`.
+    pub(crate) idempotency: idempotency::IdempotencyStore,
     /// todoq shift heartbeats (`<data_dir>/shift.sqlite`) and PR author.
     pub(crate) shift: shift::ShiftState,
     /// Pipeline event log (`<data_dir>/shift.sqlite`, table `pipeline_events`).
@@ -278,6 +281,7 @@ impl WebState {
             gate_runners: control_plane::GateRunnerStore::from_env(),
             merge_queue: Arc::default(),
             merge_attempts: merge_attempts::MergeAttemptStore::default(),
+            idempotency: idempotency::IdempotencyStore::default(),
             shift,
             events,
             disputes,
@@ -675,6 +679,11 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
                 .route_layer(DefaultBodyLimit::disable()),
         )
         .fallback(surface::spa_fallback)
+        // Innermost: a replayed write skips the handler, never the auth gate.
+        .layer(from_fn_with_state(
+            state.idempotency.clone(),
+            idempotency::replay,
+        ))
         // Response middleware that stamps every reply with advisory steering
         // headers (and a per-route MCP tool hint for gh/automation UAs).
         // Inside the auth gate: a 304 only answers a caller allowed the body.

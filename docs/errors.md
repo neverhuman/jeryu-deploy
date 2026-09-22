@@ -76,6 +76,8 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `forge_validation` | 422 | the forge rejected the request fields |
 | `git_error` | 500 | a git operation failed |
 | `git_source_failed` | 500 | reading repository source from git failed |
+| `idempotency_key_in_flight` | 409 | a request with this Idempotency-Key is still running |
+| `idempotency_key_reused` | 422 | the Idempotency-Key was already used for a different request |
 | `internal_error` | 500 | the server failed while handling the request |
 | `invalid_branch` | 422 | the branch name is not valid |
 | `invalid_compare` | 422 | the compare range is not valid |
@@ -199,6 +201,18 @@ receipt, or signed witness.
 
 The operation would violate merge or state consistency. Refresh base state,
 recompute the witness, and retry through the queue path.
+
+## Idempotent Writes
+
+A `POST` under `/api/v1/` or `/repos/` (and `/api/v3/repos/`) may carry an
+`Idempotency-Key` header (1-255 visible ASCII characters). The first request
+runs; a repeat with the same key, credentials, method, path and body within 24
+hours answers the kept reply again with `Idempotent-Replayed: true` and does not
+run the write twice. A repeat while the first still runs answers
+`idempotency_key_in_flight` (retry later); the same key on a different request
+answers `idempotency_key_reused` (use a fresh key). 5xx answers are not kept, so
+a retry after a server error runs the write. `PUT`, `PATCH` and `DELETE` set a
+named resource and are idempotent without a key.
 
 ## Missing Receipt
 
