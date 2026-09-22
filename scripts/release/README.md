@@ -95,6 +95,25 @@ scripts/release/build-web-dist.sh --commit <jeryu-web sha> /tmp/web-dist   # pri
 jeryu-web keeps its build reproducible (same commit, same hash) and checks it
 with its `scripts/check-reproducible-web-build.sh`.
 
+## Machine-readable output
+
+`stage-release.sh` and `deploy-release.sh` take `--json` and `--dry-run`. Under `--json` stdout is
+exactly one JSON line (everything else goes to stderr): the result on success, or the API's error
+envelope `{"code","message","exit_code"}` on failure. `--dry-run` reads what it needs and changes
+nothing. Refusals exit with a code per class, named by the envelope's `code`:
+
+| exit | code | meaning |
+|---|---|---|
+| 64 | `usage` | bad argument or env value |
+| 65 | `state` | the live or staged release is not what the script expects |
+| 69 | `unreachable` | a host or the remote did not answer |
+| 70 | `build` | the staged binary needs a newer glibc (stage) |
+| 77 | `credential` | the deploy token is not readable (deploy) |
+| 1 | `failed` | anything else |
+
+A failed switch exits with `switch.sh`'s own code (`switch_failed`). Without `--json`, the release id
+is still the last line of `stage-release.sh`'s stdout.
+
 ## Builder image
 
 `stage-release.sh` builds in `jeryu-builder:rust1.95-glibc2.35-r2`, defined by

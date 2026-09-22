@@ -394,6 +394,65 @@ jq -se '.[-1] | .state == "success" and (.log_path | endswith(".log")) and (has(
 [[ "$(find "$logs" -name '*.log' | wc -l)" == 30 ]] || fail "the switch logs are not pruned to the newest 30"
 ok "deploy-release records the log path on success and keeps the newest 30 logs"
 
+# --json and --dry-run on deploy-release.sh: one JSON line on stdout, a distinct exit code per refusal.
+: >"$D/statuses.jsonl"; : >"$D/curl-args"; logs_before="$(find "$logs" -name '*.log' | wc -l)"
+out="$(PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bash "$here/deploy-release.sh" --json --dry-run "$D_REL" 2>/dev/null)" \
+  || fail "a dry-run deploy failed"
+jq -e --arg rel "$D_REL" --arg prev "$PREV" '.dry_run and .release == $rel and .deployment.payload.previous_release == $prev' <<<"$out" >/dev/null \
+  || fail "the dry-run JSON does not describe the deployment: $out"
+[[ ! -s "$D/curl-args" && ! -s "$D/statuses.jsonl" ]] || fail "a dry-run deploy recorded something"
+[[ "$(find "$logs" -name '*.log' | wc -l)" == "$logs_before" ]] || fail "a dry-run deploy wrote a log"
+rc=0; out="$(PATH="$D/bin:$PATH" HOME="$D/home" bash "$here/deploy-release.sh" --json not-a-release 2>/dev/null)" || rc=$?
+[[ $rc == 64 ]] && jq -e '.code == "usage" and .exit_code == 64' <<<"$out" >/dev/null || fail "a bad release id is not a usage refusal ($rc): $out"
+rc=0; out="$(PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/missing" bash "$here/deploy-release.sh" --json "$D_REL" 2>/dev/null)" || rc=$?
+[[ $rc == 77 ]] && jq -e '.code == "credential" and .exit_code == 77' <<<"$out" >/dev/null || fail "a missing token is not a credential refusal ($rc): $out"
+rm -f "$D/succeed"
+rc=0; out="$(PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bash "$here/deploy-release.sh" --json "$D_REL" 2>/dev/null)" || rc=$?
+[[ $rc == 3 && "$(wc -l <<<"$out")" == 1 ]] || fail "a failed --json switch did not print one line and exit 3 ($rc): $out"
+jq -e '.code == "switch_failed" and .exit_code == 3 and (.message | contains("health check timed out"))' <<<"$out" >/dev/null \
+  || fail "a failed --json switch is not an error envelope: $out"
+touch "$D/succeed"
+out="$(PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bash "$here/deploy-release.sh" --json "$D_REL" 2>/dev/null)" \
+  || fail "a successful --json deploy failed"
+jq -e --arg rel "$D_REL" '.release == $rel and .deployment_id == 5 and (.log_path | endswith(".log")) and (.dry_run | not)' <<<"$out" >/dev/null \
+  || fail "a successful --json deploy is not one JSON line: $out"
+ok "deploy-release --json prints one line, --dry-run changes nothing, and each refusal has its own exit code"
+
+# --json and --dry-run on stage-release.sh. Stand-ins: git that names main, ssh that names the live
+# release, has the builder image, and runs the remote build with the exit code in $S/remote-rc.
+S="$T/stage"; mkdir -p "$S/bin"
+S_SHA="$(printf 5%.0s {1..40})"
+printf '#!/usr/bin/env bash\nprintf "%%s\\trefs/heads/main\\n" %s\n' "$S_SHA" >"$S/bin/git"
+cat >"$S/bin/ssh" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *readlink*) cat "$S/live" ;;
+  *"image inspect"*) exit 0 ;;
+  *"bash -s"*) cat >/dev/null; exit "\$(cat "$S/remote-rc")" ;;
+esac
+EOF
+chmod +x "$S/bin/git" "$S/bin/ssh"
+echo "jeryu-$PREV" >"$S/live"; echo 0 >"$S/remote-rc"
+stage_release() { PATH="$S/bin:$PATH" bash "$here/stage-release.sh" "$@" 2>/dev/null; }
+out="$(stage_release --dry-run)" || fail "a dry-run stage failed"
+[[ "$(tail -n 1 <<<"$out")" == prod-*-5555555-unsigned ]] || fail "a dry-run stage does not end with the release id: $out"
+echo 70 >"$S/remote-rc"
+out="$(stage_release --json --dry-run)" || fail "a --json dry-run stage failed (it must not build)"
+jq -e --arg sha "$S_SHA" --arg prev "$PREV" '.dry_run and .commit == $sha and .previous_release == $prev and (.release | endswith("-5555555-unsigned"))' <<<"$out" >/dev/null \
+  || fail "the dry-run stage JSON is wrong: $out"
+rc=0; out="$(stage_release --json)" || rc=$?
+[[ $rc == 70 ]] && jq -e '.code == "build" and .exit_code == 70' <<<"$out" >/dev/null || fail "a too-new glibc is not a build refusal ($rc): $out"
+echo 0 >"$S/remote-rc"
+out="$(stage_release --json)" || fail "a --json stage failed"
+jq -e '(.dry_run | not) and (.release | startswith("prod-"))' <<<"$out" >/dev/null || fail "a --json stage is not one JSON line: $out"
+rc=0; out="$(stage_release --json abc)" || rc=$?
+[[ $rc == 64 ]] && jq -e '.code == "usage"' <<<"$out" >/dev/null || fail "a short sha is not a usage refusal ($rc): $out"
+echo "jeryu-something-else" >"$S/live"
+rc=0; out="$(stage_release --json "$S_SHA")" || rc=$?
+[[ $rc == 65 ]] && jq -e '.code == "state" and (.message | contains("something-else"))' <<<"$out" >/dev/null \
+  || fail "an unexpected live release is not a state refusal ($rc): $out"
+ok "stage-release --json prints one line, --dry-run builds nothing, and each refusal has its own exit code"
+
 # -h and --help on every release script print its header and exit 0 without running anything:
 # the network, git, docker, service and file tools on PATH are tripwires.
 mkdir -p "$T/tripwire"

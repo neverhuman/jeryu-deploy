@@ -26,11 +26,46 @@
 # ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat). It is read into a
 # 0600 curl config, never put on argv. Env: JERYU_BUILD_HOST (xbabe2),
 # JERYU_FORGE_HOST (atomicsoul), JERYU_FORGE_URL (https://git.neverhuman.org).
+#
+# --dry-run reads the staged metadata and prints the deployment it would record,
+# then stops: nothing is recorded, switched or logged.
+# --json prints exactly one JSON line on stdout (switch output and receipts go
+# to stderr): {"release","deployment_id","log_path","dry_run"} on success,
+# {"release","deployment","dry_run":true} on a dry run, or the API's error
+# envelope {"code","message","exit_code"} on a refusal or a failed switch.
+# Exit codes: 0 live, 64 usage (bad argument), 65 state (the release is not
+# staged, or its metadata is incomplete), 69 unreachable (the hosts did not
+# answer), 77 credential (the deploy token is not readable), 1 anything else.
+# A failed switch exits with switch.sh's own code (envelope code switch_failed).
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
-rel="${1:?usage: deploy-release.sh RELEASE_ID}"
-[[ "$rel" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+-unsigned$ ]] || { echo "not a release id: $rel" >&2; exit 1; }
+json=0; dry_run=0; args=()
+[[ " $* " != *" --json "* ]] || json=1
+exec 3>&1
+envelope() { # CODE MESSAGE EXIT — the API's error envelope, on stdout under --json
+  [[ $json == 0 ]] || jq -cn --arg c "$1" --arg m "$2" --argjson e "$3" '{code:$c, message:$m, exit_code:$e}' >&3
+}
+refuse() { # CLASS MESSAGE — exit with the class's code
+  local code
+  case "$1" in usage) code=64 ;; state) code=65 ;; unreachable) code=69 ;; credential) code=77 ;; *) code=1 ;; esac
+  echo "$2" >&2
+  envelope "$1" "$2" "$code"
+  exit "$code"
+}
+for a in "$@"; do
+  case "$a" in
+    --json) ;;
+    --dry-run) dry_run=1 ;;
+    -*) refuse usage "unknown option '$a'" ;;
+    *) args+=("$a") ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
+(($# == 1)) || refuse usage "usage: deploy-release.sh [--json] [--dry-run] RELEASE_ID"
+[[ $json == 0 ]] || exec 1>&2
+rel="$1"
+[[ "$rel" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+-unsigned$ ]] || refuse usage "not a release id: $rel"
 build_host="${JERYU_BUILD_HOST:-xbabe2}"
 forge_host="${JERYU_FORGE_HOST:-atomicsoul}"
 forge="${JERYU_FORGE_URL:-https://git.neverhuman.org}"
@@ -39,7 +74,7 @@ repo=/repos/jeryu/jeryu-deploy
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 umask 077
-[[ -r "$token_file" ]] || { echo "deploy token $token_file is not readable" >&2; exit 1; }
+[[ -r "$token_file" ]] || refuse credential "deploy token $token_file is not readable"
 printf 'header = "Authorization: Bearer %s"\n' "$(cat "$token_file")" >"$tmp/curl.cfg"
 api() { # METHOD PATH [JSON-FILE]
   local args=(--silent --show-error --max-time 60 -X "$1" --config "$tmp/curl.cfg" -H 'Accept: application/json')
@@ -47,10 +82,14 @@ api() { # METHOD PATH [JSON-FILE]
   curl "${args[@]}" "$forge$2"
 }
 
-meta="$(ssh "$build_host" "ssh -n $forge_host 'set -e; d=~/.jeryu/incoming/$rel; cat \$d/RELEASE.txt; echo binary_sha256=\$(sha256sum \$d/bundle/jeryu | cut -c1-64); echo live=\$(readlink ~/.jeryu/bin/jeryu)'")"
+meta="$(ssh "$build_host" "ssh -n $forge_host 'set -e; d=~/.jeryu/incoming/$rel; cat \$d/RELEASE.txt; echo binary_sha256=\$(sha256sum \$d/bundle/jeryu | cut -c1-64); echo live=\$(readlink ~/.jeryu/bin/jeryu)'")" || {
+  rc=$?
+  [[ $rc != 255 ]] || refuse unreachable "cannot reach $forge_host through $build_host"
+  refuse state "$rel is not staged on $forge_host"
+}
 field() { sed -n "s/^$1=//p" <<<"$meta" | head -1; }
 sha="$(field jeryu_deploy_commit | cut -d' ' -f1)"
-[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "staged RELEASE.txt has no 40-hex jeryu_deploy_commit" >&2; exit 1; }
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || refuse state "staged RELEASE.txt has no 40-hex jeryu_deploy_commit"
 
 # Empty for a release staged before jeryu-web was pinned by commit.
 web_commit="$(field jeryu_web_commit)"; web_sha="$(field web_dist_sha256)"
@@ -61,6 +100,12 @@ jq -n --arg sha "$sha" --arg rel "$rel" --arg prev "$(field rollback_target)" \
   '{sha:$sha, ref:"main", environment:"production", description:("release " + $rel),
     payload:{release:$rel, previous_release:$prev, previous_binary:$live, binary_sha256:$bin,
              jeryu_web_commit:$web, web_dist_sha256:$web_sha, host:$host, signed:false}}' >"$tmp/deployment.json"
+
+if [[ $dry_run == 1 ]]; then
+  echo "[dry-run] would switch $forge_host to $rel (${sha:0:12}, rollback target $(field rollback_target)); nothing recorded or switched" >&2
+  [[ $json == 0 ]] || jq -c --arg rel "$rel" '{release:$rel, deployment:., dry_run:true}' "$tmp/deployment.json" >&3
+  exit 0
+fi
 
 record() {
   local created
@@ -109,8 +154,11 @@ if [[ $rc == 0 ]]; then
     record
   fi
   status success "live on $forge_host" "$log"
+  [[ $json == 0 ]] || jq -cn --arg rel "$rel" --arg id "$deployment_id" --arg log "$log" \
+    '{release:$rel, deployment_id:($id | tonumber? // null), log_path:$log, dry_run:false}' >&3
 else
   why="$(clean_log | grep -v 'rollback: bash ' | tail -n 1 | cut -c1-300)"
   status failure "switch.sh exited $rc${why:+: $why}" "$log" "$(clean_log | tail -n 20)"
+  envelope switch_failed "switch.sh exited $rc${why:+: $why}; log $log" "$rc"
   exit "$rc"
 fi

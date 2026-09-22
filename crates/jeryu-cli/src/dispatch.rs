@@ -2,8 +2,10 @@
 //!
 //! The router holds no business logic; it fans out to the thin command
 //! adapters and maps a [`ClientError`] to a non-zero exit code with a stderr
-//! line, so the CLI behaves like an operator tool (0 on success, 1 on a
-//! client error).
+//! line, so the CLI behaves like an operator tool (0 on success, non-zero on
+//! a client error). Under `--json` the failure is also written to stdout as
+//! the same `{"code", "message"}` envelope the API returns, so an agent gets
+//! parseable output on both paths.
 
 use std::io::Write;
 
@@ -82,6 +84,9 @@ pub fn dispatch_with_api_url_env(
         Ok(()) => 0,
         Err(error) => {
             writeln!(err, "error: {error}").ok();
+            if json {
+                writeln!(out, "{}", error_envelope(&error)).ok();
+            }
             exit_code(&error)
         }
     }
@@ -94,4 +99,47 @@ fn exit_code(error: &ClientError) -> i32 {
         ClientError::Invalid(_) => 4,
         ClientError::NotWired(_) => 5,
     }
+}
+
+/// The API's error envelope (`code`, `message`, `reason`, `purpose`,
+/// `common_fixes`, `repair_hint`, `docs_url`; see `docs/errors.md`) for a
+/// client error, plus the process `exit_code`. Every `code` is one the API
+/// publishes at `GET /api/v1/errors`.
+pub fn error_envelope(error: &ClientError) -> serde_json::Value {
+    let (code, message, reason, fix) = match error {
+        ClientError::NotFound(m) => (
+            "not_found",
+            m,
+            "the requested entity was not found",
+            "check the owner/repo and id, then retry",
+        ),
+        ClientError::Conflict(m) => (
+            "conflict",
+            m,
+            "the request conflicts with existing state",
+            "read the current state and retry against it",
+        ),
+        ClientError::Invalid(m) => (
+            "invalid_input",
+            m,
+            "the request is structurally invalid",
+            "fix the argument the message names and retry",
+        ),
+        ClientError::NotWired(m) => (
+            "service_unavailable",
+            m,
+            "the capability is not wired to a live engine",
+            "pass --api-url or set JERYU_API_URL to a live forge",
+        ),
+    };
+    serde_json::json!({
+        "code": code,
+        "message": message,
+        "reason": reason,
+        "purpose": "complete a jeryu CLI command",
+        "common_fixes": [fix],
+        "repair_hint": "look the code up at GET /api/v1/errors, fix what it names, and retry",
+        "docs_url": "docs/errors.md",
+        "exit_code": exit_code(error),
+    })
 }

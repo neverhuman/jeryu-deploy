@@ -1201,3 +1201,43 @@ fn dispatch_json_output_is_machine_readable() {
     assert_eq!(value["name"], "alpha");
     assert_eq!(value["owner"], "jeryu");
 }
+
+#[test]
+fn dispatch_json_error_emits_api_error_envelope() {
+    let client = InMemoryClient::new();
+    let (code, out, err) = run_cli(
+        &client,
+        &[
+            "jeryu", "--json", "forge", "issue", "create", "--repo", "ghost", "--title", "x",
+        ],
+    );
+    assert_eq!(code, 2);
+    // Under --json the failure is a single parseable envelope on stdout with
+    // the same code/message keys the API returns.
+    let envelope: serde_json::Value =
+        serde_json::from_str(out.trim()).expect("stdout is one JSON document");
+    assert_eq!(envelope["code"], "not_found");
+    assert_eq!(envelope["exit_code"], 2);
+    for field in [
+        "code",
+        "message",
+        "reason",
+        "purpose",
+        "common_fixes",
+        "repair_hint",
+        "docs_url",
+    ] {
+        assert!(envelope.get(field).is_some(), "envelope lacks {field}");
+    }
+    assert!(
+        envelope["message"]
+            .as_str()
+            .unwrap()
+            .contains("jeryu/ghost"),
+        "message names the missing repo: {envelope}"
+    );
+    assert!(
+        err.contains("not found"),
+        "stderr keeps the prose line: {err:?}"
+    );
+}
