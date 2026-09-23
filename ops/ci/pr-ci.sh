@@ -38,6 +38,8 @@ cd "${repo_root}"
 source ops/ci/lib.sh
 require_jankurai
 bash "${repo_root}/ops/ci/test-governed-jankurai.sh"
+# No gate may run with the ci_bridge mock flag set (it would pass without running).
+bash "${repo_root}/ops/ci/test-ci-env.sh"
 # The production release scripts (switch/rollback) against a throwaway forge home.
 bash "${repo_root}/scripts/release/test-release-scripts.sh"
 
