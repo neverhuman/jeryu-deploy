@@ -717,7 +717,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
     vec![
         ("/api/v1/errors", get(error_envelope::catalog)),
         ("/api/v1/bootstrap", get(bootstrap)),
-        ("/api/v1/bootstrap.tui", get(bootstrap_tui)),
+        ("/api/v1/read-model/tui", get(tui_read_model)),
+        // The suffixed spelling reads like a content-type negotiation it never
+        // was; kept as an alias so clients can move at their own pace.
+        ("/api/v1/bootstrap.tui", get(tui_read_model)),
         ("/api/v1/work", get(work::list).post(work::create)),
         ("/api/v1/work/:key", get(work::detail).patch(work::patch)),
         ("/api/v1/work/:key/comments", post(work::comment)),
@@ -1193,7 +1196,11 @@ async fn bootstrap(
     }
 }
 
-async fn bootstrap_tui(State(state): State<Arc<WebState>>) -> Json<TuiReadModel> {
+/// `GET /api/v1/read-model/tui` — the TUI read model as a resource of its own,
+/// fetched by the clients that project it rather than shipped inside every
+/// bootstrap. Also served at `/api/v1/bootstrap.tui` for clients still asking
+/// for that path.
+async fn tui_read_model(State(state): State<Arc<WebState>>) -> Json<TuiReadModel> {
     Json(workcells::live_tui(&state))
 }
 

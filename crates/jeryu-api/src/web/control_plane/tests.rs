@@ -486,7 +486,7 @@ fn helper_branches_normalize_tty_time_and_check_states() {
 }
 
 #[test]
-fn bootstrap_tui_pools_match_the_live_runner_fabric() {
+fn tui_read_model_pools_match_the_live_runner_fabric() {
     let state = seeded_state();
     let now = Utc::now();
     report(&state, "xbabe2/slot0", true, now);

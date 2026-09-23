@@ -32,11 +32,11 @@ fn feature_flag_state() -> WebState {
 }
 
 /// Seed a repo + open PR + one failing check, build `WebState`, and assert
-/// the model served by `/api/v1/bootstrap.tui` (i.e. `state.tui`) reflects the
+/// the model served by `/api/v1/read-model/tui` (i.e. `state.tui`) reflects the
 /// seeded load: a populated `RepoActivity` with `failed_jobs == 1`, a non-empty
 /// pool fabric, and Healthy system components — NOT the empty fixture.
 #[tokio::test]
-async fn bootstrap_tui_reflects_seeded_repo_pr_and_failing_check() {
+async fn tui_read_model_reflects_seeded_repo_pr_and_failing_check() {
     let core = ForgeCore::new();
     core.create_repository(
         "alice",
@@ -91,8 +91,8 @@ async fn bootstrap_tui_reflects_seeded_repo_pr_and_failing_check() {
     // No component is probed, so health is Unknown rather than a blanket Healthy.
     assert!(matches!(state.tui.system.scm.status, HealthLevel::Unknown));
 
-    // The actual `/api/v1/bootstrap.tui` handler serves exactly this model.
-    let served = bootstrap_tui(State(state.clone())).await.0;
+    // The actual `/api/v1/read-model/tui` handler serves exactly this model.
+    let served = tui_read_model(State(state.clone())).await.0;
     assert_eq!(served.pool_activity, *activity);
     assert_eq!(served.pool_activity.repos[0].failed_jobs, 1);
     assert!(served.workcells.items.is_empty());
@@ -100,7 +100,7 @@ async fn bootstrap_tui_reflects_seeded_repo_pr_and_failing_check() {
     assert_ne!(
         served.pool_activity,
         TuiReadModel::default().pool_activity,
-        "bootstrap.tui must not serve an empty pool activity"
+        "the TUI read model must not serve an empty pool activity"
     );
 }
 
@@ -396,8 +396,8 @@ async fn generated_at_is_stamped_at_serialization_time() {
             .expect("generated_at is RFC 3339")
             .with_timezone(&chrono::Utc)
     };
-    let served = bootstrap_tui(State(state.clone())).await.0;
-    assert!(served.generated_at >= before, "bootstrap.tui is stale");
+    let served = tui_read_model(State(state.clone())).await.0;
+    assert!(served.generated_at >= before, "the TUI read model is stale");
     let repos = repo_list_response(&state);
     assert!(parse(&repos.generated_at) >= before, "repos is stale");
     assert!(parse(&server_time()) >= before, "server_time is stale");
@@ -464,4 +464,43 @@ async fn capabilities_and_mcp_are_served_through_the_router() {
         .unwrap();
     assert_ne!(response.status(), StatusCode::NOT_FOUND);
     assert!(response.headers().contains_key("x-jeryu-fast-path"));
+}
+
+/// The TUI read model is a resource of its own at `/api/v1/read-model/tui`.
+/// The suffixed `/api/v1/bootstrap.tui` spelling still answers with the very
+/// same bytes, so clients can move to the resource path on their own schedule.
+#[tokio::test]
+async fn tui_read_model_is_served_under_its_own_path_and_the_suffixed_alias() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let fetch = |path: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            (status, response_json(response).await)
+        }
+    };
+
+    let (status, resource) = fetch("/api/v1/read-model/tui").await;
+    assert_eq!(status, StatusCode::OK, "the read model has its own route");
+    assert!(
+        resource["schema_version"].is_string(),
+        "the read model is served, not an error envelope"
+    );
+    let (alias_status, alias) = fetch("/api/v1/bootstrap.tui").await;
+    assert_eq!(alias_status, StatusCode::OK);
+    assert_eq!(
+        alias["schema_version"], resource["schema_version"],
+        "both paths serve the same read model"
+    );
 }
