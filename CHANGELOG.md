@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Redeploying the release production already runs is a no-op, not an alert.
+  `deploy-release.sh` reads the live release before it records anything: if it
+  is the requested one it says "already live" and exits 0, recording no
+  deployment (`--json` answers `already_live: true`); the staged `switch.sh`
+  does the same when run on its own, without stopping the service. The
+  `deploy_failed` attention item is `watch` rather than `critical` when the
+  failed attempt left production as it was — the live deployment is a
+  successful one of the release the attempt tried to deploy. Both deployment
+  statuses now carry a `log_url` pointing at the `deploy.status` events, which
+  carry the switch's log tail and its path on the release host
+  (`JERYU_RELEASE_LOG_URL` overrides it).
+
 - The web console's Quality gate pages have their API: `GET /api/v1/quality-gate/overview?days=7|30`,
   `GET /api/v1/quality-gate/rules/:rule?days=`, `GET /api/v1/quality-gate/heads/:owner/:name/:sha` and
   admin-only `POST /api/v1/quality-gate/findings/:id/dispute` serve the stored jankurai scores and disputes

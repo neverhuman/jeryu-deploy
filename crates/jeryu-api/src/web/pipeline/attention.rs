@@ -236,6 +236,11 @@ fn production_facts(state: &WebState) -> Vec<ProductionFacts> {
         };
         all.push(ProductionFacts {
             repo: repo.full_name.clone(),
+            current_release: production.current.as_ref().and_then(|current| {
+                current.deployment.payload["release"]
+                    .as_str()
+                    .map(str::to_string)
+            }),
             current: production
                 .current
                 .map(|current| (current.deployment.sha, current.deployment.created_at)),

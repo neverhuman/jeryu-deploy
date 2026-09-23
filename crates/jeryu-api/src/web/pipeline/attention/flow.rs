@@ -290,6 +290,8 @@ pub(crate) struct ProductionFacts {
     pub repo: String,
     /// The live deployment's sha and creation time.
     pub current: Option<(String, DateTime<Utc>)>,
+    /// The live deployment's release name, when its payload names one.
+    pub current_release: Option<String>,
     /// The newest deployment's state, release name, sha and creation time.
     pub latest: Option<LatestDeployment>,
 }
@@ -326,6 +328,20 @@ fn failed_attempt(facts: Option<&ProductionFacts>, release: &str) -> String {
             )
         })
         .unwrap_or_default()
+}
+
+/// Whether the failed attempt left production as it was: the live deployment
+/// is a successful one of the very release the attempt tried to deploy, as when
+/// the release that is already live is deployed a second time. Release names
+/// decide it when both are known, else the commits do.
+fn left_production_alone(facts: &ProductionFacts, latest: &LatestDeployment) -> bool {
+    let Some((live_sha, _)) = facts.current.as_ref() else {
+        return false;
+    };
+    match (facts.current_release.as_deref(), latest.release.as_deref()) {
+        (Some(live), Some(failed)) => live == failed,
+        _ => live_sha == &latest.sha,
+    }
 }
 
 /// A staged release nobody deployed, a staging that gave up, a failed deploy.
@@ -435,28 +451,47 @@ pub(crate) fn release_items(
             continue;
         }
         let what = latest.release.clone().unwrap_or_else(|| latest.sha.clone());
-        let mut item = Draft {
-            id: format!("deploy-failed:{}:{what}", facts.repo),
-            kind: "deploy_failed",
-            severity: Severity::Critical,
-            title: format!("The production deploy of {what} failed"),
-            reason: format!(
-                "The newest production deployment of {} ended in {}{}. The deploy script \
-                 rolls back on failure, so production probably runs the previous release: \
-                 confirm what is live before deploying again.",
-                facts.repo,
-                latest.state.as_deref().unwrap_or("failure"),
-                latest
-                    .description
-                    .as_ref()
-                    .map(|text| format!(": {text}"))
-                    .unwrap_or_default()
-            ),
-            href: "/releases".to_string(),
-            label: "Check what production runs, then redeploy or roll back",
-            command: None,
-        }
-        .build();
+        let why = latest
+            .description
+            .as_ref()
+            .map(|text| format!(": {text}"))
+            .unwrap_or_default();
+        let state = latest.state.as_deref().unwrap_or("failure");
+        let draft = if left_production_alone(facts, latest) {
+            Draft {
+                id: format!("deploy-failed:{}:{what}", facts.repo),
+                kind: "deploy_failed",
+                severity: Severity::Watch,
+                title: format!("A deploy of {what} failed, and production still runs it"),
+                reason: format!(
+                    "The newest production deployment of {} ended in {}{}, but it is the \
+                     release production already runs and the live deployment of it \
+                     succeeded: nothing changed. Read the status log if the attempt is a \
+                     surprise; production needs no deploy.",
+                    facts.repo, state, why
+                ),
+                href: "/releases".to_string(),
+                label: "Read the failed attempt; production is unchanged",
+                command: None,
+            }
+        } else {
+            Draft {
+                id: format!("deploy-failed:{}:{what}", facts.repo),
+                kind: "deploy_failed",
+                severity: Severity::Critical,
+                title: format!("The production deploy of {what} failed"),
+                reason: format!(
+                    "The newest production deployment of {} ended in {}{}. The deploy script \
+                     rolls back on failure, so production probably runs the previous release: \
+                     confirm what is live before deploying again.",
+                    facts.repo, state, why
+                ),
+                href: "/releases".to_string(),
+                label: "Check what production runs, then redeploy or roll back",
+                command: None,
+            }
+        };
+        let mut item = draft.build();
         item.since = Some(latest.created_at.to_rfc3339());
         item.repo = Some(facts.repo.clone());
         item.sha = Some(latest.sha.clone());

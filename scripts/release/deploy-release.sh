@@ -15,7 +15,12 @@
 # JERYU_RELEASE_LOG_DIR overrides the directory). Both statuses carry the log's
 # path (log_path); a failure's description adds the log's last meaningful line
 # and the status carries its last 20 lines (log_tail), which the forge puts in
-# the deploy.status event's detail.
+# the deploy.status event's detail. Both statuses also carry log_url, the
+# deploy.status events on the forge where that tail can be read
+# (JERYU_RELEASE_LOG_URL overrides it).
+#
+# Deploying the release production already runs is a no-op: the script says
+# "already live" and exits 0, recording no deployment and no failure.
 #
 # The record never decides the deploy. If the forge that is live before the
 # switch cannot record it (for instance the release that introduces the
@@ -30,7 +35,8 @@
 # --dry-run reads the staged metadata and prints the deployment it would record,
 # then stops: nothing is recorded, switched or logged.
 # --json prints exactly one JSON line on stdout (switch output and receipts go
-# to stderr): {"release","deployment_id","log_path","dry_run"} on success,
+# to stderr): {"release","deployment_id","log_path","dry_run","already_live"}
+# on success (or on an already live release, where the ids are null),
 # {"release","deployment","dry_run":true} on a dry run, or the API's error
 # envelope {"code","message","exit_code"} on a refusal or a failed switch.
 # Exit codes: 0 live, 64 usage (bad argument), 65 state (the release is not
@@ -91,6 +97,16 @@ field() { sed -n "s/^$1=//p" <<<"$meta" | head -1; }
 sha="$(field jeryu_deploy_commit | cut -d' ' -f1)"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || refuse state "staged RELEASE.txt has no 40-hex jeryu_deploy_commit"
 
+# Redeploying what production already runs changes nothing, so it is a no-op:
+# nothing is recorded, switched or logged, and no failed deployment is left
+# behind for the inbox to call a broken pipeline.
+if [[ "$(field live)" == "jeryu-$rel" ]]; then
+  echo "[deploy] $rel is already live on $forge_host; nothing to do" >&2
+  [[ $json == 0 ]] || jq -cn --arg rel "$rel" --argjson dry "$dry_run" \
+    '{release:$rel, deployment_id:null, log_path:null, dry_run:($dry == 1), already_live:true}' >&3
+  exit 0
+fi
+
 # Empty for a release staged before jeryu-web was pinned by commit.
 web_commit="$(field jeryu_web_commit)"; web_sha="$(field web_dist_sha256)"
 
@@ -119,14 +135,17 @@ record() {
 }
 status() { # STATE DESCRIPTION [LOG_PATH [LOG_TAIL]]
   [[ -n "$deployment_id" ]] || return 0
-  jq -n --arg s "$1" --arg d "$2" --arg url "$forge" --arg path "${3:-}" --arg tail "${4:-}" \
-    '{state:$s, description:$d, environment_url:$url}
+  jq -n --arg s "$1" --arg d "$2" --arg url "$forge" --arg log "$log_url" --arg path "${3:-}" --arg tail "${4:-}" \
+    '{state:$s, description:$d, environment_url:$url, log_url:$log}
      + (if $path != "" then {log_path:$path} else {} end)
      + (if $tail != "" then {log_tail:$tail} else {} end)' >"$tmp/status.json"
   api POST "$repo/deployments/$deployment_id/statuses" "$tmp/status.json" \
     | jq -r '"[receipt] status \(.state // "not recorded: \(.message // "?")")"'
 }
 
+# Where a reader can see what switch.sh printed: the deploy.status events, whose
+# detail carries the status's log tail and the log's path on the release host.
+log_url="${JERYU_RELEASE_LOG_URL:-$forge/api/v1/events?kind=deploy.status&repo=jeryu/jeryu-deploy}"
 log_dir="${JERYU_RELEASE_LOG_DIR:-$HOME/.local/state/jeryu-release/logs}"
 mkdir -p "$log_dir"; chmod 700 "$log_dir"
 log="$log_dir/$rel-$(date -u +%Y%m%dT%H%M%SZ).log"
@@ -155,7 +174,8 @@ if [[ $rc == 0 ]]; then
   fi
   status success "live on $forge_host" "$log"
   [[ $json == 0 ]] || jq -cn --arg rel "$rel" --arg id "$deployment_id" --arg log "$log" \
-    '{release:$rel, deployment_id:($id | tonumber? // null), log_path:$log, dry_run:false}' >&3
+    '{release:$rel, deployment_id:($id | tonumber? // null), log_path:$log, dry_run:false,
+      already_live:false}' >&3
 else
   why="$(clean_log | grep -v 'rollback: bash ' | tail -n 1 | cut -c1-300)"
   status failure "switch.sh exited $rc${why:+: $why}" "$log" "$(clean_log | tail -n 20)"

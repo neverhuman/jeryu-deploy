@@ -67,8 +67,23 @@ grep -q "integrity=ok" "$T/switch.log" || fail "no snapshot integrity line"
 [[ "$(readlink "/proc/$(cat "$T/pid")/exe")" == "$JERYU_HOME/bin/jeryu-$REL" ]] || fail "running exe is not REL"
 ok "switch installs REL, repoints both symlinks, snapshots every database and proves the running binary"
 
-if bash "$JERYU_HOME/incoming/$REL/switch.sh" >/dev/null 2>&1; then fail "switch ran twice"; fi
+# A third release staged against the release that is no longer live: PREV is stale, so refuse.
+LIVE_REL="$REL" REL=prod-20260103T000000Z-ccccccc-unsigned
+stage
+if bash "$JERYU_HOME/incoming/$REL/switch.sh" >/dev/null 2>&1; then fail "switch accepted a stale PREV"; fi
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$LIVE_REL" ]] || fail "a refused switch moved the live symlink"
+REL="$LIVE_REL"
 ok "switch refuses when PREV is no longer live"
+
+# The same release again: nothing to do, and nothing done.
+stamp="$(stat -c %Y "$JERYU_HOME/bin/jeryu-$REL")"
+bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-again.log" 2>&1 \
+  || { cat "$T/switch-again.log" >&2; fail "a redeploy of the live release did not exit 0"; }
+grep -q "already live" "$T/switch-again.log" || fail "a redeploy of the live release did not say it is already live"
+if grep -q "stopping jeryu.service" "$T/switch-again.log"; then fail "a redeploy of the live release stopped the service"; fi
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$REL" ]] || fail "a redeploy of the live release moved the live symlink"
+[[ "$(stat -c %Y "$JERYU_HOME/bin/jeryu-$REL")" == "$stamp" ]] || fail "a redeploy of the live release reinstalled the binary"
+ok "switch is a no-op for the release that is already live"
 
 python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"update t set v='after'\"); c.commit()" "$JERYU_DATA/forge.sqlite"
 bash "$JERYU_HOME/releases/$REL/rollback.sh" >"$T/rollback.log" 2>&1 || { cat "$T/rollback.log" >&2; fail "rollback failed"; }
@@ -357,7 +372,7 @@ cat >"$D/bin/ssh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
   *RELEASE.txt*) printf 'jeryu_deploy_commit=%s x\nrollback_target=%s\nbinary_sha256=%s\nlive=jeryu-%s\n' \
-    "$(printf 4%.0s {1..40})" "$PREV" "$(printf e%.0s {1..64})" "$PREV" ;;
+    "$(printf 4%.0s {1..40})" "$PREV" "$(printf e%.0s {1..64})" "\$(cat "$D/live")" ;;
   *)
     echo "[switch] stopping jeryu.service"
     [ -e "$D/succeed" ] && { echo "[switch] rollback: bash ~/.jeryu/releases/x/rollback.sh"; exit 0; }
@@ -378,6 +393,7 @@ esac
 EOF
 chmod +x "$D/bin/ssh" "$D/bin/curl"
 echo "not-a-real-deploy-token" >"$D/token"
+echo "$PREV" >"$D/live"
 deploy_release() {
   PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bash "$here/deploy-release.sh" "$D_REL"
 }
@@ -390,6 +406,8 @@ jq -e '.state == "failure" and .description == "switch.sh exited 3: error: healt
   || fail "the failure status does not say why: $failure"
 jq -e '(.log_tail | contains("health check timed out")) and (.log_tail | contains("\u001b") | not)' <<<"$failure" >/dev/null \
   || fail "the failure status lacks a clean log tail: $failure"
+jq -e '.log_url | test("^https?://.*deploy\\.status")' <<<"$failure" >/dev/null \
+  || fail "the failure status links nowhere the switch output can be read: $failure"
 log="$(jq -r .log_path <<<"$failure")"
 [[ "$log" == "$logs/$D_REL-"*Z.log && -s "$log" ]] || fail "the failure status does not name the kept log: $log"
 [[ "$(stat -c %a "$log")" == 600 ]] || fail "the switch log is not 0600"
@@ -405,6 +423,20 @@ jq -se '.[-1] | .state == "success" and (.log_path | endswith(".log")) and (has(
 [[ -s "$(jq -sr '.[-1].log_path' "$D/statuses.jsonl")" ]] || fail "the success log is empty"
 [[ "$(find "$logs" -name '*.log' | wc -l)" == 30 ]] || fail "the switch logs are not pruned to the newest 30"
 ok "deploy-release records the log path on success and keeps the newest 30 logs"
+
+# Deploying what is already live: nothing recorded, nothing switched, no failure to alert on.
+echo "$D_REL" >"$D/live"; rm -f "$D/succeed"
+: >"$D/statuses.jsonl"; : >"$D/curl-args"; logs_before="$(find "$logs" -name '*.log' | wc -l)"
+deploy_release >"$D/run.log" 2>&1 || { cat "$D/run.log" >&2; fail "redeploying the live release did not exit 0"; }
+grep -q "already live" "$D/run.log" || fail "redeploying the live release did not say it is already live"
+[[ ! -s "$D/curl-args" && ! -s "$D/statuses.jsonl" ]] || fail "redeploying the live release recorded a deployment"
+[[ "$(find "$logs" -name '*.log' | wc -l)" == "$logs_before" ]] || fail "redeploying the live release wrote a log"
+out="$(PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bash "$here/deploy-release.sh" --json "$D_REL" 2>/dev/null)" \
+  || fail "an already live --json deploy failed"
+jq -e --arg rel "$D_REL" '.already_live and .release == $rel and .deployment_id == null and (.dry_run | not)' <<<"$out" >/dev/null \
+  || fail "an already live --json deploy does not say so: $out"
+echo "$PREV" >"$D/live"; touch "$D/succeed"
+ok "deploy-release treats the release production already runs as a no-op"
 
 # --json and --dry-run on deploy-release.sh: one JSON line on stdout, a distinct exit code per refusal.
 : >"$D/statuses.jsonl"; : >"$D/curl-args"; logs_before="$(find "$logs" -name '*.log' | wc -l)"

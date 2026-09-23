@@ -9,6 +9,9 @@
 # Refuses unless PREV is what is live, the staged checksums hold, and no
 # snapshot for REL exists yet. rollback.sh (staged beside it) undoes it.
 #
+# Running it again for the release that is already live is a no-op: it says
+# "already live" and exits 0, without stopping the service or touching a thing.
+#
 # After starting REL it polls JERYU_HEALTH_URL (default
 # http://172.19.0.1:8787/health, the forge's local health endpoint) once a second,
 # JERYU_HEALTH_TRIES times (default 30). If it never answers, the switch fails
@@ -32,7 +35,11 @@ TRIES="${JERYU_HEALTH_TRIES:-30}"
 [[ "$TRIES" =~ ^[1-9][0-9]*$ ]] || { echo "JERYU_HEALTH_TRIES must be a positive integer, got '$TRIES'" >&2; exit 1; }
 IN="$J/incoming/$REL" OUT="$J/releases/$REL" SNAP="$J/backups/pre-$REL"
 
-[[ "$(readlink "$J/bin/jeryu")" == "jeryu-$PREV" ]] || { echo "live binary is not $PREV; refusing" >&2; exit 1; }
+if [[ "$(readlink "$J/bin/jeryu")" == "jeryu-$REL" ]]; then
+  echo "[switch] $REL is already live; nothing to do"
+  exit 0
+fi
+[[ "$(readlink "$J/bin/jeryu")" == "jeryu-$PREV" ]] ||{ echo "live binary is not $PREV; refusing" >&2; exit 1; }
 (cd "$IN" && sha256sum --quiet -c SHA256SUMS) || { echo "staged checksums fail; refusing" >&2; exit 1; }
 [[ ! -e "$SNAP" ]] || { echo "snapshot $SNAP already exists; refusing" >&2; exit 1; }
 

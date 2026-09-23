@@ -248,7 +248,7 @@ pushes leave from there).
 | `workers_down` | critical | a family has open or claimed todos and no healthy worker slot (the supervisor slot does not count) |
 | `release_staged` | action | the newest `release.staged` event names a commit production does not run and is newer than the live deployment; `action.command` is the event's `detail.deploy_command` |
 | `release_stage_failed` | critical | the newest `release.stage_failed` with `needs_human` is newer than the newest `release.staged` |
-| `deploy_failed` | critical | a repository's newest production deployment ended in `failure` or `error` |
+| `deploy_failed` | critical or watch | a repository's newest production deployment ended in `failure` or `error`. `watch` when the attempt left production as it was, because the live deployment is a successful one of the very release the attempt tried to deploy (release names decide it when both payloads name one, else the commits): production runs that release and needs no deploy |
 | `pin_behind` | action or watch | a deploy repo's pin misses green, merged work of a dependency (see [Pins](#pins)). A `commit` pin with no bump open is `watch` with no command while the dependency's newest commit (`latest_at`) is younger than 20 minutes, because auto-pin is about to open the bump; after that, or when `latest_at` is missing or unreadable, it is `action` and the command starts auto-pin (`systemctl --user start jeryu-auto-pin.service`), which builds the web bundle, changes the two lock fields and opens the pull request. The id is the same on both sides of the line. When auto-pin has given up on the dependency's current head (the newest `pin.bump_failed` with `needs_human` whose `sha` is `latest_sha`) it is `action` at once, grace or not: the title says auto-pin gave up on `<sha7>`, the reason leads with the event's `reason` (else a `reason` in `detail`, else the last line of `log_tail`) on one trimmed line, and the command clears the give-up marker and retries (`rm -f ~/.local/state/jeryu-auto-pin/failures/<sha> && systemctl --user start jeryu-auto-pin.service`); a give-up for an older head is ignored. With a bump pull request open it is `watch` and `href` is that pull request; a `tag` pin is `watch`, because nothing cuts tags. Gone when the pin is current |
 
 ## Pins
@@ -458,6 +458,15 @@ may be older than the client.
   jeryu-deploy, and the alton2 token file, mode 0600). Disable with
   `systemctl --user disable --now jeryu-auto-pin.timer`. State and build logs
   are under `~/.local/state/jeryu-auto-pin/`.
-- **Deployment logs.** `deploy-release.sh` still sets no `log_url`: nothing
-  serves the switch log yet. A `deploy.status` event carries the status
-  description; serving the log is a follow-up.
+- **Deployment logs.** The switch log itself lives on the release host
+  (`~/.local/state/jeryu-release/logs/`, named by the status's `log_path`) and
+  its last 20 lines travel in the status's `log_tail`. `deploy-release.sh` sets
+  `log_url` to the `deploy.status` events that carry them
+  (`<forge>/api/v1/events?kind=deploy.status&repo=jeryu/jeryu-deploy`, override
+  with `JERYU_RELEASE_LOG_URL`), so a failed status links to what `switch.sh`
+  printed. Serving the whole log is a follow-up.
+- **Redeploying what is live.** `deploy-release.sh` reads the live release name
+  before recording anything: deploying the release production already runs
+  prints "already live" and exits 0, recording no deployment (`--json` answers
+  `already_live: true` with null ids). `switch.sh` is the same no-op when it is
+  run on its own.

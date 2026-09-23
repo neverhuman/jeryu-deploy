@@ -650,6 +650,8 @@ fn production(sha: &str, at: &str, latest_state: &str) -> ProductionFacts {
     ProductionFacts {
         repo: "jeryu/jeryu-deploy".to_string(),
         current: Some((sha.to_string(), at)),
+        // Production runs an older release than the newest attempt.
+        current_release: Some("prod-20260919T101500Z-9a1c0de-unsigned".to_string()),
         latest: Some(LatestDeployment {
             state: Some(latest_state.to_string()),
             release: Some("prod-20260919T122707Z-283416e-unsigned".to_string()),
@@ -658,6 +660,49 @@ fn production(sha: &str, at: &str, latest_state: &str) -> ProductionFacts {
             created_at: at,
         }),
     }
+}
+
+#[test]
+fn a_failed_deploy_that_left_production_on_the_same_release_is_only_a_watch() {
+    let live = "5fbe0ef2824d526ce03996cfa0cccca4ac3611d8";
+    let release = "prod-20260922T161333Z-5fbe0ef-unsigned";
+
+    // The release deployed fine, then was deployed again and the switch exited 1
+    // without touching production: the live deployment is still the successful one.
+    let mut facts = production(live, "2026-09-22T16:17:00Z", "failure");
+    facts.current_release = Some(release.to_string());
+    if let Some(latest) = facts.latest.as_mut() {
+        latest.release = Some(release.to_string());
+    }
+    let items = release_items(None, None, &[facts.clone()], &hosts());
+    assert_eq!(kinds(&items), ["deploy_failed"]);
+    assert_eq!(items[0].severity, Severity::Watch);
+    assert!(
+        items[0].title.contains("production still runs it"),
+        "{}",
+        items[0].title
+    );
+    assert!(
+        items[0].reason.contains("nothing changed"),
+        "{}",
+        items[0].reason
+    );
+
+    // A failure on a release production does not run is still critical.
+    let mut moved_on = facts.clone();
+    moved_on.current_release = Some("prod-20260922T120000Z-283416e-unsigned".to_string());
+    let items = release_items(None, None, &[moved_on], &hosts());
+    assert_eq!(items[0].severity, Severity::Critical);
+
+    // Without release names in the payloads the commits decide.
+    let mut by_sha = facts;
+    by_sha.current_release = None;
+    if let Some(latest) = by_sha.latest.as_mut() {
+        latest.release = None;
+        latest.sha = "01dfe680a6de5e02da4e9aa7821534742aa46d7e".to_string();
+    }
+    let items = release_items(None, None, &[by_sha], &hosts());
+    assert_eq!(items[0].severity, Severity::Critical);
 }
 
 #[test]
@@ -693,6 +738,7 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
     }
     let retry = release_items(Some(&staged), None, &[attempt], &hosts());
     assert_eq!(kinds(&retry), ["release_staged", "deploy_failed"]);
+    assert_eq!(retry[1].severity, Severity::Critical);
     assert!(
         retry[0]
             .reason
