@@ -1594,3 +1594,122 @@ fn check_run_details_url_must_be_an_https_web_page() {
     );
     assert_eq!(accepted.status, 201, "{}", accepted.body);
 }
+
+/// The pending Work-mirror repair queue is durable: a repair recorded by one
+/// router is still queued by a router rebuilt over the same forge state and
+/// the same store, the way a restart rebuilds it.
+#[cfg(feature = "web")]
+#[test]
+fn work_bridge_repairs_survive_a_router_rebuild() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let repair_store = temp.path().join("shift.sqlite");
+    let router = GithubRouter::new()
+        .with_work_store(blocked_work_store(temp.path()))
+        .with_work_bridge_repair_store(&repair_store)
+        .expect("open work bridge repair store");
+    let created = router.post(
+        "/repos",
+        r#"{"owner":"alice","name":"jeryu","private":false,"description":"forge"}"#,
+    );
+    assert_eq!(created.status, 201, "create repo: {}", created.body);
+    let issue = router.post(
+        "/repos/alice/jeryu/issues",
+        r#"{"title":"bug report","body":"it broke","labels":["bug"],"actor":"alice"}"#,
+    );
+    assert_eq!(issue.status, 201, "create issue: {}", issue.body);
+    assert_eq!(router.work_bridge_repairs().len(), 1);
+
+    let rebuilt = GithubRouter::with_core(router.core().clone())
+        .with_work_bridge_repair_store(&repair_store)
+        .expect("reopen work bridge repair store");
+    let repairs = rebuilt.work_bridge_repairs();
+    assert_eq!(repairs.len(), 1, "rebuilt router lost the pending repair");
+    assert_eq!(repairs[0], router.work_bridge_repairs()[0]);
+    assert_eq!(repairs[0].code, "work_bridge_lookup_failed");
+    assert_eq!(repairs[0].operation, "create issue");
+    assert_eq!(repairs[0].issue_number, 1);
+    assert!(!repairs[0].common_fixes.is_empty());
+}
+
+/// A later bridge write that reaches the Work store applies the repair, so it
+/// leaves the queue in this router and in the store behind it.
+#[cfg(feature = "web")]
+#[test]
+fn work_bridge_repair_is_dropped_once_the_mirror_succeeds() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let repair_store = temp.path().join("shift.sqlite");
+    let work = WorkStore::open(temp.path().join("work.sqlite")).expect("open work store");
+    let mirrored = GithubRouter::new()
+        .with_work_store(work.clone())
+        .with_work_bridge_repair_store(&repair_store)
+        .expect("open work bridge repair store");
+    assert_eq!(
+        mirrored
+            .post(
+                "/repos",
+                r#"{"owner":"alice","name":"jeryu","private":false,"description":"forge"}"#,
+            )
+            .status,
+        201
+    );
+    assert_eq!(
+        mirrored
+            .post(
+                "/repos/alice/jeryu/issues",
+                r#"{"title":"bug report","body":"it broke","actor":"alice"}"#,
+            )
+            .status,
+        201
+    );
+    assert!(mirrored.work_bridge_repairs().is_empty());
+
+    // The same issue, updated while the Work store is unreachable: one repair.
+    let degraded = GithubRouter::with_core(mirrored.core().clone())
+        .with_work_store(blocked_work_store(temp.path()))
+        .with_work_bridge_repair_store(&repair_store)
+        .expect("open work bridge repair store");
+    let updated = degraded.handle(
+        Method::Patch,
+        "/repos/alice/jeryu/issues/1",
+        r#"{"title":"still broken"}"#,
+    );
+    assert_eq!(updated.status, 200, "update issue: {}", updated.body);
+    assert_eq!(header(&updated, "X-Jeryu-Work-Bridge"), Some("degraded"));
+    assert_eq!(degraded.work_bridge_repairs().len(), 1);
+
+    // The same update once the store answers again: the repair is applied.
+    let repaired = GithubRouter::with_core(mirrored.core().clone())
+        .with_work_store(work)
+        .with_work_bridge_repair_store(&repair_store)
+        .expect("open work bridge repair store");
+    assert_eq!(repaired.work_bridge_repairs().len(), 1);
+    let retried = repaired.handle(
+        Method::Patch,
+        "/repos/alice/jeryu/issues/1",
+        r#"{"title":"still broken"}"#,
+    );
+    assert_eq!(retried.status, 200, "retry update: {}", retried.body);
+    assert_eq!(header(&retried, "X-Jeryu-Work-Bridge"), None);
+    assert!(repaired.work_bridge_repairs().is_empty());
+
+    let reloaded = GithubRouter::new()
+        .with_work_bridge_repair_store(&repair_store)
+        .expect("reopen work bridge repair store");
+    assert!(
+        reloaded.work_bridge_repairs().is_empty(),
+        "an applied repair came back from the store"
+    );
+}
+
+/// A Work store whose sqlite path is blocked by a regular file, so every
+/// bridge call against it fails the way an unreachable store does.
+#[cfg(feature = "web")]
+fn blocked_work_store(root: &std::path::Path) -> WorkStore {
+    let db_dir = root.join("blocked-work-db");
+    let db_path = db_dir.join("work.sqlite");
+    let work = WorkStore::open(&db_path).expect("open work store");
+    std::fs::remove_file(&db_path).expect("remove sqlite file");
+    std::fs::remove_dir(&db_dir).expect("remove sqlite dir");
+    std::fs::write(&db_dir, "not a directory").expect("block sqlite parent path");
+    work
+}

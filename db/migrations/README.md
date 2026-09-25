@@ -8,6 +8,9 @@ file for an applied version stops the server at startup.
 | Migration | Store | Owner |
 |---|---|---|
 | `0001_shift_heartbeats.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/shift/heartbeats.rs` |
+| `0002_pipeline_events.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/store.rs` |
+| `0003_jankurai_disputes.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/jankurai/disputes.rs` |
+| `0004_work_bridge_repairs.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/github/work_bridge_repairs.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. Every later migration must be ordered, immutable after

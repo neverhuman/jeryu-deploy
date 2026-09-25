@@ -29,7 +29,7 @@ mod request_id;
 mod request_rules;
 mod route_index;
 mod sessions;
-mod shift;
+pub(crate) mod shift;
 mod surface;
 mod tool_build;
 mod tool_finder;
@@ -272,7 +272,9 @@ impl WebState {
         Self {
             github: GithubRouter::with_core(core)
                 .with_repo_manager(repo_manager.clone())
-                .with_work_store(work.clone()),
+                .with_work_store(work.clone())
+                .with_work_bridge_repair_store(&shift_path)
+                .expect("open work bridge repair store"),
             tui,
             spa_dir,
             ws: WsHub::new(),

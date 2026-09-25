@@ -30,12 +30,12 @@ mod releases;
 mod repos;
 mod support;
 mod users;
+mod work_bridge_repairs;
 
 use jeryu_core::ForgeCore;
 use jeryu_jira::WorkStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::{Arc, Mutex};
 
 use crate::routes::Response;
 
@@ -46,6 +46,7 @@ use support::{
     Pagination, PullStateSelector, first_contact_response, gh_auth_workaround_response,
     json_response, link_base, not_found,
 };
+use work_bridge_repairs::WorkBridgeRepairQueue;
 
 /// Semantic version reported by `GET /api/v1/version`.
 pub const JERYU_API_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -85,7 +86,7 @@ pub struct WorkBridgeRepair {
 pub struct GithubRouter {
     core: ForgeCore,
     work_store: Option<WorkStore>,
-    work_bridge_repairs: Arc<Mutex<Vec<WorkBridgeRepair>>>,
+    work_bridge_repairs: WorkBridgeRepairQueue,
     #[cfg(feature = "web")]
     repo_manager: Option<std::sync::Arc<jeryu_gitd::RepoManager>>,
     /// Opt-in, tests only: finalize a merge with a synthesized sha when no
@@ -109,7 +110,7 @@ impl GithubRouter {
         Self {
             core,
             work_store: None,
-            work_bridge_repairs: Arc::new(Mutex::new(Vec::new())),
+            work_bridge_repairs: WorkBridgeRepairQueue::default(),
             #[cfg(feature = "web")]
             repo_manager: None,
             #[cfg(feature = "web")]
@@ -125,6 +126,16 @@ impl GithubRouter {
     pub fn with_work_store(mut self, work_store: WorkStore) -> Self {
         self.work_store = Some(work_store);
         self
+    }
+
+    /// Persist the pending Work-mirror repair queue in the sqlite file at
+    /// `path` (the web server's `<data_dir>/shift.sqlite`), seeding it with the
+    /// repairs already recorded there. Without this call the queue lives only
+    /// in this router, so pending repairs are lost when the process ends.
+    #[cfg(feature = "web")]
+    pub fn with_work_bridge_repair_store(mut self, path: &std::path::Path) -> Result<Self, String> {
+        self.work_bridge_repairs = WorkBridgeRepairQueue::with_store(path)?;
+        Ok(self)
     }
 
     /// Attach a git [`RepoManager`](jeryu_gitd::RepoManager) so the PR merge
@@ -174,18 +185,19 @@ impl GithubRouter {
         &self.core
     }
 
+    /// Every Work-mirror repair still waiting for a human, oldest first.
     pub fn work_bridge_repairs(&self) -> Vec<WorkBridgeRepair> {
-        self.work_bridge_repairs
-            .lock()
-            .expect("work bridge repair queue lock")
-            .clone()
+        self.work_bridge_repairs.pending()
     }
 
     fn record_work_bridge_repair(&self, repair: WorkBridgeRepair) {
-        self.work_bridge_repairs
-            .lock()
-            .expect("work bridge repair queue lock")
-            .push(repair);
+        self.work_bridge_repairs.record(repair);
+    }
+
+    /// Drops the repairs filed against an issue whose bridge write has just
+    /// reached the Work store.
+    fn resolve_work_bridge_repairs(&self, owner: &str, repo: &str, issue_number: u64) {
+        self.work_bridge_repairs.resolve(owner, repo, issue_number);
     }
 
     /// Dispatches a request. `body` is the raw JSON request body (empty for

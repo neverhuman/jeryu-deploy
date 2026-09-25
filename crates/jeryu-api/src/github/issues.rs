@@ -47,10 +47,8 @@ impl GithubRouter {
         match self.core.create_issue(owner, repo, &author, req) {
             Ok(issue) => {
                 let mut response = json_response(201, &issue_json(&issue));
-                if let Some(repair) = self.link_user_issue_to_work(&issue) {
-                    self.record_work_bridge_repair(repair.clone());
-                    attach_work_bridge_headers(&mut response, &repair);
-                }
+                let outcome = self.link_user_issue_to_work(&issue);
+                self.settle_work_bridge(owner, repo, issue.number, outcome, &mut response);
                 response
             }
             Err(err) => error_response(err),
@@ -86,10 +84,8 @@ impl GithubRouter {
         match self.core.update_issue(owner, repo, number, req) {
             Ok(issue) => {
                 let mut response = json_response(200, &issue_json(&issue));
-                if let Some(repair) = self.sync_issue_to_work(&issue) {
-                    self.record_work_bridge_repair(repair.clone());
-                    attach_work_bridge_headers(&mut response, &repair);
-                }
+                let outcome = self.sync_issue_to_work(&issue);
+                self.settle_work_bridge(owner, repo, number, outcome, &mut response);
                 response
             }
             Err(err) => error_response(err),
@@ -132,14 +128,31 @@ impl GithubRouter {
         {
             Ok(comment) => {
                 let mut response = json_response(201, &issue_comment_json(&comment));
-                if let Some(repair) = self.sync_issue_comment_to_work(owner, repo, number, &comment)
-                {
-                    self.record_work_bridge_repair(repair.clone());
-                    attach_work_bridge_headers(&mut response, &repair);
-                }
+                let outcome = self.sync_issue_comment_to_work(owner, repo, number, &comment);
+                self.settle_work_bridge(owner, repo, number, outcome, &mut response);
                 response
             }
             Err(err) => error_response(err),
+        }
+    }
+
+    /// Files the repair a bridge write produced, or — when the write reached
+    /// the Work store — clears the repairs an earlier failure left against
+    /// that issue, so the queue holds only what still needs a human.
+    fn settle_work_bridge(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        outcome: Option<WorkBridgeRepair>,
+        response: &mut Response,
+    ) {
+        match outcome {
+            Some(repair) => {
+                self.record_work_bridge_repair(repair.clone());
+                attach_work_bridge_headers(response, &repair);
+            }
+            None => self.resolve_work_bridge_repairs(owner, repo, issue_number),
         }
     }
 
