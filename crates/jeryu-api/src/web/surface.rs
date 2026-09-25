@@ -42,10 +42,11 @@ pub(super) async fn graphql(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
-    let account = match github_account_from_headers(&state, peer.as_ref(), &headers) {
-        Ok(account) => account,
-        Err(response) => return *response,
-    };
+    let account =
+        match github_account_from_headers(&state, peer.as_ref(), &HttpMethod::POST, &headers) {
+            Ok(account) => account,
+            Err(response) => return *response,
+        };
     let body = std::str::from_utf8(&body).unwrap_or_default();
     let body = bind_authenticated_actor(body, &account.login);
     github_response(state.github.graphql_for_account(&body, &account))
@@ -165,6 +166,7 @@ async fn github_forward_request(
     uri: axum::http::Uri,
     body: Bytes,
 ) -> AxumResponse {
+    let http_method = method.clone();
     let Some(method) = map_method(&method) else {
         return guided_github_edge_response(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -174,7 +176,7 @@ async fn github_forward_request(
             uri.path(),
         );
     };
-    let account = match github_account_from_headers(&state, peer.as_ref(), &headers) {
+    let account = match github_account_from_headers(&state, peer.as_ref(), &http_method, &headers) {
         Ok(account) => account,
         Err(response) => return *response,
     };
@@ -329,6 +331,7 @@ fn is_browser_repo_route(path: &str) -> bool {
 fn github_account_from_headers(
     state: &super::WebState,
     peer: Option<&ConnectInfo<SocketAddr>>,
+    method: &HttpMethod,
     headers: &HeaderMap,
 ) -> Result<AccountSummary, Box<AxumResponse>> {
     if !state.auth_required || super::auth::local_dev_trusted(state, peer.map(|connect| connect.0))
@@ -336,9 +339,16 @@ fn github_account_from_headers(
         return Ok(super::auth::trusted_local_account(state));
     }
     super::auth::authenticate_headers(state, headers)
-        .map(|auth| auth.account)
-        .ok_or_else(|| {
-            Box::new(
+        .map(|auth| {
+            // The edge is outside the `/api/v1` gate, so it applies the same
+            // password-change and CSRF policies itself.
+            match super::auth::account_state_refusal(state, &auth, method, headers) {
+                Some(message) => Err(Box::new(github_forbidden(message))),
+                None => Ok(auth.account),
+            }
+        })
+        .unwrap_or_else(|| {
+            Err(Box::new(
                 (
                     StatusCode::UNAUTHORIZED,
                     [(header::WWW_AUTHENTICATE, "Basic realm=\"Jeryu\"")],
@@ -348,7 +358,7 @@ fn github_account_from_headers(
                     })),
                 )
                     .into_response(),
-            )
+            ))
         })
 }
 

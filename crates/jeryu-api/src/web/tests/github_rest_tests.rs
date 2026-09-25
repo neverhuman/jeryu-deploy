@@ -1141,3 +1141,138 @@ async fn github_graphql_repository_query_honours_repo_grants() {
         "main"
     );
 }
+
+/// The GitHub edge (`/repos`, `/api/v3`, `/graphql`) authenticates outside the
+/// `/api/v1` gate, so it has to apply the same two account-state policies:
+/// an account owing a password change cannot act, and a cookie-session
+/// mutation needs its CSRF header. Bearer tokens stay CSRF-exempt.
+#[tokio::test]
+async fn github_edge_applies_password_change_and_csrf_policies() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::User)
+        .unwrap();
+    let temporary_password = ["temporary", "pass", "123"].join("-");
+    core.create_temporary_account("resetuser", &temporary_password, UserRole::User)
+        .unwrap();
+    let alice_session = core.create_session("alice").unwrap();
+    let alice_cookie = format!("jeryu-session={}", alice_session.token);
+    let alice_csrf = alice_session.session.csrf_token.clone();
+    let reset_cookie = format!(
+        "jeryu-session={}",
+        core.create_session("resetuser").unwrap().token
+    );
+    let token = core
+        .create_personal_access_token("alice", "test", None)
+        .unwrap()
+        .secret;
+
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    // An account that must change its password is refused on every edge path.
+    for request in [
+        Request::builder()
+            .uri("/repos")
+            .header(header::ACCEPT, "application/json")
+            .header(header::COOKIE, &reset_cookie)
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .uri("/api/v3/user")
+            .header(header::COOKIE, &reset_cookie)
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/graphql")
+            .header(header::COOKIE, &reset_cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"query":"{ viewer { login } }"}"#))
+            .unwrap(),
+    ] {
+        let uri = request.uri().to_string();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
+        let body = response_json(response).await;
+        assert_eq!(
+            body["message"], "password change required before continuing",
+            "{uri}"
+        );
+    }
+
+    // A cookie mutation without the CSRF header is refused on every edge path.
+    for path in ["/repos", "/api/v3/repos", "/graphql"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(HttpMethod::POST)
+                    .uri(path)
+                    .header(header::ACCEPT, "application/json")
+                    .header(header::COOKIE, &alice_cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"csrf-probe"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        let body = response_json(response).await;
+        assert_eq!(body["message"], "missing or invalid CSRF token", "{path}");
+    }
+
+    // The same mutation with the header passes the CSRF check and is decided
+    // by the edge's own authorization instead.
+    let with_csrf = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/repos")
+                .header(header::ACCEPT, "application/json")
+                .header(header::COOKIE, &alice_cookie)
+                .header("x-jeryu-csrf", &alice_csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"name":"csrf-probe"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let with_csrf_body = response_json(with_csrf).await;
+    assert_ne!(with_csrf_body["message"], "missing or invalid CSRF token");
+
+    // A bearer token is CSRF-exempt, as it is on /api/v1.
+    let bearer_read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v3/user")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bearer_read.status(), StatusCode::OK);
+
+    let bearer_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/graphql")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"query":"{ viewer { login } }"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bearer_write.status(), StatusCode::OK);
+}

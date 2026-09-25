@@ -733,6 +733,27 @@ fn auth_applies(path: &str) -> bool {
             ))
 }
 
+/// The GitHub edge (`/repos`, `/api/v3`, `/graphql`) authenticates outside
+/// [`gate`], which only covers `/mcp` and `/api/v1/*`, so it asks here for the
+/// same two account-state policies: an account that must change its password
+/// cannot act anywhere, and a cookie-session mutation needs its CSRF header.
+/// Token and basic-auth callers stay CSRF-exempt, as they are on `/api/v1`.
+/// Returns the refusal message, which the caller renders in the edge's shape.
+pub(super) fn account_state_refusal(
+    state: &WebState,
+    auth: &HeaderAuth,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Option<&'static str> {
+    if auth.account.must_change_password {
+        return Some("password change required before continuing");
+    }
+    if unsafe_method(method) && auth.source == AuthSource::Session && !csrf_valid(state, headers) {
+        return Some("missing or invalid CSRF token");
+    }
+    None
+}
+
 fn password_change_allowed_path(path: &str) -> bool {
     matches!(
         path,
