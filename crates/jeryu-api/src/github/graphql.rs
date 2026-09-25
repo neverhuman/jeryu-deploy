@@ -57,15 +57,7 @@ impl GithubRouter {
         if is_viewer_login_query(query) {
             return json_response(
                 200,
-                &json!({
-                    "data": {
-                        "viewer": {
-                            "login": "jeryu",
-                            "name": "Jeryu Local Operator",
-                            "id": "U_jeryu"
-                        }
-                    }
-                }),
+                &json!({ "data": { "viewer": self.viewer_json(account) } }),
             );
         }
         if is_repository_read_query(query)

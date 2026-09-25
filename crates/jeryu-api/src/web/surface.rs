@@ -203,19 +203,7 @@ async fn github_forward_request(
         );
     }
     if github_user_path(&path_and_query) && method == Method::Get {
-        return github_response(GithubResponse {
-            status: 200,
-            body: json!({
-                "login": account.login,
-                "id": 1,
-                "node_id": format!("U_{}", account.login),
-                "type": "User",
-                "name": account.login,
-                "url": "/user",
-            })
-            .to_string(),
-            headers: Vec::new(),
-        });
+        return github_response(state.github.user_for_account(&account));
     }
     let body = std::str::from_utf8(&body).unwrap_or_default();
     let body = bind_authenticated_actor(body, &account.login);

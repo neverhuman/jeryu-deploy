@@ -29,6 +29,7 @@ pub(crate) mod pulls;
 mod releases;
 mod repos;
 mod support;
+mod users;
 
 use jeryu_core::ForgeCore;
 use jeryu_jira::WorkStore;
@@ -275,17 +276,7 @@ impl GithubRouter {
                 200,
                 &json!({ "version": JERYU_API_VERSION, "name": "jeryu-api" }),
             )),
-            (Get, ["user"]) => Ok(json_response(
-                200,
-                &json!({
-                    "login": "jeryu",
-                    "id": 1,
-                    "node_id": "U_jeryu",
-                    "type": "User",
-                    "name": "Jeryu Local Operator",
-                    "url": "/user",
-                }),
-            )),
+            (Get, ["user"]) => Ok(self.service_user()),
             (Post, ["graphql"]) => Ok(self.graphql(body)),
 
             // Repositories ---------------------------------------------------

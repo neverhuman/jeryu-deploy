@@ -1399,3 +1399,94 @@ async fn github_edge_applies_password_change_and_csrf_policies() {
         .unwrap();
     assert_eq!(bearer_write.status(), StatusCode::OK);
 }
+
+/// `gh auth status`, `gh api user` and every agent that introspects its own
+/// identity read `GET /user` and the GraphQL `viewer`. Both must answer with
+/// the token's own account: two tokens, two different logins, ids and names.
+#[tokio::test]
+async fn github_user_and_viewer_report_the_authenticated_account() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("jordanh", "jordanh-password", UserRole::User)
+        .unwrap();
+    core.create_account("mina", "mina-password", UserRole::User)
+        .unwrap();
+    let jordanh = core
+        .create_personal_access_token("jordanh", "test", None)
+        .unwrap()
+        .secret;
+    let mina = core
+        .create_personal_access_token("mina", "test", None)
+        .unwrap()
+        .secret;
+
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let get_user = |token: String, path: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let viewer = |token: String| {
+        let app = app.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/graphql")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "query": "query { viewer { login name id } }" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    for path in ["/user", "/api/v3/user"] {
+        let first = get_user(jordanh.clone(), path).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = response_json(first).await;
+        assert_eq!(first["login"], "jordanh");
+        assert_eq!(first["name"], "jordanh");
+        assert_eq!(first["node_id"], "U_jordanh");
+        assert_eq!(first["type"], "User");
+
+        let second = get_user(mina.clone(), path).await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second = response_json(second).await;
+        assert_eq!(second["login"], "mina");
+        assert_eq!(second["name"], "mina");
+        assert_ne!(
+            first["id"], second["id"],
+            "two accounts must not share one user id"
+        );
+    }
+
+    let first = response_json(viewer(jordanh).await).await;
+    assert_eq!(first["data"]["viewer"]["login"], "jordanh");
+    assert_eq!(first["data"]["viewer"]["name"], "jordanh");
+    assert_eq!(first["data"]["viewer"]["id"], "U_jordanh");
+
+    let second = response_json(viewer(mina).await).await;
+    assert_eq!(second["data"]["viewer"]["login"], "mina");
+    assert_eq!(second["data"]["viewer"]["id"], "U_mina");
+}
