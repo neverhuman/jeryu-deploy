@@ -103,15 +103,16 @@ pub(crate) fn run(json: bool, args: OnboardArgs, out: &mut dyn Write) -> ClientR
         "onboard plan (dry-run) for {} -> {}/{} on {}",
         plan.path, plan.owner, plan.repo, plan.host
     )
-    .ok();
+    .map_err(ClientError::write_failed)?;
     for step in &plan.steps {
-        writeln!(out, "  {}. {}: {}", step.order, step.action, step.detail).ok();
+        writeln!(out, "  {}. {}: {}", step.order, step.action, step.detail)
+            .map_err(ClientError::write_failed)?;
     }
     writeln!(
         out,
         "  (dry-run: server transport not live; no changes were made)"
     )
-    .ok();
+    .map_err(ClientError::write_failed)?;
     Ok(())
 }
 

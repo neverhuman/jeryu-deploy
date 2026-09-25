@@ -61,8 +61,8 @@ pub(crate) fn run(json: bool, args: AutonomyInitArgs, out: &mut dyn Write) -> Cl
 
     if args.print {
         for file in &report.files {
-            writeln!(out, "# === {} ===", file.path).ok();
-            writeln!(out, "{}", file.contents.trim_end()).ok();
+            writeln!(out, "# === {} ===", file.path).map_err(ClientError::write_failed)?;
+            writeln!(out, "{}", file.contents.trim_end()).map_err(ClientError::write_failed)?;
         }
     } else {
         writeln!(
@@ -72,9 +72,9 @@ pub(crate) fn run(json: bool, args: AutonomyInitArgs, out: &mut dyn Write) -> Cl
             report.files.len(),
             report.root
         )
-        .ok();
+        .map_err(ClientError::write_failed)?;
         for file in &report.files {
-            writeln!(out, "  {}", file.path).ok();
+            writeln!(out, "  {}", file.path).map_err(ClientError::write_failed)?;
         }
     }
     Ok(())

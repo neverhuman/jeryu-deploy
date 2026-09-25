@@ -180,6 +180,32 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `workcell_startup_rebase_failed` | 409 | the workcell startup rebase failed |
 | `workcell_tar_path_denied` | 422 | the workcell archive contains a denied path |
 
+## CLI Exit Codes
+
+The `jeryu` CLI turns a failure into a process exit code, so a shell script can
+route without parsing output. The codes are stable:
+
+| exit | meaning | HTTP statuses that map here |
+| --- | --- | --- |
+| 0 | the command succeeded | 2xx |
+| 1 | the CLI itself could not start (argument parsing, `serve`) | — |
+| 2 | the entity was not found | 404 |
+| 3 | the request conflicts with current state | 409 |
+| 4 | the request is not acceptable as sent | 400, 422, any other 4xx |
+| 5 | the capability is not wired to a live engine | — |
+| 6 | not authenticated, or not allowed | 401, 403 |
+| 7 | the service failed | 5xx |
+| 8 | rendered output could not be written or flushed | — |
+
+With `--json`, a failure is one envelope on stdout carrying the fields above
+plus `exit_code`. When the failure came from a live API, it also carries
+`http_status` and `body` — the API's answer verbatim, including an error body
+that is not JSON (kept as a string) — and the API's own `code`, `reason`,
+`common_fixes`, `repair_hint` and `docs_url` win over the CLI's defaults.
+
+Exit 8 covers a closed stdout (`jeryu ... | head`) and a full disk. The CLI
+never reports success for output it could not deliver.
+
 ## Not Found
 
 The requested repository, pull request, queue entry, receipt, or other domain

@@ -22,7 +22,7 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use crate::client::ClientResult;
+use crate::client::{ClientError, ClientResult};
 
 /// Render either a JSON value or a human line, depending on `json`.
 pub(crate) fn render<T: Serialize>(
@@ -33,10 +33,10 @@ pub(crate) fn render<T: Serialize>(
 ) -> ClientResult<()> {
     if json {
         let text = serde_json::to_string(value)
-            .map_err(|e| crate::client::ClientError::Invalid(format!("serialize: {e}")))?;
-        writeln!(out, "{text}").ok();
+            .map_err(|e| ClientError::Invalid(format!("serialize: {e}")))?;
+        writeln!(out, "{text}").map_err(ClientError::write_failed)?;
     } else {
-        writeln!(out, "{human}").ok();
+        writeln!(out, "{human}").map_err(ClientError::write_failed)?;
     }
     Ok(())
 }

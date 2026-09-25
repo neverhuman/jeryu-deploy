@@ -7,6 +7,10 @@ use std::process::ExitCode;
 use clap::Parser;
 use jeryu_cli::{Cli, InMemoryClient, cli::Commands, dispatch};
 
+/// Exit code for output that could not be written or flushed; the same code
+/// `dispatch` returns for a `ClientError::Io` (see `docs/errors.md`).
+const OUTPUT_WRITE_EXIT_CODE: i32 = 8;
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Commands::Serve {
@@ -39,9 +43,12 @@ fn main() -> ExitCode {
     let mut out = stdout.lock();
     let mut err = stderr.lock();
 
-    let code = dispatch(cli, &client, &mut out, &mut err);
-    out.flush().ok();
-    err.flush().ok();
+    let mut code = dispatch(cli, &client, &mut out, &mut err);
+    // A flush that fails lost output the caller asked for (closed pipe, full
+    // disk); exit 8 rather than claiming success.
+    if out.flush().is_err() || err.flush().is_err() {
+        code = OUTPUT_WRITE_EXIT_CODE;
+    }
 
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }

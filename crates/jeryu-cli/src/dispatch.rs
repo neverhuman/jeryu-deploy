@@ -10,7 +10,7 @@
 use std::io::Write;
 
 use crate::cli::{AutonomyCommands, Cli, Commands};
-use crate::client::{ClientError, ForgeClient};
+use crate::client::{ApiFailureKind, ClientError, ForgeClient};
 use crate::commands;
 
 /// Dispatch a parsed command against a client, writing human/JSON output to
@@ -83,21 +83,37 @@ pub fn dispatch_with_api_url_env(
     match result {
         Ok(()) => 0,
         Err(error) => {
-            writeln!(err, "error: {error}").ok();
-            if json {
-                writeln!(out, "{}", error_envelope(&error)).ok();
+            let code = exit_code(&error);
+            // A failure that cannot be reported is itself a failure: if the
+            // error line or the envelope will not write, exit with the write
+            // code rather than pretending the report was delivered.
+            if writeln!(err, "error: {error}").is_err() {
+                return exit_code(&ClientError::Io(String::new()));
             }
-            exit_code(&error)
+            if json && writeln!(out, "{}", error_envelope(&error)).is_err() {
+                return exit_code(&ClientError::Io(String::new()));
+            }
+            code
         }
     }
 }
 
+/// The documented process exit codes. `docs/errors.md` publishes this table;
+/// keep the two in step.
 fn exit_code(error: &ClientError) -> i32 {
     match error {
         ClientError::NotFound(_) => 2,
         ClientError::Conflict(_) => 3,
         ClientError::Invalid(_) => 4,
         ClientError::NotWired(_) => 5,
+        ClientError::Io(_) => 8,
+        ClientError::Api(failure) => match failure.kind() {
+            ApiFailureKind::NotFound => 2,
+            ApiFailureKind::Conflict => 3,
+            ApiFailureKind::Invalid => 4,
+            ApiFailureKind::Denied => 6,
+            ApiFailureKind::Server => 7,
+        },
     }
 }
 
@@ -131,6 +147,71 @@ pub fn error_envelope(error: &ClientError) -> serde_json::Value {
             "the capability is not wired to a live engine",
             "pass --api-url or set JERYU_API_URL to a live forge",
         ),
+        ClientError::Io(m) => (
+            "output_write_failed",
+            m,
+            "rendered output could not be written",
+            "keep the output pipe open and make room on the target filesystem",
+        ),
+        ClientError::Api(failure) => {
+            let (code, reason, fix) = match failure.status {
+                401 => (
+                    "unauthorized",
+                    "the API rejected the request as unauthenticated",
+                    "log in again, then retry",
+                ),
+                403 => (
+                    "forbidden",
+                    "the API rejected the request as not allowed",
+                    "retry with an account that may do this",
+                ),
+                404 => (
+                    "not_found",
+                    "the API found no such entity",
+                    "check the owner/repo and id, then retry",
+                ),
+                409 => (
+                    "conflict",
+                    "the request conflicts with the API's current state",
+                    "read the current state and retry against it",
+                ),
+                500..=599 => (
+                    "server_error",
+                    "the API failed while handling the request",
+                    "retry; if it keeps failing, read the server log the request id names",
+                ),
+                _ => (
+                    "invalid_input",
+                    "the API rejected the request fields",
+                    "fix what the message names and retry",
+                ),
+            };
+            // The full body the API sent travels with the envelope, so an
+            // agent routing on `--json` never loses the fields the CLI itself
+            // does not read.
+            let mut envelope = serde_json::json!({
+                "code": code,
+                "message": failure.message,
+                "reason": reason,
+                "purpose": "complete a jeryu CLI command",
+                "common_fixes": [fix],
+                "repair_hint": "look the code up at GET /api/v1/errors, fix what it names, and retry",
+                "docs_url": "docs/errors.md",
+                "exit_code": exit_code(error),
+                "http_status": failure.status,
+                "body": failure.body.clone(),
+            });
+            // The API's own envelope keys win where it sent them.
+            if let (Some(object), Some(body)) = (envelope.as_object_mut(), failure.body.as_object())
+            {
+                for key in ["code", "reason", "common_fixes", "repair_hint", "docs_url"] {
+                    if let Some(value) = body.get(key) {
+                        object.insert(key.to_string(), value.clone());
+                    }
+                }
+            }
+            return envelope;
+        }
     };
     serde_json::json!({
         "code": code,

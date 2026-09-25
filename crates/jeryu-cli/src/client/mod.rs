@@ -56,6 +56,61 @@ pub enum ClientError {
     Invalid(String),
     /// The backing capability is recognized but not yet wired to a real engine.
     NotWired(String),
+    /// Rendered output could not be written (closed pipe, full disk).
+    Io(String),
+    /// A live API answered a non-2xx status. Carries the status, the message
+    /// pulled out of the envelope, and the body verbatim so `--json` can hand
+    /// the caller everything the API said.
+    Api(Box<ApiFailure>),
+}
+
+/// A non-2xx answer from a live `jeryu-api`.
+#[derive(Debug)]
+pub struct ApiFailure {
+    /// The HTTP status the API answered with.
+    pub status: u16,
+    /// The envelope `message`, or the raw body when it carries none.
+    pub message: String,
+    /// The response body: the parsed JSON envelope, or a JSON string holding
+    /// the raw text when the body is not JSON.
+    pub body: serde_json::Value,
+}
+
+impl ApiFailure {
+    /// The class of failure the status falls into, which decides the exit code
+    /// and the envelope `code`.
+    pub fn kind(&self) -> ApiFailureKind {
+        match self.status {
+            401 | 403 => ApiFailureKind::Denied,
+            404 => ApiFailureKind::NotFound,
+            409 => ApiFailureKind::Conflict,
+            500..=599 => ApiFailureKind::Server,
+            _ => ApiFailureKind::Invalid,
+        }
+    }
+}
+
+/// The classes a [`ApiFailure`] status maps onto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiFailureKind {
+    /// 401/403: not authenticated, or not allowed.
+    Denied,
+    /// 404: no such entity.
+    NotFound,
+    /// 409: the request conflicts with current state.
+    Conflict,
+    /// Any other 4xx (422 included): the request is not acceptable as sent.
+    Invalid,
+    /// 5xx: the service failed.
+    Server,
+}
+
+impl ClientError {
+    /// A failed write of rendered output. A closed stdout or a full disk must
+    /// end in a non-zero exit, not a silently truncated success.
+    pub fn write_failed(err: std::io::Error) -> Self {
+        ClientError::Io(format!("write output: {err}"))
+    }
 }
 
 impl std::fmt::Display for ClientError {
@@ -65,6 +120,17 @@ impl std::fmt::Display for ClientError {
             ClientError::Conflict(m) => write!(f, "conflict: {m}"),
             ClientError::Invalid(m) => write!(f, "invalid: {m}"),
             ClientError::NotWired(m) => write!(f, "not yet wired: {m}"),
+            ClientError::Io(m) => write!(f, "output failed: {m}"),
+            ClientError::Api(failure) => {
+                let label = match failure.kind() {
+                    ApiFailureKind::Denied => "denied",
+                    ApiFailureKind::NotFound => "not found",
+                    ApiFailureKind::Conflict => "conflict",
+                    ApiFailureKind::Invalid => "invalid",
+                    ApiFailureKind::Server => "server error",
+                };
+                write!(f, "{label}: HTTP {}: {}", failure.status, failure.message)
+            }
         }
     }
 }

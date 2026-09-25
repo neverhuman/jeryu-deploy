@@ -65,7 +65,7 @@ pub(crate) fn run(json: bool, args: GhSetupArgs, out: &mut dyn Write) -> ClientR
             canonical_repair_command(&args.host),
             config.trim_end()
         )
-        .ok();
+        .map_err(ClientError::write_failed)?;
     } else {
         writeln!(
             out,
@@ -75,7 +75,7 @@ pub(crate) fn run(json: bool, args: GhSetupArgs, out: &mut dyn Write) -> ClientR
             token.source.output_note(),
             canonical_repair_command(&args.host)
         )
-        .ok();
+        .map_err(ClientError::write_failed)?;
     }
     Ok(())
 }

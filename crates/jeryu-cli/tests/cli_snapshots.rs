@@ -438,6 +438,20 @@ fn spawn_http_fixture(
     Arc<Mutex<Option<CapturedRequest>>>,
     thread::JoinHandle<()>,
 ) {
+    spawn_http_fixture_status("200 OK", response_body)
+}
+
+/// Like [`spawn_http_fixture`] but answers with the given status line, so a
+/// test can drive the CLI's status -> error mapping.
+fn spawn_http_fixture_status(
+    status: &str,
+    response_body: String,
+) -> (
+    SocketAddr,
+    Arc<Mutex<Option<CapturedRequest>>>,
+    thread::JoinHandle<()>,
+) {
+    let status = status.to_string();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
     let addr = listener.local_addr().expect("fixture addr");
     let captured = Arc::new(Mutex::new(None));
@@ -470,7 +484,7 @@ fn spawn_http_fixture(
             body,
         });
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             response_body.len(),
             response_body
         );
@@ -1240,4 +1254,121 @@ fn dispatch_json_error_emits_api_error_envelope() {
         err.contains("not found"),
         "stderr keeps the prose line: {err:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// HTTP status -> exit code, and output that will not write
+// ---------------------------------------------------------------------------
+
+/// Run `forge repo list` against a fixture answering `status` with `body`,
+/// returning `(exit_code, stdout, stderr)`.
+fn run_against_status(status: &str, body: &str, json: bool) -> (i32, String, String) {
+    let (addr, _captured, server) = spawn_http_fixture_status(status, body.to_string());
+    let api_url = format!("http://{addr}");
+    let client = InMemoryClient::new();
+    let mut argv = vec!["jeryu"];
+    if json {
+        argv.push("--json");
+    }
+    argv.extend(["--api-url", &api_url, "forge", "repo", "list"]);
+    let result = run_cli(&client, &argv);
+    server.join().expect("fixture server");
+    result
+}
+
+#[test]
+fn dispatch_maps_each_http_status_to_its_own_exit_code() {
+    // status, expected exit code, expected envelope code
+    let cases = [
+        ("401 Unauthorized", 6, "unauthorized"),
+        ("403 Forbidden", 6, "forbidden"),
+        ("404 Not Found", 2, "not_found"),
+        ("409 Conflict", 3, "conflict"),
+        ("422 Unprocessable Entity", 4, "invalid_input"),
+        ("500 Internal Server Error", 7, "server_error"),
+        ("503 Service Unavailable", 7, "server_error"),
+    ];
+    for (status, expected_code, expected_envelope_code) in cases {
+        let (code, out, err) = run_against_status(status, r#"{"message":"the api said no"}"#, true);
+        assert_eq!(code, expected_code, "{status} should exit {expected_code}");
+        let envelope: serde_json::Value =
+            serde_json::from_str(out.trim()).expect("stdout is one JSON document");
+        assert_eq!(envelope["code"], expected_envelope_code, "for {status}");
+        assert_eq!(envelope["exit_code"], expected_code, "for {status}");
+        assert_eq!(envelope["message"], "the api said no", "for {status}");
+        assert!(
+            err.contains("the api said no"),
+            "stderr names the API message for {status}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn dispatch_json_error_keeps_the_full_api_error_body() {
+    let body = r#"{"code":"forge_repository_archived","message":"repo is archived","reason":"archived","details":{"repo":"jeryu/alpha"}}"#;
+    let (code, out, _) = run_against_status("409 Conflict", body, true);
+    assert_eq!(code, 3);
+    let envelope: serde_json::Value =
+        serde_json::from_str(out.trim()).expect("stdout is one JSON document");
+    // The API's own code and reason win, and nothing it sent is dropped.
+    assert_eq!(envelope["code"], "forge_repository_archived");
+    assert_eq!(envelope["reason"], "archived");
+    assert_eq!(envelope["http_status"], 409);
+    assert_eq!(envelope["body"]["details"]["repo"], "jeryu/alpha");
+}
+
+#[test]
+fn dispatch_non_json_error_body_is_kept_verbatim() {
+    let (code, out, err) = run_against_status("502 Bad Gateway", "<html>proxy down</html>", true);
+    assert_eq!(code, 7, "a 5xx is a server error, not a parse failure");
+    let envelope: serde_json::Value =
+        serde_json::from_str(out.trim()).expect("stdout is one JSON document");
+    assert_eq!(envelope["code"], "server_error");
+    assert_eq!(envelope["body"], "<html>proxy down</html>");
+    assert!(err.contains("proxy down"), "stderr was {err:?}");
+}
+
+/// A writer that fails every write, the way stdout does once its reader is
+/// gone (EPIPE) or the filesystem is full.
+struct ClosedWriter;
+
+impl Write for ClosedWriter {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "stdout is closed",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "stdout is closed",
+        ))
+    }
+}
+
+#[test]
+fn dispatch_closed_stdout_exits_non_zero() {
+    let client = InMemoryClient::new();
+    let cli = Cli::try_parse_from(["jeryu", "forge", "repo", "create", "alpha"]).expect("parses");
+    let mut err = Vec::new();
+    let code = dispatch_with_api_url_env(cli, &client, &mut ClosedWriter, &mut err, || None);
+    assert_eq!(code, 8, "a write that failed must not exit 0");
+    assert!(
+        String::from_utf8(err).unwrap().contains("output failed"),
+        "the failure is named on stderr"
+    );
+}
+
+#[test]
+fn dispatch_closed_stderr_still_exits_non_zero() {
+    let client = InMemoryClient::new();
+    let cli = Cli::try_parse_from([
+        "jeryu", "forge", "issue", "create", "--repo", "ghost", "--title", "x",
+    ])
+    .expect("parses");
+    let mut out = Vec::new();
+    let code = dispatch_with_api_url_env(cli, &client, &mut out, &mut ClosedWriter, || None);
+    assert_eq!(code, 8, "an unreportable error must not exit 0");
 }

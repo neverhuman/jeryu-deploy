@@ -5,7 +5,7 @@ use std::net::TcpStream;
 
 use serde_json::Value;
 
-use crate::client::{ClientError, ClientResult};
+use crate::client::{ApiFailure, ClientError, ClientResult};
 
 pub(crate) struct ApiClient {
     endpoint: Endpoint,
@@ -66,22 +66,34 @@ impl ApiClient {
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|code| code.parse::<u16>().ok())
             .unwrap_or(0);
-        let value = if body.trim().is_empty() {
-            Value::Null
+        let parsed: Option<Value> = if body.trim().is_empty() {
+            Some(Value::Null)
         } else {
-            serde_json::from_str(body)
-                .map_err(|err| ClientError::Invalid(format!("parse JSON response: {err}")))?
+            serde_json::from_str(body).ok()
         };
         if !(200..300).contains(&status) {
-            return Err(ClientError::Conflict(format!(
-                "HTTP {status}: {}",
-                value
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or(body.trim())
-            )));
+            // An error body that is not JSON is still the API's answer: keep it
+            // as a JSON string so `--json` hands the caller every byte of it.
+            let failure_body = parsed
+                .clone()
+                .unwrap_or_else(|| Value::String(body.trim().to_string()));
+            let message = failure_body
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or(body.trim())
+                .to_string();
+            return Err(ClientError::Api(Box::new(ApiFailure {
+                status,
+                message,
+                body: failure_body,
+            })));
         }
-        Ok(value)
+        parsed.ok_or_else(|| {
+            ClientError::Invalid(format!(
+                "parse JSON response: HTTP {status} body is not JSON: {}",
+                body.trim()
+            ))
+        })
     }
 }
 
