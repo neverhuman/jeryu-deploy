@@ -383,29 +383,45 @@ impl GithubRouter {
     }
 
     /// Finalize a PR that has already passed the merge gate. With a git
-    /// [`RepoManager`] wired this advances the real base ref; otherwise it falls
-    /// back to the in-memory synthetic-sha merge.
+    /// [`RepoManager`](jeryu_gitd::RepoManager) wired this advances the real
+    /// base ref; without one the merge fails closed, unless a test opted into
+    /// the synthetic-sha path via `with_in_memory_merge`.
     fn merge_ready_pull(&self, ready: MergeReady<'_>) -> Response {
         #[cfg(feature = "web")]
         {
             if let Some(rm) = &self.repo_manager {
                 return self.merge_ready_pull_git(rm, ready);
             }
-            // No git backend wired: production merges silently fall back to the
-            // in-memory synthetic-sha path. Surface it so an operator can spot a
-            // missing `.with_repo_manager(...)` wiring in web.rs. The crate has
-            // no tracing infra, so this matches the existing `eprintln!`
-            // advisory-logging convention (see web/tests.rs).
-            eprintln!(
-                "WARN: repo_manager unset; merge falling back to the in-memory synthetic-sha \
-                 path (production git merge not wired)"
-            );
+            if !self.in_memory_merge {
+                // No git backend wired: refuse rather than record a merge sha
+                // that exists in no repository. 503 marks it as a server
+                // misconfiguration (a missing `.with_repo_manager(...)` in
+                // web.rs), not something the caller can fix by retrying.
+                return json_response(
+                    503,
+                    &json!({
+                        "message": "merge unavailable: this server has no git backend attached, \
+                                    so no merge commit can be produced",
+                        "errors": [{
+                            "resource": "PullRequest",
+                            "field": "merge",
+                            "code": "git_backend_unavailable",
+                        }],
+                        "documentation_url": docs_url(),
+                        "jeryu_steering": steering(
+                            "jeryu.request_merge",
+                            "the server is missing its git repository manager; an operator must \
+                             wire one (`GithubRouter::with_repo_manager`) before merges can land",
+                        ),
+                    }),
+                );
+            }
         }
         self.merge_ready_pull_in_memory(ready)
     }
 
-    /// Git-less finalize: synthesize a merge sha in core. Used by unit tests and
-    /// as the no-`repo_manager` fallback.
+    /// Git-less finalize: synthesize a merge sha in core. Used by tests and, off
+    /// the `web` feature, by the git-less build.
     fn merge_ready_pull_in_memory(&self, ready: MergeReady<'_>) -> Response {
         let merge_sha = format!("merge-{}-{}", ready.head_sha, ready.number);
         match self.core.finalize_merge(

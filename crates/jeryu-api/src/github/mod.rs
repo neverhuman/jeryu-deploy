@@ -77,8 +77,9 @@ pub struct WorkBridgeRepair {
 /// When built with the `web` feature, the router may also carry an optional
 /// [`jeryu_gitd::RepoManager`] (via [`GithubRouter::with_repo_manager`]). When
 /// present, the PR merge endpoint performs a REAL, gated git merge that
-/// advances `refs/heads/<base>` in the bare repo; when absent it falls back to
-/// the in-memory synthetic-sha merge.
+/// advances `refs/heads/<base>` in the bare repo; when absent the merge fails
+/// closed with a 503 unless a test opted into the in-memory synthetic-sha merge
+/// via [`GithubRouter::with_in_memory_merge`].
 #[derive(Clone, Debug, Default)]
 pub struct GithubRouter {
     core: ForgeCore,
@@ -86,6 +87,12 @@ pub struct GithubRouter {
     work_bridge_repairs: Arc<Mutex<Vec<WorkBridgeRepair>>>,
     #[cfg(feature = "web")]
     repo_manager: Option<std::sync::Arc<jeryu_gitd::RepoManager>>,
+    /// Opt-in, tests only: finalize a merge with a synthesized sha when no
+    /// [`jeryu_gitd::RepoManager`] is wired. Off everywhere else, so a server
+    /// missing its git backend fails the merge closed instead of recording a
+    /// sha no repository holds.
+    #[cfg(feature = "web")]
+    in_memory_merge: bool,
     #[cfg(feature = "web")]
     github_mirror: Option<std::sync::Arc<crate::github_mirror::GithubMirror>>,
 }
@@ -104,6 +111,8 @@ impl GithubRouter {
             work_bridge_repairs: Arc::new(Mutex::new(Vec::new())),
             #[cfg(feature = "web")]
             repo_manager: None,
+            #[cfg(feature = "web")]
+            in_memory_merge: false,
             #[cfg(feature = "web")]
             github_mirror: None,
         }
@@ -128,6 +137,18 @@ impl GithubRouter {
         repo_manager: std::sync::Arc<jeryu_gitd::RepoManager>,
     ) -> Self {
         self.repo_manager = Some(repo_manager);
+        self
+    }
+
+    /// Tests only: let the PR merge endpoint finalize with a synthesized merge
+    /// sha when no [`RepoManager`](jeryu_gitd::RepoManager) is attached. A
+    /// server built without this (production wiring in `web.rs`, which attaches
+    /// a real manager instead) answers such a merge with a 503 rather than
+    /// recording a sha that exists in no repository.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn with_in_memory_merge(mut self) -> Self {
+        self.in_memory_merge = true;
         self
     }
 

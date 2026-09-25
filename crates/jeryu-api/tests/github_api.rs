@@ -15,13 +15,60 @@ fn body(response: &jeryu_api::Response) -> Value {
 }
 
 fn router_with_repo() -> GithubRouter {
-    let router = GithubRouter::new();
+    // No git backend here: these conformance tests exercise the route table, so
+    // they opt into the synthetic-sha merge a git-less server refuses to do.
+    let router = in_memory_router();
     let response = router.post(
         "/repos",
         r#"{"owner":"alice","name":"jeryu","private":false,"description":"forge"}"#,
     );
     assert_eq!(response.status, 201, "create repo: {}", response.body);
     router
+}
+
+/// A router that finalizes merges in memory. Under the `web` feature that is an
+/// explicit opt-in; without it there is no git merge path to fail closed on.
+fn in_memory_router() -> GithubRouter {
+    #[cfg(feature = "web")]
+    {
+        GithubRouter::new().with_in_memory_merge()
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        GithubRouter::new()
+    }
+}
+
+/// Without a repository manager (and without the test opt-in) a merge that has
+/// passed the gate must fail closed rather than record a sha no repository
+/// holds.
+#[cfg(feature = "web")]
+#[test]
+fn merge_without_a_git_backend_fails_closed() {
+    let router = GithubRouter::new();
+    let created = router.post(
+        "/repos",
+        r#"{"owner":"alice","name":"jeryu","private":false,"description":"forge"}"#,
+    );
+    assert_eq!(created.status, 201, "create repo: {}", created.body);
+    let opened = router.post(
+        "/repos/alice/jeryu/pulls",
+        r#"{"title":"lands nowhere","head":"feat","base":"main","head_sha":"sha-feat"}"#,
+    );
+    assert_eq!(opened.status, 201, "open pr: {}", opened.body);
+    let number = body(&opened)["number"].as_u64().expect("pr number");
+
+    let merged = router.put(&format!("/repos/alice/jeryu/pulls/{number}/merge"), "{}");
+    assert_eq!(merged.status, 503, "merge: {}", merged.body);
+    let payload = body(&merged);
+    assert_eq!(payload["errors"][0]["code"], "git_backend_unavailable");
+    assert_eq!(payload["jeryu_steering"]["mcp_tool"], "jeryu.request_merge");
+    assert!(payload["merged"].is_null(), "merge: {}", merged.body);
+
+    // The PR is untouched: still open, with no merge sha invented for it.
+    let after = router.get(&format!("/repos/alice/jeryu/pulls/{number}"));
+    assert_eq!(body(&after)["state"], "open");
+    assert_eq!(body(&after)["merged"], false);
 }
 
 #[test]
