@@ -877,10 +877,10 @@ async fn live_list_query_paginates_and_surfaces_link_header() {
     );
 }
 
-/// The overlap engine's `X-Jeryu-Reused-PR` header reaches the wire through
-/// `github_response`'s passthrough when a create-PR request coalesces.
+/// A create-PR request that belongs on an existing open PR is refused on the
+/// wire with GitHub's duplicate-PR 422 naming that PR, not a claimed success.
 #[tokio::test]
-async fn live_overlap_routing_surfaces_reused_pr_header() {
+async fn live_overlap_routing_refuses_duplicate_create() {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -926,16 +926,25 @@ async fn live_overlap_routing_surfaces_reused_pr_header() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        response.headers().get("X-Jeryu-Reused-PR").is_none(),
+        "no success signal for a refused duplicate create"
+    );
+    let parsed = response_json(response).await;
+    assert!(
+        parsed["message"]
+            .as_str()
+            .expect("message")
+            .starts_with("A pull request already exists for"),
+        "GitHub's duplicate-PR message: {parsed}"
+    );
     assert_eq!(
-        response
-            .headers()
-            .get("X-Jeryu-Reused-PR")
-            .expect("reused-pr header present")
-            .to_str()
-            .unwrap(),
-        "1",
-        "the header points at the reused PR number"
+        parsed["existing_pull_request"]["number"]
+            .as_u64()
+            .expect("pr"),
+        1,
+        "the body names the existing PR"
     );
 }
 

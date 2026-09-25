@@ -379,7 +379,7 @@ fn header<'a>(response: &'a jeryu_api::Response, name: &str) -> Option<&'a str> 
 }
 
 #[test]
-fn overlapping_change_routes_to_existing_pr_without_creating_a_new_one() {
+fn overlapping_change_reports_the_existing_pr_without_creating_a_new_one() {
     let router = router_with_repo();
 
     // Two existing OPEN PRs touching disjoint files (no protection -> mergeable).
@@ -401,34 +401,54 @@ fn overlapping_change_routes_to_existing_pr_without_creating_a_new_one() {
 
     assert_eq!(open_pr_count(&router), 2);
 
-    // A change overlapping PR b above threshold (identical file set, Jaccard 1.0)
-    // routes onto it instead of opening a third PR.
-    let routed = router.post(
+    // A change overlapping PR b above threshold (identical file set, Jaccard
+    // 1.0) belongs on that PR. Nothing is applied onto it here, so the create
+    // is refused with GitHub's duplicate-PR 422 rather than a claimed success.
+    let refused = router.post(
         "/repos/alice/jeryu/pulls",
         r#"{"title":"hot-fix b","head":"feat-b2","base":"main","changed_files":["src/b.rs","src/c.rs"]}"#,
     );
-    assert_eq!(routed.status, 200, "route response: {}", routed.body);
-    let parsed = body(&routed);
+    assert_eq!(refused.status, 422, "duplicate response: {}", refused.body);
+    let parsed = body(&refused);
+    assert!(
+        parsed["message"]
+            .as_str()
+            .expect("message")
+            .starts_with("A pull request already exists for"),
+        "GitHub's duplicate-PR message: {}",
+        refused.body
+    );
+    assert_eq!(parsed["errors"][0]["resource"], "PullRequest");
+    assert_eq!(parsed["errors"][0]["code"], "custom");
     assert_eq!(
-        parsed["route_to_existing"]["pr"].as_u64().expect("pr"),
+        parsed["existing_pull_request"]["number"]
+            .as_u64()
+            .expect("pr"),
         target
     );
-    assert!(
-        parsed["route_to_existing"]["reason"]
-            .as_str()
-            .expect("reason")
-            .contains(&format!("#{target}")),
-        "reason names the reused PR: {}",
-        routed.body
-    );
-    // The X-Jeryu-Reused-PR header points at the reused PR.
     assert_eq!(
-        header(&routed, "X-Jeryu-Reused-PR"),
-        Some(target.to_string().as_str())
+        parsed["existing_pull_request"]["url"]
+            .as_str()
+            .expect("url"),
+        format!("/repos/alice/jeryu/pulls/{target}")
     );
-
-    // Crucially, no new PR row was created.
-    assert_eq!(open_pr_count(&router), 2, "routing must not open a new PR");
+    assert!(
+        parsed["existing_pull_request"]["html_url"]
+            .as_str()
+            .expect("html_url")
+            .contains(&format!("/pulls/{target}")),
+        "html_url points at the existing PR: {}",
+        refused.body
+    );
+    // The machine repair hint survives the shape change.
+    assert_eq!(parsed["jeryu_steering"]["mcp_tool"], "jeryu.propose_patch");
+    // No success signal: neither a reuse header nor a new PR row.
+    assert!(header(&refused, "X-Jeryu-Reused-PR").is_none());
+    assert_eq!(
+        open_pr_count(&router),
+        2,
+        "a refusal must not open a new PR"
+    );
 }
 
 #[test]

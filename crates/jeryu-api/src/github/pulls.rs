@@ -12,13 +12,9 @@ use crate::routes::Response;
 
 use super::GithubRouter;
 use super::support::{
-    Pagination, PullStateSelector, actor, docs_url, error_response, json_response,
-    json_response_with_headers, owner_json, paginate, parse_body, parse_number,
+    Pagination, PullStateSelector, actor, docs_url, error_response, json_response, owner_json,
+    paginate, parse_body, parse_number, steering,
 };
-
-/// Response header stamped when a create-PR request is hot-fixed onto an
-/// existing open PR instead of opening a fresh one.
-const HDR_REUSED_PR: &str = "X-Jeryu-Reused-PR";
 
 /// The base SHA the forge assigns when a create request omits `base_sha`.
 /// Mirrored here so the overlap engine compares the proposed change against
@@ -140,8 +136,10 @@ impl GithubRouter {
     }
 
     /// Runs the PR-overlap engine for a proposed change. Returns:
-    /// * `Some(route_to_existing 200)` with an `X-Jeryu-Reused-PR` header when
-    ///   the change should hot-fix an existing open PR,
+    /// * `Some(422)` when the change belongs on an existing open PR: Jeryu does
+    ///   not apply the proposed head onto that PR, so it answers with GitHub's
+    ///   own "a pull request already exists" shape naming the existing PR
+    ///   rather than claiming a success it did not perform,
     /// * `Some(409)` when the best candidate overlaps but coalescing is unsafe
     ///   (stale base / unproven head),
     /// * `None` when a fresh PR should be created (caller proceeds as normal).
@@ -198,21 +196,47 @@ impl GithubRouter {
 
         match decide(&change, &open, OverlapConfig::default()) {
             OverlapDecision::RouteToExisting { pr, reason } => {
+                // The overlap engine only decides WHERE the change belongs; no
+                // coalescing is performed here, so the proposed head is not in
+                // review anywhere. Answering 200 would tell the caller its
+                // change had landed on #pr when nothing was applied. Use
+                // GitHub's 422 for a duplicate create instead, naming the
+                // existing PR so the caller can push onto it itself.
+                let existing = open_prs.iter().find(|candidate| candidate.number == pr);
+                let head_label = existing
+                    .map(|candidate| candidate.head.label.clone())
+                    .unwrap_or_else(|| format!("{owner}:{}", req.head));
                 let payload = json!({
-                    "route_to_existing": {
-                        "pr": pr,
+                    "message": format!(
+                        "A pull request already exists for {head_label}."
+                    ),
+                    "errors": [{
+                        "resource": "PullRequest",
+                        "code": "custom",
+                        "field": "base",
+                        "message": format!(
+                            "A pull request already exists for {head_label}."
+                        ),
+                    }],
+                    "existing_pull_request": {
+                        "number": pr,
+                        "html_url": existing.map_or(Value::Null, |candidate| json!(
+                            super::support::web_url(&pull_request_web_path(
+                                &candidate.owner,
+                                &candidate.repo,
+                                candidate.number,
+                            ))
+                        )),
+                        "url": format!("/repos/{owner}/{repo}/pulls/{pr}"),
                         "reason": reason,
                     },
-                    "message": format!(
-                        "change coalesced onto existing pull request #{pr}; no new PR created"
-                    ),
                     "documentation_url": docs_url(),
+                    "jeryu_steering": steering(
+                        "jeryu.propose_patch",
+                        "this change overlaps an open pull request; push it onto that PR instead of opening a duplicate",
+                    ),
                 });
-                Some(json_response_with_headers(
-                    200,
-                    &payload,
-                    vec![(HDR_REUSED_PR.to_string(), pr.to_string())],
-                ))
+                Some(json_response(422, &payload))
             }
             OverlapDecision::RefuseCoalesce { pr, reason } => {
                 // GitHub returns 409 Conflict when a change cannot be applied

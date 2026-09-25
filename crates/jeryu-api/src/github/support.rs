@@ -327,21 +327,6 @@ pub(super) fn json_response(status: u16, value: &Value) -> Response {
     }
 }
 
-/// Like [`json_response`] but attaches advisory response headers. Used by the
-/// overlap engine to stamp `X-Jeryu-Reused-PR` when a create-PR request is
-/// routed onto an existing open PR.
-pub(super) fn json_response_with_headers(
-    status: u16,
-    value: &Value,
-    headers: Vec<(String, String)>,
-) -> Response {
-    Response {
-        status,
-        body: value.to_string(),
-        headers,
-    }
-}
-
 pub(super) fn error_response(err: ForgeError) -> Response {
     let (status, mcp_tool, hint) = match err {
         ForgeError::NotFound(_) => (
