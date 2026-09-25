@@ -859,11 +859,11 @@ fn actions_runs_are_sourced_from_check_runs() {
     assert_eq!(run["path"], ".github/workflows/ci-fast.yml@main");
     assert_eq!(run["status"], "completed");
     assert_eq!(run["conclusion"], "success");
-    assert_eq!(run["workflow_id"], 1);
+    let workflow_id = run["workflow_id"].as_u64().expect("workflow id");
     assert_eq!(run["workflow_name"], "ci/fast");
     assert_eq!(
         run["workflow_url"],
-        "/repos/alice/jeryu/actions/workflows/1"
+        format!("/repos/alice/jeryu/actions/workflows/{workflow_id}")
     );
     assert_eq!(run["jobs_url"], "/repos/alice/jeryu/actions/runs/1/jobs");
     assert_eq!(run["run_started_at"], run["created_at"]);
@@ -876,16 +876,18 @@ fn actions_runs_are_sourced_from_check_runs() {
     assert_eq!(single_body["workflow_name"], "ci/fast");
     assert_eq!(single_body["path"], ".github/workflows/ci-fast.yml@main");
 
-    let workflow = router.get("/repos/alice/jeryu/actions/workflows/1");
+    let workflow = router.get(&format!(
+        "/repos/alice/jeryu/actions/workflows/{workflow_id}"
+    ));
     assert_eq!(workflow.status, 200, "{}", workflow.body);
     let workflow_body = body(&workflow);
-    assert_eq!(workflow_body["id"], 1);
+    assert_eq!(workflow_body["id"], workflow_id);
     assert_eq!(workflow_body["name"], "ci/fast");
     assert_eq!(workflow_body["path"], ".github/workflows/ci-fast.yml");
     assert_eq!(workflow_body["state"], "active");
     assert_eq!(
         workflow_body["url"],
-        "/repos/alice/jeryu/actions/workflows/1"
+        format!("/repos/alice/jeryu/actions/workflows/{workflow_id}")
     );
     assert_eq!(
         workflow_body["html_url"],
@@ -900,13 +902,18 @@ fn actions_runs_are_sourced_from_check_runs() {
 
     let workflow_by_file = router.get("/repos/alice/jeryu/actions/workflows/ci-fast.yml");
     assert_eq!(workflow_by_file.status, 200, "{}", workflow_by_file.body);
-    assert_eq!(body(&workflow_by_file)["id"], 1);
+    assert_eq!(body(&workflow_by_file)["id"], workflow_id);
 
-    let workflow_runs = router.get("/repos/alice/jeryu/actions/workflows/1/runs");
+    let workflow_runs = router.get(&format!(
+        "/repos/alice/jeryu/actions/workflows/{workflow_id}/runs"
+    ));
     assert_eq!(workflow_runs.status, 200, "{}", workflow_runs.body);
     let workflow_runs_body = body(&workflow_runs);
     assert_eq!(workflow_runs_body["total_count"], 1);
-    assert_eq!(workflow_runs_body["workflow_runs"][0]["workflow_id"], 1);
+    assert_eq!(
+        workflow_runs_body["workflow_runs"][0]["workflow_id"],
+        workflow_id
+    );
     assert_eq!(
         workflow_runs_body["workflow_runs"][0]["workflow_name"],
         "ci/fast"
@@ -960,14 +967,60 @@ fn actions_workflow_detail_and_runs_accept_id_or_file_name() {
     let detail = router.get("/repos/alice/jeryu/actions/workflows/ci-fast.yml");
     assert_eq!(detail.status, 200, "{}", detail.body);
     let detail_body = body(&detail);
-    assert_eq!(detail_body["id"], 1);
+    let workflow_id = detail_body["id"].as_u64().expect("workflow id");
+    assert!(workflow_id > 0);
     assert_eq!(detail_body["name"], "ci/fast");
 
     let runs = router.get("/repos/alice/jeryu/actions/workflows/ci-fast.yml/runs");
     assert_eq!(runs.status, 200, "{}", runs.body);
     let runs_body = body(&runs);
     assert_eq!(runs_body["total_count"], 1);
-    assert_eq!(runs_body["workflow_runs"][0]["workflow_id"], 1);
+    assert_eq!(runs_body["workflow_runs"][0]["workflow_id"], workflow_id);
+}
+
+#[test]
+fn actions_workflow_ids_survive_an_earlier_sorting_check_name() {
+    let router = router_with_repo();
+
+    let created = router.post(
+        "/repos/alice/jeryu/check-runs",
+        r#"{"name":"ci/fast","head_sha":"deadbeef","status":"completed","conclusion":"success"}"#,
+    );
+    assert_eq!(created.status, 201, "{}", created.body);
+
+    let before = body(&router.get("/repos/alice/jeryu/actions/workflows/ci-fast.yml"));
+    let workflow_id = before["id"].as_u64().expect("workflow id");
+    assert!(workflow_id > 0);
+    assert!(workflow_id <= i64::MAX as u64, "id fits a signed i64");
+
+    // A check whose name sorts before the existing one must not renumber it:
+    // a stored workflow id stays resolvable.
+    let added = router.post(
+        "/repos/alice/jeryu/check-runs",
+        r#"{"name":"a-lint","head_sha":"deadbeef","status":"completed","conclusion":"success"}"#,
+    );
+    assert_eq!(added.status, 201, "{}", added.body);
+
+    let after = body(&router.get("/repos/alice/jeryu/actions/workflows/ci-fast.yml"));
+    assert_eq!(after["id"].as_u64(), Some(workflow_id));
+
+    let by_id = router.get(&format!(
+        "/repos/alice/jeryu/actions/workflows/{workflow_id}"
+    ));
+    assert_eq!(by_id.status, 200, "{}", by_id.body);
+    assert_eq!(body(&by_id)["name"], "ci/fast");
+
+    // The new workflow gets its own distinct id.
+    let listed = body(&router.get("/repos/alice/jeryu/actions/workflows"));
+    assert_eq!(listed["total_count"], 2);
+    let ids: Vec<u64> = listed["workflows"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|workflow| workflow["id"].as_u64().expect("workflow id"))
+        .collect();
+    assert!(ids.contains(&workflow_id));
+    assert_ne!(ids[0], ids[1]);
 }
 
 #[test]

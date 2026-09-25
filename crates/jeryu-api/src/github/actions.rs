@@ -12,9 +12,11 @@
 //!
 //! Run ids are synthesized as a stable 1-based index over the repo's
 //! check-runs so `/actions/runs/{id}` and `/actions/runs/{id}/jobs` resolve
-//! deterministically against the same projection.
+//! deterministically against the same projection. Workflow ids are derived
+//! from the workflow name instead of its position, so a check whose name
+//! sorts before the existing ones does not renumber them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jeryu_core::{CheckConclusion, CheckRun, CheckRunStatus, check_conclusion_wire_value};
 use serde_json::{Value, json};
@@ -194,11 +196,11 @@ impl GithubRouter {
                         .or_default()
                         .push((index as u64 + 1, run));
                 }
+                let mut taken = BTreeSet::new();
                 Ok(grouped
                     .into_iter()
-                    .enumerate()
-                    .map(|(index, (name, runs))| WorkflowRecord {
-                        id: index as u64 + 1,
+                    .map(|(name, runs)| WorkflowRecord {
+                        id: workflow_id(&name, &mut taken),
                         path: workflow_path(&name),
                         default_branch: default_branch.clone(),
                         created_at: runs
@@ -385,6 +387,27 @@ fn workflow_json(owner: &str, repo: &str, workflow: &WorkflowRecord) -> Value {
         "url": format!("/repos/{owner}/{repo}/actions/workflows/{}", workflow.id),
         "badge_url": format!("/{owner}/{repo}/workflows/{}/badge.svg", slugify(&workflow.name)),
     })
+}
+
+/// The largest workflow id we synthesize: ids stay inside the positive `i64`
+/// range so clients that decode them as signed 64-bit integers keep working.
+const MAX_WORKFLOW_ID: u64 = i64::MAX as u64;
+
+/// Derives a workflow's synthetic id from its name with an FNV-1a hash, so the
+/// id depends only on the name and not on how many other checks the repo has
+/// or how they sort. `taken` collects the ids already handed out within one
+/// projection; a collision walks to the next free id.
+fn workflow_id(name: &str, taken: &mut BTreeSet<u64>) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in name.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut id = (hash & MAX_WORKFLOW_ID).max(1);
+    while !taken.insert(id) {
+        id = if id >= MAX_WORKFLOW_ID { 1 } else { id + 1 };
+    }
+    id
 }
 
 fn workflow_path(name: &str) -> String {

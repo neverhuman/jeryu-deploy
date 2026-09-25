@@ -733,7 +733,7 @@ async fn live_actions_workflow_routes_return_json_and_steering_headers() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/repos/alice/jeryu/actions/workflows/1")
+                .uri("/repos/alice/jeryu/actions/workflows/ci-fast.yml")
                 .header(header::USER_AGENT, "GitHub CLI 2.40.0 go-gh/2.0")
                 .body(Body::empty())
                 .unwrap(),
@@ -757,6 +757,7 @@ async fn live_actions_workflow_routes_return_json_and_steering_headers() {
     );
     let detail_body = response_json(detail).await;
     assert_eq!(detail_body["name"], "ci/fast");
+    let workflow_id = detail_body["id"].as_u64().expect("workflow id");
 
     let runs = app
         .oneshot(
@@ -777,7 +778,7 @@ async fn live_actions_workflow_routes_return_json_and_steering_headers() {
     );
     let runs_body = response_json(runs).await;
     assert_eq!(runs_body["total_count"], 1);
-    assert_eq!(runs_body["workflow_runs"][0]["workflow_id"], 1);
+    assert_eq!(runs_body["workflow_runs"][0]["workflow_id"], workflow_id);
 }
 
 #[tokio::test]
