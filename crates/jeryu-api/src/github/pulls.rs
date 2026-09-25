@@ -55,12 +55,16 @@ impl GithubRouter {
     }
 
     pub(super) fn create_pull(&self, owner: &str, repo: &str, body: &str) -> Response {
-        #[cfg_attr(not(feature = "web"), allow(unused_mut))]
         let mut req: CreatePullRequestRequest = match parse_body(body) {
             Ok(value) => value,
             Err(response) => return response,
         };
         let author = actor(body);
+
+        // A fork PR names its source repository either explicitly or through
+        // GitHub's `head: "fork-owner:branch"` form. Persist it on the record so
+        // every later ref resolution (create, merge) knows where the head lives.
+        req.source_repository = Some(create_source_repository(owner, repo, &req));
 
         // With a git backend wired, persist the REAL commit oids of the head and
         // base branch refs (never the literal "base"/"head-<n>" placeholders).
@@ -86,12 +90,19 @@ impl GithubRouter {
             Ok(pr) => {
                 #[cfg(feature = "web")]
                 if let Some(repo_manager) = &self.repo_manager {
+                    // A fork head does not live on a branch of this repository:
+                    // fetch it into `refs/pull/<n>/head` first so the commit is
+                    // present locally, and seed CI against that ref.
+                    let head_ref = match self.fetch_fork_head(repo_manager, owner, repo, &pr) {
+                        Some(pull_ref) => pull_ref,
+                        None => format!("refs/heads/{}", pr.head.ref_name),
+                    };
                     crate::ci_bridge::seed_pull_request_head(
                         &self.core,
                         repo_manager,
                         owner,
                         repo,
-                        &format!("refs/heads/{}", pr.head.ref_name),
+                        &head_ref,
                         &pr.head.sha,
                         "",
                     );
@@ -121,9 +132,17 @@ impl GithubRouter {
             return;
         };
         let refs = RefService::new((**rm).clone());
+        // The head branch lives in the PR's SOURCE repository, which is this
+        // repository only for a same-repo PR. Resolving a fork head here would
+        // silently pick a same-named branch of the destination.
+        let head_repo = match fork_source(owner, repo, req.source_repository.as_deref()) {
+            Some((fork_owner, fork_repo)) => rm.resolve_parts(&fork_owner, &fork_repo).ok(),
+            None => Some(resolved.clone()),
+        };
         if req.head_sha.is_none()
+            && let Some(head_repo) = &head_repo
             && let Ok(Some(oid)) =
-                refs.resolve_commit(&resolved, &format!("refs/heads/{}", req.head))
+                refs.resolve_commit(head_repo, &format!("refs/heads/{}", head_branch(&req.head)))
         {
             req.head_sha = Some(oid);
         }
@@ -346,10 +365,21 @@ impl GithubRouter {
                 req: &req,
                 base_ref,
                 head_ref,
+                source_repository: self.pull_source_repository(owner, repo, number),
                 head_sha,
                 require_linear_history,
             }),
         }
+    }
+
+    /// The repository full name a PR's head lives in, as recorded on the PR.
+    /// Falls back to this repository so a lookup failure keeps the same-repo
+    /// resolution path rather than inventing a fork.
+    fn pull_source_repository(&self, owner: &str, repo: &str, number: u64) -> String {
+        self.core
+            .get_pull_request(owner, repo, number)
+            .map(|pr| pr.source_repository)
+            .unwrap_or_else(|_| format!("{owner}/{repo}"))
     }
 
     /// Finalize a PR that has already passed the merge gate. With a git
@@ -446,15 +476,15 @@ impl GithubRouter {
         // Resolve the LIVE head: prefer the PR's head branch ref, then fall back
         // to the stored head sha ONLY if it is itself a real commit. A head that
         // resolves by neither route is unprocessable (422), not a 500.
-        let head_oid = match self.resolve_pull_head(&refs, &resolved, &ready) {
+        let head_oid = match self.resolve_pull_head(rm, &refs, &resolved, &ready) {
             Ok(Some(oid)) => oid,
             Ok(None) => {
                 return json_response(
                     422,
                     &json!({
                         "message": format!(
-                            "head ref refs/heads/{} does not resolve to a commit",
-                            ready.head_ref
+                            "head ref {} does not resolve to a commit",
+                            ready.head_locator()
                         ),
                         "documentation_url": docs_url(),
                     }),
@@ -774,6 +804,7 @@ impl GithubRouter {
             req: &req,
             base_ref,
             head_ref,
+            source_repository: self.pull_source_repository(owner, repo, number),
             head_sha,
             require_linear_history,
         };
@@ -844,19 +875,86 @@ impl GithubRouter {
         );
     }
 
+    /// Mirror a fork PR's head branch into this repository as
+    /// `refs/pull/<number>/head` and return that ref name, so the destination
+    /// holds the fork's commit without the fork's branch names ever leaking
+    /// into `refs/heads/`. Returns `None` for a same-repo PR or when the fetch
+    /// does not succeed (callers then fall back to their own resolution).
+    #[cfg(feature = "web")]
+    fn fetch_pull_head(
+        &self,
+        rm: &std::sync::Arc<jeryu_gitd::RepoManager>,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        head_ref: &str,
+        source_repository: &str,
+    ) -> Option<String> {
+        let (fork_owner, fork_repo) = fork_source(owner, repo, Some(source_repository))?;
+        let source = rm.resolve_parts(&fork_owner, &fork_repo).ok()?;
+        let destination = rm.resolve_parts(owner, repo).ok()?;
+        let pull_ref = format!("refs/pull/{number}/head");
+        let spec = format!("+refs/heads/{}:{pull_ref}", head_branch(head_ref));
+        let status = std::process::Command::new(&rm.config().git_bin)
+            .args(["fetch", "--no-tags", &source.path.to_string_lossy(), &spec])
+            .current_dir(&destination.path)
+            .status()
+            .ok()?;
+        status.success().then_some(pull_ref)
+    }
+
+    /// Fetch a freshly created fork PR's head into `refs/pull/<n>/head`.
+    #[cfg(feature = "web")]
+    fn fetch_fork_head(
+        &self,
+        rm: &std::sync::Arc<jeryu_gitd::RepoManager>,
+        owner: &str,
+        repo: &str,
+        pr: &PullRequest,
+    ) -> Option<String> {
+        self.fetch_pull_head(
+            rm,
+            owner,
+            repo,
+            pr.number,
+            &pr.head.ref_name,
+            &pr.source_repository,
+        )
+    }
+
     /// Resolve a PR's head to a real commit oid for merging.
     ///
-    /// Tries the live head branch ref first (`refs/heads/<head_ref>`), then
-    /// falls back to the stored head sha ONLY when it is itself a real commit
-    /// in the repo. Returns `Ok(None)` when neither resolves, so the caller
-    /// renders a 4xx rather than feeding a placeholder into the merge.
+    /// For a FORK PR the head branch does not live here: re-fetch it from the
+    /// source repository into `refs/pull/<n>/head` and resolve that, never
+    /// `refs/heads/<head_ref>` of the destination (which may be an unrelated
+    /// same-named branch). For a same-repo PR the live head branch ref is tried
+    /// first. Both then fall back to the stored head sha ONLY when it is itself
+    /// a real commit in the repo. Returns `Ok(None)` when nothing resolves, so
+    /// the caller renders a 4xx rather than feeding a placeholder into the merge.
     #[cfg(feature = "web")]
     fn resolve_pull_head(
         &self,
+        rm: &std::sync::Arc<jeryu_gitd::RepoManager>,
         refs: &jeryu_gitd::refs::RefService,
         repo: &jeryu_gitd::repo::Repository,
         ready: &MergeReady<'_>,
     ) -> jeryu_gitd::Result<Option<String>> {
+        if fork_source(ready.owner, ready.repo, Some(&ready.source_repository)).is_some() {
+            let _ = self.fetch_pull_head(
+                rm,
+                ready.owner,
+                ready.repo,
+                ready.number,
+                &ready.head_ref,
+                &ready.source_repository,
+            );
+            if let Some(oid) =
+                refs.resolve_commit(repo, &format!("refs/pull/{}/head", ready.number))?
+            {
+                return Ok(Some(oid));
+            }
+            return refs.resolve_commit(repo, &ready.head_sha);
+        }
         if let Some(oid) = refs.resolve_commit(repo, &format!("refs/heads/{}", ready.head_ref))? {
             return Ok(Some(oid));
         }
@@ -889,9 +987,25 @@ struct MergeReady<'a> {
     base_ref: String,
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     head_ref: String,
+    /// Repository full name the head lives in; a FORK when it differs from
+    /// `owner/repo` (see `fork_source`).
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    source_repository: String,
     head_sha: String,
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     require_linear_history: bool,
+}
+
+#[cfg(feature = "web")]
+impl MergeReady<'_> {
+    /// Where the merge looks for this PR's head, for error messages.
+    fn head_locator(&self) -> String {
+        if fork_source(self.owner, self.repo, Some(&self.source_repository)).is_some() {
+            format!("refs/pull/{}/head", self.number)
+        } else {
+            format!("refs/heads/{}", self.head_ref)
+        }
+    }
 }
 
 fn merge_success_response(result: &jeryu_core::MergeResult) -> Response {
@@ -929,6 +1043,52 @@ fn merge_message(number: u64, req: &MergePullRequestRequest) -> String {
         message.push_str(body);
     }
     message
+}
+
+/// The repository full name a create request's head lives in: an explicit
+/// `source_repository`, else the `fork-owner:branch` prefix of `head` (GitHub's
+/// cross-repository form, whose repo name matches the destination), else this
+/// repository.
+fn create_source_repository(owner: &str, repo: &str, req: &CreatePullRequestRequest) -> String {
+    req.source_repository
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            req.head
+                .split_once(':')
+                .map(|(head_owner, _)| head_owner.trim())
+                .filter(|head_owner| !head_owner.is_empty())
+                .map(|head_owner| format!("{head_owner}/{repo}"))
+        })
+        .unwrap_or_else(|| format!("{owner}/{repo}"))
+}
+
+/// The branch name of a head that may carry GitHub's `fork-owner:branch` prefix.
+#[cfg(feature = "web")]
+fn head_branch(head: &str) -> &str {
+    head.split_once(':').map_or(head, |(_, branch)| branch)
+}
+
+/// Split a PR's source repository into `(owner, repo)` when it is a FORK of the
+/// destination. Returns `None` for a same-repo PR (and for an unparsable name),
+/// so callers keep resolving the head in this repository as before.
+#[cfg(feature = "web")]
+fn fork_source(
+    owner: &str,
+    repo: &str,
+    source_repository: Option<&str>,
+) -> Option<(String, String)> {
+    let (source_owner, source_repo) = source_repository?.trim().split_once('/')?;
+    let source_repo = source_repo.trim_end_matches(".git");
+    if source_owner.is_empty() || source_repo.is_empty() {
+        return None;
+    }
+    if source_owner == owner && source_repo == repo.trim_end_matches(".git") {
+        return None;
+    }
+    Some((source_owner.to_string(), source_repo.to_string()))
 }
 
 /// Web UI route for a pull request: `/repos/<host>/<owner>/<repo>/pulls/<n>`.

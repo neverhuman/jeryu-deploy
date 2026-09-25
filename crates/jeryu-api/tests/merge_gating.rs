@@ -1126,3 +1126,108 @@ fn unconfigured_repo_pushes_nothing() {
 
     fixture.cleanup();
 }
+
+/// B-17: a PR from a FORK resolves its head in the SOURCE repository, even when
+/// the destination has a branch of the same name pointing at another commit.
+#[test]
+fn fork_pull_head_resolves_in_the_source_repository() {
+    if !git_available() {
+        return;
+    }
+    let fixture = seed_fixture("jeryu-fork-head");
+
+    // A fork of the destination with its OWN `feature` branch, off the shared
+    // base, carrying a different commit than `acme/demo`'s `feature`.
+    let fork = fixture
+        .manager
+        .create_bare(&RepoId::new("forkowner", "demo").unwrap())
+        .expect("create fork bare");
+    run_git(
+        &fixture.work,
+        &["checkout", "-b", "fork-feature", &fixture.base_oid],
+        "checkout fork branch",
+    );
+    std::fs::write(fixture.work.join("FORK.md"), "from the fork\n").expect("write");
+    run_git(&fixture.work, &["add", "FORK.md"], "git add fork file");
+    run_git(&fixture.work, &["commit", "-m", "fork work"], "git commit");
+    let fork_oid = rev_parse_head(&fixture.work);
+    run_git(
+        &fixture.work,
+        &[
+            "push",
+            fork.path.to_str().unwrap(),
+            "HEAD:refs/heads/feature",
+        ],
+        "push fork feature",
+    );
+    assert_ne!(
+        fork_oid, fixture.head_oid,
+        "the fork's feature branch must differ from the destination's"
+    );
+
+    let router =
+        GithubRouter::with_core(ForgeCore::new()).with_repo_manager(fixture.manager.clone());
+    let created = router.post(
+        "/repos",
+        r#"{"owner":"acme","name":"demo","private":false,"default_branch":"main"}"#,
+    );
+    assert_eq!(created.status, 201, "create repo: {}", created.body);
+
+    // GitHub's cross-repository form: no head_sha, head prefixed by the fork owner.
+    let opened = router.post(
+        "/repos/acme/demo/pulls",
+        r#"{"title":"fork feature","head":"forkowner:feature","base":"main","actor":"alice"}"#,
+    );
+    assert_eq!(opened.status, 201, "open fork pr: {}", opened.body);
+    let opened_body = body(&opened);
+    let number = opened_body["number"].as_u64().expect("pr number");
+    assert_eq!(opened_body["source_repository"], "forkowner/demo");
+    assert_eq!(
+        opened_body["head"]["sha"], fork_oid,
+        "the head must be the FORK's commit, not the destination's same-named branch"
+    );
+
+    // The fork commit is mirrored into the destination as refs/pull/<n>/head.
+    let destination = fixture.manager.resolve_parts("acme", "demo").unwrap();
+    let pull_ref = RefService::new((*fixture.manager).clone())
+        .resolve_commit(&destination, &format!("refs/pull/{number}/head"))
+        .expect("resolve pull head")
+        .expect("refs/pull/<n>/head present");
+    assert_eq!(pull_ref, fork_oid);
+
+    let protect = router.put(
+        "/repos/acme/demo/branches/main/protection",
+        r#"{"required_approving_review_count":1}"#,
+    );
+    assert_eq!(protect.status, 200, "set protection: {}", protect.body);
+    router
+        .core()
+        .create_review(
+            "acme",
+            "demo",
+            number,
+            "bob",
+            CreateReviewRequest {
+                body: None,
+                event: ReviewState::Approved,
+                comments: vec![],
+                expected_head_sha: Some(fork_oid.clone()),
+            },
+        )
+        .expect("approve");
+
+    let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(merged.status, 200, "merge fork pr: {}", merged.body);
+    assert_eq!(
+        body(&merged)["sha"],
+        fork_oid,
+        "merge must land the fork commit"
+    );
+    assert_eq!(
+        fixture.main_ref(),
+        fork_oid,
+        "main must advance to the FORK's commit"
+    );
+
+    fixture.cleanup();
+}
