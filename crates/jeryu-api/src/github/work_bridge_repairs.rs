@@ -112,7 +112,7 @@ mod store {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    use rusqlite::{Connection, Row, params};
+    use rusqlite::{Connection, Row, params, types::Type};
 
     use super::WorkBridgeRepair;
 
@@ -153,7 +153,11 @@ mod store {
                 .map_err(|err| err.to_string())?;
             let mut repairs = Vec::new();
             for row in rows {
-                repairs.push(row.map_err(|err| err.to_string())?);
+                match row {
+                    Ok(repair) => repairs.push(repair),
+                    // One unreadable row must not discard every other pending repair.
+                    Err(err) => report("load", &err.to_string()),
+                }
             }
             Ok(repairs)
         }
@@ -231,7 +235,9 @@ mod store {
             code: row.get(4)?,
             work_key: row.get(5)?,
             reason: row.get(6)?,
-            common_fixes: serde_json::from_str(&common_fixes).unwrap_or_default(),
+            common_fixes: serde_json::from_str(&common_fixes).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
+            })?,
             docs_url: row.get(8)?,
             repair_hint: row.get(9)?,
         })
