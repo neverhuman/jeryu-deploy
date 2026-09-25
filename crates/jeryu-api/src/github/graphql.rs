@@ -4,6 +4,7 @@
 //! tiny read-only subset used by common discovery probes and otherwise returns
 //! a GitHub-shaped error with typed Jeryu repair routes.
 
+use jeryu_core::{AccountSummary, UserRole};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -21,7 +22,19 @@ struct GraphqlRequest {
 }
 
 impl GithubRouter {
+    /// Account-scoped GraphQL for the local web edge: the caller only sees
+    /// repositories it may read.
+    pub(crate) fn graphql_for_account(&self, body: &str, account: &AccountSummary) -> Response {
+        self.graphql_scoped(body, Some(account))
+    }
+
     pub(super) fn graphql(&self, body: &str) -> Response {
+        self.graphql_scoped(body, None)
+    }
+
+    /// `account` is `None` for the trusted in-process edge, which is already
+    /// past authorization; the web edge always passes the caller.
+    fn graphql_scoped(&self, body: &str, account: Option<&AccountSummary>) -> Response {
         let request = match parse_body::<GraphqlRequest>(body) {
             Ok(request) => request,
             Err(response) => return response,
@@ -59,6 +72,10 @@ impl GithubRouter {
             && let Some((owner, name)) = repository_args(query, &request.variables)
         {
             let repo = self.core().get_repository(&owner, &name).ok();
+            // A repository the caller cannot read reads as absent, which is
+            // GraphQL's own shape for "no such node" and leaks nothing about
+            // whether it exists.
+            let repo = repo.filter(|repo| self.account_can_read(account, &repo.owner, &repo.name));
             return json_response(
                 200,
                 &json!({
@@ -76,6 +93,16 @@ impl GithubRouter {
         }
 
         unsupported_response(query, request.operation_name.as_deref())
+    }
+
+    fn account_can_read(&self, account: Option<&AccountSummary>, owner: &str, name: &str) -> bool {
+        match account {
+            None => true,
+            Some(account) => {
+                account.role == UserRole::Admin
+                    || self.core().user_can_read_repo(&account.login, owner, name)
+            }
+        }
     }
 }
 

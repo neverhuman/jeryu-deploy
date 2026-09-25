@@ -1052,3 +1052,92 @@ async fn issue_create_with_idempotency_key_replays_instead_of_filing_twice() {
     assert_ne!(fresh["number"], first["number"]);
     assert_eq!(core.list_issues("alice", "jeryu", None).unwrap().len(), 2);
 }
+
+/// The GraphQL edge answers the same repository question the REST edge does,
+/// so it must honour the same grants: an ungranted caller sees `repository:
+/// null` rather than a private repository's name, privacy and default branch.
+#[tokio::test]
+async fn github_graphql_repository_query_honours_repo_grants() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "secret".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("jordanh", "jordanh-password", UserRole::User)
+        .unwrap();
+    core.create_account("mina", "mina-password", UserRole::User)
+        .unwrap();
+    core.grant_repo_access(
+        "jeryu-admin",
+        "mina",
+        "alice",
+        "secret",
+        RepoAccessLevel::Read,
+    )
+    .unwrap();
+    let ungranted = core
+        .create_personal_access_token("jordanh", "test", None)
+        .unwrap()
+        .secret;
+    let granted = core
+        .create_personal_access_token("mina", "test", None)
+        .unwrap()
+        .secret;
+
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let query = json!({
+        "query": "query { repository(owner: \"alice\", name: \"secret\") { name nameWithOwner isPrivate defaultBranchRef { name } } }"
+    })
+    .to_string();
+
+    let graphql = |token: String, body: String| {
+        let app = app.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/graphql")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    let denied = graphql(ungranted, query.clone()).await;
+    assert_eq!(denied.status(), StatusCode::OK);
+    let body = response_json(denied).await;
+    assert_eq!(
+        body["data"]["repository"],
+        Value::Null,
+        "a caller without a grant must not learn the repository exists"
+    );
+
+    let allowed = graphql(granted, query).await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    let body = response_json(allowed).await;
+    assert_eq!(body["data"]["repository"]["nameWithOwner"], "alice/secret");
+    assert_eq!(body["data"]["repository"]["isPrivate"], true);
+    assert_eq!(
+        body["data"]["repository"]["defaultBranchRef"]["name"],
+        "main"
+    );
+}

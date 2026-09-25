@@ -48,7 +48,7 @@ pub(super) async fn graphql(
     };
     let body = std::str::from_utf8(&body).unwrap_or_default();
     let body = bind_authenticated_actor(body, &account.login);
-    github_response(state.github.handle(Method::Post, "/graphql", &body))
+    github_response(state.github.graphql_for_account(&body, &account))
 }
 
 /// Accept-aware `/repos` entrypoint that serves the SPA shell to browser
