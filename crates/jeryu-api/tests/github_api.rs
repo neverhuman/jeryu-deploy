@@ -1035,6 +1035,60 @@ fn list_routes_emit_rfc5988_link_header_for_pagination() {
 }
 
 #[test]
+fn pagination_links_keep_the_callers_filters() {
+    let router = router_with_repo();
+
+    // Two closed PRs plus one open one: paging the closed list per_page=1 must
+    // hand back a `next` that is still scoped to `state=closed`.
+    for (head, sha) in [("done-a", "sha-a"), ("done-b", "sha-b")] {
+        let opened = router.post(
+            "/repos/alice/jeryu/pulls",
+            &format!(r#"{{"title":"{head}","head":"{head}","base":"main","head_sha":"{sha}"}}"#),
+        );
+        assert_eq!(opened.status, 201, "open {head}: {}", opened.body);
+        let number = body(&opened)["number"].as_u64().expect("number");
+        let closed = router.handle(
+            Method::Patch,
+            &format!("/repos/alice/jeryu/pulls/{number}"),
+            r#"{"state":"closed"}"#,
+        );
+        assert_eq!(closed.status, 200, "close {head}: {}", closed.body);
+    }
+    let still_open = router.post(
+        "/repos/alice/jeryu/pulls",
+        r#"{"title":"open-c","head":"open-c","base":"main","head_sha":"sha-c"}"#,
+    );
+    assert_eq!(still_open.status, 201, "{}", still_open.body);
+
+    let page1 = router.get("/repos/alice/jeryu/pulls?state=closed&per_page=1");
+    assert_eq!(page1.status, 200, "{}", page1.body);
+    let link = header(&page1, "Link").expect("Link header on the closed list");
+    assert!(
+        link.contains("/repos/alice/jeryu/pulls?state=closed&per_page=1&page=2"),
+        "next link keeps state=closed: {link}"
+    );
+    assert!(
+        !link.contains("?per_page="),
+        "the filter is not dropped from the base: {link}"
+    );
+
+    // Following `next` stays on the closed list instead of resetting to open.
+    let page2 = router.get("/repos/alice/jeryu/pulls?state=closed&per_page=1&page=2");
+    assert_eq!(page2.status, 200, "{}", page2.body);
+    let states: Vec<String> = body(&page2)
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|pull| pull["state"].as_str().expect("state").to_owned())
+        .collect();
+    assert_eq!(
+        states,
+        vec!["closed".to_owned()],
+        "page 2 of the closed list"
+    );
+}
+
+#[test]
 fn error_bodies_carry_jeryu_steering_fields() {
     let router = router_with_repo();
 

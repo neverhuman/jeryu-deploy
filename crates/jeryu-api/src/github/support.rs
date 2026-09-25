@@ -175,6 +175,26 @@ where
     }
 }
 
+/// Builds the base URL that pagination links hang off: the route path plus the
+/// caller's own query with `per_page`/`page` dropped. The surviving pairs keep
+/// their original order and encoding, so a `next` hop still carries filters
+/// such as `?state=closed` instead of silently falling back to the defaults.
+pub(super) fn link_base(route_path: &str, query: &str) -> String {
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter(|pair| {
+            let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
+            key != "per_page" && key != "page"
+        })
+        .collect();
+    if kept.is_empty() {
+        route_path.to_owned()
+    } else {
+        format!("{route_path}?{}", kept.join("&"))
+    }
+}
+
 /// Builds the RFC 5988 `Link` header value. Emits `next`/`last` while more
 /// pages remain and `prev`/`first` once past page 1; returns `None` for a
 /// single-page result (GitHub omits the header entirely in that case).

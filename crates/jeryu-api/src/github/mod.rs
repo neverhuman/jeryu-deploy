@@ -43,7 +43,7 @@ pub(crate) use support::{GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_TOKEN_FILE
 pub(crate) use support::{MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL};
 use support::{
     Pagination, PullStateSelector, first_contact_response, gh_auth_workaround_response,
-    json_response, not_found,
+    json_response, link_base, not_found,
 };
 
 /// Semantic version reported by `GET /api/v1/version`.
@@ -177,8 +177,21 @@ impl GithubRouter {
         let (route_path, query) = path.split_once('?').unwrap_or((path, ""));
         let page = Pagination::from_query(query);
         let segments: Vec<&str> = route_path.trim_matches('/').split('/').collect();
-        self.route(method, &segments, body, route_path, page, query)
-            .unwrap_or_else(not_found)
+        // Pagination links hang off the path plus the caller's own filters, so
+        // following `next` keeps `?state=` and friends instead of resetting them.
+        let link_base = link_base(route_path, query);
+        self.route(
+            method,
+            &segments,
+            body,
+            RouteContext {
+                route_path,
+                path: &link_base,
+                page,
+                query,
+            },
+        )
+        .unwrap_or_else(not_found)
     }
 
     /// Convenience GET wrapper.
@@ -195,7 +208,19 @@ impl GithubRouter {
     pub fn put(&self, path: &str, body: &str) -> Response {
         self.handle(Method::Put, path, body)
     }
+}
 
+/// The per-request context a route arm needs beyond its path segments: the
+/// matched path, the base pagination links hang off (the path plus the caller's
+/// surviving filters), the requested page and the raw query.
+struct RouteContext<'a> {
+    route_path: &'a str,
+    path: &'a str,
+    page: Pagination,
+    query: &'a str,
+}
+
+impl GithubRouter {
     /// Routes a parsed request. Returns `Err(status)` for an unmatched route so
     /// the caller can render the GitHub-shaped fallback body.
     fn route(
@@ -203,10 +228,14 @@ impl GithubRouter {
         method: Method,
         segments: &[&str],
         body: &str,
-        path: &str,
-        page: Pagination,
-        query: &str,
+        context: RouteContext<'_>,
     ) -> std::result::Result<Response, u16> {
+        let RouteContext {
+            route_path,
+            path,
+            page,
+            query,
+        } = context;
         use Method::{Get, Patch, Post, Put};
         match (method, segments) {
             (Get, ["health"]) => Ok(json_response(
@@ -220,7 +249,7 @@ impl GithubRouter {
                 ["login", "device", "code"]
                 | ["login", "oauth", "access_token"]
                 | ["login", "oauth", "authorize"],
-            ) => Ok(gh_auth_workaround_response(path)),
+            ) => Ok(gh_auth_workaround_response(route_path)),
             (Get, ["api", "v1", "version"]) => Ok(json_response(
                 200,
                 &json!({ "version": JERYU_API_VERSION, "name": "jeryu-api" }),
