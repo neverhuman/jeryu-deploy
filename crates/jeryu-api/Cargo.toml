@@ -35,6 +35,7 @@ clap = { workspace = true }
 futures-util = { version = "0.3", optional = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
 hex = { workspace = true, optional = true }
+libc = { version = "0.2", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true, optional = true }
@@ -57,7 +58,7 @@ tower = "0.5"
 
 [features]
 default = []
-web = ["dep:axum", "dep:rusqlite", "dep:pulldown-cmark", "dep:base64", "dep:flate2", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:sha2", "dep:tokio", "dep:tower", "dep:uuid"]
+web = ["dep:axum", "dep:rusqlite", "dep:pulldown-cmark", "dep:base64", "dep:flate2", "dep:futures-util", "dep:hex", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-autonomy", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:libc", "dep:sha2", "dep:tokio", "dep:tower", "dep:uuid"]
 
 [lints]
 workspace = true

@@ -1133,6 +1133,7 @@ dependencies = [
  "jeryu-runner-oci",
  "jeryu-runnerd",
  "jeryu-wsversion",
+ "libc",
  "pulldown-cmark",
  "reqwest",
  "rusqlite",

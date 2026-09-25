@@ -2,6 +2,7 @@
 
 use super::export::export_workcell_agent_run;
 use super::*;
+use crate::web::sessions::purge_seeded_agent_auth;
 
 pub(in crate::web) async fn start(State(state): State<Arc<WebState>>, body: Bytes) -> AxumResponse {
     let request: AgentRunStartRequest = match parse_agent_body(&body, "start an agent run") {
@@ -78,6 +79,7 @@ fn start_request(
         output_budget,
         require_cgroup: request.require_cgroup(),
         control_rx,
+        purge_seeded_auth: false,
     });
 
     Ok(AgentRunStartResponse {
@@ -119,6 +121,11 @@ struct DriverThreadInit {
     output_budget: usize,
     require_cgroup: bool,
     control_rx: mpsc::Receiver<AgentControl>,
+    /// Whether the host operator's seeded agent credentials under
+    /// `{workspace}/.agent-home` are removed once the run reaches a terminal
+    /// state. True for a launched session agent (it owns the seeding), false for
+    /// the companion shell and the public agent-run route.
+    purge_seeded_auth: bool,
 }
 
 /// Which PTY backend a launched agent runs under.
@@ -149,6 +156,7 @@ fn spawn_driver_thread(init: DriverThreadInit) {
         output_budget,
         require_cgroup,
         control_rx,
+        purge_seeded_auth,
     } = init;
     std::thread::spawn(move || {
         let sink = RecordingSink {
@@ -183,6 +191,9 @@ fn spawn_driver_thread(init: DriverThreadInit) {
                 .run(&repo_root, &spec, &sink),
         };
         store.complete(&run_id, result);
+        if purge_seeded_auth {
+            purge_seeded_agent_auth(&repo_root);
+        }
     });
 }
 
@@ -214,6 +225,10 @@ pub(in crate::web) struct SessionAgentSpawn {
     /// Whether enforced cgroup-v2 limits are required (false only under test, and
     /// only consulted by the native backend; the docker backend ignores it).
     pub require_cgroup: bool,
+    /// Whether the seeded host credentials under `{workspace}/.agent-home` are
+    /// removed when this run ends. Set for the session agent, not the companion
+    /// shell that shares the same workspace.
+    pub purge_seeded_auth: bool,
 }
 
 /// Launch the selected agent for a repo-scoped session on a controlling PTY,
@@ -238,6 +253,7 @@ pub(in crate::web) fn spawn_session_agent(store: &AgentRunStore, spawn: SessionA
         timeout,
         output_budget,
         require_cgroup,
+        purge_seeded_auth,
     } = spawn;
 
     let Some(spec) = spec else {
@@ -256,6 +272,7 @@ pub(in crate::web) fn spawn_session_agent(store: &AgentRunStore, spawn: SessionA
         output_budget,
         require_cgroup,
         control_rx,
+        purge_seeded_auth,
     });
 }
 
@@ -477,6 +494,7 @@ pub(in crate::web) async fn shell(
             timeout: std::time::Duration::from_secs(7200),
             output_budget: 20_971_520,
             require_cgroup: false,
+            purge_seeded_auth: false,
         },
     );
 

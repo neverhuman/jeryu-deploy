@@ -424,6 +424,9 @@ fn create_session(
             timeout: Duration::from_secs(SESSION_AGENT_TIMEOUT_SECS),
             output_budget: SESSION_AGENT_OUTPUT_BYTES,
             require_cgroup: session_require_cgroup(),
+            // The session agent owns the seeded credentials: drop them from the
+            // checkout as soon as it exits.
+            purge_seeded_auth: true,
         },
     );
 
@@ -476,6 +479,7 @@ fn create_session(
                 timeout: Duration::from_secs(7200),
                 output_budget: 20_971_520,
                 require_cgroup: false,
+                purge_seeded_auth: false,
             },
         );
         state
@@ -682,6 +686,7 @@ mod runtime;
 #[cfg(test)]
 pub(crate) use runtime::SessionRuntime;
 pub(crate) use runtime::SessionRuntimeConfig;
+pub(in crate::web) use runtime::purge_seeded_agent_auth;
 #[cfg(test)]
 use runtime::seed_agent_auth_from_home;
 use runtime::{materialize_workspace, resolve_session_backend, seed_agent_auth};

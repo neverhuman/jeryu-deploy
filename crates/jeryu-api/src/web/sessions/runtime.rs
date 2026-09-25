@@ -1,5 +1,7 @@
 //! Session workspace materialization, agent credential seeding, and runtime selection.
 
+use std::os::unix::fs::OpenOptionsExt;
+
 use super::*;
 
 /// Materialize the session workspace into a real working tree on the unique branch
@@ -225,6 +227,19 @@ pub(super) fn seed_agent_auth_from_home(
     };
 
     let agent_home = workspace.join(".agent-home");
+    // Every seeded path is created without ever following a symlink: a checkout
+    // that plants `.agent-home` (or a directory under it) as a symlink would
+    // otherwise redirect the host operator's refresh tokens anywhere on the host
+    // filesystem. A refusal skips seeding entirely rather than writing through it.
+    if let Err(err) = ensure_seed_dir(workspace, &agent_home) {
+        eprintln!(
+            "seed_agent_auth[{}]: refusing to seed into {}: {}",
+            agent_id,
+            agent_home.display(),
+            err
+        );
+        return;
+    }
 
     for file in files {
         let src = host_home.join(file.host_rel);
@@ -232,23 +247,13 @@ pub(super) fn seed_agent_auth_from_home(
             continue;
         }
         let dst = agent_home.join(file.container_rel);
-        if let Some(parent) = dst.parent()
-            && let Err(err) = std::fs::create_dir_all(parent)
-        {
-            eprintln!(
-                "seed_agent_auth: failed to create dir {} -> {}: {}",
-                src.display(),
-                dst.display(),
-                err
-            );
-            continue;
-        }
-        match std::fs::copy(&src, &dst) {
+        match copy_seeded_file(
+            workspace,
+            &src,
+            &dst,
+            seeded_auth_file_mode(file.container_rel),
+        ) {
             Ok(bytes) => {
-                let _ = std::fs::set_permissions(
-                    &dst,
-                    std::fs::Permissions::from_mode(seeded_auth_file_mode(file.container_rel)),
-                );
                 eprintln!(
                     "seed_agent_auth[{}]: seeded {} -> {} ({} bytes)",
                     agent_id,
@@ -273,12 +278,22 @@ pub(super) fn seed_agent_auth_from_home(
     if agent_id == "agy" || !matches!(agent_id, "codex" | "claude") {
         // Recursively copy relevant ~/.gemini subtrees for agy auth.
         fn copy_dir_recursive(
+            workspace_root: &std::path::Path,
             src: &std::path::Path,
             dst: &std::path::Path,
             agent_id: &str,
             label: &str,
         ) {
-            let _ = std::fs::create_dir_all(dst);
+            if let Err(err) = ensure_seed_dir(workspace_root, dst) {
+                eprintln!(
+                    "seed_agent_auth[{}]: refusing to seed {} into {}: {}",
+                    agent_id,
+                    label,
+                    dst.display(),
+                    err
+                );
+                return;
+            }
             let entries = match std::fs::read_dir(src) {
                 Ok(e) => e,
                 Err(_) => return,
@@ -287,9 +302,9 @@ pub(super) fn seed_agent_auth_from_home(
                 let src_path = entry.path();
                 let dst_path = dst.join(entry.file_name());
                 if src_path.is_dir() {
-                    copy_dir_recursive(&src_path, &dst_path, agent_id, label);
+                    copy_dir_recursive(workspace_root, &src_path, &dst_path, agent_id, label);
                 } else if src_path.is_file() {
-                    match std::fs::copy(&src_path, &dst_path) {
+                    match copy_seeded_file(workspace_root, &src_path, &dst_path, 0o600) {
                         Ok(bytes) => {
                             eprintln!(
                                 "seed_agent_auth[{}]: seeded {} {} ({} bytes)",
@@ -316,12 +331,12 @@ pub(super) fn seed_agent_auth_from_home(
         // ~/.gemini/antigravity-cli/ (installation_id, implicit tokens, settings)
         let cli_src = host_home.join(".gemini/antigravity-cli");
         let cli_dst = agent_home.join(".gemini/antigravity-cli");
-        copy_dir_recursive(&cli_src, &cli_dst, agent_id, "cli");
+        copy_dir_recursive(workspace, &cli_src, &cli_dst, agent_id, "cli");
 
         // ~/.gemini/config/ (projects, mcp_config, .migrated marker)
         let cfg_src = host_home.join(".gemini/config");
         let cfg_dst = agent_home.join(".gemini/config");
-        copy_dir_recursive(&cfg_src, &cfg_dst, agent_id, "config");
+        copy_dir_recursive(workspace, &cfg_src, &cfg_dst, agent_id, "config");
     }
 
     // ── Seed a custom resolv.conf with public DNS for sandboxed agents ──
@@ -330,9 +345,11 @@ pub(super) fn seed_agent_auth_from_home(
     // at a well-known path; the sandbox mounts it over /etc/resolv.conf.
     {
         let resolv_path = workspace.join(".resolv.conf");
-        let _ = std::fs::write(
+        let _ = write_seeded_file(
+            workspace,
             &resolv_path,
-            "nameserver 8.8.8.8\nnameserver 8.8.4.4\noptions ndots:0\n",
+            b"nameserver 8.8.8.8\nnameserver 8.8.4.4\noptions ndots:0\n",
+            0o644,
         );
         eprintln!(
             "seed_agent_auth[{}]: wrote custom resolv.conf at {}",
@@ -351,7 +368,7 @@ pub(super) fn seed_agent_auth_from_home(
             ".gemini/antigravity-cli/knowledge",
             ".gemini/antigravity-cli/builtin",
         ] {
-            let _ = std::fs::create_dir_all(agent_home.join(subdir));
+            let _ = ensure_seed_dir(workspace, &agent_home.join(subdir));
         }
     }
 
@@ -381,9 +398,7 @@ pub(super) fn seed_agent_auth_from_home(
                         cleaned.push('\n');
                     }
                 }
-                let _ = std::fs::write(&codex_cfg, &cleaned);
-                let _ =
-                    std::fs::set_permissions(&codex_cfg, std::fs::Permissions::from_mode(0o400));
+                let _ = write_seeded_file(workspace, &codex_cfg, cleaned.as_bytes(), 0o400);
                 eprintln!(
                     "seed_agent_auth[{}]: stripped [mcp_servers.*] from config.toml",
                     agent_id
@@ -412,8 +427,7 @@ pub(super) fn seed_agent_auth_from_home(
             }
         } else {
             // No host config — create a minimal one with just workspace trust.
-            let _ = std::fs::create_dir_all(agent_home.join(".codex"));
-            let _ = write_codex_trust_config(&codex_cfg, &trust_paths);
+            let _ = write_codex_trust_config(workspace, &codex_cfg, &trust_paths);
             eprintln!(
                 "seed_agent_auth[{}]: created minimal config.toml with workspace trust",
                 agent_id
@@ -426,9 +440,154 @@ pub(super) fn seed_agent_auth_from_home(
     // Keep the nested path too for older builds, but the top-level copy is the
     // important one for auth/session state.
     if agent_id == "claude" || !matches!(agent_id, "codex" | "agy") {
-        ensure_claude_onboarding_state(&agent_home.join(".claude.json"), agent_id);
-        ensure_claude_onboarding_state(&agent_home.join(".claude/.claude.json"), agent_id);
+        ensure_claude_onboarding_state(workspace, &agent_home.join(".claude.json"), agent_id);
+        ensure_claude_onboarding_state(
+            workspace,
+            &agent_home.join(".claude/.claude.json"),
+            agent_id,
+        );
     }
+}
+
+/// Remove the seeded credential copies from a session workspace. Called when the
+/// session's agent run reaches a terminal state so the host operator's refresh
+/// tokens do not outlive the session in the checkout. A `.agent-home` that is not
+/// a real directory (a planted symlink) is left alone — following it would delete
+/// somewhere else on the host.
+pub(in crate::web) fn purge_seeded_agent_auth(workspace: &std::path::Path) {
+    let agent_home = workspace.join(".agent-home");
+    match std::fs::symlink_metadata(&agent_home) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            match std::fs::remove_dir_all(&agent_home) {
+                Ok(()) => eprintln!(
+                    "purge_seeded_agent_auth: removed seeded credentials at {}",
+                    agent_home.display()
+                ),
+                Err(err) => eprintln!(
+                    "purge_seeded_agent_auth: failed to remove {}: {}",
+                    agent_home.display(),
+                    err
+                ),
+            }
+        }
+        Ok(_) => eprintln!(
+            "purge_seeded_agent_auth: {} is not a directory; leaving it untouched",
+            agent_home.display()
+        ),
+        Err(_) => {}
+    }
+}
+
+/// The error a planted symlink on a seed path yields. Seeding refuses rather than
+/// writing (or reading) through it.
+fn seed_symlink_refusal(path: &std::path::Path) -> std::io::Error {
+    std::io::Error::other(format!(
+        "{} is a symlink; refusing to seed credentials through it",
+        path.display()
+    ))
+}
+
+/// Create `path` under `root`, creating missing directories one component at a
+/// time and refusing any component that is a symlink or an existing non-directory.
+/// `root` itself must already be a real directory; `path` must live under it.
+fn ensure_seed_dir(root: &std::path::Path, path: &std::path::Path) -> std::io::Result<()> {
+    let rel = path.strip_prefix(root).map_err(|_| {
+        std::io::Error::other(format!(
+            "{} is outside the session workspace {}",
+            path.display(),
+            root.display()
+        ))
+    })?;
+    let root_meta = std::fs::symlink_metadata(root)?;
+    if root_meta.file_type().is_symlink() {
+        return Err(seed_symlink_refusal(root));
+    }
+    if !root_meta.is_dir() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a directory",
+            root.display()
+        )));
+    }
+    let mut current = root.to_path_buf();
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(name) => current.push(name),
+            _ => {
+                return Err(std::io::Error::other(format!(
+                    "{} has a path component that cannot be seeded",
+                    path.display()
+                )));
+            }
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(seed_symlink_refusal(&current));
+            }
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(std::io::Error::other(format!(
+                    "{} exists and is not a directory",
+                    current.display()
+                )));
+            }
+            Err(_) => std::fs::create_dir(&current)?,
+        }
+    }
+    Ok(())
+}
+
+/// Create one seeded file under `root` fresh, at `mode`, without following a
+/// symlink anywhere on its path: parents go through [`ensure_seed_dir`], a
+/// pre-existing symlink at the leaf is refused, and the file itself is opened
+/// `O_CREAT | O_EXCL | O_NOFOLLOW` so the bytes can only ever land on a regular
+/// file this call created.
+fn create_seeded_file(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    mode: u32,
+) -> std::io::Result<std::fs::File> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other(format!("{} has no parent", path.display())))?;
+    ensure_seed_dir(root, parent)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => return Err(seed_symlink_refusal(path)),
+        // Seeding rewrites its own files (the Codex config is written more than
+        // once); a regular file it already owns is replaced, not written through.
+        Ok(_) => std::fs::remove_file(path)?,
+        Err(_) => {}
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+/// Write `bytes` to a freshly created seeded file (see [`create_seeded_file`]).
+fn write_seeded_file(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    bytes: &[u8],
+    mode: u32,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    create_seeded_file(root, path, mode)?.write_all(bytes)
+}
+
+/// Copy one host file into a freshly created seeded file, returning the bytes
+/// copied. Replaces `std::fs::copy`, which would happily follow a planted
+/// symlink at the destination.
+fn copy_seeded_file(
+    root: &std::path::Path,
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    mode: u32,
+) -> std::io::Result<u64> {
+    let mut reader = std::fs::File::open(src)?;
+    let mut writer = create_seeded_file(root, dst, mode)?;
+    std::io::copy(&mut reader, &mut writer)
 }
 
 fn seeded_auth_file_mode(container_rel: &str) -> u32 {
@@ -447,15 +606,20 @@ fn codex_trust_paths(workspace: &std::path::Path) -> Vec<String> {
     paths
 }
 
-fn write_codex_trust_config(path: &std::path::Path, trust_paths: &[String]) -> std::io::Result<()> {
+fn write_codex_trust_config(
+    workspace: &std::path::Path,
+    path: &std::path::Path,
+    trust_paths: &[String],
+) -> std::io::Result<()> {
     let mut text = String::new();
     for trust_path in trust_paths {
         text.push_str(&codex_trust_entry(trust_path));
     }
-    std::fs::write(path, text)?;
-    std::fs::set_permissions(
+    write_seeded_file(
+        workspace,
         path,
-        std::fs::Permissions::from_mode(seeded_auth_file_mode(".codex/config.toml")),
+        text.as_bytes(),
+        seeded_auth_file_mode(".codex/config.toml"),
     )
 }
 
@@ -475,7 +639,10 @@ fn append_codex_trust_entries(
         return Ok(());
     }
     use std::io::Write;
-    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
     file.write_all(additions.as_bytes())
 }
 
@@ -494,15 +661,27 @@ fn toml_basic_string_fragment(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn ensure_claude_onboarding_state(path: &std::path::Path, agent_id: &str) {
+fn ensure_claude_onboarding_state(
+    workspace: &std::path::Path,
+    path: &std::path::Path,
+    agent_id: &str,
+) {
     if let Some(parent) = path.parent()
-        && let Err(err) = std::fs::create_dir_all(parent)
+        && let Err(err) = ensure_seed_dir(workspace, parent)
     {
         eprintln!(
             "seed_agent_auth[{}]: failed to create Claude state dir {}: {}",
             agent_id,
             parent.display(),
             err
+        );
+        return;
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        eprintln!(
+            "seed_agent_auth[{}]: refusing to seed Claude state through symlink {}",
+            agent_id,
+            path.display()
         );
         return;
     }
@@ -539,10 +718,9 @@ fn ensure_claude_onboarding_state(path: &std::path::Path, agent_id: &str) {
 
     match serde_json::to_vec_pretty(&state)
         .map_err(std::io::Error::other)
-        .and_then(|bytes| std::fs::write(path, bytes))
+        .and_then(|bytes| write_seeded_file(workspace, path, &bytes, 0o600))
     {
-        Ok(_) => {
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        Ok(()) => {
             eprintln!(
                 "seed_agent_auth[{}]: ensured Claude onboarding state at {}",
                 agent_id,
