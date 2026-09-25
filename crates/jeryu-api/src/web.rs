@@ -607,6 +607,9 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
     )));
     let mcp_router = jeryu_mcp::mcp_router(mcp_state)
         .layer(from_fn(steer_headers))
+        // Inside the gate, so the authenticated account it resolved reaches the
+        // backend: the MCP tool context only carries a client-declared name.
+        .layer(from_fn(mcp_backend::scope_caller))
         .layer(from_fn_with_state(state.clone(), auth::gate))
         .layer(from_fn(request_id::propagate));
     api_v1_routes()

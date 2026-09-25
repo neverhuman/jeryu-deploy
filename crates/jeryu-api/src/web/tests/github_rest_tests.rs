@@ -993,6 +993,120 @@ async fn mcp_endpoint_requires_configured_authentication() {
     assert_eq!(authenticated.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
+/// The MCP transport carries no identity of its own — the `clientInfo` name in
+/// `initialize` is whatever the client typed — so the control-plane tools are
+/// authorized against the account the request gate authenticated, exactly as
+/// `/api/v1/control-plane/*` is.
+#[tokio::test]
+async fn mcp_control_plane_tools_answer_admins_and_refuse_other_accounts() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("bob", "bob-password", UserRole::User)
+        .unwrap();
+    let app = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    async fn call_control_plane_status(app: &axum::Router, core: &ForgeCore, login: &str) -> Value {
+        let token = core
+            .create_personal_access_token(login, "mcp", None)
+            .unwrap()
+            .secret;
+        let post = |method: &'static str, session: Option<String>, body: Value| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Mcp-Method", method);
+            if let Some(session) = session {
+                request = request
+                    .header("Mcp-Session-Id", session)
+                    .header("MCP-Protocol-Version", jeryu_mcp::MCP_PROTOCOL_VERSION);
+            }
+            request.body(Body::from(body.to_string())).unwrap()
+        };
+
+        let initialized = app
+            .clone()
+            .oneshot(post(
+                "initialize",
+                None,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": jeryu_mcp::MCP_PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": { "name": "jeryu-admin", "version": "1" }
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(initialized.status(), StatusCode::OK);
+        let session = initialized
+            .headers()
+            .get("Mcp-Session-Id")
+            .and_then(|value| value.to_str().ok())
+            .expect("session id")
+            .to_string();
+
+        let called = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("Mcp-Method", "tools/call")
+                    .header("Mcp-Name", "jeryu.control_plane.status")
+                    .header("Mcp-Session-Id", session)
+                    .header("MCP-Protocol-Version", jeryu_mcp::MCP_PROTOCOL_VERSION)
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "jeryu.control_plane.status",
+                                "arguments": {}
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(called.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(called.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // The `clientInfo` name claims to be the admin either way; only the token decides.
+    let refused = call_control_plane_status(&app, &core, "bob").await;
+    assert_eq!(refused["result"]["isError"], json!(true));
+    assert_eq!(
+        refused["result"]["structuredContent"]["message"],
+        json!("control_plane.status requires the admin role")
+    );
+
+    let answered = call_control_plane_status(&app, &core, "alice").await;
+    assert_eq!(answered["result"]["isError"], json!(false));
+    assert!(answered["result"]["structuredContent"]["data"].is_object());
+}
+
 #[tokio::test]
 async fn issue_create_with_idempotency_key_replays_instead_of_filing_twice() {
     use axum::body::Body;

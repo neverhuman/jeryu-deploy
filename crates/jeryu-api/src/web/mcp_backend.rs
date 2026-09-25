@@ -1,8 +1,92 @@
 use std::sync::Arc;
 
+use axum::extract::Request;
+use axum::middleware::Next;
+use axum::response::Response as AxumResponse;
+use jeryu_core::{AccountSummary, UserRole};
 use serde_json::{Value, json};
 
+use super::repositories::find_repo;
 use super::{WebState, agent_runs, codegraph, control_plane};
+
+tokio::task_local! {
+    /// The authenticated account of the `/mcp` request being served on this task.
+    ///
+    /// The MCP call context carries an `actor`, but that string is whatever the
+    /// client put in `clientInfo` at `initialize`, so it says who the caller
+    /// claims to be, never who they are. The authenticated identity is the one
+    /// [`super::auth::gate`] resolved from the session cookie or bearer token
+    /// and left in the request extensions; [`scope_caller`] carries it from
+    /// there into the backend, which is shared across requests and so has
+    /// nowhere else to read it.
+    static CALLER: AccountSummary;
+}
+
+/// Carry the gate's authenticated account into the MCP backend for this request.
+///
+/// Layered *inside* [`super::auth::gate`] so the account extension is already
+/// set. A request that arrives without one (no gate, or a future route that
+/// escapes it) runs with no caller in scope, and every tool the web backend
+/// dispatches itself refuses it.
+pub(super) async fn scope_caller(request: Request, next: Next) -> AxumResponse {
+    match request.extensions().get::<AccountSummary>().cloned() {
+        Some(account) => CALLER.scope(account, next.run(request)).await,
+        None => next.run(request).await,
+    }
+}
+
+/// What a web-dispatched MCP tool asks of its caller.
+enum Access {
+    /// Global admin, like the `/api/v1` route that serves the same data.
+    Admin,
+    /// Read access to the repository named in the call, admins included.
+    RepoRead,
+    /// Any authenticated account, like the equivalent `/api/v1` route.
+    Account,
+}
+
+/// The grant each web-dispatched tool requires, mirroring the `/api/v1` route
+/// that serves the same data:
+///
+/// * `control_plane.*`, `repo_graph.*`, `remote.status`, `artifacts.latest`,
+///   `runner_fabric.status` and the live-status reads answer from
+///   `/api/v1/control-plane/*`, which is admin-only.
+/// * `agent_work.*` is `/api/v1/agent-runs/*`, `codegraph.tool_build.*` is
+///   `/api/v1/codegraph/tool-build/*` and `tool_finder.*` is
+///   `/api/v1/tool-finder/*`: all admin-only paths.
+/// * `tool_registry.summary` is `/api/v1/tools/registry/summary`, open to any
+///   authenticated account.
+/// * The codegraph reads name a repository, so they ask for the read grant that
+///   repository's routes ask for.
+///
+/// `None` is a tool this backend does not dispatch; it falls through to the
+/// inner [`jeryu_mcp::MemoryBackend`], which the auth gate already covers.
+fn required_access(tool: &str) -> Option<Access> {
+    let access = match tool {
+        "control_plane.status"
+        | "control_plane.priorities"
+        | "repo_graph.clusters"
+        | "repo_graph.query"
+        | "remote.status"
+        | "artifacts.latest"
+        | "runner_fabric.status"
+        | "get_system_snapshot"
+        | "get_ci_run_jobs"
+        | "get_ci_bottlenecks"
+        | "explain_blockers"
+        | "plan_validation" => Access::Admin,
+        tool if tool.starts_with("agent_work.")
+            || tool.starts_with("codegraph.tool_build.")
+            || tool.starts_with("tool_finder.") =>
+        {
+            Access::Admin
+        }
+        "tool_registry.summary" => Access::Account,
+        tool if is_codegraph_tool(tool) => Access::RepoRead,
+        _ => return None,
+    };
+    Some(access)
+}
 
 pub(super) struct WebMcpBackend {
     state: Arc<WebState>,
@@ -25,6 +109,9 @@ impl jeryu_mcp::ToolBackend for WebMcpBackend {
         args: Value,
         ctx: &jeryu_mcp::backend::McpCallContext,
     ) -> anyhow::Result<jeryu_mcp::ToolResponse> {
+        if let Some(denial) = self.permission_denial(tool, &args) {
+            return Ok(jeryu_mcp::ToolResponse::error(denial));
+        }
         if let Some(response) = self.call_agent_work(tool, args.clone())? {
             return Ok(response);
         }
@@ -57,6 +144,31 @@ impl jeryu_mcp::ToolBackend for WebMcpBackend {
 }
 
 impl WebMcpBackend {
+    /// Refuse a tool this caller may not use, as the message of a tool error.
+    ///
+    /// `Ok`-shaped refusals keep MCP's contract: a denied call is an
+    /// `isError` tool result, not a transport fault.
+    fn permission_denial(&self, tool: &str, args: &Value) -> Option<String> {
+        let access = required_access(tool)?;
+        let Ok(account) = CALLER.try_with(Clone::clone) else {
+            return Some(format!("{tool} requires an authenticated caller"));
+        };
+        let admin = account.role == UserRole::Admin;
+        match access {
+            Access::Admin if !admin => Some(format!("{tool} requires the admin role")),
+            Access::RepoRead if !admin => {
+                let repo = args.get("repo").and_then(Value::as_str)?;
+                let found = find_repo(&self.state, repo)?;
+                (!self
+                    .state
+                    .core
+                    .user_can_read_repo(&account.login, &found.owner, &found.name))
+                .then(|| format!("{tool} requires read access to {repo}"))
+            }
+            _ => None,
+        }
+    }
+
     fn call_agent_work(
         &self,
         tool: &str,
@@ -459,7 +571,7 @@ mod tests {
         CrateDepRow, GraphSnapshot, SymbolRefRow, SymbolRow, ToolBuildScanConfig,
         scan_tool_build_clusters,
     };
-    use jeryu_core::ForgeCore;
+    use jeryu_core::{AccountStatus, AccountSummary, CreateRepositoryRequest, ForgeCore, UserRole};
     use jeryu_mcp::ToolBackend;
     use jeryu_mcp::backend::McpCallContext;
     use jeryu_runnerd::{HoldFailedTreeRequest, StartupSync, WorkcellClaimRequest};
@@ -544,8 +656,36 @@ mod tests {
         (repairing.workcell_id, repairing.runner_epoch)
     }
 
+    /// Every tool the web backend dispatches is authorized against the caller
+    /// the request gate put in scope, so a call outside a request scope has to
+    /// name one. The default is an admin: these tests exercise dispatch, and
+    /// `mcp_tools_require_the_grant_their_api_route_requires` covers the gate.
     fn call(backend: &WebMcpBackend, tool: &str, args: Value) -> jeryu_mcp::ToolResponse {
-        backend.call(tool, args, &ctx()).expect("mcp call")
+        call_as(&admin_account(), backend, tool, args)
+    }
+
+    fn call_as(
+        account: &AccountSummary,
+        backend: &WebMcpBackend,
+        tool: &str,
+        args: Value,
+    ) -> jeryu_mcp::ToolResponse {
+        super::CALLER
+            .sync_scope(account.clone(), || backend.call(tool, args, &ctx()))
+            .expect("mcp call")
+    }
+
+    fn admin_account() -> AccountSummary {
+        AccountSummary {
+            login: "mcp-admin".to_string(),
+            display_name: "MCP Admin".to_string(),
+            role: UserRole::Admin,
+            status: AccountStatus::Active,
+            auth_epoch: 0,
+            must_change_password: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
     }
 
     #[test]
@@ -927,6 +1067,103 @@ pub fn alpha(input: &str) -> Result<String, String> {
         assert_eq!(
             feedback.data.as_ref().unwrap()["reason"],
             "fixture boilerplate"
+        );
+    }
+
+    fn user_account() -> AccountSummary {
+        AccountSummary {
+            login: "mcp-user".to_string(),
+            role: UserRole::User,
+            display_name: "MCP User".to_string(),
+            ..admin_account()
+        }
+    }
+
+    #[test]
+    fn mcp_tools_require_the_grant_their_api_route_requires() {
+        let state = Arc::new(WebState::new(ForgeCore::new()));
+        let backend = WebMcpBackend::new(state);
+        let user = user_account();
+
+        for tool in [
+            "control_plane.status",
+            "control_plane.priorities",
+            "repo_graph.clusters",
+            "remote.status",
+            "artifacts.latest",
+            "runner_fabric.status",
+            "get_system_snapshot",
+            "explain_blockers",
+            "agent_work.status",
+            "codegraph.tool_build.status",
+            "tool_finder.clusters",
+        ] {
+            let denied = call_as(&user, &backend, tool, json!({}));
+            assert!(!denied.success, "{tool} answered a non-admin: {denied:?}");
+            assert_eq!(denied.message, format!("{tool} requires the admin role"));
+        }
+
+        // The admin reads the same control-plane tool the non-admin was refused.
+        let allowed = call(&backend, "control_plane.status", json!({}));
+        assert!(allowed.success, "{allowed:?}");
+        assert!(allowed.data.is_some());
+
+        // `/api/v1/tools/registry/summary` is not admin-only, so neither is its tool.
+        let summary = call_as(&user, &backend, "tool_registry.summary", json!({}));
+        assert!(summary.success, "{summary:?}");
+    }
+
+    #[test]
+    fn mcp_tools_refuse_a_call_with_no_authenticated_caller() {
+        let state = Arc::new(WebState::new(ForgeCore::new()));
+        let backend = WebMcpBackend::new(state);
+
+        let denied = backend
+            .call("control_plane.status", json!({}), &ctx())
+            .expect("mcp call");
+        assert!(!denied.success, "{denied:?}");
+        assert_eq!(
+            denied.message,
+            "control_plane.status requires an authenticated caller"
+        );
+    }
+
+    #[test]
+    fn codegraph_tools_require_read_access_to_the_named_repository() {
+        let core = ForgeCore::new();
+        core.create_account("carol", "carol-password", UserRole::User)
+            .expect("create account");
+        core.create_account("dana", "dana-password", UserRole::Admin)
+            .expect("create owner");
+        let repo = core
+            .create_repository(
+                "dana",
+                CreateRepositoryRequest {
+                    name: "private-repo".to_string(),
+                    private: true,
+                    description: None,
+                    default_branch: Some("main".to_string()),
+                },
+            )
+            .expect("create repository");
+        let state = Arc::new(WebState::new(core));
+        let backend = WebMcpBackend::new(state);
+        let carol = AccountSummary {
+            login: "carol".to_string(),
+            role: UserRole::User,
+            ..admin_account()
+        };
+
+        let denied = call_as(
+            &carol,
+            &backend,
+            "code.definition",
+            json!({ "repo": repo.full_name, "symbol": "CodeGraph" }),
+        );
+        assert!(!denied.success, "{denied:?}");
+        assert_eq!(
+            denied.message,
+            format!("code.definition requires read access to {}", repo.full_name)
         );
     }
 }
