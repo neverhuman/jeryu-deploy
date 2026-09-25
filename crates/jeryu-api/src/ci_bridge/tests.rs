@@ -829,6 +829,56 @@ fn ref_updates_track_ref_name_and_previous_oid() {
     assert_eq!(updates[0].new_oid, "ccc");
 }
 
+#[test]
+fn ref_updates_diff_a_large_snapshot_by_name_not_by_position() {
+    let before: Vec<GitRef> = (0..500)
+        .map(|index| GitRef {
+            name: format!("refs/heads/branch-{index}"),
+            oid: format!("oid-{index}"),
+        })
+        .collect();
+    // Reversed order, one moved tip, one new branch, one deleted branch and a
+    // tag: the diff must key on the ref name alone.
+    let mut after: Vec<GitRef> = before.iter().rev().cloned().collect();
+    after.retain(|r| r.name != "refs/heads/branch-7");
+    after
+        .iter_mut()
+        .find(|r| r.name == "refs/heads/branch-42")
+        .unwrap()
+        .oid = "moved".to_owned();
+    after.push(GitRef {
+        name: "refs/heads/fresh".to_owned(),
+        oid: "new-oid".to_owned(),
+    });
+    after.push(GitRef {
+        name: "refs/tags/v1".to_owned(),
+        oid: "tag-oid".to_owned(),
+    });
+
+    let updates = ref_updates(&before, &after);
+
+    let mut named: Vec<(String, String, String)> = updates
+        .into_iter()
+        .map(|u| (u.ref_name, u.old_oid, u.new_oid))
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        vec![
+            (
+                "refs/heads/branch-42".to_owned(),
+                "oid-42".to_owned(),
+                "moved".to_owned()
+            ),
+            (
+                "refs/heads/fresh".to_owned(),
+                ZERO_OID.to_owned(),
+                "new-oid".to_owned()
+            ),
+        ]
+    );
+}
+
 fn assert_reviewed_main_preserved(explicit_version: bool) {
     use jeryu_core::{CreateReviewRequest, ReviewState};
     use jeryu_gitd::GitdConfig;

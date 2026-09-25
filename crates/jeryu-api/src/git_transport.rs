@@ -320,18 +320,15 @@ pub(crate) async fn git_receive_pack(
         body,
     )
     .await;
-    // After a successful push, fire the push->CI bridge for any moved branch.
-    if response.status().is_success() {
-        let core = state.core.clone();
-        let owner = owner.clone();
-        let repo = repo.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            let after = snapshot_refs(&manager, &owner, &repo);
-            let updates = crate::ci_bridge::ref_updates(&before, &after);
-            crate::ci_bridge::on_push(&core, &manager, &owner, &repo, &updates, &origin_base_url);
-        })
-        .await;
-    }
+    // The refs are durable once receive-pack succeeds, so the push->CI bridge
+    // for any moved branch runs detached: scoring a pushed commit must not hold
+    // the acknowledgement the pushing agent is waiting for.
+    let core = state.core.clone();
+    spawn_post_push(&response, move || {
+        let after = snapshot_refs(&manager, &owner, &repo);
+        let updates = crate::ci_bridge::ref_updates(&before, &after);
+        crate::ci_bridge::on_push(&core, &manager, &owner, &repo, &updates, &origin_base_url);
+    });
     response
 }
 
@@ -651,6 +648,21 @@ fn lfs_json_response(status: StatusCode, message: &str) -> AxumResponse {
     response
 }
 
+/// Run a successful push's follow-up work on the blocking pool without holding
+/// the response. A panic in the follow-up is logged, never surfaced to the
+/// pusher: the refs it reacts to are already durable.
+fn spawn_post_push(response: &AxumResponse, work: impl FnOnce() + Send + 'static) {
+    if !response.status().is_success() {
+        return;
+    }
+    let handle = tokio::task::spawn_blocking(work);
+    tokio::spawn(async move {
+        if let Err(error) = handle.await {
+            eprintln!("jeryu-api git transport: post-push bridge failed: {error}");
+        }
+    });
+}
+
 /// Snapshot a repo's refs. A repo that cannot be resolved or listed yields an
 /// empty snapshot, so the post-push diff simply finds no updates.
 fn snapshot_refs(manager: &RepoManager, owner: &str, repo: &str) -> Vec<jeryu_gitd::refs::GitRef> {
@@ -666,10 +678,11 @@ fn snapshot_refs(manager: &RepoManager, owner: &str, repo: &str) -> Vec<jeryu_gi
 mod tests {
     use super::{
         GitRpcBodyError, GitRpcContentEncoding, decode_git_rpc_body, forwarded_git_headers,
-        git_rpc_content_encoding, logical_repo_name, read_git_rpc_body,
+        git_rpc_content_encoding, logical_repo_name, read_git_rpc_body, spawn_post_push,
     };
     use axum::body::{Body, Bytes};
-    use axum::http::{HeaderMap, HeaderValue, header};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+    use axum::response::IntoResponse;
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use std::io::Write;
@@ -678,6 +691,43 @@ mod tests {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(bytes).unwrap();
         encoder.finish().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_slow_post_push_bridge_does_not_hold_the_response() {
+        let response = (StatusCode::OK, "ok").into_response();
+        let (started, was_started) = std::sync::mpsc::channel();
+        let (finished, was_finished) = std::sync::mpsc::channel();
+
+        let handed_back = std::time::Instant::now();
+        spawn_post_push(&response, move || {
+            started.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            finished.send(()).unwrap();
+        });
+        let elapsed = handed_back.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "spawning the bridge took {elapsed:?}"
+        );
+        was_started
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("bridge runs detached");
+        was_finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("bridge runs to completion");
+    }
+
+    #[tokio::test]
+    async fn a_failed_receive_pack_runs_no_post_push_bridge() {
+        let response = (StatusCode::FORBIDDEN, "no").into_response();
+        let (ran, was_run) = std::sync::mpsc::channel();
+
+        spawn_post_push(&response, move || ran.send(()).unwrap());
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(was_run.try_recv().is_err());
     }
 
     #[test]

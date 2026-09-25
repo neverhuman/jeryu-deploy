@@ -4,10 +4,10 @@
 //! workflows from the bare repo, compile them, **execute** each job's steps in
 //! the real sandboxed runner, and record a check-run with the actual result so
 //! the autonomy gate has live CI state for the pushed commit. Execution runs
-//! synchronously on the blocking pool (the caller holds the receive-pack
-//! response until it finishes), so a `git push` produces real green/red CI.
+//! on the blocking pool after the pushed refs are durable, so a push produces
+//! real green/red CI without the pusher waiting on the run.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,19 +40,22 @@ pub(crate) struct RefUpdate {
 /// Branch refs whose tip changed between two ref snapshots (new branches are
 /// treated as updates; deletes and tags are ignored).
 pub(crate) fn ref_updates(before: &[GitRef], after: &[GitRef]) -> Vec<RefUpdate> {
+    // Index the previous snapshot once: a repo with many refs would otherwise
+    // pay a linear scan per ref.
+    let previous: HashMap<&str, &str> = before
+        .iter()
+        .map(|b| (b.name.as_str(), b.oid.as_str()))
+        .collect();
     after
         .iter()
         .filter(|r| r.name.starts_with("refs/heads/") && r.oid != ZERO_OID)
         .filter_map(|r| {
-            let previous_oid = before
-                .iter()
-                .find(|b| b.name == r.name)
-                .map(|b| b.oid.clone());
-            match &previous_oid {
-                Some(previous) if *previous == r.oid => None,
+            let previous_oid = previous.get(r.name.as_str()).copied();
+            match previous_oid {
+                Some(previous) if previous == r.oid => None,
                 _ => Some(RefUpdate {
                     ref_name: r.name.clone(),
-                    old_oid: previous_oid.unwrap_or_else(|| ZERO_OID.to_owned()),
+                    old_oid: previous_oid.unwrap_or(ZERO_OID).to_owned(),
                     new_oid: r.oid.clone(),
                 }),
             }
