@@ -182,9 +182,14 @@ async fn serve_rejects_trust_local_dev_on_public_bind() {
     assert!(err.to_string().contains("trust_local_dev"));
 }
 
+/// The tool names the live `/mcp` backend dispatches for a default server.
+fn installed_mcp_tools() -> BTreeSet<String> {
+    live_mcp_tools(&Arc::new(WebState::new(ForgeCore::new())))
+}
+
 #[test]
 fn capabilities_payload_exposes_the_gh_command_map() {
-    let payload = capabilities_payload();
+    let payload = capabilities_payload(&installed_mcp_tools());
     assert_eq!(payload["server"], "jeryu");
     assert_eq!(payload["api_version"], "v4");
     assert_eq!(payload["graphql"], "/graphql");
@@ -237,6 +242,57 @@ fn capabilities_payload_exposes_the_gh_command_map() {
             .contains("GitHub.com auth and local Jeryu host auth are separate")
     );
     assert!(!payload.to_string().contains("JERYU-TOKEN"));
+}
+
+/// The manifest is built from the live backend catalog, so a tool the `/mcp`
+/// endpoint does not dispatch is advertised nowhere in it, neither in
+/// `mcp_tools` nor as the jeryu answer to a `gh` command.
+#[test]
+fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
+    let mut tools = installed_mcp_tools();
+    assert!(
+        tools.remove(MCP_MERGE_TOOL),
+        "the live backend is expected to dispatch {MCP_MERGE_TOOL}"
+    );
+    assert!(tools.remove(MCP_AGENT_WORK_TOOL));
+    let payload = capabilities_payload(&tools);
+
+    let advertised = payload["mcp_tools"].as_array().expect("mcp_tools array");
+    assert!(
+        !advertised.iter().any(|tool| tool == MCP_MERGE_TOOL),
+        "an uninstalled tool is still advertised"
+    );
+    assert!(payload["gh_command_map"].get("gh pr merge").is_none());
+    // A tool that is installed keeps its mapping.
+    assert_eq!(payload["gh_command_map"]["gh pr create"], MCP_PATCH_TOOL);
+    assert!(payload["gh_command_map"].get("gh pr list").is_some());
+    // The CLI hint for the agent surface goes with that surface.
+    assert!(payload["gh_auth_policy"].get("agent_auth").is_none());
+    assert!(!payload.to_string().contains(MCP_MERGE_TOOL));
+}
+
+/// Every MCP tool the manifest names is one the live backend dispatches.
+#[test]
+fn capabilities_payload_only_names_installed_tools() {
+    let installed = installed_mcp_tools();
+    let payload = capabilities_payload(&installed);
+    for tool in payload["mcp_tools"].as_array().expect("mcp_tools array") {
+        let tool = tool.as_str().expect("tool name");
+        assert!(installed.contains(tool), "uninstalled MCP tool: {tool}");
+    }
+    for (command, answer) in payload["gh_command_map"]
+        .as_object()
+        .expect("gh_command_map object")
+    {
+        let answer = answer.as_str().unwrap_or_default();
+        if answer.starts_with("jeryu.") {
+            assert!(
+                installed.contains(answer),
+                "{command} points at uninstalled tool {answer}"
+            );
+        }
+    }
+    assert!(payload["gh_auth_policy"]["agent_auth"].is_string());
 }
 
 #[test]
@@ -303,7 +359,7 @@ fn bootstrap_flags_close_write_surfaces_without_a_grant() {
 /// policy from one that is off for want of a grant.
 #[test]
 fn capabilities_payload_explains_every_bootstrap_feature_flag() {
-    let payload = capabilities_payload();
+    let payload = capabilities_payload(&installed_mcp_tools());
     let notes = payload["web_feature_flags"]["flags"]
         .as_object()
         .expect("feature flag notes object");

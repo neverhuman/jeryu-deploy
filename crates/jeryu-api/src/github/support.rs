@@ -50,6 +50,9 @@ pub(crate) const MCP_RUN_TESTS_TOOL: &str = "jeryu.run_tests";
 pub(crate) const GH_SETUP_TOKEN_FILE: &str = "~/.jeryu/secrets/merge-token";
 pub(crate) const GH_SETUP_COMMAND: &str =
     "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token";
+/// Repair form of [`GH_SETUP_COMMAND`] for a host entry that already exists.
+pub(crate) const GH_SETUP_REPAIR_COMMAND: &str =
+    "jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token";
 pub(crate) const GH_AUTH_BOUNDARY: &str = "GitHub.com auth and local Jeryu host auth are separate; do not run gh auth login for Jeryu hosts.";
 
 /// The fast-path pointer surfaced on every error body so a confused agent is

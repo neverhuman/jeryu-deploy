@@ -485,7 +485,7 @@ fn advertised_mcp_tools_exist_in_catalog() {
         let tool = tool.expect("tool hint");
         assert!(known.contains(tool), "invalid suggested MCP tool: {tool}");
     }
-    let payload = capabilities_payload();
+    let payload = capabilities_payload(&live_mcp_tools(&Arc::new(WebState::new(ForgeCore::new()))));
     for tool in payload["mcp_tools"].as_array().expect("mcp_tools array") {
         let tool = tool.as_str().expect("tool string");
         assert!(known.contains(tool), "invalid capability MCP tool: {tool}");

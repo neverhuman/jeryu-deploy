@@ -68,7 +68,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::GithubRouter;
 use crate::git_materializer::{CoreRedirects, GitMaterializer};
 use crate::github::{
-    GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_TOKEN_FILE, MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL,
+    GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE,
+    MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL,
 };
 use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
@@ -87,6 +88,9 @@ const MCP_BLOCKERS_TOOL: &str = "jeryu.explain_blockers";
 const MCP_PATCH_TOOL: &str = "jeryu.propose_patch";
 const MCP_MERGE_TOOL: &str = "jeryu.request_merge";
 const MCP_ISSUE_TOOL: &str = "jeryu.bug_submit";
+/// The agent-run tool whose presence tells the manifest that `jeryu agent auth`
+/// has a live surface to prepare credentials for.
+const MCP_AGENT_WORK_TOOL: &str = "jeryu.agent_work.start";
 /// Steady-state depth of pre-warmed agent containers the pool refills back to, so
 /// a New Session claims a ready cell instead of paying a cold-start.
 const WARM_POOL_TARGET: usize = 2;
@@ -1066,45 +1070,103 @@ fn suggested_tool(method: &HttpMethod, path: &str) -> Option<&'static str> {
 
 /// Capability manifest: advertises the live endpoints plus a `gh` command -> jeryu
 /// mapping so external agents can discover and prefer the faster MCP path.
-async fn capabilities() -> Json<Value> {
-    Json(capabilities_payload())
+async fn capabilities(State(state): State<Arc<WebState>>) -> Json<Value> {
+    Json(capabilities_payload(&live_mcp_tools(&state)))
+}
+
+/// The MCP tool names this server actually dispatches, read from the live
+/// backend's catalog. The manifest is built from these so it can never steer an
+/// agent at a tool the `/mcp` endpoint would answer "unknown tool" for.
+fn live_mcp_tools(state: &Arc<WebState>) -> BTreeSet<String> {
+    use jeryu_mcp::ToolBackend;
+    mcp_backend::WebMcpBackend::new(state.clone())
+        .list()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect()
 }
 
 /// Pure builder for the `/.jeryu/capabilities` payload (unit-testable).
-fn capabilities_payload() -> Value {
+///
+/// `tools` is the live backend catalog: every MCP tool named here is looked up
+/// in it first, and a `gh` command whose jeryu answer is a tool that is not
+/// installed is left out of the map rather than advertised.
+fn capabilities_payload(tools: &BTreeSet<String>) -> Value {
+    let installed = |tool: &str| tools.contains(tool);
+    let mut gh_command_map = serde_json::Map::new();
+    let mut map_rest = |command: &str, target: &str| {
+        gh_command_map.insert(command.to_string(), Value::String(target.to_string()));
+    };
+    map_rest(
+        "gh auth login",
+        &format!("Do not run direct gh auth against a Jeryu host; run {GH_SETUP_COMMAND} instead."),
+    );
+    map_rest(
+        "gh auth refresh",
+        &format!(
+            "Do not refresh host auth manually; rerun {GH_SETUP_REPAIR_COMMAND} for the Jeryu host entry."
+        ),
+    );
+    map_rest(
+        "gh auth status",
+        &format!(
+            "If status fails for the Jeryu host, do not start a login flow; rerun {GH_SETUP_REPAIR_COMMAND} and inspect /.jeryu/capabilities."
+        ),
+    );
+    map_rest("gh pr list", "GET /repos/{owner}/{repo}/pulls");
+    map_rest(
+        "gh workflow list",
+        "GET /repos/{owner}/{repo}/actions/workflows",
+    );
+    map_rest(
+        "gh workflow view",
+        "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}",
+    );
+    map_rest("gh run list", "GET /repos/{owner}/{repo}/actions/runs");
+    map_rest("gh run view", "GET /repos/{owner}/{repo}/actions/runs/{id}");
+    map_rest(
+        "gh api",
+        "Use /.jeryu/capabilities and the listed jeryu.* MCP tools; unsupported REST returns guided JSON.",
+    );
+    map_rest("gh repo create", "POST /repos");
+    for (command, tool) in [
+        ("gh pr create", MCP_PATCH_TOOL),
+        ("gh pr merge", MCP_MERGE_TOOL),
+        ("gh workflow run", MCP_RUN_TESTS_TOOL),
+        ("gh run rerun", MCP_RUN_TESTS_TOOL),
+        ("gh run cancel", MCP_RUN_TESTS_TOOL),
+        ("gh issue create", MCP_ISSUE_TOOL),
+    ] {
+        if installed(tool) {
+            gh_command_map.insert(command.to_string(), Value::String(tool.to_string()));
+        }
+    }
+
+    let mut gh_auth_policy = json!({
+        "do_not_run": ["gh auth login", "gh auth refresh", "credential-store token hunting"],
+        "run_instead": GH_SETUP_COMMAND,
+        "token_file": GH_SETUP_TOKEN_FILE,
+        "stale_host_repair": GH_SETUP_REPAIR_COMMAND,
+        "host_auth_boundary": GH_AUTH_BOUNDARY,
+    });
+    // `jeryu agent auth` only has something to prepare credentials for when the
+    // agent-run tools are dispatched here, so the hint follows the backend.
+    if installed(MCP_AGENT_WORK_TOOL) {
+        gh_auth_policy["agent_auth"] = Value::String(
+            "jeryu agent auth doctor <tool>; jeryu agent auth import --from-host <tool>"
+                .to_string(),
+        );
+    }
+
     json!({
         "server": "jeryu",
         "api_version": "v4",
         "graphql": "/graphql",
         "websocket": "/api/v1/ws",
         "mcp_endpoint": "/mcp",
-        "mcp_tools": MCP_GUIDANCE_TOOLS,
-        "gh_command_map": {
-            "gh auth login": "Do not run direct gh auth against a Jeryu host; run jeryu gh-setup --host <local-jeryu-url> --token-file ~/.jeryu/secrets/merge-token instead.",
-            "gh auth refresh": "Do not refresh host auth manually; rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token for the Jeryu host entry.",
-            "gh auth status": "If status fails for the Jeryu host, do not start a login flow; rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token and inspect /.jeryu/capabilities.",
-            "gh pr create": MCP_PATCH_TOOL,
-            "gh pr merge": MCP_MERGE_TOOL,
-            "gh pr list": "GET /repos/{owner}/{repo}/pulls",
-            "gh workflow list": "GET /repos/{owner}/{repo}/actions/workflows",
-            "gh workflow view": "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}",
-            "gh run list": "GET /repos/{owner}/{repo}/actions/runs",
-            "gh run view": "GET /repos/{owner}/{repo}/actions/runs/{id}",
-            "gh workflow run": MCP_RUN_TESTS_TOOL,
-            "gh run rerun": MCP_RUN_TESTS_TOOL,
-            "gh run cancel": MCP_RUN_TESTS_TOOL,
-            "gh issue create": MCP_ISSUE_TOOL,
-            "gh api": "Use /.jeryu/capabilities and the listed jeryu.* MCP tools; unsupported REST returns guided JSON.",
-            "gh repo create": "POST /repos",
-        },
-        "gh_auth_policy": {
-            "do_not_run": ["gh auth login", "gh auth refresh", "credential-store token hunting"],
-            "run_instead": GH_SETUP_COMMAND,
-            "token_file": GH_SETUP_TOKEN_FILE,
-            "stale_host_repair": "jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token",
-            "host_auth_boundary": GH_AUTH_BOUNDARY,
-            "agent_auth": "jeryu agent auth doctor <tool>; jeryu agent auth import --from-host <tool>",
-        },
+        "mcp_tools": tools.iter().cloned().collect::<Vec<_>>(),
+        "gh_command_map": Value::Object(gh_command_map),
+        "gh_auth_policy": gh_auth_policy,
         "web_feature_flags": {
             "purpose": "What each /api/v1/bootstrap feature flag gates, and what turns it on for a viewer. A flag reported off means this viewer lacks the grant, or the note says the flag is admin-only — never that the code is missing.",
             "flags": permissions::FEATURE_FLAG_NOTES
