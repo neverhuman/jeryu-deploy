@@ -25,6 +25,7 @@ mod pulls;
 mod repo_address;
 mod repo_admin;
 mod repositories;
+mod repository_create;
 mod request_id;
 mod request_rules;
 mod route_index;
@@ -800,7 +801,8 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/workcells/:id/export_pr",
             post(workcells::export_pr),
         ),
-        ("/api/v1/repos", get(repos)),
+        ("/api/v1/repos", get(repos).post(repository_create::create)),
+        ("/api/v1/repos/preview", post(repository_create::preview)),
         ("/api/v1/releases", get(operator_resources::releases)),
         ("/api/v1/mirrors", get(operator_resources::mirrors)),
         ("/api/v1/settings", get(operator_resources::settings)),

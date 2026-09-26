@@ -79,6 +79,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the workcell state does not allow this agent run step",
     ),
     entry(
+        "already_exists",
+        409,
+        "the resource the request would create already exists",
+    ),
+    entry(
         "api_route_not_found",
         404,
         "no API route matches the request path",
@@ -124,6 +129,16 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "conflict",
         409,
         "the request conflicts with the current state",
+    ),
+    entry(
+        "creation_failed",
+        500,
+        "the creation did not complete; inspect the server log before retrying",
+    ),
+    entry(
+        "creation_incomplete",
+        409,
+        "an earlier creation with this key is still running or needs recovery",
     ),
     entry(
         "csrf_required",
@@ -178,6 +193,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "git_source_failed",
         500,
         "reading repository source from git failed",
+    ),
+    entry(
+        "idempotency_conflict",
+        409,
+        "the Idempotency-Key was used with a different request",
     ),
     entry(
         "idempotency_key_in_flight",
@@ -353,6 +373,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("rate_limited", 429, "too many attempts; wait and retry"),
     entry("repository_archived", 409, "the repository is archived"),
+    entry(
+        "repository_changed",
+        409,
+        "the repository the replayed request created no longer exists",
+    ),
     entry("request_failed", 400, "the request failed"),
     entry(
         "runner_policy_denied",

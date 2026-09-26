@@ -51,6 +51,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `agent_run_path_denied` | 403 | the agent run path is outside the allowed slice |
 | `agent_run_repo_source_use_sessions` | 422 | repository agent runs start through the repo sessions route |
 | `agent_run_workcell_state_denied` | 409 | the workcell state does not allow this agent run step |
+| `already_exists` | 409 | the resource the request would create already exists |
 | `api_route_not_found` | 404 | no API route matches the request path |
 | `attention_collect_failed` | 500 | the attention inbox could not be collected |
 | `bad_head` | 409 | the pull request head does not match the queued head |
@@ -62,6 +63,8 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `codegraph_materialize_failed` | 500 | the repository could not be materialized for codegraph |
 | `codegraph_query_failed` | 500 | the codegraph query failed |
 | `conflict` | 409 | the request conflicts with the current state |
+| `creation_failed` | 500 | the creation did not complete; inspect the server log before retrying |
+| `creation_incomplete` | 409 | an earlier creation with this key is still running or needs recovery |
 | `csrf_required` | 403 | a session-authenticated write needs a valid CSRF token |
 | `events_invalid_query` | 422 | the pipeline event query failed validation |
 | `events_invalid_request` | 422 | the pipeline event body failed validation |
@@ -76,6 +79,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `forge_validation` | 422 | the forge rejected the request fields |
 | `git_error` | 500 | a git operation failed |
 | `git_source_failed` | 500 | reading repository source from git failed |
+| `idempotency_conflict` | 409 | the Idempotency-Key was used with a different request |
 | `idempotency_key_in_flight` | 409 | a request with this Idempotency-Key is still running |
 | `idempotency_key_reused` | 422 | the Idempotency-Key was already used for a different request |
 | `internal_error` | 500 | the server failed while handling the request |
@@ -118,6 +122,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `queue_mismatch` | 409 | the queue replay does not match the queued tree |
 | `rate_limited` | 429 | too many attempts; wait and retry |
 | `repository_archived` | 409 | the repository is archived |
+| `repository_changed` | 409 | the repository the replayed request created no longer exists |
 | `request_failed` | 400 | the request failed |
 | `runner_policy_denied` | 422 | the runner policy denies this trust tier on the chosen runner |
 | `serialization_failed` | 500 | the response could not be serialized |
