@@ -120,13 +120,21 @@ pub(super) fn resolve_session_backend(
 /// is logged but never blocks the session. Files are copied fresh (not
 /// bind-mounted) on every session start so credentials are always up-to-date
 /// but the container cannot modify the host's tokens.
-pub(super) fn seed_agent_auth(workspace: &std::path::Path, agent_id: &str) {
-    let host_home = std::env::var("JERYU_AUTH_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
+pub(super) fn seed_agent_auth(
+    workspace: &std::path::Path,
+    agent_id: &str,
+    auth_home: Option<&std::path::Path>,
+) {
+    let host_home = auth_home
+        .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+            std::env::var("JERYU_AUTH_HOME")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+                })
         });
     seed_agent_auth_from_home(workspace, agent_id, &host_home);
 }
@@ -440,12 +448,13 @@ pub(super) fn seed_agent_auth_from_home(
     // Keep the nested path too for older builds, but the top-level copy is the
     // important one for auth/session state.
     if agent_id == "claude" || !matches!(agent_id, "codex" | "agy") {
-        ensure_claude_onboarding_state(workspace, &agent_home.join(".claude.json"), agent_id);
-        ensure_claude_onboarding_state(
-            workspace,
-            &agent_home.join(".claude/.claude.json"),
-            agent_id,
-        );
+        for relative in [".claude.json", ".claude/.claude.json"] {
+            if let Err(error) =
+                ensure_claude_onboarding_state(workspace, &agent_home.join(relative), agent_id)
+            {
+                eprintln!("{error}");
+            }
+        }
     }
 }
 
@@ -665,34 +674,58 @@ fn ensure_claude_onboarding_state(
     workspace: &std::path::Path,
     path: &std::path::Path,
     agent_id: &str,
-) {
-    if let Some(parent) = path.parent()
-        && let Err(err) = ensure_seed_dir(workspace, parent)
-    {
-        eprintln!(
-            "seed_agent_auth[{}]: failed to create Claude state dir {}: {}",
-            agent_id,
-            parent.display(),
-            err
-        );
-        return;
-    }
+) -> std::io::Result<()> {
+    let context = |operation: &str, error: std::io::Error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "seed_agent_auth[{agent_id}]: failed to {operation} Claude onboarding state {}: {error}",
+                path.display()
+            ),
+        )
+    };
     if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        eprintln!(
-            "seed_agent_auth[{}]: refusing to seed Claude state through symlink {}",
-            agent_id,
-            path.display()
-        );
-        return;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "seed_agent_auth[{}]: refusing to seed Claude state through symlink {}",
+                agent_id,
+                path.display()
+            ),
+        ));
     }
 
-    let mut state = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
+    // Read and validate the existing state before creating any directory or
+    // touching the file: a state we cannot parse is left exactly as it is.
+    let mut object = match std::fs::read_to_string(path) {
+        Ok(raw) => {
+            let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+                context(
+                    "parse",
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+                )
+            })?;
+            match value {
+                serde_json::Value::Object(object) => object,
+                _ => {
+                    return Err(context(
+                        "validate",
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "expected a JSON object",
+                        ),
+                    ));
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) => return Err(context("read", error)),
+    };
 
-    let object = state.as_object_mut().expect("state object");
+    if let Some(parent) = path.parent() {
+        ensure_seed_dir(workspace, parent).map_err(|error| context("create parent for", error))?;
+    }
+
     object.insert(
         "hasCompletedOnboarding".to_string(),
         serde_json::json!(true),
@@ -716,27 +749,21 @@ fn ensure_claude_onboarding_state(
         .entry("hasSeenAutoDefaultNotice".to_string())
         .or_insert_with(|| serde_json::json!(true));
 
-    match serde_json::to_vec_pretty(&state)
+    let bytes = serde_json::to_vec_pretty(&object)
         .map_err(std::io::Error::other)
-        .and_then(|bytes| write_seeded_file(workspace, path, &bytes, 0o600))
-    {
-        Ok(()) => {
-            eprintln!(
-                "seed_agent_auth[{}]: ensured Claude onboarding state at {}",
-                agent_id,
-                path.display()
-            );
-        }
-        Err(err) => {
-            eprintln!(
-                "seed_agent_auth[{}]: failed to write Claude onboarding state {}: {}",
-                agent_id,
-                path.display(),
-                err
-            );
-        }
-    }
+        .map_err(|error| context("serialize", error))?;
+    write_seeded_file(workspace, path, &bytes, 0o600).map_err(|error| context("write", error))?;
+    eprintln!(
+        "seed_agent_auth[{}]: ensured Claude onboarding state at {}",
+        agent_id,
+        path.display()
+    );
+    Ok(())
 }
+
+#[cfg(test)]
+#[path = "onboarding_tests.rs"]
+mod onboarding_tests;
 
 /// Build the host `docker run ...` launch command for a session agent. The flags
 /// come straight from the planned, hardened [`OciSpec`] (read-only root, all caps
