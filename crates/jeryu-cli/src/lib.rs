@@ -8,11 +8,15 @@
 //! - [`cli`]: pure clap data (no logic).
 //! - [`commands`]: thin adapters that map each clap leaf onto a client call.
 //! - [`dispatch`]: the router that wires the two together and yields an exit code.
-//! - [`client`]: the [`client::ForgeClient`] seam plus an in-memory client.
+//! - [`client`]: the [`client::ForgeClient`] seam, the fail-closed
+//!   [`client::RemoteOnlyClient`] the binary runs on, and an in-memory client
+//!   for tests.
+//! - [`data_dir`]: durable storage selection for `jeryu serve`.
 
 pub mod cli;
 pub mod client;
 pub mod commands;
+pub mod data_dir;
 pub mod dispatch;
 
 pub use cli::Cli;

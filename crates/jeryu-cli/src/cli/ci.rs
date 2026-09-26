@@ -31,7 +31,7 @@ impl From<CiKindArg> for CiKind {
 /// CI command group.
 #[derive(Debug, Subcommand)]
 pub enum CiCommands {
-    /// Compile a workflow file to IR and schedule a run for a ref.
+    /// Unavailable: compile and schedule a CI run (no server transport).
     Run {
         /// Repository name (under the acting owner).
         #[arg(long)]
@@ -43,13 +43,13 @@ pub enum CiCommands {
         #[arg(long, value_enum, default_value_t = CiKindArg::Native)]
         kind: CiKindArg,
     },
-    /// Report queued and scheduled runs for a repository.
+    /// Unavailable: report CI runs for a repository (no server transport).
     Status {
         /// Repository name (under the acting owner).
         #[arg(long)]
         repo: String,
     },
-    /// Explain whether a run is blocked from merging and why.
+    /// Unavailable: explain a CI run blocker (no server transport).
     Explain {
         /// Run identifier to explain.
         run_id: String,

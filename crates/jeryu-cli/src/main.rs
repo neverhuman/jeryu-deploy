@@ -5,14 +5,18 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use jeryu_cli::{Cli, InMemoryClient, cli::Commands, dispatch};
+use jeryu_cli::{Cli, cli::Commands, client::RemoteOnlyClient, dispatch};
 
 /// Exit code for output that could not be written or flushed; the same code
 /// `dispatch` returns for a `ClientError::Io` (see `docs/errors.md`).
 const OUTPUT_WRITE_EXIT_CODE: i32 = 8;
 
+/// The forge a bare `jeryu` talks to when neither `--api-url` nor
+/// `JERYU_API_URL` names one: the loopback server `jeryu serve` binds.
+const DEFAULT_API_URL: &str = "http://127.0.0.1:8787";
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     if let Commands::Serve {
         bind,
         spa_dir,
@@ -34,9 +38,14 @@ fn main() -> ExitCode {
         };
     }
 
-    // The binary runs against the in-memory client; swapping in an
-    // `jeryu-api`/`jeryu-core`-backed client uses the identical dispatch seam.
-    let client = InMemoryClient::new();
+    // Every command the binary can honor goes over HTTP to a live forge, so
+    // the API URL is always resolved here. The seam is backed by the
+    // fail-closed client: a command with no server transport reports the
+    // failure rather than a locally simulated success.
+    cli.api_url = Some(cli.api_url.unwrap_or_else(|| {
+        std::env::var("JERYU_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
+    }));
+    let client = RemoteOnlyClient;
 
     let stdout = io::stdout();
     let stderr = io::stderr();
@@ -56,10 +65,10 @@ fn main() -> ExitCode {
 fn serve(
     bind: std::net::SocketAddr,
     spa_dir: PathBuf,
-    data_dir: PathBuf,
+    data_dir: Option<PathBuf>,
     split_manifests: Vec<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = expand_tilde(data_dir);
+    let data_dir = jeryu_cli::data_dir::resolve(data_dir)?;
     let git_storage_root = data_dir.join("git");
     let trust_local_dev = env_flag("JERYU_WEB_TRUST_LOCAL");
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -81,17 +90,4 @@ fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
-}
-
-fn expand_tilde(path: PathBuf) -> PathBuf {
-    let raw = path.to_string_lossy();
-    if raw == "~" {
-        std::env::var_os("HOME").map_or(path, PathBuf::from)
-    } else if let Some(rest) = raw.strip_prefix("~/") {
-        std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join(rest))
-            .unwrap_or(path)
-    } else {
-        path
-    }
 }
