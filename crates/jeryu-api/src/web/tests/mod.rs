@@ -36,6 +36,7 @@ mod repo_list_tests;
 mod source_tests;
 mod surface_tests;
 mod tools_tests;
+mod work_authorization;
 mod work_tests;
 mod workcells_tests;
 mod ws_tests;

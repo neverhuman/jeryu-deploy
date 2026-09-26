@@ -18,6 +18,7 @@ async fn work_repo_create_persists_item_and_linked_issue() {
     let created = response_json(
         crate::web::work::repo_create(
             State(state.clone()),
+            authenticated_admin_account("alice"),
             AxumPath(repo.id.to_string()),
             Json(jeryu_jira::CreateWorkItemRequest {
                 title: "Fix flaky CI".to_string(),
@@ -44,6 +45,7 @@ async fn work_repo_create_persists_item_and_linked_issue() {
     let listed = response_json(
         crate::web::work::repo_list(
             State(state),
+            authenticated_admin_account("alice"),
             AxumPath(repo.id.to_string()),
             Query(crate::web::work::WorkListQuery::default()),
         )
