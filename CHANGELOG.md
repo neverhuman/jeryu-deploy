@@ -14,6 +14,12 @@
   carry the switch's log tail and its path on the release host
   (`JERYU_RELEASE_LOG_URL` overrides it).
 
+- Dependency majors: workspace `sha2` 0.11 with `hmac` 0.13, `toml` 1, `thiserror` 2,
+  `reqwest` 0.13 (jeryu-cli and jeryu-api's dev-dependency) and `base64` 0.23 in
+  jeryu-api. `sha2` 0.11 no longer formats a digest with `{:x}`, so digests are
+  spelled `hex::encode(...)`. `reqwest` 0.13 brings aws-lc-rs, so the `deny.toml`
+  licence allow-list gains `ISC`, `MIT-0` and `CDLA-Permissive-2.0`.
+
 - The web console's Quality gate pages have their API: `GET /api/v1/quality-gate/overview?days=7|30`,
   `GET /api/v1/quality-gate/rules/:rule?days=`, `GET /api/v1/quality-gate/heads/:owner/:name/:sha` and
   admin-only `POST /api/v1/quality-gate/findings/:id/dispute` serve the stored jankurai scores and disputes
