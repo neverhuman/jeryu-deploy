@@ -50,21 +50,21 @@ const EXPECTED_MAPPINGS: [(&str, &str); 8] = [
 const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     (
         "jeryu-ci-runner",
-        "jeryu-ci-runner-v5.0.0-split.2",
-        "e7ee53b6ebc84b525dfef5760323594de3c31f4c",
-        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.2",
+        "jeryu-ci-runner-v5.0.0-split.3",
+        "c6c2498816c8a53c07d37d9981e8520339564546",
+        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.3",
     ),
     (
         "jeryu-core",
-        "jeryu-core-v5.0.0-split.9",
-        "31e7063b2bcba9d28694ed50e7eddf529f32a1dd",
-        "refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.9",
+        "jeryu-core-v5.0.0-split.10",
+        "762ea81887a7f86db717772612f71eaf8d8c21d0",
+        "refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.10",
     ),
     (
         "jeryu-intelligence",
-        "jeryu-intelligence-v5.0.0-split.1",
-        "6fb845c594c3e5e9ffea8047d8a3f814fa9ba4da",
-        "refs/heads/preserve/hosted-cargo/jeryu-intelligence-v5.0.0-split.1",
+        "jeryu-intelligence-v5.0.0-split.2",
+        "246d024265b78eeb4b7508d2645d054b6fc45074",
+        "refs/heads/preserve/hosted-cargo/jeryu-intelligence-v5.0.0-split.2",
     ),
     (
         "jeryu-jira",
@@ -292,13 +292,13 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
     assert_ne!(parse_mappings(&extra), expected_mappings);
 
     let missing_pin = pin_policy.replacen(
-        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.2|e7ee53b6ebc84b525dfef5760323594de3c31f4c|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.2\n",
+        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.3|c6c2498816c8a53c07d37d9981e8520339564546|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.3\n",
         "",
         1,
     );
     assert_ne!(parse_pins(&missing_pin), expected_pins);
     let wrong_pin = pin_policy.replacen(
-        "e7ee53b6ebc84b525dfef5760323594de3c31f4c",
+        "c6c2498816c8a53c07d37d9981e8520339564546",
         "0000000000000000000000000000000000000000",
         1,
     );

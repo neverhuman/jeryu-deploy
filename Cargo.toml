@@ -48,31 +48,31 @@ pedantic = { level = "allow", priority = -1 }
 # Core source at split.0; redirect only those two transitive packages to the
 # reviewed local-forge split.9 tag so Cargo has one immutable Core identity.
 [patch."https://github.com/neverhuman/jeryu-core.git"]
-jeryu-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.9" }
-jeryu-proof = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.9" }
+jeryu-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.10" }
+jeryu-proof = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.10" }
 
 # Runner unification. jeryu-api and the historical jeryu-intelligence release both
 # name the GitHub jeryu-ci-runner source at split.0; redirect every runner package
-# to the reviewed local-forge split.2 tag so Cargo has one runner identity. split.2
+# to the reviewed local-forge split.3 tag so Cargo has one runner identity. split.2+
 # carries the cgroup capability-probe fix: at split.0, parallel probes remove each
 # other's leaf and agent runs under systemd fail with EOPNOTSUPP (os error 95).
 [patch."https://github.com/neverhuman/jeryu-ci-runner.git"]
-jeryu-agent-stream = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-agentbridge = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-ci-compiler = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-ci-ir = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-ci-scheduler = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-runner-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-runner-microvm = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-runner-native = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-runner-oci = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-runner-protocol = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-runner-registry = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-runnerd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
-jeryu-sandbox-linux = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.2" }
+jeryu-agent-stream = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-agentbridge = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-ci-compiler = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-ci-ir = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-ci-scheduler = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-runner-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-runner-microvm = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-runner-native = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-runner-oci = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-runner-protocol = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-runner-registry = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-runnerd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
+jeryu-sandbox-linux = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.3" }
 
 [patch."https://github.com/neverhuman/jeryu-intelligence.git"]
-jeryu-rustjet = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.1" }
+jeryu-rustjet = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.2" }
 
 # Account creation and login hash with argon2 at production cost; unoptimized it
 # takes ~1 s per hash, which dominated the web tests' wall time. Optimizing just
