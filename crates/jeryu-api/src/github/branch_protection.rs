@@ -43,7 +43,7 @@ fn branch_protection_json(rule: &BranchProtectionRule) -> Value {
             rule.owner, rule.repo, rule.branch
         ),
         "required_status_checks": {
-            "strict": rule.required_linear_history,
+            "strict": rule.strict,
             "contexts": rule.required_status_checks,
         },
         "required_pull_request_reviews": {

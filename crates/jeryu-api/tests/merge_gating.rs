@@ -185,7 +185,7 @@ fn router_with_pr(fixture: &GitFixture) -> (GithubRouter, u64) {
     // Require one approving review on main.
     let protect = router.put(
         "/repos/acme/demo/branches/main/protection",
-        r#"{"required_approving_review_count":1}"#,
+        r#"{"required_approving_review_count":1,"required_status_checks":[],"enforce_admins":false}"#,
     );
     assert_eq!(protect.status, 200, "set protection: {}", protect.body);
 
@@ -590,7 +590,7 @@ fn merge_diverged_on_linear_main(
     // Linear history and no review requirement, so only the FF rule applies.
     let protect = router.put(
         "/repos/acme/demo/branches/main/protection",
-        r#"{"required_linear_history":true}"#,
+        r#"{"required_linear_history":true,"required_status_checks":[],"required_approving_review_count":0,"enforce_admins":false}"#,
     );
     assert_eq!(protect.status, 200, "set protection: {}", protect.body);
     let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
@@ -1197,7 +1197,7 @@ fn fork_pull_head_resolves_in_the_source_repository() {
 
     let protect = router.put(
         "/repos/acme/demo/branches/main/protection",
-        r#"{"required_approving_review_count":1}"#,
+        r#"{"required_approving_review_count":1,"required_status_checks":[],"enforce_admins":false}"#,
     );
     assert_eq!(protect.status, 200, "set protection: {}", protect.body);
     router

@@ -135,7 +135,7 @@ fn new_repository_exposes_linear_history_branch_protection() {
     assert_eq!(protection.status, 200, "protection: {}", protection.body);
     let rule = body(&protection);
     assert_eq!(rule["required_linear_history"]["enabled"], true);
-    assert_eq!(rule["required_status_checks"]["strict"], true);
+    assert_eq!(rule["required_status_checks"]["strict"], false);
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn full_pull_request_lifecycle_create_check_status_protect_and_merge() {
     // Protect `main`: require the `ci/fast` status check and one approval.
     let protect = router.put(
         "/repos/alice/jeryu/branches/main/protection",
-        r#"{"required_status_checks":["ci/fast"],"required_approving_review_count":0}"#,
+        r#"{"required_status_checks":["ci/fast"],"required_approving_review_count":0,"enforce_admins":false}"#,
     );
     assert_eq!(protect.status, 200, "set protection: {}", protect.body);
     let rule = body(&protect);
@@ -259,7 +259,7 @@ fn fork_source_repository_still_requires_signed_commits() {
 
     let protect = router.put(
         "/repos/alice/jeryu/branches/main/protection",
-        r#"{"require_signed_commits":true,"allow_force_pushes":false,"allow_deletions":false}"#,
+        r#"{"require_signed_commits":true,"allow_force_pushes":false,"allow_deletions":false,"required_status_checks":[],"required_approving_review_count":0,"enforce_admins":false}"#,
     );
     assert_eq!(protect.status, 200, "set protection: {}", protect.body);
 
