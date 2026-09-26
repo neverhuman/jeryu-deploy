@@ -29,6 +29,7 @@ use tempfile::tempdir;
 
 mod auth_tests;
 mod control_plane_tests;
+mod git_authorization;
 mod github_rest_tests;
 mod pulls_tests;
 mod repo_admin_tests;

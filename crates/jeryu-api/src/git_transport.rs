@@ -467,10 +467,6 @@ fn origin_base_url(headers: &HeaderMap) -> String {
     }
 }
 
-fn logical_repo_name(repo: &str) -> &str {
-    repo.strip_suffix(".git").unwrap_or(repo)
-}
-
 fn authorize_git_core(
     state: &WebState,
     peer: SocketAddr,
@@ -482,18 +478,33 @@ fn authorize_git_core(
     if !state.auth_required || (state.trust_local_dev && peer.ip().is_loopback()) {
         return Ok(());
     }
-    let logical_repo = logical_repo_name(repo);
+    // Use the transport resolver's identity for every authorization decision.
+    // Independently stripping a suffix can authorize a different metadata row
+    // from the bare repository that Git actually opens.
+    let resolved = state
+        .repo_manager
+        .resolve_parts(owner, repo)
+        .map_err(|error| Box::new(gitd_error_to_axum(error)))?;
+    let owner = resolved.id.owner.as_str();
+    let logical_repo = resolved.id.name.as_str();
     // A public repository is readable by anyone, as the UI's PUBLIC chip and
     // Clone button promise; writes always need a principal.
-    if !write
+    let public_read = !write
         && state
             .core
             .get_repository(owner, logical_repo)
-            .is_ok_and(|found| !found.private)
-    {
-        return Ok(());
-    }
-    let Some(auth) = crate::web::auth::authenticate_headers(state, headers) else {
+            .is_ok_and(|found| !found.private);
+    // A supplied Authorization header must carry a valid bearer or basic
+    // credential: never fall back to a cookie session or to anonymous read,
+    // so a revoked or mistyped token is refused instead of silently accepted.
+    let auth = crate::web::auth::authenticate_headers(state, headers).filter(|auth| {
+        !headers.contains_key(header::AUTHORIZATION)
+            || auth.source == crate::web::auth::AuthSource::Bearer
+    });
+    let Some(auth) = auth else {
+        if public_read && !headers.contains_key(header::AUTHORIZATION) {
+            return Ok(());
+        }
         return Err(Box::new(gitd_to_axum_response(
             &GitHttpResponse::text(401, "Requires authentication\n")
                 .with_header("WWW-Authenticate", "Basic realm=\"jeryu\""),
@@ -505,9 +516,10 @@ fn authorize_git_core(
             .core
             .user_can_write_repo(&account.login, owner, logical_repo)
     } else {
-        state
-            .core
-            .user_can_read_repo(&account.login, owner, logical_repo)
+        public_read
+            || state
+                .core
+                .user_can_read_repo(&account.login, owner, logical_repo)
     };
     if allowed {
         Ok(())
@@ -678,7 +690,7 @@ fn snapshot_refs(manager: &RepoManager, owner: &str, repo: &str) -> Vec<jeryu_gi
 mod tests {
     use super::{
         GitRpcBodyError, GitRpcContentEncoding, decode_git_rpc_body, forwarded_git_headers,
-        git_rpc_content_encoding, logical_repo_name, read_git_rpc_body, spawn_post_push,
+        git_rpc_content_encoding, read_git_rpc_body, spawn_post_push,
     };
     use axum::body::{Body, Bytes};
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -728,16 +740,6 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(was_run.try_recv().is_err());
-    }
-
-    #[test]
-    fn logical_repo_name_strips_only_the_transport_suffix() {
-        assert_eq!(logical_repo_name("project.git"), "project");
-        assert_eq!(logical_repo_name("project"), "project");
-        assert_eq!(
-            logical_repo_name("project.git.backup"),
-            "project.git.backup"
-        );
     }
 
     #[test]
