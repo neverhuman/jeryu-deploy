@@ -119,8 +119,8 @@ fn pkt_line(payload: &[u8]) -> Vec<u8> {
     encoded
 }
 
-/// A stub SPA shell. The readiness probe (`/healthz`) is answered by the SPA
-/// fallback, and tests build without an embedded jeryu-web dist.
+/// A stub SPA shell, so tests build without an embedded jeryu-web dist. The
+/// readiness probe deliberately does not go through it: see `backend_is_ready`.
 fn write_spa_shell(spa_dir: &std::path::Path) {
     std::fs::create_dir_all(spa_dir).unwrap();
     std::fs::write(
@@ -128,6 +128,19 @@ fn write_spa_shell(spa_dir: &std::path::Path) {
         r#"<!doctype html><html><body><div id="root"></div></body></html>"#,
     )
     .unwrap();
+}
+
+/// Probe the backend `/health` route and require its JSON body. An unknown path
+/// is answered by the SPA fallback with the HTML shell, so a status-only check
+/// on a path the backend does not serve would pass against a broken server.
+async fn backend_is_ready(client: &reqwest::Client, addr: SocketAddr) -> bool {
+    match client.get(format!("http://{addr}/health")).send().await {
+        Ok(response) if response.status().is_success() => response
+            .json::<serde_json::Value>()
+            .await
+            .is_ok_and(|body| body["status"] == "ok" && body["service"] == "jeryu-api"),
+        _ => false,
+    }
 }
 
 async fn wait_until_listening(addr: SocketAddr, server: &mut tokio::task::JoinHandle<()>) {
@@ -141,8 +154,7 @@ async fn wait_until_listening(addr: SocketAddr, server: &mut tokio::task::JoinHa
             let result = server.await;
             panic!("server task exited before readiness on {addr}: {result:?}");
         }
-        let health = client.get(format!("http://{addr}/healthz")).send().await;
-        if health.is_ok_and(|response| response.status().is_success()) {
+        if backend_is_ready(&client, addr).await {
             tokio::task::yield_now().await;
             if server.is_finished() {
                 let result = server.await;
@@ -164,6 +176,34 @@ async fn readiness_rejects_an_already_exited_server_task() {
     tokio::task::yield_now().await;
 
     wait_until_listening(addr, &mut server).await;
+}
+
+/// A server that answers every path with the SPA shell must not read as ready:
+/// that is exactly the shape a broken backend behind an SPA fallback has.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn readiness_rejects_a_server_serving_only_the_spa_shell() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let shell = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let body = r#"<!doctype html><html><body><div id="root"></div></body></html>"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    assert!(
+        !backend_is_ready(&client, addr).await,
+        "SPA shell response passed as a healthy backend"
+    );
+    shell.join().unwrap();
 }
 
 fn assert_lfs_content_type(resp: &reqwest::Response) {
