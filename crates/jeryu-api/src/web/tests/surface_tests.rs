@@ -202,19 +202,25 @@ fn capabilities_payload_exposes_the_gh_command_map() {
         "gh auth login",
         "gh auth refresh",
         "gh auth status",
-        "gh pr create",
-        "gh pr merge",
         "gh pr list",
-        "gh issue create",
         "gh api",
         "gh repo create",
     ] {
         assert!(map.get(key).is_some(), "missing gh_command_map key: {key}");
     }
-    assert_eq!(map["gh pr create"], MCP_PATCH_TOOL);
-    assert_eq!(map["gh pr merge"], MCP_MERGE_TOOL);
-    assert_eq!(map["gh issue create"], MCP_ISSUE_TOOL);
     assert_eq!(map["gh repo create"], "POST /repos");
+    // The mutating tools have no execution adapter on a default server, so the
+    // commands whose jeryu answer is one of them are not advertised at all.
+    for (command, tool) in [
+        ("gh pr create", MCP_PATCH_TOOL),
+        ("gh pr merge", MCP_MERGE_TOOL),
+        ("gh issue create", MCP_ISSUE_TOOL),
+    ] {
+        assert!(
+            map.get(command).is_none(),
+            "{command} is mapped to the uninstalled {tool}"
+        );
+    }
     assert!(
         map["gh auth login"]
             .as_str()
@@ -249,12 +255,15 @@ fn capabilities_payload_exposes_the_gh_command_map() {
 /// `mcp_tools` nor as the jeryu answer to a `gh` command.
 #[test]
 fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
-    let mut tools = installed_mcp_tools();
+    let tools = installed_mcp_tools();
     assert!(
-        tools.remove(MCP_MERGE_TOOL),
-        "the live backend is expected to dispatch {MCP_MERGE_TOOL}"
+        !tools.contains(MCP_MERGE_TOOL),
+        "{MCP_MERGE_TOOL} has no execution adapter and must not be installed"
     );
-    assert!(tools.remove(MCP_AGENT_WORK_TOOL));
+    assert!(
+        tools.contains(MCP_AGENT_WORK_TOOL),
+        "the live backend is expected to dispatch {MCP_AGENT_WORK_TOOL}"
+    );
     let payload = capabilities_payload(&tools);
 
     let advertised = payload["mcp_tools"].as_array().expect("mcp_tools array");
@@ -263,12 +272,17 @@ fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
         "an uninstalled tool is still advertised"
     );
     assert!(payload["gh_command_map"].get("gh pr merge").is_none());
-    // A tool that is installed keeps its mapping.
-    assert_eq!(payload["gh_command_map"]["gh pr create"], MCP_PATCH_TOOL);
+    // A REST answer needs no tool, so it stays mapped either way.
     assert!(payload["gh_command_map"].get("gh pr list").is_some());
     // The CLI hint for the agent surface goes with that surface.
-    assert!(payload["gh_auth_policy"].get("agent_auth").is_none());
+    assert!(payload["gh_auth_policy"].get("agent_auth").is_some());
     assert!(!payload.to_string().contains(MCP_MERGE_TOOL));
+
+    // Dropping the installed agent-work tool drops its hint too.
+    let mut without_agent_work = tools.clone();
+    assert!(without_agent_work.remove(MCP_AGENT_WORK_TOOL));
+    let payload = capabilities_payload(&without_agent_work);
+    assert!(payload["gh_auth_policy"].get("agent_auth").is_none());
 }
 
 /// Every MCP tool the manifest names is one the live backend dispatches.

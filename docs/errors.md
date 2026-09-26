@@ -159,6 +159,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `tool_proposal_not_proposed` | 409 | the tool is not in the proposed state |
 | `tool_proposal_registry_unavailable` | 424 | the tool registry is unavailable |
 | `tool_proposal_registry_write_failed` | 500 | the tool registry could not be written |
+| `tool_unavailable` | 424 | the MCP tool has no execution adapter installed on this server |
 | `unauthorized` | 401 | the request needs a login or token |
 | `unsupported_media_type` | 415 | the request body needs Content-Type: application/json |
 | `workcell_branch_budget_denied` | 409 | the workcell branch budget is spent |

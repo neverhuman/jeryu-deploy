@@ -546,6 +546,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         500,
         "the tool registry could not be written",
     ),
+    entry(
+        "tool_unavailable",
+        424,
+        "the MCP tool has no execution adapter installed on this server",
+    ),
     entry("unauthorized", 401, "the request needs a login or token"),
     entry(
         "unsupported_media_type",
