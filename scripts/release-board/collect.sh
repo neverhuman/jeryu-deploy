@@ -12,7 +12,10 @@
 # adapter in that directory. Without --push the boards are only written to --out (default
 # $JERYU_RELEASE_BOARD_STATE/boards/<family>.json), which is how to look at one first.
 #
-# Env (the timer reads ~/.config/jeryu/release-board.env): JERYU_BASE (the forge's URL; required);
+# Settings come from the environment, and any that are unset from $JERYU_RELEASE_BOARD_ENV
+# (default ~/.config/jeryu/release-board.env, KEY=VALUE lines), so a release script that starts a
+# refresh needs no configuration of its own. A value already set always wins over the file.
+# Env: JERYU_BASE (the forge's URL; required);
 # JERYU_BOARD_TOKEN_FILE (a token of a forge admin or a JERYU_BOARD_REPORTERS login; default
 # ~/.config/jeryu/release-board.token); JERYU_RELEASE_BOARD_FAMILIES; JERYU_RELEASE_BOARD_STATE
 # (~/.local/state/jeryu-release-board: mirrors, boards, lock); JERYU_BOARD_QUEUE_CMD (the todo
@@ -21,6 +24,19 @@
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Fill unset settings from the env file: read as KEY=VALUE lines, never run as shell, and never
+# over a value the caller already set.
+env_file="${JERYU_RELEASE_BOARD_ENV:-$HOME/.config/jeryu/release-board.env}"
+if [ -r "$env_file" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}" value="${BASH_REMATCH[2]}"
+    value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
+    [ -n "${!key+set}" ] || export "$key=$value"
+  done <"$env_file"
+fi
+
 # shellcheck source=scripts/release-board/lib.sh
 . "$here/lib.sh"
 

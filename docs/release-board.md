@@ -17,7 +17,7 @@ jeryu ships the API, the page, the collector (`scripts/release-board/collect.sh`
 
 | Where | What |
 |---|---|
-| `~/.config/jeryu/release-board.env` | `JERYU_BASE` (the forge's URL, required), `JERYU_BOARD_TOKEN_FILE` (default `~/.config/jeryu/release-board.token`), and any secret an adapter needs. Read by the timer's unit. |
+| `~/.config/jeryu/release-board.env` | `JERYU_BASE` (the forge's URL, required), `JERYU_BOARD_TOKEN_FILE` (default `~/.config/jeryu/release-board.token`), and any secret an adapter needs. The collector reads it itself for any setting the caller left unset, so a refresh started by a release script needs no setup; `JERYU_RELEASE_BOARD_ENV` points elsewhere. |
 | `~/.config/jeryu/release-board/families/<family>.sh` | one **adapter** per family: which repositories, hosts, paths and URLs make up its deliverables and stages. `scripts/release-board/examples/acme.sh` is an invented one to copy. |
 
 The token belongs to a forge admin or a login named in `JERYU_BOARD_REPORTERS` on the forge.

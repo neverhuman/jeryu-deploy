@@ -86,6 +86,8 @@ EOF
 chmod +x "$T/bin/queue" "$T/bin/curl"
 export PATH="$T/bin:$PATH" JERYU_BASE="file://$T/forge" JERYU_RELEASE_BOARD_STATE="$T/state"
 export JERYU_RELEASE_BOARD_FAMILIES="$T/families" JERYU_BOARD_QUEUE_CMD=queue
+# An empty env file, so a real ~/.config/jeryu/release-board.env on this host never leaks in.
+: >"$T/empty.env"; export JERYU_RELEASE_BOARD_ENV="$T/empty.env"
 printf 'secret-token\n' >"$T/token"
 export JERYU_BOARD_TOKEN_FILE="$T/token"
 
@@ -127,6 +129,19 @@ ok "all collects every adapter in the families directory"
 if JERYU_BASE="" bash "$T/rb/collect.sh" --out "$T/out" demo 2>"$T/log"; then fail "a run without JERYU_BASE must fail"; fi
 grep -q "JERYU_BASE is not set" "$T/log" || fail "the refusal names JERYU_BASE: $(cat "$T/log")"
 ok "the forge's URL is configuration: without JERYU_BASE the run refuses and says why"
+
+# Settings the caller did not set come from the env file (what a release script's refresh relies
+# on); a value the caller did set always wins over the file.
+printf 'JERYU_BASE="file://%s/forge"\n# a comment\nnot a setting\n' "$T" >"$T/board.env"
+rm -f "$T/put.url"
+env -u JERYU_BASE JERYU_RELEASE_BOARD_ENV="$T/board.env" bash "$T/rb/collect.sh" --push --out "$T/out" demo 2>"$T/log" \
+  || fail "a run whose JERYU_BASE comes from the env file failed: $(cat "$T/log")"
+[ "$(cat "$T/put.url")" = "file://$T/forge/api/v1/release-board/demo" ] || fail "the env file's JERYU_BASE was not used"
+ok "an unset setting is read from the env file, so a release script's refresh needs no setup"
+printf 'JERYU_BASE=file:///nowhere\n' >"$T/other.env"; rm -f "$T/put.url"
+JERYU_RELEASE_BOARD_ENV="$T/other.env" bash "$T/rb/collect.sh" --push --out "$T/out" demo 2>"$T/log" || fail "override run failed"
+[ "$(cat "$T/put.url")" = "file://$T/forge/api/v1/release-board/demo" ] || fail "the env file overrode the caller's JERYU_BASE"
+ok "a value the caller set wins over the env file"
 
 # The shipped example must stay a working template, and site adapters stay out of the repo.
 bash -n "$here/examples/acme.sh" || fail "examples/acme.sh does not parse"
