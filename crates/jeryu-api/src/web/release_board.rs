@@ -46,6 +46,7 @@ const MAX_SHIPS: usize = 50;
 const MAX_PROBLEMS: usize = 64;
 const MAX_PIN_ROWS: usize = 200;
 const MAX_PIN_COLUMNS: usize = 12;
+const MAX_BOARD_COLUMNS: usize = 8;
 const MAX_FAMILIES: usize = 64;
 /// A collector clock may run a little ahead of the forge's; more than this is
 /// a wrong clock, and a board from the future would never be replaced.
@@ -103,6 +104,11 @@ pub(crate) struct ReleaseBoard {
     pub accepted_at: Option<String>,
     pub summary: String,
     pub collector: Collector,
+    /// The family's fixed stage columns, left to right. When present the page
+    /// draws every lane on one grid and a column a lane skips as "not used";
+    /// when empty each lane is its own track.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<Column>,
     pub lanes: Vec<Lane>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<Work>,
@@ -123,9 +129,18 @@ pub(crate) struct Collector {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Column {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Lane {
     pub id: String,
     pub name: String,
+    /// Neighbouring lanes with the same group sit together under its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub source: String,
     pub owner_family: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -145,6 +160,9 @@ pub(crate) struct Stage {
     pub parallel: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub never_deployed: bool,
+    /// One of the board's `columns`; several stages of a lane may share one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
     #[serde(default)]
     pub targets: Vec<Target>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,6 +417,16 @@ pub(crate) fn validate(
     }
     check_count("lanes", board.lanes.len(), 1, MAX_LANES)?;
     check_count("problems", board.problems.len(), 0, MAX_PROBLEMS)?;
+    check_count("columns", board.columns.len(), 0, MAX_BOARD_COLUMNS)?;
+    let mut column_ids = BTreeSet::new();
+    for (c, column) in board.columns.iter().enumerate() {
+        if !valid_id(&column.id) {
+            return Err(format!("columns[{c}].id {:?} is not a valid id", column.id));
+        }
+        if !column_ids.insert(column.id.as_str()) {
+            return Err(format!("columns[{c}].id {:?} is used twice", column.id));
+        }
+    }
     let mut lane_ids = BTreeSet::new();
     for (l, lane) in board.lanes.iter().enumerate() {
         if !valid_id(&lane.id) {
@@ -427,6 +455,13 @@ pub(crate) fn validate(
             }
             if !stage_ids.insert(stage.id.as_str()) {
                 return Err(format!("{at}.id {:?} is used twice in the lane", stage.id));
+            }
+            if let Some(column) = &stage.column
+                && !column_ids.contains(column.as_str())
+            {
+                return Err(format!(
+                    "{at}.column {column:?} is not one of the board's columns"
+                ));
             }
             check_count(
                 &format!("{at}.targets"),
@@ -664,6 +699,53 @@ mod tests {
         board.lanes[0].stages.push(first);
         let error = validate(&board.family, &board, at("2026-09-28T16:00:00Z")).expect_err("dup");
         assert!(error.contains("used twice"), "{error}");
+    }
+
+    fn with_columns(mut board: ReleaseBoard) -> ReleaseBoard {
+        board.columns = ["main", "dev", "stage", "prod"]
+            .into_iter()
+            .map(|id| Column {
+                id: id.into(),
+                name: id.into(),
+            })
+            .collect();
+        board
+    }
+
+    #[test]
+    fn columns_groups_and_stage_columns_are_kept() {
+        let mut board = with_columns(board());
+        board.lanes[0].group = Some("Apps".into());
+        board.lanes[0].stages[0].column = Some("main".into());
+        validate(&board.family, &board, at("2026-09-28T16:00:00Z")).expect("valid");
+        let again: ReleaseBoard =
+            serde_json::from_value(serde_json::to_value(&board).expect("serialize"))
+                .expect("parse");
+        assert_eq!(again, board);
+        assert_eq!(again.columns.len(), 4);
+        assert_eq!(again.lanes[0].stages[0].column.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_stage_column_must_be_declared() {
+        let mut board = with_columns(board());
+        board.lanes[0].stages[0].column = Some("qa".into());
+        let error =
+            validate(&board.family, &board, at("2026-09-28T16:00:00Z")).expect_err("column");
+        assert!(error.contains("lanes[0].stages[0].column"), "{error}");
+        let mut board = self::board();
+        board.lanes[0].stages[0].column = Some("main".into());
+        let error = validate(&board.family, &board, at("2026-09-28T16:00:00Z"))
+            .expect_err("no columns declared");
+        assert!(error.contains("not one of the board's columns"), "{error}");
+    }
+
+    #[test]
+    fn column_ids_are_unique() {
+        let mut board = with_columns(board());
+        board.columns[1].id = "main".into();
+        let error = validate(&board.family, &board, at("2026-09-28T16:00:00Z")).expect_err("dup");
+        assert!(error.contains("columns[1].id"), "{error}");
     }
 
     #[test]

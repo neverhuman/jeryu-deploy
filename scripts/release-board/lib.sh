@@ -59,15 +59,15 @@ contains() { git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; }
 target() { jq -cn --arg n "$1" --arg r "$2" --arg s "$3" '{name: $n, running: (if $r == "" then null else $r end), state: $s}'; }
 
 # stage KEY=VALUE... — one stage. Keys: id name version state status known parallel never_deployed
-# targets (a JSON array) promote_cmd human_only automatic ships (JSON array) rollback
-# forge_repo forge_env.
+# column (one of the board's columns) targets (a JSON array) promote_cmd human_only automatic ships
+# (JSON array) rollback forge_repo forge_env.
 stage() {
   local -A f=([parallel]=false [never_deployed]=false [targets]='[]' [human_only]=false [automatic]=false [ships]='')
   local kv
   for kv in "$@"; do f["${kv%%=*}"]="${kv#*=}"; done
   jq -cn \
     --arg id "${f[id]}" --arg name "${f[name]}" --arg version "${f[version]:-}" --arg state "${f[state]:-none}" \
-    --arg status "${f[status]:-}" --arg known "${f[known]:-unverified}" \
+    --arg status "${f[status]:-}" --arg known "${f[known]:-unverified}" --arg column "${f[column]:-}" \
     --argjson parallel "${f[parallel]}" --argjson never "${f[never_deployed]}" --argjson targets "${f[targets]}" \
     --arg cmd "${f[promote_cmd]:-}" --argjson human "${f[human_only]}" --argjson auto "${f[automatic]}" \
     --arg ships "${f[ships]}" --arg rollback "${f[rollback]:-}" \
@@ -76,19 +76,32 @@ stage() {
      status: $status, known_by: $known, targets: $targets}
     + (if $parallel then {parallel: true} else {} end)
     + (if $never then {never_deployed: true} else {} end)
+    + (if $column != "" then {column: $column} else {} end)
     + (if $cmd != "" then {promote: {command: $cmd, human_only: $human, automatic: $auto}} else {} end)
     + (if $ships != "" then {ships: ($ships | fromjson)} else {} end)
     + (if $rollback != "" then {rollback: $rollback} else {} end)
     + (if $frepo != "" then {forge: {repo: $frepo, environment: $fenv}} else {} end)'
 }
 
-# lane ID NAME SOURCE OWNER READ_ONLY STAGE_JSON... — one lane; appended to $lanes_file.
+# lane ID NAME SOURCE OWNER READ_ONLY [group=NAME] STAGE_JSON... — one lane; appended to
+# $lanes_file. Neighbouring lanes with the same group are drawn together under its name.
 lane() {
-  local id="$1" name="$2" source="$3" owner="$4" ro="$5"
+  local id="$1" name="$2" source="$3" owner="$4" ro="$5" group=""
   shift 5
+  case "${1:-}" in group=*) group="${1#group=}"; shift ;; esac
   printf '%s\n' "$@" | jq -cs --arg id "$id" --arg name "$name" --arg src "$source" --arg owner "$owner" \
-    --argjson ro "$ro" '{id: $id, name: $name, source: $src, owner_family: $owner, stages: .}
+    --argjson ro "$ro" --arg group "$group" '{id: $id, name: $name, source: $src, owner_family: $owner, stages: .}
+      + (if $group != "" then {group: $group} else {} end)
       + (if $ro then {read_only: true} else {} end)' >>"$lanes_file"
+}
+
+# board_columns ID=NAME... — the board's fixed stage columns, left to right; sets $columns_json.
+# Every lane is then drawn on one grid, a stage sits in the column its `column=` names, and a
+# column a lane skips shows as "not used". Without it each lane is a free track of stages.
+board_columns() {
+  # shellcheck disable=SC2034  # read by collect.sh
+  columns_json="$(printf '%s\n' "$@" | jq -Rcs 'split("\n") | map(select(length > 0)
+    | {id: (split("=")[0]), name: (split("=")[1:] | join("="))})')"
 }
 
 # worst STATE... — the most serious of several states (bad > warn > ok > none).

@@ -46,7 +46,7 @@ Keep the env file and the token mode 600.
 | GET | `/api/v1/release-board/{family}` | admin | the snapshot plus `accepted_at`; `404 not_found` |
 
 Reads are admin-only because a board names hosts, commands and pinned commits of private
-repositories. Limits: 1–32 lanes, 1–16 stages per lane, 32 targets per stage, 50 `ships` lines,
+repositories. Limits: 1–32 lanes, 0–8 columns, 1–16 stages per lane, 32 targets per stage, 50 `ships` lines,
 64 problems, 200 pin rows, every string at most 2000 characters, `observed_at` at most five
 minutes ahead of the forge's clock.
 
@@ -55,10 +55,18 @@ minutes ahead of the forge's clock.
 `docs/release-board.example.json` is a complete, invented example (family `acme`). In short:
 
 - `family`, `observed_at` (RFC 3339), `summary`, `collector {host, version, trigger, duration_ms}`.
-- `lanes[]`: `{id, name, source, owner_family, read_only?, stages[]}`. A lane owned by another
-  family and shown on this one is `read_only`.
-- `stages[]`: `{id, name, version, state, status, known_by, parallel?, never_deployed?, targets[],
-  promote?, ships?, rollback?, forge?}`.
+- `columns[]?`: `{id, name}`, at most 8: the family's fixed stages left to right, such as main,
+  dev, stage, prod. When present every lane is drawn on one grid under a single header row,
+  a stage sits in the column its `column` names (several may share one, e.g. shift work beside
+  main), a column a lane skips shows as "not used", and a stage with no `column` is listed after
+  the grid. Without `columns` each lane is its own track of stages, joined by → and ‖.
+- `lanes[]`: `{id, name, source, owner_family, group?, read_only?, stages[]}`. A lane owned by
+  another family and shown on this one is `read_only`. Neighbouring lanes with the same `group`
+  sit together under its name: give each separately installed tool its own lane and one group,
+  rather than one lane whose "stages" are different tools.
+- `stages[]`: `{id, name, version, state, status, known_by, column?, parallel?, never_deployed?,
+  targets[], promote?, ships?, rollback?, forge?}`. `column` must be one of the board's
+  `columns`.
   - `state` is `ok | warn | bad | none`; a stage is only `ok` when every target is.
   - `known_by` says how the collector knows: `reported` (a forge deployment), `host` (read from
     the machine or service), `derived` (computed from git), `unverified`.
@@ -88,8 +96,9 @@ Copy `scripts/release-board/examples/acme.sh` to your families directory and rep
 An adapter defines `collect_<family>` (dashes become underscores) and uses `lib.sh`:
 
 - `mirror owner/repo` — a bare mirror of a forge repository, fetched once per run.
-- `stage key=value…` / `lane id name source owner read_only stage…` / `target name running state`
-  — the board's pieces.
+- `stage key=value…` / `lane id name source owner read_only [group=name] stage…` /
+  `target name running state` — the board's pieces; `board_columns id=name…` declares the grid
+  and `stage … column=id` places a stage on it.
 - `behind`, `contains`, `worst`, `worst_of`, `short`, `lines_json` — comparisons and formatting.
 - `work_summary family method unlinked mirror=tip…` — the work bar; set `main_specs` first.
 - `problem source message` — record anything unreadable and keep going.

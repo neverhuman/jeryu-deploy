@@ -25,11 +25,16 @@ collect_demo() {
   m="$(mirror demo/app)" || return 1
   main="$(git -C "$m" rev-parse refs/heads/main)"
   prod="$(cat "$DEMO_PROD")"
+  board_columns main=main stage=stage prod=production
   lane app "App" "demo/app" demo false \
-    "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived)" \
-    "$(stage id=prod name=prod version="$(short "$prod")" state=warn status="$(behind "$m" "$prod" "$main") behind" known=host \
+    "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived column=main)" \
+    "$(stage id=prod name=prod column=prod version="$(short "$prod")" state=warn status="$(behind "$m" "$prod" "$main") behind" known=host \
         targets="[$(target node-a "$(short "$prod")" ok),$(target node-b old bad)]" human_only=true promote_cmd="tag it" \
         ships="$(git -C "$m" log --format='%h · %s' "$prod..$main" | lines_json)" forge_repo=demo/app forge_env=production)"
+  lane tool-a "Tool A" "demo/app" demo false group=Tools \
+    "$(stage id=installed name=installed version="$(short "$main")" state=ok status="= main" known=host column=prod)"
+  lane tool-b "Tool B" "demo/app" demo false group=Tools \
+    "$(stage id=installed name=installed version="$(short "$main")" state=ok status="= main" known=host)"
   problem "node-b" "ssh timed out"
   main_specs="$m=$main"
   work_json="$(work_summary demo "by trailer, then content" "" "$m=$prod")"
@@ -93,13 +98,19 @@ export JERYU_BOARD_TOKEN_FILE="$T/token"
 
 bash "$T/rb/collect.sh" --out "$T/out" demo 2>"$T/log" || fail "collect.sh demo exited non-zero: $(cat "$T/log")"
 b="$T/out/demo.json"
-jq -e '.schema == "jeryu.release_board.v1" and .family == "demo" and (.lanes | length) == 1' "$b" >/dev/null \
+jq -e '.schema == "jeryu.release_board.v1" and .family == "demo" and (.lanes | length) == 3' "$b" >/dev/null \
   || fail "the board has the v1 shape"
 ok "collect.sh writes a v1 board for the family"
 jq -e '.lanes[0].stages[1] | .forge == {repo: "demo/app", environment: "production"} and .promote.human_only == true
   and (.targets | map(.state)) == ["ok", "bad"] and (.ships | length) == 2' "$b" >/dev/null \
   || fail "the prod stage carries its binding, promote, targets and ships"
 ok "a stage carries its forge binding, promote action, targets and what promoting ships"
+jq -e '.columns == [{id: "main", name: "main"}, {id: "stage", name: "stage"}, {id: "prod", name: "production"}]
+  and ([.lanes[0].stages[].column] == ["main", "prod"])
+  and ([.lanes[] | .group] == [null, "Tools", "Tools"])
+  and (.lanes[2].stages[0] | has("column") | not)' "$b" >/dev/null \
+  || fail "columns, stage columns and lane groups: $(jq -c '{columns, lanes: [.lanes[] | {group, c: [.stages[].column]}]}' "$b")"
+ok "board_columns declares the grid, column= places a stage, group= gathers lanes"
 jq -e '.problems == [{source: "node-b", message: "ssh timed out"}]' "$b" >/dev/null || fail "problems are recorded"
 ok "an unreadable source becomes one problem line"
 parts="$(jq -c '[.work.parts[] | {(.key): .count}] | add' "$b")"

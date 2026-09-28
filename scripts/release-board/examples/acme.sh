@@ -36,13 +36,17 @@ collect_acme() {
   prod_state="$(worst_of "$prod_targets")"
   n_behind="$(behind "$app" "$prod_sha" "$main")"
 
+  # Every lane on one grid: a column a lane skips shows as "not used". Leave this out and each
+  # lane is drawn as its own track of stages.
+  board_columns main=main stage=stage prod=production
+
   lane app "App" "$ACME_REPO · built by the deploy timer" acme false \
-    "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived)" \
-    "$(stage id=stage name=stage version="$(short "$stage_sha")" \
+    "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived column=main)" \
+    "$(stage id=stage name=stage column=stage version="$(short "$stage_sha")" \
         state="$( [ "$stage_sha" = "$main" ] && echo ok || echo warn)" \
         status="$( [ "$stage_sha" = "$main" ] && echo "in sync" || echo "$(behind "$app" "$stage_sha" "$main") behind")" \
         known=host automatic=true promote_cmd="merge a pull request to main")" \
-    "$(stage id=prod name=production version="$(short "$prod_sha")" state="$prod_state" \
+    "$(stage id=prod name=production column=prod version="$(short "$prod_sha")" state="$prod_state" \
         status="$( [ "$prod_state" = ok ] && echo "in sync" || echo skew) · ${n_behind:-?} behind" known=host \
         targets="$prod_targets" human_only=true promote_cmd="git tag -a vX.Y.Z && git push origin vX.Y.Z" \
         ships="$(git -C "$app" log --format='%h · %s' "$prod_sha..$main" 2>/dev/null | lines_json)" \

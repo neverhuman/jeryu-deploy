@@ -84,7 +84,7 @@ for family in "${families[@]}"; do
   [ -r "$adapter" ] || { say "no adapter for family $family in $families_dir"; status=2; continue; }
   started="$(date +%s%3N)"
   lanes_file="$work/$family.lanes" problems_file="$work/$family.problems"
-  summary="" work_json="null" pins_json="null" notes_json="null" main_specs=""
+  summary="" work_json="null" pins_json="null" notes_json="null" columns_json="null" main_specs=""
   : >"$lanes_file"; : >"$problems_file"
   # shellcheck source=/dev/null
   . "$adapter"
@@ -98,10 +98,12 @@ for family in "${families[@]}"; do
     --arg host "$(hostname -s)" --arg version "$version" --arg trigger "$trigger" \
     --argjson ms "$(( $(date +%s%3N) - started ))" \
     --slurpfile lanes "$lanes_file" --slurpfile problems "$problems_file" \
-    --argjson work "$work_json" --argjson pins "$pins_json" --argjson notes "$notes_json" '
+    --argjson work "$work_json" --argjson pins "$pins_json" --argjson notes "$notes_json" \
+    --argjson columns "$columns_json" '
     {schema: "jeryu.release_board.v1", family: $family, observed_at: $at, summary: $summary,
      collector: {host: $host, version: $version, trigger: $trigger, duration_ms: $ms},
      lanes: $lanes, problems: ($problems | .[:64])}
+    + (if $columns != null and $columns != [] then {columns: $columns} else {} end)
     + (if $work != null then {work: $work} else {} end)
     + (if $pins != null then {pins: $pins} else {} end)
     + (if $notes != null then {notes: $notes} else {} end)' >"$board.tmp" && mv "$board.tmp" "$board" \
