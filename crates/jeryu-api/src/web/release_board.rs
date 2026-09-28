@@ -144,7 +144,7 @@ pub(crate) struct Stage {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub parallel: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub unused: bool,
+    pub never_deployed: bool,
     #[serde(default)]
     pub targets: Vec<Target>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

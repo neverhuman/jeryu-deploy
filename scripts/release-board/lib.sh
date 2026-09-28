@@ -58,24 +58,24 @@ contains() { git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; }
 # target NAME RUNNING STATE
 target() { jq -cn --arg n "$1" --arg r "$2" --arg s "$3" '{name: $n, running: (if $r == "" then null else $r end), state: $s}'; }
 
-# stage KEY=VALUE... — one stage. Keys: id name version state status known parallel unused
+# stage KEY=VALUE... — one stage. Keys: id name version state status known parallel never_deployed
 # targets (a JSON array) promote_cmd human_only automatic ships (JSON array) rollback
 # forge_repo forge_env.
 stage() {
-  local -A f=([parallel]=false [unused]=false [targets]='[]' [human_only]=false [automatic]=false [ships]='')
+  local -A f=([parallel]=false [never_deployed]=false [targets]='[]' [human_only]=false [automatic]=false [ships]='')
   local kv
   for kv in "$@"; do f["${kv%%=*}"]="${kv#*=}"; done
   jq -cn \
     --arg id "${f[id]}" --arg name "${f[name]}" --arg version "${f[version]:-}" --arg state "${f[state]:-none}" \
     --arg status "${f[status]:-}" --arg known "${f[known]:-unverified}" \
-    --argjson parallel "${f[parallel]}" --argjson unused "${f[unused]}" --argjson targets "${f[targets]}" \
+    --argjson parallel "${f[parallel]}" --argjson never "${f[never_deployed]}" --argjson targets "${f[targets]}" \
     --arg cmd "${f[promote_cmd]:-}" --argjson human "${f[human_only]}" --argjson auto "${f[automatic]}" \
     --arg ships "${f[ships]}" --arg rollback "${f[rollback]:-}" \
     --arg frepo "${f[forge_repo]:-}" --arg fenv "${f[forge_env]:-}" '
     {id: $id, name: $name, version: (if $version == "" then null else $version end), state: $state,
      status: $status, known_by: $known, targets: $targets}
     + (if $parallel then {parallel: true} else {} end)
-    + (if $unused then {unused: true} else {} end)
+    + (if $never then {never_deployed: true} else {} end)
     + (if $cmd != "" then {promote: {command: $cmd, human_only: $human, automatic: $auto}} else {} end)
     + (if $ships != "" then {ships: ($ships | fromjson)} else {} end)
     + (if $rollback != "" then {rollback: $rollback} else {} end)

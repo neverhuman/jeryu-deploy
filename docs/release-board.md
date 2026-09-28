@@ -45,13 +45,13 @@ minutes ahead of the forge's clock.
 - `family`, `observed_at` (RFC 3339), `summary`, `collector {host, version, trigger, duration_ms}`.
 - `lanes[]`: `{id, name, source, owner_family, read_only?, stages[]}`. A lane owned by another
   family (the cloud appliance on jain's board) is `read_only`.
-- `stages[]`: `{id, name, version, state, status, known_by, parallel?, unused?, targets[],
+- `stages[]`: `{id, name, version, state, status, known_by, parallel?, never_deployed?, targets[],
   promote?, ships?, rollback?, forge?}`.
   - `state` is `ok | warn | bad | none`; a stage is only `ok` when every target is.
   - `known_by` says how the collector knows: `reported` (a forge deployment), `host` (read from
     the machine or service), `derived` (computed from git), `unverified`.
   - `parallel` marks a stage that runs beside the previous one (veox-ai's stage beside dev);
-    `unused` a stage that is declared but has never been deployed.
+    `never_deployed` a stage that is declared but has never been deployed.
   - `promote {command, human_only, automatic}` is shown, never run, by the page.
   - `forge {repo, environment}` is the live overlay binding.
 - `work {total, method, parts[{key, label, count}], unlinked?}`: every todo in the family queue

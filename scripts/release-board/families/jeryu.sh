@@ -47,9 +47,9 @@ collect_jeryu() {
   p_behind="$(behind "$deploy" "$prod_sha" "$main")"
   p_state=none; [ -n "$prod_sha" ] && { p_state=ok; [ "${p_behind:-0}" -gt 0 ] && p_state=warn; }
   s_state=none; [ -n "$staged" ] && { s_state=ok; [ "$staged" = "$prod_rel" ] || s_state=warn; }
-  local ships unused_envs
+  local ships idle_envs
   ships="$(git -C "$deploy" log --format='%h · %s' "$prod_sha..$main" 2>/dev/null | lines_json)"
-  unused_envs="$(jq -r '[.environments[]?.name] as $have | ["dev","canary","stable"] - $have | join(" · ")' <<<"${env_json:-{\}}")"
+  idle_envs="$(jq -r '[.environments[]?.name] as $have | ["dev","canary","stable"] - $have | join(" · ")' <<<"${env_json:-{\}}")"
   lane forge-server "Forge server" "$DEPLOY_REPO + web + ${#CRATES[@]} crates · built on xbabe2 · served from atomicsoul" jeryu false \
     ${shift_stage:+"$shift_stage"} \
     "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived)" \
@@ -62,7 +62,7 @@ collect_jeryu() {
         promote_cmd="scripts/release/deploy-release.sh \$(cat ~/.local/state/jeryu-auto-stage/latest)" \
         rollback="~/.jeryu/releases/<release>/rollback.sh on atomicsoul → ${prev_rel:-unknown}" \
         forge_repo="$DEPLOY_REPO" forge_env=production)" \
-    ${unused_envs:+"$(stage id=unused name="$unused_envs" version="never deployed" state=none status=unused known=reported unused=true)"}
+    ${idle_envs:+"$(stage id=never-deployed name="$idle_envs" version="no deployment yet" state=none status="never deployed" known=reported never_deployed=true)"}
 
   # The web UI: main, the pin in jeryu-split.lock.toml, and what production's payload names.
   local web_pin w_state
