@@ -788,6 +788,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
     admin_only_path(path)
         || (path.starts_with("/api/v1/shift/") && unsafe_method(method))
         || (pipeline_events_path(path) && !unsafe_method(method))
+        || (release_board_path(path) && !unsafe_method(method))
         || attention_path(path)
         || pins_path(path)
         || audit_path(path)
@@ -799,6 +800,15 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
 /// identity), like runner heartbeats.
 fn pipeline_events_path(path: &str) -> bool {
     path == "/api/v1/events" || path == "/api/v1/events/"
+}
+
+/// Release boards name hosts, commands and the pinned commits of private
+/// repositories, so reading them is for global admins. Writing is decided in
+/// the handler (admin or a `JERYU_BOARD_REPORTERS` identity), like heartbeats.
+fn release_board_path(path: &str) -> bool {
+    path == "/api/v1/release-board"
+        || path == "/api/v1/release-board/"
+        || path.starts_with("/api/v1/release-board/")
 }
 
 /// The attention inbox names todos, notes and pull requests across every

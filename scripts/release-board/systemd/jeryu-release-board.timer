@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the release boards every 5 minutes (release scripts also refresh them at once)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,328 @@
+{
+  "schema": "jeryu.release_board.v1",
+  "family": "veox-ai",
+  "observed_at": "2026-09-28T15:40:00Z",
+  "collector": {
+    "host": "xbabe0",
+    "version": "audit-20260928",
+    "trigger": "manual",
+    "duration_ms": 0
+  },
+  "summary": "3 deliverables · prod on v0.8.12 · 1 commit waiting on main",
+  "lanes": [
+    {
+      "id": "cloud-app",
+      "name": "Cloud app",
+      "owner_family": "veox-ai",
+      "source": "veox-ai/ai-veox-app · built on xbabe0 by the deploy timer",
+      "stages": [
+        {
+          "id": "main",
+          "name": "main",
+          "version": "a275def",
+          "state": "none",
+          "status": "source",
+          "known_by": "derived",
+          "targets": []
+        },
+        {
+          "id": "dev",
+          "name": "dev",
+          "version": "a275def",
+          "state": "warn",
+          "status": "skew",
+          "known_by": "reported",
+          "targets": [
+            {
+              "name": "xbabe0 · dev-xbabe0.veox.ai",
+              "running": "a275def",
+              "state": "ok"
+            },
+            {
+              "name": "xbabe1 · dev worker",
+              "running": "v0.8.3 fc54c2d",
+              "state": "warn"
+            },
+            {
+              "name": "xbabe3 · dev worker",
+              "running": "v0.8.3 fc54c2d",
+              "state": "warn"
+            }
+          ],
+          "promote": {
+            "command": "merge a PR to forge main (xbabe0 follows in 5 min); nodes: deploy/fleet-roll.sh",
+            "human_only": false,
+            "automatic": true
+          },
+          "forge": {
+            "repo": "veox-ai/ai-veox-app",
+            "environment": "dev"
+          }
+        },
+        {
+          "id": "stage",
+          "name": "stage",
+          "version": "a275def",
+          "state": "ok",
+          "status": "in sync",
+          "known_by": "reported",
+          "targets": [
+            {
+              "name": "xbabe0 · 127.0.0.1:8082",
+              "running": "a275def",
+              "state": "ok"
+            }
+          ],
+          "parallel": true,
+          "promote": {
+            "command": "merge a PR to forge main (runs beside dev, not after it)",
+            "human_only": false,
+            "automatic": true
+          },
+          "forge": {
+            "repo": "veox-ai/ai-veox-app",
+            "environment": "stage"
+          }
+        },
+        {
+          "id": "prod",
+          "name": "prod",
+          "version": "v0.8.12 · 96d8374",
+          "state": "bad",
+          "status": "skew · 1 behind",
+          "known_by": "reported",
+          "targets": [
+            {
+              "name": "xbabe0 · cloud.veox.ai + mcp.veox.ai",
+              "running": "v0.8.12 96d8374",
+              "state": "ok"
+            },
+            {
+              "name": "xbabe1 · prod worker",
+              "running": "v0.7.11 5c3af7f",
+              "state": "bad"
+            },
+            {
+              "name": "xbabe1 · prod gateway",
+              "running": "v0.8.6 2bd40b4",
+              "state": "bad"
+            },
+            {
+              "name": "xbabe3 · prod worker",
+              "running": "v0.7.11 5c3af7f",
+              "state": "bad"
+            },
+            {
+              "name": "xbabe3 · prod gateway",
+              "running": "v0.8.6 2bd40b4",
+              "state": "bad"
+            }
+          ],
+          "promote": {
+            "command": "just tag-release v0.8.13 && git push origin v0.8.13   # then: VEOX_ENV=prod deploy/fleet-roll.sh",
+            "human_only": true,
+            "automatic": false
+          },
+          "ships": [
+            "a275def · deploy: report each deploy to the forge, and notes for v0.8.12 (PR #13, todo 9e28d6)"
+          ],
+          "rollback": "a new, higher v* tag on the old commit",
+          "forge": {
+            "repo": "veox-ai/ai-veox-app",
+            "environment": "production"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cloud-appliance",
+      "name": "Cloud appliance",
+      "source": "veox/cloud-appliance-cuda · engine jain-web v10.1.6-split.3 · moves by channel",
+      "owner_family": "veox-ai",
+      "stages": [
+        {
+          "id": "accepted",
+          "name": "accepted",
+          "version": "c30b5082",
+          "state": "none",
+          "status": "accepted-gpu-20260911",
+          "known_by": "host",
+          "targets": []
+        },
+        {
+          "id": "dev",
+          "name": "dev channel",
+          "version": "c30b5082",
+          "state": "warn",
+          "status": "skew",
+          "known_by": "host",
+          "targets": [
+            {
+              "name": "xbabe0 dev",
+              "running": "c30b5082",
+              "state": "ok"
+            },
+            {
+              "name": "xbabe1, xbabe3 dev workers",
+              "running": "55a4b9ef",
+              "state": "warn"
+            }
+          ],
+          "promote": {
+            "command": "scripts/promote-cloud-appliance.sh gpu=<accepted image>",
+            "human_only": true,
+            "automatic": false
+          }
+        },
+        {
+          "id": "canary",
+          "name": "canary → stage",
+          "version": "c30b5082",
+          "state": "ok",
+          "status": "in sync",
+          "known_by": "host",
+          "targets": [
+            {
+              "name": "xbabe0 stage",
+              "running": "c30b5082",
+              "state": "ok"
+            }
+          ],
+          "promote": {
+            "command": "scripts/promote-cloud-appliance.sh --deploy promote gpu canary",
+            "human_only": true,
+            "automatic": false
+          }
+        },
+        {
+          "id": "stable",
+          "name": "stable → prod",
+          "version": "c30b5082",
+          "state": "bad",
+          "status": "skew",
+          "known_by": "host",
+          "targets": [
+            {
+              "name": "xbabe0 · cloud.veox.ai",
+              "running": "c30b5082",
+              "state": "ok"
+            },
+            {
+              "name": "xbabe1, xbabe3 prod workers",
+              "running": "9eb30bdc (Aug 28)",
+              "state": "bad"
+            }
+          ],
+          "promote": {
+            "command": "VEOX_PROMOTE_DEPLOY_PROD=1 scripts/promote-cloud-appliance.sh --deploy promote gpu stable",
+            "human_only": true,
+            "automatic": false
+          },
+          "rollback": "promote-cloud-appliance.sh rollback gpu stable → previous-stable 55a4b9ef"
+        }
+      ]
+    },
+    {
+      "id": "website",
+      "name": "Website",
+      "owner_family": "veox-ai",
+      "source": "veox-ai/ai-veox-www · Cloudflare Pages project veox-www",
+      "stages": [
+        {
+          "id": "main",
+          "name": "main",
+          "version": "72d7e2d",
+          "state": "none",
+          "status": "source",
+          "known_by": "derived",
+          "targets": []
+        },
+        {
+          "id": "dev-www",
+          "name": "dev-www",
+          "version": "72d7e2d",
+          "state": "ok",
+          "status": "in sync",
+          "known_by": "host",
+          "targets": [
+            {
+              "name": "xbabe0 · dev-www.veox.ai",
+              "running": "72d7e2d",
+              "state": "ok"
+            }
+          ],
+          "promote": {
+            "command": "merge to main (the convoy timer follows in 5 min)",
+            "human_only": false,
+            "automatic": true
+          }
+        },
+        {
+          "id": "production",
+          "name": "production",
+          "version": "72d7e2d",
+          "state": "bad",
+          "status": "deploy path broken",
+          "known_by": "host",
+          "targets": [
+            {
+              "name": "veox.ai (www., new. redirect)",
+              "running": "72d7e2d · deployed 09-17",
+              "state": "ok"
+            }
+          ],
+          "promote": {
+            "command": "merge to GitHub main → GitHub Actions → wrangler pages deploy   (Actions stopped 09-21)",
+            "human_only": true,
+            "automatic": false
+          }
+        }
+      ]
+    }
+  ],
+  "work": {
+    "total": 7,
+    "method": "Matched by content: forge main was reset by tree, so ancestry finds 0 of 5.",
+    "parts": [
+      {
+        "key": "live",
+        "label": "Live",
+        "count": 3
+      },
+      {
+        "key": "merged",
+        "label": "Merged, not released",
+        "count": 0
+      },
+      {
+        "key": "stranded",
+        "label": "Stranded in open shift PRs #11, #12",
+        "count": 2
+      },
+      {
+        "key": "untraceable",
+        "label": "Untraceable",
+        "count": 0
+      },
+      {
+        "key": "blocked",
+        "label": "Blocked",
+        "count": 2
+      },
+      {
+        "key": "open",
+        "label": "Open",
+        "count": 0
+      }
+    ],
+    "unlinked": "Not linkable: 22 legacy files in ai-veox-app/todo, 10 in ai-veox-www/todo."
+  },
+  "notes": {
+    "title": "Cloud app: what promoting prod would ship",
+    "items": [
+      "PR #13 · deploy: report each deploy to the forge, and notes for v0.8.12"
+    ],
+    "coverage": "Hand-written notes exist for v0.8.3–v0.8.12 in releases.json. The website and the appliance have none."
+  },
+  "problems": []
+}

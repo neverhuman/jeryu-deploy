@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect every family's release board and push it to the forge (/releases)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# install-release-board.sh points this at an installed copy of collect.sh.
+# Optional secrets for sources the forge cannot see (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID).
+EnvironmentFile=-%h/.config/jeryu/release-board.env
+ExecStart=%h/.local/share/jeryu-release-board/collect.sh --push --trigger timer all
+TimeoutStartSec=15min

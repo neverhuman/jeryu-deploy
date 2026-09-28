@@ -32,6 +32,7 @@ mod control_plane_tests;
 mod git_authorization;
 mod github_rest_tests;
 mod pulls_tests;
+mod release_board_tests;
 mod repo_admin_tests;
 mod repo_list_tests;
 mod source_tests;

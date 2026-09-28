@@ -173,6 +173,11 @@ if [[ $rc == 0 ]]; then
     record
   fi
   status success "live on $forge_host" "$log"
+  # The forge that just started keeps release boards in memory, so it has none: refresh every
+  # family now (scripts/release-board/) rather than leave /releases empty until the next timer
+  # tick. Detached and best-effort, like everything this script does after the switch.
+  board="${JERYU_RELEASE_BOARD:-$HOME/.local/share/jeryu-release-board/collect.sh}"
+  if [[ -x "$board" ]]; then nohup "$board" --push --trigger release all >/dev/null 2>&1 & fi
   [[ $json == 0 ]] || jq -cn --arg rel "$rel" --arg id "$deployment_id" --arg log "$log" \
     '{release:$rel, deployment_id:($id | tonumber? // null), log_path:$log, dry_run:false,
       already_live:false}' >&3

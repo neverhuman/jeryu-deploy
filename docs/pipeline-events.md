@@ -388,6 +388,16 @@ of `onlineRunners`, `offlineRunners`, the slot totals and the inbox's
 `gate_runner_down` rule. `offlineAfterSeconds` is absent on workcell nodes,
 which do not report by heartbeat.
 
+## Release boards
+
+`PUT /api/v1/release-board/{family}` (a `JERYU_BOARD_REPORTERS` login or an
+admin) stores a family's `jeryu.release_board.v1` snapshot, which `/releases`
+renders. A stored snapshot publishes one `release_board.updated` frame
+`{family, observed_at}` on the `pipeline` websocket scope so open pages
+refetch; it is **not** an event and is never written to the log, because the
+collector posts every five minutes. The shape, the collector and its release
+triggers are in [release-board.md](release-board.md).
+
 ## For agents
 
 **Post an event.** Send a bearer token of an admin or a `JERYU_EVENT_REPORTERS`

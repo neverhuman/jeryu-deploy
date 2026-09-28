@@ -22,6 +22,7 @@ mod mcp_backend;
 mod permissions;
 mod pipeline;
 mod pulls;
+mod release_board;
 mod repo_address;
 mod repo_admin;
 mod repositories;
@@ -133,6 +134,8 @@ pub(crate) struct WebState {
     pub(crate) agent_runs: agent_runs::AgentRunStore,
     /// Live PR gate runners, fed by `POST /api/v1/runners/heartbeat`.
     pub(crate) gate_runners: control_plane::GateRunnerStore,
+    /// Family release boards, fed by `PUT /api/v1/release-board/:family`.
+    pub(crate) release_boards: release_board::ReleaseBoardStore,
     /// Merge queue index; the queue itself lives in `refs/queue*` of each repo.
     pub(crate) merge_queue: Arc<merge_queue::MergeQueue>,
     /// The last merge attempt per PR and its forge answer (`merge_attempts`).
@@ -289,6 +292,7 @@ impl WebState {
             workcells: Arc::new(Mutex::new(WorkcellManager::new())),
             agent_runs: agent_runs::AgentRunStore::new(),
             gate_runners: control_plane::GateRunnerStore::from_env(),
+            release_boards: release_board::ReleaseBoardStore::from_env(),
             merge_queue: Arc::default(),
             merge_attempts: merge_attempts::MergeAttemptStore::default(),
             idempotency: idempotency::IdempotencyStore::default(),
@@ -939,6 +943,11 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         ("/api/v1/attention", get(pipeline::attention::attention)),
         ("/api/v1/pins", get(pipeline::pins::pins)),
+        ("/api/v1/release-board", get(release_board::list_boards)),
+        (
+            "/api/v1/release-board/:family",
+            get(release_board::get_board).put(release_board::put_board),
+        ),
         ("/api/v1/shift/families", get(shift::families)),
         (
             "/api/v1/shift/todos",
