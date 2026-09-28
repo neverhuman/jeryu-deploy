@@ -7,5 +7,8 @@ Type=oneshot
 # install-release-board.sh points this at an installed copy of collect.sh.
 # Optional secrets for sources the forge cannot see (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID).
 EnvironmentFile=-%h/.config/jeryu/release-board.env
+# A user unit's PATH omits ~/.local/bin, where per-user tools such as the todo queue's command
+# are usually installed; without it the work bar reports "could not list the queue".
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/share/jeryu-release-board/collect.sh --push --trigger timer all
 TimeoutStartSec=15min
