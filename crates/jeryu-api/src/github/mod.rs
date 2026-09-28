@@ -334,6 +334,9 @@ impl GithubRouter {
             (Patch, ["repos", owner, repo, "pulls", number]) => {
                 Ok(self.update_pull(owner, repo, number, body))
             }
+            (Get, ["repos", owner, repo, "pulls", number, "commits"]) => {
+                Ok(self.list_pull_commits(owner, repo, number, path, page))
+            }
             (Put, ["repos", owner, repo, "pulls", number, "merge"]) => {
                 Ok(self.merge_pull(owner, repo, number, body))
             }

@@ -279,7 +279,7 @@ impl GithubRouter {
             Err(response) => return response,
         };
         match self.core.get_pull_request(owner, repo, number) {
-            Ok(pr) => json_response(200, &pull_request_json(&pr)),
+            Ok(pr) => json_response(200, &self.pull_request_json_with_commit_count(&pr)),
             Err(err) => error_response(err),
         }
     }
@@ -1164,6 +1164,22 @@ fn fork_source(
 
 /// Web UI route for a pull request: `/repos/<host>/<owner>/<repo>/pulls/<n>`.
 /// Every forge repository is served under the `jeryu` host segment.
+impl GithubRouter {
+    /// The pull JSON plus GitHub's `commits` count: the number of commits in
+    /// the PR's own range, counted in the bare repository. Without a git
+    /// backend the count falls back to the commits recorded on the PR.
+    fn pull_request_json_with_commit_count(&self, pr: &PullRequest) -> Value {
+        let mut value = pull_request_json(pr);
+        #[cfg(feature = "web")]
+        if let Some(count) = self.pull_commit_count(pr)
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert("commits".to_owned(), json!(count));
+        }
+        value
+    }
+}
+
 pub(crate) fn pull_request_web_path(owner: &str, repo: &str, number: u64) -> String {
     format!("/repos/jeryu/{owner}/{repo}/pulls/{number}")
 }
@@ -1186,6 +1202,9 @@ pub(super) fn pull_request_json(pr: &PullRequest) -> Value {
         "merged_at": pr.merged_at,
         "merge_commit_sha": pr.merge_commit_sha,
         "source_repository": pr.source_repository,
+        // GitHub's commit count. The single-PR read replaces it with the count
+        // git reports for the PR's range; the recorded commits are the floor.
+        "commits": pr.commits.len(),
         "html_url": super::support::web_url(&pull_request_web_path(&pr.owner, &pr.repo, pr.number)),
         "url": format!("/repos/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number),
         "created_at": pr.created_at,
