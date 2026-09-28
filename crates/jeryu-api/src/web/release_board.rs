@@ -693,14 +693,14 @@ mod tests {
         older.summary = "older".into();
         assert!(
             store
-                .put("veox-ai", newer, now)
+                .put("acme", newer, now)
                 .expect("newer")
                 .ignored
                 .is_none()
         );
-        let answer = store.put("veox-ai", older, now).expect("older answers");
+        let answer = store.put("acme", older, now).expect("older answers");
         assert_eq!(answer.ignored, Some("older than stored snapshot"));
-        assert_ne!(store.get("veox-ai").expect("stored").summary, "older");
+        assert_ne!(store.get("acme").expect("stored").summary, "older");
     }
 
     #[test]
@@ -709,14 +709,14 @@ mod tests {
         let now = at("2026-09-28T16:00:00Z");
         let mut board = board();
         board.problems.push(Problem {
-            source: "xbabe1".into(),
+            source: "node-b".into(),
             message: "ssh timed out".into(),
         });
-        store.put("veox-ai", board.clone(), now).expect("first");
-        store.put("veox-ai", board, now).expect("second");
+        store.put("acme", board.clone(), now).expect("first");
+        store.put("acme", board, now).expect("second");
         let list = store.list();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].family, "veox-ai");
+        assert_eq!(list[0].family, "acme");
         assert_eq!(list[0].problem_count, 1);
         assert!(!list[0].accepted_at.is_empty());
     }
@@ -732,11 +732,11 @@ mod tests {
 
     #[test]
     fn family_names_are_url_safe() {
-        assert!(valid_family("veox-ai"));
-        assert!(valid_family("jain"));
-        assert!(!valid_family("-jain"));
-        assert!(!valid_family("Jain"));
-        assert!(!valid_family("jain/web"));
+        assert!(valid_family("acme"));
+        assert!(valid_family("initech"));
+        assert!(!valid_family("-initech"));
+        assert!(!valid_family("Initech"));
+        assert!(!valid_family("initech/web"));
         assert!(!valid_family(""));
     }
 }

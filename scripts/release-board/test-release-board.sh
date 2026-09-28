@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # test-release-board.sh — run the real collect.sh and lib.sh against a throwaway forge: a local
-# bare repo served over file://, a stand-in todoq that lists six todos (one per work category),
-# and a stand-in curl that records the PUT. A demo family adapter uses the same library calls the
-# real adapters do. No service, network or credential.
+# bare repo served over file://, a stand-in queue command that lists seven todos (one per work
+# category), and a stand-in curl that records the PUT. A demo adapter in a throwaway families
+# directory uses the same library calls a site's adapters do. No service, network or credential.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
@@ -16,10 +16,10 @@ fail() { echo "not ok - $1" >&2; exit 1; }
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
-# The collector under test, beside a demo adapter.
-mkdir -p "$T/rb/families" "$T/bin" "$T/forge/git/demo" "$T/out"
+# The collector under test; the demo adapter lives where a site's would, outside the scripts.
+mkdir -p "$T/rb" "$T/families" "$T/bin" "$T/forge/git/demo" "$T/out"
 cp "$here/collect.sh" "$here/lib.sh" "$T/rb/"
-cat >"$T/rb/families/demo.sh" <<'EOF'
+cat >"$T/families/demo.sh" <<'EOF'
 collect_demo() {
   local m main prod
   m="$(mirror demo/app)" || return 1
@@ -59,7 +59,7 @@ printf 'content\n' >"$src/content.txt"; git -C "$src" add content.txt; git -C "$
 git clone -q --bare "$src" "$T/forge/git/demo/app.git"
 export DEMO_PROD="$T/prod"
 
-cat >"$T/bin/todoq" <<'EOF'
+cat >"$T/bin/queue" <<'EOF'
 #!/usr/bin/env bash
 cat <<'LIST'
 t-live      done     now p2 app  live
@@ -83,8 +83,9 @@ done
 cp "\$body" "$T/put.json"; printf '%s\n' "\$url" >"$T/put.url"
 printf '{"family":"demo"}\n200'
 EOF
-chmod +x "$T/bin/todoq" "$T/bin/curl"
+chmod +x "$T/bin/queue" "$T/bin/curl"
 export PATH="$T/bin:$PATH" JERYU_BASE="file://$T/forge" JERYU_RELEASE_BOARD_STATE="$T/state"
+export JERYU_RELEASE_BOARD_FAMILIES="$T/families" JERYU_BOARD_QUEUE_CMD=queue
 printf 'secret-token\n' >"$T/token"
 export JERYU_BOARD_TOKEN_FILE="$T/token"
 
@@ -119,7 +120,16 @@ fi
 [ ! -e "$T/put.json" ] || fail "nothing is sent without a token"
 ok "without a token the board is written but not pushed, and the run says so"
 
-# Guard: no adapter may request /try-free (a GET there leases a real Try slot).
-if grep -nE '^[^#]*(curl|wget|https?://)[^#"]*try-free' "$here"/families/*.sh; then fail "an adapter requests /try-free"; fi
-ok "no adapter requests /try-free"
+bash "$T/rb/collect.sh" --out "$T/all" all 2>"$T/log" || fail "collect.sh all exited non-zero: $(cat "$T/log")"
+[ -s "$T/all/demo.json" ] || fail "all did not collect the demo family"
+ok "all collects every adapter in the families directory"
+
+if JERYU_BASE="" bash "$T/rb/collect.sh" --out "$T/out" demo 2>"$T/log"; then fail "a run without JERYU_BASE must fail"; fi
+grep -q "JERYU_BASE is not set" "$T/log" || fail "the refusal names JERYU_BASE: $(cat "$T/log")"
+ok "the forge's URL is configuration: without JERYU_BASE the run refuses and says why"
+
+# The shipped example must stay a working template, and site adapters stay out of the repo.
+bash -n "$here/examples/acme.sh" || fail "examples/acme.sh does not parse"
+[ ! -d "$here/families" ] || fail "scripts/release-board/families/ is back: site adapters belong in host config"
+ok "the example adapter parses, and no site adapter lives in the repository"
 echo "1..$pass"

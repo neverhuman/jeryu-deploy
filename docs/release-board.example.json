@@ -1,10 +1,10 @@
 {
   "schema": "jeryu.release_board.v1",
-  "family": "veox-ai",
+  "family": "acme",
   "observed_at": "2026-09-28T15:40:00Z",
   "collector": {
-    "host": "xbabe0",
-    "version": "audit-20260928",
+    "host": "collector-1",
+    "version": "example",
     "trigger": "manual",
     "duration_ms": 0
   },
@@ -13,8 +13,8 @@
     {
       "id": "cloud-app",
       "name": "Cloud app",
-      "owner_family": "veox-ai",
-      "source": "veox-ai/ai-veox-app · built on xbabe0 by the deploy timer",
+      "owner_family": "acme",
+      "source": "acme/app · built on node-a by the deploy timer",
       "stages": [
         {
           "id": "main",
@@ -34,28 +34,28 @@
           "known_by": "reported",
           "targets": [
             {
-              "name": "xbabe0 · dev-xbabe0.veox.ai",
+              "name": "node-a · dev.acme.example",
               "running": "a275def",
               "state": "ok"
             },
             {
-              "name": "xbabe1 · dev worker",
+              "name": "node-b · dev worker",
               "running": "v0.8.3 fc54c2d",
               "state": "warn"
             },
             {
-              "name": "xbabe3 · dev worker",
+              "name": "node-c · dev worker",
               "running": "v0.8.3 fc54c2d",
               "state": "warn"
             }
           ],
           "promote": {
-            "command": "merge a PR to forge main (xbabe0 follows in 5 min); nodes: deploy/fleet-roll.sh",
+            "command": "merge a PR to forge main (node-a follows in 5 min); nodes: deploy/fleet-roll.sh",
             "human_only": false,
             "automatic": true
           },
           "forge": {
-            "repo": "veox-ai/ai-veox-app",
+            "repo": "acme/app",
             "environment": "dev"
           }
         },
@@ -68,7 +68,7 @@
           "known_by": "reported",
           "targets": [
             {
-              "name": "xbabe0 · 127.0.0.1:8082",
+              "name": "node-a · 127.0.0.1:8082",
               "running": "a275def",
               "state": "ok"
             }
@@ -80,7 +80,7 @@
             "automatic": true
           },
           "forge": {
-            "repo": "veox-ai/ai-veox-app",
+            "repo": "acme/app",
             "environment": "stage"
           }
         },
@@ -93,33 +93,33 @@
           "known_by": "reported",
           "targets": [
             {
-              "name": "xbabe0 · cloud.veox.ai + mcp.veox.ai",
+              "name": "node-a · app.acme.example + api.acme.example",
               "running": "v0.8.12 96d8374",
               "state": "ok"
             },
             {
-              "name": "xbabe1 · prod worker",
+              "name": "node-b · prod worker",
               "running": "v0.7.11 5c3af7f",
               "state": "bad"
             },
             {
-              "name": "xbabe1 · prod gateway",
+              "name": "node-b · prod gateway",
               "running": "v0.8.6 2bd40b4",
               "state": "bad"
             },
             {
-              "name": "xbabe3 · prod worker",
+              "name": "node-c · prod worker",
               "running": "v0.7.11 5c3af7f",
               "state": "bad"
             },
             {
-              "name": "xbabe3 · prod gateway",
+              "name": "node-c · prod gateway",
               "running": "v0.8.6 2bd40b4",
               "state": "bad"
             }
           ],
           "promote": {
-            "command": "just tag-release v0.8.13 && git push origin v0.8.13   # then: VEOX_ENV=prod deploy/fleet-roll.sh",
+            "command": "just tag-release v0.8.13 && git push origin v0.8.13   # then: ACME_ENV=prod deploy/fleet-roll.sh",
             "human_only": true,
             "automatic": false
           },
@@ -128,7 +128,7 @@
           ],
           "rollback": "a new, higher v* tag on the old commit",
           "forge": {
-            "repo": "veox-ai/ai-veox-app",
+            "repo": "acme/app",
             "environment": "production"
           }
         }
@@ -136,9 +136,9 @@
     },
     {
       "id": "cloud-appliance",
-      "name": "Cloud appliance",
-      "source": "veox/cloud-appliance-cuda · engine jain-web v10.1.6-split.3 · moves by channel",
-      "owner_family": "veox-ai",
+      "name": "Runtime image",
+      "source": "acme/runtime-image · engine engine v10.1.6-split.3 · moves by channel",
+      "owner_family": "acme",
       "stages": [
         {
           "id": "accepted",
@@ -158,18 +158,18 @@
           "known_by": "host",
           "targets": [
             {
-              "name": "xbabe0 dev",
+              "name": "node-a dev",
               "running": "c30b5082",
               "state": "ok"
             },
             {
-              "name": "xbabe1, xbabe3 dev workers",
+              "name": "node-b, node-c dev workers",
               "running": "55a4b9ef",
               "state": "warn"
             }
           ],
           "promote": {
-            "command": "scripts/promote-cloud-appliance.sh gpu=<accepted image>",
+            "command": "scripts/promote-runtime.sh gpu=<accepted image>",
             "human_only": true,
             "automatic": false
           }
@@ -183,13 +183,13 @@
           "known_by": "host",
           "targets": [
             {
-              "name": "xbabe0 stage",
+              "name": "node-a stage",
               "running": "c30b5082",
               "state": "ok"
             }
           ],
           "promote": {
-            "command": "scripts/promote-cloud-appliance.sh --deploy promote gpu canary",
+            "command": "scripts/promote-runtime.sh --deploy promote gpu canary",
             "human_only": true,
             "automatic": false
           }
@@ -203,30 +203,30 @@
           "known_by": "host",
           "targets": [
             {
-              "name": "xbabe0 · cloud.veox.ai",
+              "name": "node-a · app.acme.example",
               "running": "c30b5082",
               "state": "ok"
             },
             {
-              "name": "xbabe1, xbabe3 prod workers",
+              "name": "node-b, node-c prod workers",
               "running": "9eb30bdc (Aug 28)",
               "state": "bad"
             }
           ],
           "promote": {
-            "command": "VEOX_PROMOTE_DEPLOY_PROD=1 scripts/promote-cloud-appliance.sh --deploy promote gpu stable",
+            "command": "ACME_PROMOTE_DEPLOY_PROD=1 scripts/promote-runtime.sh --deploy promote gpu stable",
             "human_only": true,
             "automatic": false
           },
-          "rollback": "promote-cloud-appliance.sh rollback gpu stable → previous-stable 55a4b9ef"
+          "rollback": "promote-runtime.sh rollback gpu stable → previous-stable 55a4b9ef"
         }
       ]
     },
     {
       "id": "website",
       "name": "Website",
-      "owner_family": "veox-ai",
-      "source": "veox-ai/ai-veox-www · Cloudflare Pages project veox-www",
+      "owner_family": "acme",
+      "source": "acme/site · Cloudflare Pages project acme-site",
       "stages": [
         {
           "id": "main",
@@ -246,7 +246,7 @@
           "known_by": "host",
           "targets": [
             {
-              "name": "xbabe0 · dev-www.veox.ai",
+              "name": "node-a · preview.acme.example",
               "running": "72d7e2d",
               "state": "ok"
             }
@@ -266,7 +266,7 @@
           "known_by": "host",
           "targets": [
             {
-              "name": "veox.ai (www., new. redirect)",
+              "name": "acme.example (www. redirect)",
               "running": "72d7e2d · deployed 09-17",
               "state": "ok"
             }
@@ -315,7 +315,7 @@
         "count": 0
       }
     ],
-    "unlinked": "Not linkable: 22 legacy files in ai-veox-app/todo, 10 in ai-veox-www/todo."
+    "unlinked": "Not linkable: 22 legacy files in acme-app/todo, 10 in acme-site/todo."
   },
   "notes": {
     "title": "Cloud app: what promoting prod would ship",

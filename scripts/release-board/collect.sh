@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # collect.sh — build each family's release board (jeryu.release_board.v1, docs/release-board.md)
 # and PUT it to the forge, where /releases renders it. Read-only everywhere else: it fetches
-# its own git mirrors, asks the forge, the fleet registry, the nodes and the public download
-# manifests what they run, and changes none of them.
+# its own git mirrors and asks each source what it runs, and changes none of them.
 #
 #   collect.sh [--push] [--trigger timer|release|manual] [--out DIR] FAMILY...
-#   collect.sh --push --trigger release veox-ai      # what a release script runs when it ends
+#   collect.sh --push --trigger release acme     # what a release script runs when it ends
 #
-# FAMILY is veox-ai, jeryu or jain (families/<name>.sh); `all` means every one. Without --push
-# the boards are only written to --out (default $JERYU_RELEASE_BOARD_STATE/boards/<family>.json),
-# which is how to look at one before the forge does.
+# What a family's board reads is site configuration, not part of jeryu: one adapter per family,
+# $JERYU_RELEASE_BOARD_FAMILIES/<family>.sh (default ~/.config/jeryu/release-board/families),
+# written against lib.sh. scripts/release-board/examples/ has one to copy. `all` means every
+# adapter in that directory. Without --push the boards are only written to --out (default
+# $JERYU_RELEASE_BOARD_STATE/boards/<family>.json), which is how to look at one first.
 #
-# Never probes www.neverhuman.org/try-free: a GET there hands out a real ten-minute Try lease.
-#
-# Env: JERYU_BASE (https://git.neverhuman.org); JERYU_BOARD_TOKEN_FILE (a token of a forge
-# admin or a JERYU_BOARD_REPORTERS login; default ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat);
-# JERYU_RELEASE_BOARD_STATE (~/.local/state/jeryu-release-board: mirrors, boards, lock).
+# Env (the timer reads ~/.config/jeryu/release-board.env): JERYU_BASE (the forge's URL; required);
+# JERYU_BOARD_TOKEN_FILE (a token of a forge admin or a JERYU_BOARD_REPORTERS login; default
+# ~/.config/jeryu/release-board.token); JERYU_RELEASE_BOARD_FAMILIES; JERYU_RELEASE_BOARD_STATE
+# (~/.local/state/jeryu-release-board: mirrors, boards, lock); JERYU_BOARD_QUEUE_CMD (the todo
+# queue's command, default todoq).
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -uo pipefail
@@ -24,20 +25,22 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/lib.sh"
 
 push=0 trigger=manual out=""
+families_dir="${JERYU_RELEASE_BOARD_FAMILIES:-$HOME/.config/jeryu/release-board/families}"
 families=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --push) push=1 ;;
     --trigger) trigger="${2:?--trigger needs a value}"; shift ;;
     --out) out="${2:?--out needs a directory}"; shift ;;
-    all) families+=(veox-ai jeryu jain) ;;
+    all) for f in "$families_dir"/*.sh; do [ -e "$f" ] && families+=("$(basename "$f" .sh)"); done ;;
     -*) say "unknown option $1"; exit 2 ;;
     *) families+=("$1") ;;
   esac
   shift
 done
 case "$trigger" in timer|release|manual) ;; *) say "--trigger must be timer, release or manual"; exit 2 ;; esac
-[ ${#families[@]} -gt 0 ] || { say "name at least one family (veox-ai, jeryu, jain or all)"; exit 2; }
+[ ${#families[@]} -gt 0 ] || { say "no family to collect: name one, or put adapters in $families_dir (see scripts/release-board/examples/)"; exit 2; }
+[ -n "$base" ] || { say "JERYU_BASE is not set: put the forge's URL in ~/.config/jeryu/release-board.env"; exit 2; }
 out="${out:-$state/boards}"
 mkdir -p "$state" "$out"
 
@@ -47,7 +50,7 @@ exec 9>"$state/lock"
 if [ "$trigger" = release ]; then flock -w 600 9 || { say "timed out waiting for another run"; exit 1; }
 else flock -n 9 || { say "another run holds the lock"; exit 0; }; fi
 
-token_file="${JERYU_BOARD_TOKEN_FILE:-$HOME/.config/jeryu/credentials/git-neverhuman-org-alton2.pat}"
+token_file="${JERYU_BOARD_TOKEN_FILE:-$HOME/.config/jeryu/release-board.token}"
 forge_cfg="" work=""
 trap 'rm -f "$forge_cfg"; rm -rf "$work"' EXIT
 if [ -r "$token_file" ]; then
@@ -61,8 +64,8 @@ version="$(git -C "$here" rev-parse --short=12 HEAD 2>/dev/null || cat "$here/VE
 
 status=0
 for family in "${families[@]}"; do
-  adapter="$here/families/$family.sh"
-  [ -r "$adapter" ] || { say "no adapter for family $family"; status=2; continue; }
+  adapter="$families_dir/$family.sh"
+  [ -r "$adapter" ] || { say "no adapter for family $family in $families_dir"; status=2; continue; }
   started="$(date +%s%3N)"
   lanes_file="$work/$family.lanes" problems_file="$work/$family.problems"
   summary="" work_json="null" pins_json="null" notes_json="null" main_specs=""

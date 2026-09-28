@@ -61,7 +61,7 @@ async fn a_reporter_writes_a_board_and_an_admin_reads_it_back() {
     let refused = board
         .router
         .clone()
-        .oneshot(put(&board.mallory, "veox-ai", EXAMPLE.to_string()))
+        .oneshot(put(&board.mallory, "acme", EXAMPLE.to_string()))
         .await
         .unwrap();
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
@@ -70,12 +70,12 @@ async fn a_reporter_writes_a_board_and_an_admin_reads_it_back() {
     let accepted = board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "veox-ai", EXAMPLE.to_string()))
+        .oneshot(put(&board.gatebot, "acme", EXAMPLE.to_string()))
         .await
         .unwrap();
     assert_eq!(accepted.status(), StatusCode::OK);
     let accepted = response_json(accepted).await;
-    assert_eq!(accepted["family"], "veox-ai");
+    assert_eq!(accepted["family"], "acme");
     assert!(accepted.get("ignored").is_none(), "{accepted}");
 
     let list = board
@@ -86,13 +86,13 @@ async fn a_reporter_writes_a_board_and_an_admin_reads_it_back() {
         .unwrap();
     assert_eq!(list.status(), StatusCode::OK);
     let list = response_json(list).await;
-    assert_eq!(list["boards"][0]["family"], "veox-ai");
-    assert_eq!(list["boards"][0]["collector"]["host"], "xbabe0");
+    assert_eq!(list["boards"][0]["family"], "acme");
+    assert_eq!(list["boards"][0]["collector"]["host"], "collector-1");
 
     let one = board
         .router
         .clone()
-        .oneshot(get(&board.admin, "/api/v1/release-board/veox-ai"))
+        .oneshot(get(&board.admin, "/api/v1/release-board/acme"))
         .await
         .unwrap();
     assert_eq!(one.status(), StatusCode::OK);
@@ -112,11 +112,11 @@ async fn reading_a_board_is_for_admins() {
     board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "veox-ai", EXAMPLE.to_string()))
+        .oneshot(put(&board.gatebot, "acme", EXAMPLE.to_string()))
         .await
         .unwrap();
 
-    for path in ["/api/v1/release-board", "/api/v1/release-board/veox-ai"] {
+    for path in ["/api/v1/release-board", "/api/v1/release-board/acme"] {
         // gatebot may write a board but, like any ordinary account, not read one.
         for token in [&board.gatebot, &board.mallory] {
             let answer = board
@@ -137,7 +137,7 @@ async fn a_family_without_a_board_is_not_found() {
     let answer = board
         .router
         .clone()
-        .oneshot(get(&board.admin, "/api/v1/release-board/jain"))
+        .oneshot(get(&board.admin, "/api/v1/release-board/initech"))
         .await
         .unwrap();
     assert_eq!(answer.status(), StatusCode::NOT_FOUND);
@@ -153,7 +153,7 @@ async fn a_malformed_or_mismatched_board_is_refused_with_the_reason() {
     let garbage = board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "veox-ai", "{\"schema\":1}".to_string()))
+        .oneshot(put(&board.gatebot, "acme", "{\"schema\":1}".to_string()))
         .await
         .unwrap();
     assert_eq!(garbage.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -162,7 +162,7 @@ async fn a_malformed_or_mismatched_board_is_refused_with_the_reason() {
     let mismatched = board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "jain", EXAMPLE.to_string()))
+        .oneshot(put(&board.gatebot, "initech", EXAMPLE.to_string()))
         .await
         .unwrap();
     assert_eq!(mismatched.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -184,7 +184,7 @@ async fn an_oversized_board_is_refused_before_it_is_parsed() {
     let answer = board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "veox-ai", huge))
+        .oneshot(put(&board.gatebot, "acme", huge))
         .await
         .unwrap();
     assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE);

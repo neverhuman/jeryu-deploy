@@ -5,20 +5,32 @@ One board per product family: every **deliverable** the family ships, each as a 
 and how much of the family's todo queue has actually reached production. `/releases` renders it;
 `/releases?repo=owner/name` still shows the single-repository view.
 
-Why a board and not the forge's own data: most of what a release is cannot be seen from the forge.
-Fleet nodes, image registry channels, staged bundles, public download manifests and todo queues all
-live on other hosts, so a **collector** on the release host (xbabe0) reads them and pushes one
+Why a board and not the forge's own data: much of what a release is cannot be seen from the forge.
+Deploy hosts, image registry channels, staged bundles, public download manifests and todo queues
+live elsewhere, so a **collector** on the host that runs releases reads them and pushes one
 snapshot per family.
+
+## Configuration is yours, not jeryu's
+
+jeryu ships the API, the page, the collector (`scripts/release-board/collect.sh`) and its library
+(`lib.sh`). What a board reads is site configuration and never lives in this repository:
+
+| Where | What |
+|---|---|
+| `~/.config/jeryu/release-board.env` | `JERYU_BASE` (the forge's URL, required), `JERYU_BOARD_TOKEN_FILE` (default `~/.config/jeryu/release-board.token`), and any secret an adapter needs. Read by the timer's unit. |
+| `~/.config/jeryu/release-board/families/<family>.sh` | one **adapter** per family: which repositories, hosts, paths and URLs make up its deliverables and stages. `scripts/release-board/examples/acme.sh` is an invented one to copy. |
+
+The token belongs to a forge admin or a login named in `JERYU_BOARD_REPORTERS` on the forge.
+Keep the env file and the token mode 600.
 
 ## Freshness
 
 - The collector runs every **5 minutes** (`jeryu-release-board.timer`).
-- Release scripts run it **at once** when they finish (`--trigger release`):
+- Release scripts run it **at once** when they finish (`--trigger release`). jeryu's own
   `scripts/release/deploy-release.sh` refreshes every family, because a restarted forge holds no
-  boards. veox-ai's `deploy.sh`, `fleet-roll.sh` and `promote-cloud-appliance.sh` refresh
-  veox-ai.
-- Stages that report deployments to the forge (`forge` binding) are also read **live** by the page
-  from `/api/v3/repos/{repo}/environments`, so a release that reports itself shows before any
+  boards; a site adds the same call to its own release scripts.
+- Stages that report deployments to the forge (a `forge` binding) are also read **live** by the
+  page from `/api/v3/repos/{repo}/environments`, so a release that reports itself shows before any
   snapshot, marked "reported after this snapshot".
 - A successful PUT publishes `release_board.updated` on the `pipeline` websocket scope, so open
   pages refetch within seconds. It is not written to the event log.
@@ -40,17 +52,17 @@ minutes ahead of the forge's clock.
 
 ## Shape: `jeryu.release_board.v1`
 
-`docs/release-board.example.json` is a complete example (veox-ai, 2026-09-28). In short:
+`docs/release-board.example.json` is a complete, invented example (family `acme`). In short:
 
 - `family`, `observed_at` (RFC 3339), `summary`, `collector {host, version, trigger, duration_ms}`.
 - `lanes[]`: `{id, name, source, owner_family, read_only?, stages[]}`. A lane owned by another
-  family (the cloud appliance on jain's board) is `read_only`.
+  family and shown on this one is `read_only`.
 - `stages[]`: `{id, name, version, state, status, known_by, parallel?, never_deployed?, targets[],
   promote?, ships?, rollback?, forge?}`.
   - `state` is `ok | warn | bad | none`; a stage is only `ok` when every target is.
   - `known_by` says how the collector knows: `reported` (a forge deployment), `host` (read from
     the machine or service), `derived` (computed from git), `unverified`.
-  - `parallel` marks a stage that runs beside the previous one (veox-ai's stage beside dev);
+  - `parallel` marks a stage that runs beside the previous one instead of after it;
     `never_deployed` a stage that is declared but has never been deployed.
   - `promote {command, human_only, automatic}` is shown, never run, by the page.
   - `forge {repo, environment}` is the live overlay binding.
@@ -65,32 +77,34 @@ minutes ahead of the forge's clock.
 
 A todo's commits are the commits carrying its `Todo:` trailer, on any branch. It has reached a
 stage when that stage's commit holds every one of them — by history, or by content (the commit's
-diff reverse-applies cleanly to the stage's tree). The content test matters: veox-ai's forge main
-was reset by tree, so history alone finds none of its earlier work. The todo's own `merged` flag
-and recorded shas are not used; landing rebases them.
+diff reverse-applies cleanly to the stage's tree), so work that reached main by a re-landed or
+reset tree still counts. The todo's own merged flag and recorded shas are not used; landing
+rebases them. The queue is listed with `$JERYU_BOARD_QUEUE_CMD list <family> --all` (default
+`todoq`).
 
-## The collector (`scripts/release-board/`)
+## Writing an adapter
+
+Copy `scripts/release-board/examples/acme.sh` to your families directory and replace its values.
+An adapter defines `collect_<family>` (dashes become underscores) and uses `lib.sh`:
+
+- `mirror owner/repo` — a bare mirror of a forge repository, fetched once per run.
+- `stage key=value…` / `lane id name source owner read_only stage…` / `target name running state`
+  — the board's pieces.
+- `behind`, `contains`, `worst`, `worst_of`, `short`, `lines_json` — comparisons and formatting.
+- `work_summary family method unlinked mirror=tip…` — the work bar; set `main_specs` first.
+- `problem source message` — record anything unreadable and keep going.
+
+An adapter must only read. A source whose "read" changes state (for example a URL that hands
+out a resource on GET) must not be called; read a health or status endpoint instead.
+
+## Commands
 
 ```sh
 scripts/release-board/collect.sh all                            # write boards, push nothing
-scripts/release-board/collect.sh --push --trigger manual jeryu  # push one family now
-scripts/release-board/install-release-board.sh                  # install + enable the timer (xbabe0)
+scripts/release-board/collect.sh --push --trigger manual acme   # push one family now
+scripts/release-board/install-release-board.sh                  # install + enable the timer
 bash scripts/release-board/test-release-board.sh                # the gate's test
 ```
 
-- Boards are written to `~/.local/state/jeryu-release-board/boards/<family>.json` whether or not
-  they are pushed; git mirrors of every repo it reads are kept beside them.
-- Token: `JERYU_BOARD_TOKEN_FILE` (default the alton2 PAT used by auto-stage and auto-pin).
-- Optional secrets go in `~/.config/jeryu/release-board.env`: `CLOUDFLARE_API_TOKEN` and
-  `CLOUDFLARE_ACCOUNT_ID`, without which veox-ai's website production stage is `unverified`.
-- One adapter per family in `families/<family>.sh`; each read is best-effort and becomes a
-  `problems` line when it fails.
-- **Never request `www.neverhuman.org/try-free`**: a GET there leases a real Try slot for ten
-  minutes. The Try pool is read from `/healthz` only; the test fails on any adapter line that
-  requests `/try-free`.
-
-## Known gaps
-
-- jain's Free publish runs on xbabe2 and does not trigger a refresh; the timer picks it up.
-- Rollbacks on atomicsoul are not recorded on the forge, so the jeryu board learns of one only
-  from the next deployment record.
+Boards are written to `~/.local/state/jeryu-release-board/boards/<family>.json` whether or not
+they are pushed; git mirrors of every repository an adapter reads are kept beside them.

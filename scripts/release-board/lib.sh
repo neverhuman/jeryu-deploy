@@ -5,7 +5,7 @@
 # Every read is best-effort. A source that cannot be read adds one line to the board's
 # `problems` and the stage it feeds says `unverified`; nothing here may stop the rest of the board.
 
-base="${JERYU_BASE:-https://git.neverhuman.org}"
+base="${JERYU_BASE:-}"
 state="${JERYU_RELEASE_BOARD_STATE:-$HOME/.local/state/jeryu-release-board}"
 problems_file=""   # set by collect.sh per family run
 
@@ -150,7 +150,7 @@ work_summary() {
   for spec in "$@"; do live_tip["${spec%%=*}"]="${spec#*=}"; done
   while IFS= read -r spec; do [ -n "$spec" ] && main_tip["${spec%%=*}"]="${spec#*=}"; done <<<"${main_specs:-}"
   local todos trailers
-  todos="$(todoq list "$family" --all 2>/dev/null)" || { problem "todoq $family" "could not list the queue"; return 0; }
+  todos="$(${JERYU_BOARD_QUEUE_CMD:-todoq} list "$family" --all 2>/dev/null)" || { problem "queue $family" "could not list the queue"; return 0; }
   trailers="$(todo_trailers "${!main_tip[@]}")"
   local live=0 merged=0 stranded=0 untraceable=0 blocked=0 open=0 id status
   while read -r id status _; do
