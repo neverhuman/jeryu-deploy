@@ -818,11 +818,15 @@ fn summary_with_required_contexts(
                 action_id: "pull.approve".to_string(),
                 label: "Approve".to_string(),
                 risk: None,
+                method: None,
+                href: None,
             },
             AvailableAction {
                 action_id: "pull.merge".to_string(),
                 label: "Merge".to_string(),
                 risk: Some("medium".to_string()),
+                method: None,
+                href: None,
             },
         ],
     }
@@ -967,6 +971,18 @@ fn core_error(error: ForgeError, purpose: &'static str) -> AxumResponse {
             &[
                 "refresh the pull request before retrying",
                 "recompute merge evidence for the current head",
+            ],
+            PROOF_LANE,
+            None,
+        ),
+        ForgeError::Forbidden(reason) => repair_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            purpose,
+            &reason,
+            &[
+                "ask a different reviewer: authors cannot approve their own changes",
+                "act as an account with the right on this repository",
             ],
             PROOF_LANE,
             None,

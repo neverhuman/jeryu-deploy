@@ -356,6 +356,13 @@ pub(super) fn error_response(err: ForgeError) -> Response {
             "jeryu.explain_blockers",
             "branch protection blocks this; ask jeryu to explain the blockers and required checks",
         ),
+        // Core refuses who may do this (an author approving their own pull
+        // request, a dismissal by someone without the right): GitHub's 403.
+        ForgeError::Forbidden(_) => (
+            403,
+            "jeryu.explain_blockers",
+            "this identity may not do that here; a different reviewer or an admin has to act",
+        ),
         ForgeError::RepositoryArchived(_) => (
             409,
             "jeryu.get_system_snapshot",

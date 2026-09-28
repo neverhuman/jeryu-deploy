@@ -216,7 +216,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         );
         assert_eq!(
             source.get("tag").and_then(toml::Value::as_str),
-            Some("jeryu-core-v5.0.0-split.10")
+            Some("jeryu-core-v5.0.0-split.11")
         );
         assert!(
             source.get("path").is_none(),
@@ -246,7 +246,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
     );
     assert_eq!(
         rustjet_source.get("tag").and_then(toml::Value::as_str),
-        Some("jeryu-intelligence-v5.0.0-split.2")
+        Some("jeryu-intelligence-v5.0.0-split.3")
     );
     assert!(
         rustjet_source.get("path").is_none(),
@@ -261,7 +261,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("API dependencies must be a table");
     let expected_groups = [
         (
-            "jeryu-core-v5.0.0-split.10",
+            "jeryu-core-v5.0.0-split.11",
             &[
                 "jeryu-core",
                 "jeryu-enterprise",
@@ -282,14 +282,14 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             ][..],
         ),
         (
-            "jeryu-intelligence-v5.0.0-split.2",
+            "jeryu-intelligence-v5.0.0-split.3",
             &["jeryu-autonomy", "jeryu-codegraph", "jeryu-mcp"][..],
         ),
         (
             "jeryu-release-ops-v5.0.0-split.0",
             &["jeryu-bench", "jeryu-obs", "jeryu-wsversion"][..],
         ),
-        ("jeryu-jira-v5.0.0-split.0", &["jeryu-jira"][..]),
+        ("jeryu-jira-v5.0.0-split.2", &["jeryu-jira"][..]),
     ];
     let expected_count: usize = expected_groups
         .iter()
@@ -314,7 +314,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
                 dependency_git.is_some(),
                 "{package} must declare a Git source"
             );
-            if tag == "jeryu-core-v5.0.0-split.10" {
+            if tag == "jeryu-core-v5.0.0-split.11" {
                 assert_eq!(
                     dependency_git,
                     Some("http://127.0.0.1:8787/git/jeryu/jeryu-core.git"),
@@ -369,18 +369,18 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             core_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.10#762ea81887a7f86db717772612f71eaf8d8c21d0"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.11#49d5593824ef10767611abbcc281c511bd5face5"
             );
         } else if name == "jeryu-proof" {
             proof_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.10#762ea81887a7f86db717772612f71eaf8d8c21d0"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.11#49d5593824ef10767611abbcc281c511bd5face5"
             );
         } else if name == "jeryu-rustjet" {
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.2#246d024265b78eeb4b7508d2645d054b6fc45074"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.3#323753b75c65220db9b448af4309197a72cb44f5"
             );
         }
     }

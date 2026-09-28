@@ -301,11 +301,14 @@ async fn pulls_routes_return_live_pr_detail_diff_checks_and_threads() {
     assert_eq!(detail["head_tree_sha"], serde_json::Value::Null);
     assert_eq!(detail["base_tree_sha"], serde_json::Value::Null);
     assert_eq!(detail["reviews"][0]["head_sha"], "head-a");
-    assert_eq!(detail["reviews"][0]["effective"], true);
+    // A comment is not a verdict (jeryu-core split.11, "Comments preserve explicit
+    // verdicts"), so the author's comment-only review is shown but not effective.
+    assert_eq!(detail["reviews"][0]["effective"], false);
     assert_eq!(detail["reviews"][0]["stale"], false);
+    // The viewer's review state is their effective verdict; a comment is not one.
     assert_eq!(
         detail["summary"]["review"]["user_review_state"],
-        "COMMENTED"
+        serde_json::Value::Null
     );
     assert!(
         detail["passport_hash"]

@@ -74,6 +74,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `forge_branch_protection` | 405 | branch protection blocks this operation |
 | `forge_conflict` | 409 | the forge state conflicts with this operation |
 | `forge_not_found` | 404 | the forge entity was not found |
+| `forge_forbidden` | 403 | this identity may not do that on the repository |
 | `forge_repository_archived` | 409 | the repository is archived |
 | `forge_storage` | 500 | the forge storage backend failed |
 | `forge_validation` | 422 | the forge rejected the request fields |

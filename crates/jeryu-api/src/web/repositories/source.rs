@@ -561,6 +561,20 @@ pub(in crate::web) async fn repo_readme_update(
             Json(readme_response_with_markdown(&state, &repo, markdown)).into_response()
         }
         Err(ForgeError::NotFound(_)) => readme_not_found_error(),
+        Err(ForgeError::Forbidden(reason)) => api_error_with_hint(
+            axum::http::StatusCode::FORBIDDEN,
+            "forbidden",
+            "this identity may not change the repository README",
+            ApiErrorHint {
+                purpose: "persist repository README",
+                reason: "forbidden",
+                common_fixes: &[
+                    "publish the README as an account with write access to the repository",
+                ],
+                docs_url: "docs/release.md",
+                repair_hint: &format!("retry as a permitted identity ({reason})"),
+            },
+        ),
         Err(ForgeError::Storage(err)) => api_error_with_hint(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "storage_failed",

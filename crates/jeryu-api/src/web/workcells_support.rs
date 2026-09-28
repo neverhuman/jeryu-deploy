@@ -120,6 +120,15 @@ pub(super) fn forge_error(err: ForgeError) -> AxumResponse {
             ][..],
             "route merges through the review flow, then retry the export if needed",
         ),
+        ForgeError::Forbidden(_) => (
+            StatusCode::FORBIDDEN,
+            "forge_forbidden",
+            &[
+                "act as an identity that may perform this on the repository",
+                "route approvals through a reviewer other than the author",
+            ][..],
+            "retry as a permitted identity; the request itself was well formed",
+        ),
         ForgeError::RepositoryArchived(_) => (
             StatusCode::CONFLICT,
             "forge_repository_archived",

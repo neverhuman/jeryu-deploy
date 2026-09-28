@@ -176,6 +176,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         409,
         "the forge state conflicts with this operation",
     ),
+    entry(
+        "forge_forbidden",
+        403,
+        "this identity may not do that on the repository",
+    ),
     entry("forge_not_found", 404, "the forge entity was not found"),
     entry(
         "forge_repository_archived",

@@ -832,16 +832,22 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
                 action_id: "repo.open".to_string(),
                 label: "Open".to_string(),
                 risk: None,
+                method: None,
+                href: None,
             },
             AvailableAction {
                 action_id: "repo.delete_registry".to_string(),
                 label: "Remove from jeryu".to_string(),
                 risk: Some("destructive".to_string()),
+                method: None,
+                href: None,
             },
             AvailableAction {
                 action_id: "repo.delete_storage".to_string(),
                 label: "Delete managed storage".to_string(),
                 risk: Some("destructive".to_string()),
+                method: None,
+                href: None,
             },
         ],
     }

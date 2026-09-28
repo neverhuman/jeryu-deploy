@@ -8,7 +8,9 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method as HttpMethod, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response as AxumResponse};
 use jeryu_core::{AccountSummary, UserRole};
-use jeryu_readmodel::contracts::{RenderedMarkdown, RepositorySummary, Viewer, WebBootstrap};
+use jeryu_readmodel::contracts::{
+    RenderedMarkdown, RepositorySummary, Viewer, WebBootstrap, WebBootstrapLinks,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Component, Path, PathBuf};
@@ -579,7 +581,6 @@ fn bootstrap_payload_with_repos(
     account: Option<&AccountSummary>,
     repos: Vec<RepositorySummary>,
 ) -> Result<WebBootstrap, serde_json::Error> {
-    let tui = serialize_payload(&super::workcells::live_tui(state))?;
     Ok(WebBootstrap {
         generated_at: super::server_time(),
         schema_version: "0.1.0-alpha".to_string(),
@@ -590,7 +591,9 @@ fn bootstrap_payload_with_repos(
             avatar_url: None,
             global_permissions: permissions(),
         },
-        tui,
+        // The TUI read model is its own resource (`GET /api/v1/read-model/tui`);
+        // bootstrap names it rather than carrying a second copy.
+        links: WebBootstrapLinks::default(),
         recent_repositories: repos.into_iter().take(10).collect(),
         websocket_url: "/api/v1/ws".to_string(),
         feature_flags: feature_flags(state, account),

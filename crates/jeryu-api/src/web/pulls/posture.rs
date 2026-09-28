@@ -587,6 +587,7 @@ pub(super) fn reviews_for_pr(state: &WebState, pr: &PullRequest) -> Vec<PullRequ
                 submitted_at: review.submitted_at.to_rfc3339(),
                 stale: review.head_sha.as_deref() != Some(pr.head.sha.as_str()),
                 head_sha: review.head_sha,
+                dismissed_review_id: review.dismissed_review_id.map(|id| id.to_string()),
                 effective,
             }
         })

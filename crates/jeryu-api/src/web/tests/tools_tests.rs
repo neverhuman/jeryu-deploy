@@ -174,7 +174,7 @@ async fn codegraph_query_route_returns_impact_pack() {
     .await;
     let pack = response_json(response).await;
     assert_eq!(pack["schema_version"], "codegraph.query/v1");
-    assert_eq!(pack["provenance"]["storage_schema"], "4");
+    assert_eq!(pack["provenance"]["storage_schema"], "5");
     assert_eq!(pack["definition"]["symbol"], "CodeGraph");
     assert_eq!(
         pack["references"][0]["ref_file"],
