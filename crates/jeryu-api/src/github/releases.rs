@@ -32,7 +32,7 @@ impl GithubRouter {
             Ok(_) => json_response(
                 501,
                 &json!({
-                    "message": "Hosted release creation is not implemented",
+                    "message": "Hosted release creation is unavailable on this forge",
                     "documentation_url": docs_url(),
                     "jeryu_repair_hint": "Git tags can be pushed through Git; hosted release resources and assets are unavailable. No release or tag was created.",
                 }),
