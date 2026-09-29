@@ -234,6 +234,23 @@ pub(crate) fn queue_todos(
     )
 }
 
+/// Every todo of every hosted family queue, unfiltered and unenriched: what
+/// product search (`search.rs`) reads. Returns the todos it could read and,
+/// per queue it could not, one line naming the family and the reason, so a
+/// broken queue narrows the answer instead of failing the whole search.
+pub(crate) fn all_todos(state: &WebState) -> (Vec<ShiftTodo>, Vec<String>) {
+    let now = Utc::now();
+    let mut todos = Vec::new();
+    let mut problems = Vec::new();
+    for queue in discover(&state.repo_manager) {
+        match queue_todos(state, &queue) {
+            Ok(queued) => todos.extend(queued.iter().map(|q| q.todo.to_api(now))),
+            Err(err) => problems.push(format!("todo queue {}: {err}", queue.family.name)),
+        }
+    }
+    (todos, problems)
+}
+
 /// `GET /api/v1/shift/todos`
 pub(crate) async fn list_todos(
     State(state): State<Arc<WebState>>,

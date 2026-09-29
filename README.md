@@ -25,6 +25,8 @@ authority. Durable detail is intentionally routed rather than duplicated:
 - Tool-finder scheduled scan and proposal decisions: `docs/tool-finder.md`.
 - Pipeline event log, attention inbox and their agent guide:
   `docs/pipeline-events.md`.
+- Product-wide search (`GET /api/v1/search`), what it looks in and what it
+  deliberately does not: `docs/search.md`.
 
 Governed Jankurai rotations run the closed projection integration test, the
 hostile-identity shell verifier, full score, and protected-base diff audit
