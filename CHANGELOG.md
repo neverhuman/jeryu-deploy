@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- `jankurai/proof` says why it failed and links a report a reader can open. A
+  `tool-failed` check carries the audit's own error in its title and summary
+  (`the auditor exited 3: no usable base ref: refs/heads/main does not exist`)
+  and stores it with the score as `host_error`, so the Quality gate page of the
+  head reads the same words; a below-floor check lists its top findings with
+  `path:line` in `output.text`. The check's `details_url` is the configured
+  public origin (`JERYU_PRODUCTION_ORIGIN`) rather than the pushing client's
+  `Host`, and a loopback or tunnel address is dropped instead of published, so
+  one head gets one proof instead of one per address it was pushed through: a
+  re-audit that reaches the same verdict posts nothing. A PR check row now
+  carries `web_url_label` ("View report") and `details_text` so the Checks panel
+  can show the link and the findings behind a score.
+
+- A `gate.finished` or `review.finished` event that went wrong always says why.
+  `POST /api/v1/runners/heartbeat` accepts `last.reason`, and a runner that
+  sends none still gets a reason derived from its conclusion, so "Review failed
+  ... needs you" no longer appears with nothing to act on. Repeats collapse: the
+  same verdict on the same head, beaten again, is one event.
+
 - Redeploying the release production already runs is a no-op, not an alert.
   `deploy-release.sh` reads the live release before it records anything: if it
   is the requested one it says "already live" and exits 0, recording no

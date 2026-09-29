@@ -618,14 +618,6 @@ printf '%s\n' '{"score":78,"caps_applied":["dead-language"],"decision":{"hard_fi
 }
 
 #[test]
-fn tool_failures_explain_the_missing_score_on_the_proof_check() {
-    let (request, pass) = jankurai_score_request("main", "abc", None, 3);
-    let output = jankurai_proof_output(&request, pass);
-    assert_eq!(output.title, "jankurai audit produced no score (exit 3)");
-    assert!(output.summary.contains("tool-failed"), "{}", output.summary);
-}
-
-#[test]
 fn malformed_or_nonzero_jankurai_reports_are_never_green() {
     let valid = serde_json::json!({
         "score": 92,
@@ -1073,4 +1065,217 @@ fn mock_flag_gates_workflow_check_run_seeding() {
     assert!(!mock_flag_set(Some("  0  ")));
     assert!(mock_flag_set(Some("1")), "opt-in for tests");
     assert!(mock_flag_set(Some("true")));
+}
+
+/// A `tool-failed` proof exists to tell a reader what went wrong, and a
+/// re-audit of the same head must not leave two rows saying it.
+#[cfg(unix)]
+#[test]
+fn a_failed_audit_names_its_reason_and_posts_one_proof_per_head() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let tool = tempfile::tempdir().unwrap();
+    let (_, head) = init_version_repo(work.path());
+    clone_bare(work.path(), bare.path());
+
+    // The auditor fails the way the first push of a repository failed: it has
+    // no base ref to diff against, says so on stderr, and writes no report.
+    let auditor = tool.path().join("jankurai");
+    fs::write(
+        &auditor,
+        "#!/bin/sh\necho 'no usable base ref: refs/heads/main does not exist' >&2\nexit 3\n",
+    )
+    .unwrap();
+    fs::set_permissions(&auditor, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "demo".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+
+    let audit = || {
+        record_authoritative_jankurai_score_with(
+            &core,
+            "git",
+            bare.path(),
+            &JankuraiRepo {
+                owner: "jeryu",
+                repo: "demo",
+                origin_base_url: "http://forge.test",
+            },
+            &ref_update("refs/heads/main", ZERO_OID, &head),
+            || Ok(auditor.clone()),
+        )
+    };
+    audit();
+    audit();
+
+    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let proofs: Vec<_> = checks
+        .check_runs
+        .iter()
+        .filter(|check| check.name == "jankurai/proof")
+        .collect();
+    assert_eq!(
+        proofs.len(),
+        1,
+        "one jankurai/proof per head, not one per audit: {:?}",
+        proofs
+            .iter()
+            .map(|check| check.details_url.clone())
+            .collect::<Vec<_>>()
+    );
+    let proof = proofs[0];
+    assert_eq!(proof.conclusion, Some(CheckConclusion::Failure));
+    assert_eq!(
+        proof.details_url.as_deref(),
+        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str()),
+        "the proof must link the report over a public https page"
+    );
+    let output = proof.output.as_ref().expect("proof check carries output");
+    assert!(
+        output.title.contains("no usable base ref"),
+        "the title must say why: {}",
+        output.title
+    );
+    assert!(
+        output
+            .summary
+            .contains("reason: the auditor exited 3: no usable base ref"),
+        "the summary must carry the auditor's own error: {}",
+        output.summary
+    );
+
+    // The same reason is stored with the score, so the Quality gate page of the
+    // head reads the same words as the check.
+    let scores = core
+        .list_jankurai_scores("jeryu", "demo", Some("main"), Some(&head))
+        .unwrap();
+    assert_eq!(scores.len(), 1);
+    assert_eq!(scores[0].decision, "tool-failed");
+    assert!(
+        scores[0]
+            .report_json
+            .as_deref()
+            .is_some_and(|report| report.contains("no usable base ref")),
+        "{:?}",
+        scores[0].report_json
+    );
+}
+
+#[test]
+fn tool_failed_proofs_explain_every_way_the_audit_can_produce_no_score() {
+    let missing_base = missing_base_reason("shift/2026-09-29");
+    let (request, pass) = jankurai_score_request_with_reason(
+        "shift/2026-09-29",
+        "abc",
+        None,
+        -1,
+        Some(missing_base.clone()),
+    );
+    assert!(!pass);
+    let output = jankurai_proof_output(&request, pass);
+    assert!(output.title.contains(&missing_base), "{}", output.title);
+    assert!(output.summary.contains(&missing_base), "{}", output.summary);
+    assert!(
+        output
+            .text
+            .is_some_and(|text| text.contains("no usable base ref"))
+    );
+
+    // An audit that wrote a report the host cannot read says that instead of
+    // repeating the bare decision word.
+    let (request, pass) = jankurai_score_request_with_reason(
+        "main",
+        "abc",
+        Some(serde_json::json!({"score": 101})),
+        0,
+        None,
+    );
+    let output = jankurai_proof_output(&request, pass);
+    assert!(
+        output.title.contains("not a valid diff-score JSON"),
+        "{}",
+        output.title
+    );
+
+    // No report and no reason at all still names the fact.
+    let (request, pass) = jankurai_score_request("main", "abc", None, 3);
+    let output = jankurai_proof_output(&request, pass);
+    assert_eq!(
+        output.title,
+        "jankurai audit produced no score: the audit wrote no report at all"
+    );
+    assert!(output.summary.contains("exit 3"), "{}", output.summary);
+    assert!(output.summary.contains("tool-failed"), "{}", output.summary);
+}
+
+#[test]
+fn a_below_floor_proof_lists_the_findings_a_reader_must_fix() {
+    let report = serde_json::json!({
+        "score": 47,
+        "caps_applied": ["missing-agent-readable-docs"],
+        "decision": {"hard_findings": 0, "minimum_score": 85},
+        "findings": [
+            {"rule_id": "authz-or-data-isolation-gap", "path": "crates/jeryu-api/src/web.rs",
+             "line": 412, "problem": "the route reads another account's rows"}
+        ]
+    });
+    let (request, pass) = jankurai_score_request("main", "abc", Some(report), 0);
+    assert!(!pass);
+    let output = jankurai_proof_output(&request, pass);
+    assert_eq!(output.title, "score 47 < floor 85");
+    assert!(
+        output
+            .summary
+            .contains("caps applied: missing-agent-readable-docs"),
+        "{}",
+        output.summary
+    );
+    let text = output.text.expect("a failing proof lists its findings");
+    assert!(
+        text.contains("authz-or-data-isolation-gap at crates/jeryu-api/src/web.rs:412"),
+        "{text}"
+    );
+}
+
+#[test]
+fn proof_links_the_public_report_page_and_never_a_local_address() {
+    let path = "/quality-gate/heads/veox-ai/veox-telemetry/0d63244";
+    assert_eq!(
+        proof_details_url(
+            Some("https://git.neverhuman.org"),
+            "http://127.0.0.1:8787",
+            path
+        )
+        .as_deref(),
+        Some("https://git.neverhuman.org/quality-gate/heads/veox-ai/veox-telemetry/0d63244"),
+        "the configured public origin wins over the pushing client's Host"
+    );
+    assert_eq!(
+        proof_details_url(None, "http://git.neverhuman.org", path).as_deref(),
+        Some("https://git.neverhuman.org/quality-gate/heads/veox-ai/veox-telemetry/0d63244")
+    );
+    for local in [
+        "http://127.0.0.1:8787",
+        "https://localhost:8787",
+        "http://[::1]:8787",
+        "http://0.0.0.0",
+        "",
+    ] {
+        assert_eq!(
+            proof_details_url(None, local, path),
+            None,
+            "a link only this host can open is not a report link: {local}"
+        );
+    }
 }

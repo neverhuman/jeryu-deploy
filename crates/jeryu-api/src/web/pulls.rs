@@ -108,6 +108,13 @@ struct PullRequestCheck {
     title: Option<String>,
     /// The check run's `output.summary`, or the commit status description.
     description: Option<String>,
+    /// The check run's `output.text`: for a failing `jankurai/proof`, the
+    /// findings behind the score, each with its `path:line`. The panel renders
+    /// it under the row so a reader never has to open the report to start.
+    details_text: Option<String>,
+    /// The label of [`Self::web_url`] on the row. A link a reader cannot see is
+    /// a link they do not follow.
+    web_url_label: Option<&'static str>,
     /// The human page that explains this check: the Quality gate head view for
     /// `jankurai/proof`, the gate run log (`target_url`) for a status.
     web_url: Option<String>,

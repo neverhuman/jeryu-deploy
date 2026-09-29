@@ -498,6 +498,10 @@ pub(super) fn record_authoritative_jankurai_score_with<F>(
         let _ = std::fs::create_dir_all(parent);
     }
     let out_json_str = out_json.to_string_lossy().to_string();
+    // Whatever went wrong is the only thing a reader of the failing check has to
+    // go on, so every failing path names itself here and the reason travels to
+    // the check output through the stored score.
+    let mut failure: Option<String> = None;
     let exit_code = match (base.as_deref(), resolve_jankurai()) {
         (Some(base), Ok(jankurai)) => {
             let mut command = Command::new(&jankurai);
@@ -513,19 +517,35 @@ pub(super) fn record_authoritative_jankurai_score_with<F>(
             if skip_proof {
                 command.arg("--skip-proof");
             }
-            command
-                .status()
-                .ok()
-                .and_then(|status| status.code())
-                .map(i64::from)
-                .unwrap_or(-1)
+            match command.output() {
+                Ok(output) => {
+                    let code = output.status.code().map(i64::from).unwrap_or(-1);
+                    if code != 0 {
+                        failure = Some(format!(
+                            "the auditor exited {code}{}",
+                            auditor_stderr(&output.stderr)
+                                .map(|tail| format!(": {tail}"))
+                                .unwrap_or_default()
+                        ));
+                    }
+                    code
+                }
+                Err(error) => {
+                    failure = Some(format!("the auditor could not be run: {error}"));
+                    -1
+                }
+            }
         }
         (Some(_), Err(error)) => {
             eprintln!("authoritative Jankurai identity rejected: {error}");
+            failure = Some(format!(
+                "the governed jankurai identity was rejected: {error}"
+            ));
             -1
         }
         (None, _) => {
             eprintln!("authoritative Jankurai base resolution failed");
+            failure = Some(missing_base_reason(branch));
             -1
         }
     };
@@ -534,7 +554,8 @@ pub(super) fn record_authoritative_jankurai_score_with<F>(
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
 
-    let (request, pass) = jankurai_score_request(branch, &update.new_oid, report, exit_code);
+    let (request, pass) =
+        jankurai_score_request_with_reason(branch, &update.new_oid, report, exit_code, failure);
 
     let output = jankurai_proof_output(&request, pass);
     if let Err(error) = core.record_jankurai_score(owner, repo, request) {
@@ -547,21 +568,39 @@ pub(super) fn record_authoritative_jankurai_score_with<F>(
     } else {
         CheckConclusion::Failure
     };
-    let _ = core.create_check_run(
+    let details_url = jankurai_score_details_url(origin_base_url, owner, repo, update);
+    if !proof_already_posted(
+        core,
         owner,
         repo,
-        CreateCheckRunRequest {
-            name: "jankurai/proof".to_string(),
-            head_sha: update.new_oid.clone(),
-            status: Some(CheckRunStatus::Completed),
-            conclusion: Some(conclusion),
-            details_url: jankurai_score_details_url(origin_base_url, owner, repo, update),
-            output: Some(output),
-        },
-    );
+        &update.new_oid,
+        &conclusion,
+        &details_url,
+        &output,
+    ) {
+        let _ = core.create_check_run(
+            owner,
+            repo,
+            CreateCheckRunRequest {
+                name: JANKURAI_PROOF_CHECK.to_string(),
+                head_sha: update.new_oid.clone(),
+                status: Some(CheckRunStatus::Completed),
+                conclusion: Some(conclusion),
+                details_url,
+                output: Some(output),
+            },
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&sandbox);
 }
+
+/// The check name, posted at most once per head.
+pub(super) const JANKURAI_PROOF_CHECK: &str = "jankurai/proof";
+/// Public origin of the forge web UI, e.g. `https://git.neverhuman.org`. The
+/// production unit sets it; it wins over the pushing client's `Host` header,
+/// which on this host is the local tunnel address nobody else can open.
+const PUBLIC_ORIGIN_ENV: &str = "JERYU_PRODUCTION_ORIGIN";
 
 /// Link the proof check at the Quality gate page of this head, where each
 /// applied cap is listed with what it means and how to clear it. A web page
@@ -572,13 +611,103 @@ fn jankurai_score_details_url(
     repo: &str,
     update: &RefUpdate,
 ) -> Option<String> {
-    if origin_base_url.trim().is_empty() {
-        return None;
-    }
-    Some(crate::github::check_runs::web_page_url(
+    proof_details_url(
+        std::env::var(PUBLIC_ORIGIN_ENV).ok().as_deref(),
         origin_base_url,
         &format!("/quality-gate/heads/{owner}/{repo}/{}", update.new_oid),
-    ))
+    )
+}
+
+/// The one URL every proof of a head links to: the configured public origin,
+/// or the origin the push arrived on when that is reachable from outside this
+/// machine. A loopback or tunnel address is dropped rather than published — a
+/// link only this host can open reads as a working report and is not one, and
+/// two audits of one head that disagreed only about it produced the duplicate
+/// checks readers could not tell apart.
+pub(super) fn proof_details_url(
+    public_origin: Option<&str>,
+    origin_base_url: &str,
+    path: &str,
+) -> Option<String> {
+    let base = public_origin
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .or_else(|| Some(origin_base_url.trim()).filter(|origin| !origin.is_empty()))
+        .filter(|origin| !is_host_local(origin))?;
+    Some(crate::github::check_runs::web_page_url(base, path))
+}
+
+/// Whether `base` names this machine only.
+fn is_host_local(base: &str) -> bool {
+    let host = base
+        .trim_end_matches('/')
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = host.split('/').next().unwrap_or("");
+    let host = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.is_empty()
+        || host == "localhost"
+        || host == "0.0.0.0"
+        || host == "::1"
+        || host.starts_with("127.")
+        || host.ends_with(".localhost")
+}
+
+/// The last stderr line the auditor wrote, short enough for a check title.
+fn auditor_stderr(stderr: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stderr);
+    let line = text.lines().rev().find(|line| !line.trim().is_empty())?;
+    Some(truncate_reason(line.trim()))
+}
+
+/// Why this branch has no base to diff against — the reason a repository whose
+/// first push is also its first `main` fails the audit.
+pub(super) fn missing_base_reason(branch: &str) -> String {
+    if branch == "main" {
+        "no usable base ref: the empty tree could not be written in the audit clone".to_string()
+    } else {
+        format!(
+            "no usable base ref: refs/heads/main does not exist, so `{branch}` has no merge-base              to diff against"
+        )
+    }
+}
+
+const MAX_REASON_CHARS: usize = 200;
+
+fn truncate_reason(reason: &str) -> String {
+    let reason = reason.trim();
+    if reason.chars().count() <= MAX_REASON_CHARS {
+        return reason.to_string();
+    }
+    let kept: String = reason.chars().take(MAX_REASON_CHARS).collect();
+    format!("{kept}...")
+}
+
+/// One `jankurai/proof` per head. Core's check list is append-only, so a
+/// re-audit that reaches the same verdict must post nothing: a second row with
+/// the same name leaves a reader guessing which one is current.
+fn proof_already_posted(
+    core: &ForgeCore,
+    owner: &str,
+    repo: &str,
+    head_sha: &str,
+    conclusion: &CheckConclusion,
+    details_url: &Option<String>,
+    output: &CheckRunOutput,
+) -> bool {
+    let Ok(existing) = core.list_check_runs(owner, repo, Some(head_sha)) else {
+        return false;
+    };
+    existing.check_runs.iter().any(|run| {
+        run.name == JANKURAI_PROOF_CHECK
+            && run.status == CheckRunStatus::Completed
+            && run.conclusion.as_ref() == Some(conclusion)
+            && &run.details_url == details_url
+            && run.output.as_ref().is_some_and(|posted| {
+                posted.title == output.title && posted.summary == output.summary
+            })
+    })
 }
 
 /// Human-readable verdict for the `jankurai/proof` check: score against the
@@ -591,14 +720,19 @@ pub(super) fn jankurai_proof_output(
         let exit = request
             .tool_exit
             .map_or_else(|| "unknown".to_string(), |code| code.to_string());
+        let reason = tool_failure_reason(request);
         return CheckRunOutput {
-            title: format!("jankurai audit produced no score (exit {exit})"),
+            title: format!("jankurai audit produced no score: {reason}"),
             summary: format!(
                 "The authoritative jankurai audit did not produce a valid report \
-                 (decision `{}`, exit {exit}); the proof fails closed.",
+                 (decision `{}`, exit {exit}); the proof fails closed.\n\n\
+                 - reason: {reason}\n\
+                 - what to do: rerun the audit on this head once the reason above is \
+                 addressed; the Quality gate page of this head keeps the audit's own \
+                 output.",
                 request.decision
             ),
-            text: None,
+            text: Some(format!("jankurai audit failed: {reason}")),
         };
     };
     let floor = request
@@ -632,15 +766,96 @@ pub(super) fn jankurai_proof_output(
         summary: format!(
             "- score: {score}\n- floor: {floor}\n- caps applied: {caps}\n- hard findings: {hard_findings}"
         ),
-        text: None,
+        text: (!pass).then(|| top_findings_text(request.report.as_ref())),
     }
 }
 
+/// How many findings a failing proof lists before it points at the report.
+const PROOF_TEXT_FINDINGS: usize = 5;
+
+/// The findings a reader needs to start fixing the head: rule id, `path:line`
+/// and the auditor's own sentence, in report order.
+fn top_findings_text(report: Option<&serde_json::Value>) -> String {
+    let findings = report
+        .and_then(|report| report.get("findings"))
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if findings.is_empty() {
+        return "The audit recorded no individual findings; the Quality gate page of this \
+                head has the full report."
+            .to_string();
+    }
+    let mut lines = vec!["Top findings:".to_string()];
+    for finding in findings.iter().take(PROOF_TEXT_FINDINGS) {
+        let string = |key: &str| {
+            finding
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        };
+        let rule = string("rule_id").unwrap_or_else(|| "unknown".to_string());
+        let mut where_at = string("path").unwrap_or_else(|| "(no path)".to_string());
+        if let Some(line) = finding.get("line").and_then(serde_json::Value::as_i64) {
+            where_at = format!("{where_at}:{line}");
+        }
+        let problem = string("problem").unwrap_or_else(|| "no description".to_string());
+        lines.push(format!("- {rule} at {where_at}: {problem}"));
+    }
+    if findings.len() > PROOF_TEXT_FINDINGS {
+        lines.push(format!(
+            "- ... and {} more on the Quality gate page of this head.",
+            findings.len() - PROOF_TEXT_FINDINGS
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Why a `tool-failed` score has no number. The host's own error, recorded with
+/// the score when the audit never produced a report, is the whole point of the
+/// check: "tool-failed" alone tells a reader nothing.
+fn tool_failure_reason(request: &RecordJankuraiScoreRequest) -> String {
+    request
+        .report
+        .as_ref()
+        .and_then(|report| report.pointer(HOST_ERROR_POINTER))
+        .and_then(serde_json::Value::as_str)
+        .map(truncate_reason)
+        .or_else(|| {
+            request.report.as_ref().map(|_| {
+                "the audit report is not a valid diff-score JSON (score, caps_applied, \
+                 decision.hard_findings and decision.minimum_score must all be present \
+                 and in range)"
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| "the audit wrote no report at all".to_string())
+}
+
+/// Where the host's own failure reason lives inside a stored `tool-failed`
+/// report, so the Quality gate page and the check output read the same words.
+const HOST_ERROR_POINTER: &str = "/host_error";
+
+/// The push path always has a reason to record, so the reasonless form exists
+/// for the tests that drive the parser directly.
+#[cfg(test)]
 pub(super) fn jankurai_score_request(
     branch: &str,
     commit_sha: &str,
     report: Option<serde_json::Value>,
     exit_code: i64,
+) -> (RecordJankuraiScoreRequest, bool) {
+    jankurai_score_request_with_reason(branch, commit_sha, report, exit_code, None)
+}
+
+/// As [`jankurai_score_request`], recording `reason` — what the host saw go
+/// wrong — with a score the auditor never produced.
+pub(super) fn jankurai_score_request_with_reason(
+    branch: &str,
+    commit_sha: &str,
+    report: Option<serde_json::Value>,
+    exit_code: i64,
+    reason: Option<String>,
 ) -> (RecordJankuraiScoreRequest, bool) {
     let parsed = report.as_ref().and_then(|report| {
         if exit_code != 0 {
@@ -688,10 +903,31 @@ pub(super) fn jankurai_score_request(
                 hard_findings: None,
                 decision: "tool-failed".to_string(),
                 caps_applied: Vec::new(),
-                report,
+                report: report_with_reason(report, reason),
                 tool_exit: Some(exit_code),
             },
             false,
         ),
+    }
+}
+
+/// Keep the host's failure reason with the stored score: an audit that wrote no
+/// report gets one whose only key is the reason, and a report the auditor did
+/// write keeps every key it has plus the reason.
+fn report_with_reason(
+    report: Option<serde_json::Value>,
+    reason: Option<String>,
+) -> Option<serde_json::Value> {
+    let reason = reason.map(|reason| truncate_reason(&reason));
+    match (report, reason) {
+        (Some(mut report), Some(reason)) => {
+            if let Some(object) = report.as_object_mut() {
+                object.insert("host_error".to_string(), serde_json::Value::from(reason));
+            }
+            Some(report)
+        }
+        (Some(report), None) => Some(report),
+        (None, Some(reason)) => Some(serde_json::json!({ "host_error": reason })),
+        (None, None) => None,
     }
 }

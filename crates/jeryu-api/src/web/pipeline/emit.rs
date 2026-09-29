@@ -4,6 +4,7 @@
 
 use jeryu_core::{PullRequest, PullRequestState, Repository};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use super::super::WebState;
 use super::super::control_plane::{GateRunnerHeartbeat, is_automation, is_reviewer, work_label};
@@ -478,8 +479,29 @@ pub(crate) fn runner_heartbeat(
                 outcome: Some(result.conclusion.clone()),
                 needs_human: reviewer_needs_human,
                 seconds: i64::try_from(result.seconds).ok(),
-                reason: bad_gate
-                    .then(|| format!("the {} recipe ended {}", result.recipe, result.conclusion)),
+                // A finished pass that went wrong always says why: a reader of
+                // the feed sees "Review failed" with the cause beside it
+                // instead of a red line with nothing to act on.
+                reason: if bad_gate {
+                    Some(format!(
+                        "the {} recipe ended {}: {}",
+                        result.recipe,
+                        result.conclusion,
+                        result_reason(result)
+                    ))
+                } else if reviewer_needs_human {
+                    Some(format!(
+                        "the {} review ended {}: {}",
+                        result.recipe,
+                        result.conclusion,
+                        result_reason(result)
+                    ))
+                } else {
+                    None
+                },
+                // The same verdict on the same head, beaten again after a
+                // restart or a retry, collapses onto the event already stored.
+                event_id: Some(result_event_id(noun, &current.runner_id, result)),
                 detail: Some(source_detail(&result.recipe)),
                 ..NewEvent::forge(
                     &format!("{noun}.finished"),
@@ -494,4 +516,46 @@ pub(crate) fn runner_heartbeat(
             },
         );
     }
+}
+
+/// Why a finished pass ended where it did: the runner's own words when it sent
+/// them, otherwise what its conclusion means. A runner that reports only
+/// `failed` still leaves a sentence a reader can act on.
+fn result_reason(result: &super::super::control_plane::GateRunnerResult) -> String {
+    if let Some(reason) = result
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+    {
+        return reason.to_string();
+    }
+    match result.conclusion.as_str() {
+        "hold" => "the reviewer held the pull request for a person".to_string(),
+        "failed" => "the pass ended without reaching a verdict and reported no reason".to_string(),
+        "publication_rejected" => {
+            "the verdict could not be published on the pull request".to_string()
+        }
+        "too_large" => "the diff was too large to review".to_string(),
+        "interrupted" => "the pass was interrupted before it finished".to_string(),
+        other => format!("the runner reported `{other}` and no reason"),
+    }
+}
+
+/// One event per (runner, head, recipe, verdict): the id every repeat of that
+/// same finished pass carries, so the store collapses them instead of painting
+/// the feed with one line per retry.
+fn result_event_id(
+    noun: &str,
+    runner_id: &str,
+    result: &super::super::control_plane::GateRunnerResult,
+) -> String {
+    let digest = Sha256::digest(
+        format!(
+            "{runner_id}\n{}\n{:?}\n{}\n{}\n{}",
+            result.repo, result.pr, result.sha, result.recipe, result.conclusion
+        )
+        .as_bytes(),
+    );
+    format!("{noun}.finished:{}", &hex::encode(digest)[..32])
 }

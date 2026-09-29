@@ -845,6 +845,77 @@ async fn runner_heartbeats_emit_gate_and_review_events_only_on_change() {
         events[3]["summary"],
         "xbabe0/pr-redteam review of jeryu/jeryu-web#35: too_large in 114s"
     );
+    // A red line without a cause sends the reader nowhere: both finished
+    // events say why, the gate and the review alike.
+    assert_eq!(
+        events[1]["reason"],
+        "the ops/ci/pr-ci.sh recipe ended failure: the runner reported `failure` and no reason"
+    );
+    assert_eq!(
+        events[3]["reason"],
+        "the ops/ci/pr-ci.sh review ended too_large: the diff was too large to review"
+    );
+}
+
+/// The same review verdict on the same head, beaten again, is the same fact:
+/// one line in the feed, with the reviewer's own reason on it.
+#[tokio::test]
+async fn repeated_review_failures_collapse_onto_one_event_that_says_why() {
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("pragent", "pragent-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "t", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, pragent) = (token("alice"), token("pragent"));
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let sha = "0d63244b76371995527bfe7795e98492703553a8";
+    let failed = json!({"repo": "veox-ai/veox-telemetry", "pr": 1, "sha": sha,
+                        "recipe": "review", "conclusion": "failed",
+                        "reason": "no usable base ref: refs/heads/main does not exist",
+                        "seconds": 0, "finishedAt": "2026-09-29T16:54:00Z"});
+    let other = json!({"repo": "veox-ai/veox-telemetry", "pr": 1, "sha": sha,
+                       "recipe": "review", "conclusion": "hold",
+                       "seconds": 3, "finishedAt": "2026-09-29T17:20:00Z"});
+    for last in [&failed, &other, &failed] {
+        let response = router
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                "/api/v1/runners/heartbeat",
+                &pragent,
+                Some(runner_beat(&["redteam"], None, Some(last.clone()))),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let events = events_of(&router, &admin, "repo=veox-ai/veox-telemetry").await;
+    let lines: Vec<(&str, &str)> = events
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap(),
+                e["outcome"].as_str().unwrap_or("-"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [("review.finished", "hold"), ("review.finished", "failed")],
+        "the repeated failure must not add a third line"
+    );
+    assert_eq!(
+        events[1]["reason"],
+        "the review review ended failed: no usable base ref: refs/heads/main does not exist"
+    );
 }
 
 #[tokio::test]

@@ -352,7 +352,8 @@ Unknown fields are refused. A malformed beat is `422 invalid_input` whose
 | `labels` | optional. `redteam` marks the reviewer and `automation` marks a background timer (the two are exclusive); anything else is a gate slot |
 | `intervalSeconds` | optional integer, 30 to 86400: how often this runner beats. Absent means the runner is offline after 180 seconds of silence; present, after `max(180, 3 * intervalSeconds)` |
 | `current` | optional: `{repo, pr?, sha, recipe, startedAt}`, the work in hand |
-| `last` | optional: `{repo, pr?, sha, recipe, conclusion, seconds, finishedAt}`, the newest finished work. Leave it out when there is no history |
+| `last` | optional: `{repo, pr?, sha, recipe, conclusion, reason?, seconds, finishedAt}`, the newest finished work. Leave it out when there is no history |
+| `last.reason` | optional: why a pass that went wrong ended that way, in the runner's own words (`no usable base ref: refs/heads/main does not exist`). It becomes the event's `reason`; without it the event still carries one derived from `conclusion` |
 | `pr` | optional in both, for every label: absent or `null` when the work has no pull request (auto-stage stages a commit) |
 | `last.conclusion` | by label. Gate slot: `success`, `failure`, `error`. `redteam`: `approve`, `hold`, `failed`, `interrupted`, `publication_rejected`, `too_large`. `automation`: `opened` (a pull request), `staged` (a release), `waiting` (behind `pr`, or for the gate of `sha` when there is no `pr`), `failed` |
 
@@ -360,7 +361,11 @@ The answer is `{"accepted": true, "runnerId": "…", "offlineAfterSeconds": 900}
 with the threshold that now applies to this runner.
 
 A gate slot's or the reviewer's beat emits `gate.*` / `review.*` events when its
-`current` or `last` changes (see Kinds). An `automation` beat never emits an
+`current` or `last` changes (see Kinds). A `gate.finished` or `review.finished`
+that did not go well always carries a `reason`. The same verdict on the same
+head, beaten again after a restart or a retry, collapses onto the event already
+stored: the `event_id` is derived from the runner, the head, the recipe and the
+conclusion, so a retried pass does not repeat in the feed. An `automation` beat never emits an
 event: the release scripts post their own `pin.*` and `release.*` events.
 
 ### Reading them: `GET /api/v1/control-plane/runners`

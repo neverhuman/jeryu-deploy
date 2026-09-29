@@ -1423,8 +1423,12 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
             conclusion: Some(CheckConclusion::Failure),
             output: Some(jeryu_core::CheckRunOutput {
                 title: "score 42 < floor 85".to_string(),
-                summary: "- score: 42\n- caps applied: dead-language".to_string(),
-                text: None,
+                summary: "- score: 42\n- floor: 85\n- caps applied: dead-language".to_string(),
+                text: Some(
+                    "Top findings:\n- dead-language at crates/jeryu-api/src/web.rs:412: \
+                     the word is not neutral"
+                        .to_string(),
+                ),
             }),
             ..CreateCheckRunRequest::default()
         },
@@ -1466,6 +1470,19 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     assert_eq!(proof["advisory"]["label"], "advisory - shadow mode");
     assert_eq!(proof["advisory"]["url"], "/quality-gate");
     assert_eq!(proof["web_url"], "/quality-gate/heads/alice/jeryu/deadbeef");
+    // The link is only useful if the row shows it, and the reason is only
+    // useful if the row shows the score, the floor, the caps and the findings.
+    assert_eq!(proof["web_url_label"], "View report");
+    assert_eq!(
+        proof["description"],
+        "- score: 42\n- floor: 85\n- caps applied: dead-language"
+    );
+    assert!(
+        proof["details_text"]
+            .as_str()
+            .is_some_and(|text| text.contains("crates/jeryu-api/src/web.rs:412")),
+        "{proof}"
+    );
 
     let gate = row("jeryu/required");
     assert_eq!(gate["kind"], "status");
@@ -1474,4 +1491,5 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     assert!(gate["advisory"].is_null());
     assert_eq!(gate["description"], "cargo test failed");
     assert_eq!(gate["web_url"], "https://forge.invalid/gate/runs/7");
+    assert_eq!(gate["web_url_label"], "View log");
 }

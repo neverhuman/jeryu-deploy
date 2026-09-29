@@ -105,6 +105,11 @@ pub(crate) struct GateRunnerResult {
     pub sha: String,
     pub recipe: String,
     pub conclusion: String,
+    /// Why a pass that needs a person ended the way it did, in the runner's own
+    /// words (`no usable base ref: refs/heads/main does not exist`). Optional:
+    /// a runner that sends none still gets a reason derived from `conclusion`.
+    #[serde(default)]
+    pub reason: Option<String>,
     pub seconds: u64,
     #[serde(alias = "finished_at")]
     pub finished_at: DateTime<Utc>,
@@ -333,6 +338,7 @@ mod tests {
                 sha: "3926cbd".to_string(),
                 recipe: "just required".to_string(),
                 conclusion: "success".to_string(),
+                reason: None,
                 seconds: 46,
                 finished_at: Utc::now(),
             }),

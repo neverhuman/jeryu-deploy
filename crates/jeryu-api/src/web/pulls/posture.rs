@@ -352,6 +352,9 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
             details_url: run.details_url.clone(),
             title: run.output.as_ref().map(|output| output.title.clone()),
             description: run.output.as_ref().map(|output| output.summary.clone()),
+            details_text: run.output.as_ref().and_then(|output| output.text.clone()),
+            web_url_label: check_web_url(pr, &run.name, run.details_url.as_deref())
+                .map(|_| report_link_label(&run.name)),
             web_url: check_web_url(pr, &run.name, run.details_url.as_deref()),
             required: is_required,
             advisory: (!is_required).then(|| check_advisory(pr, &run.name)),
@@ -372,6 +375,8 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
             details_url: status.target_url.clone(),
             title: None,
             description: status.description.clone(),
+            details_text: None,
+            web_url_label: status.target_url.as_ref().map(|_| "View log"),
             web_url: status.target_url.clone(),
             required: is_required,
             advisory: (!is_required).then(|| check_advisory(pr, &status.context)),
@@ -446,6 +451,16 @@ fn check_web_url(pr: &PullRequest, name: &str, details_url: Option<&str>) -> Opt
     details_url
         .filter(|url| crate::github::check_runs::details_url_problem(url).is_none())
         .map(str::to_string)
+}
+
+/// What the link on a check row says. `jankurai/proof` links its audit report;
+/// every other check links whatever log its runner published.
+fn report_link_label(name: &str) -> &'static str {
+    if name == JANKURAI_PROOF {
+        "View report"
+    } else {
+        "View log"
+    }
 }
 
 fn latest_statuses_by_context(statuses: Vec<CommitStatus>) -> Vec<CommitStatus> {
