@@ -18,7 +18,7 @@ mod merge_queue;
 pub(crate) mod mirror_reconcile;
 mod operator_resources;
 mod paging;
-pub(crate) use merge_queue::{is_queue_owned_ref, rebase_onto};
+pub(crate) use merge_queue::{gate_verdict, is_queue_owned_ref, rebase_onto};
 mod mcp_backend;
 mod permissions;
 mod pipeline;

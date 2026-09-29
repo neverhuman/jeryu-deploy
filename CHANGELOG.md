@@ -53,6 +53,15 @@
   sends none still gets a reason derived from its conclusion, so "Review failed
   ... needs you" no longer appears with nothing to act on. Repeats collapse: the
   same verdict on the same head, beaten again, is one event.
+- A direct merge no longer lands an ungated replay. A base that requires linear
+  history had the forge replay a diverged pull request onto the live tip and
+  fast-forward to it: the gate had run on the PR head, so main's new sha carried
+  no `<repo>/required` of its own, auto-pin sat at "gate is pending; waiting"
+  and the crate commits to be tagged had no gate evidence (jeryu-web #63/#64 and
+  jeryu-core #17 on 2026-09-28, worked around with empty helper PRs). The merge
+  now refuses such a replay with `409` naming the missing context, and the pull
+  request lands through the merge queue, which gates the replay at its exact sha
+  before the base moves. A base that declares no required contexts is unchanged.
 
 - Redeploying the release production already runs is a no-op, not an alert.
   `deploy-release.sh` reads the live release before it records anything: if it

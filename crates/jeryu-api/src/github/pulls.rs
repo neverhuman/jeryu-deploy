@@ -563,6 +563,35 @@ impl GithubRouter {
                 &base_oid,
                 &head_oid,
             ) {
+                // A replay onto a moved base is a NEW sha that no runner has
+                // gated: the gate ran on the PR head. Landing it would leave
+                // the base tip without a required status of its own, which is
+                // what auto-pin and the tag cutter read. Refuse, and let the
+                // merge queue build and gate the replay (docs/merge-queue.md).
+                Ok(rebased) if rebased != head_oid => {
+                    match self.replay_gate_blocker(
+                        ready.owner,
+                        ready.repo,
+                        &ready.base_ref,
+                        &rebased,
+                    ) {
+                        None => rebased,
+                        Some(reason) => {
+                            return json_response(
+                                409,
+                                &json!({
+                                    "message": format!(
+                                        "{} requires linear history, and the replay of the pull \
+                                         request onto it ({rebased}) {reason}; queue the pull \
+                                         request so the forge gates the commit it lands",
+                                        ready.base_ref
+                                    ),
+                                    "documentation_url": docs_url(),
+                                }),
+                            );
+                        }
+                    }
+                }
                 Ok(rebased) => rebased,
                 Err(reason) => {
                     return json_response(
@@ -657,6 +686,32 @@ impl GithubRouter {
                 &json!({ "message": reason, "documentation_url": docs_url() }),
             ),
             Err(err) => error_response(err),
+        }
+    }
+
+    /// Why `sha` may not land on `base_ref`, or `None` when it carries its own
+    /// green gate. A base that declares no required contexts has no gate to
+    /// wait for, so nothing blocks there.
+    #[cfg(feature = "web")]
+    fn replay_gate_blocker(
+        &self,
+        owner: &str,
+        repo: &str,
+        base_ref: &str,
+        sha: &str,
+    ) -> Option<String> {
+        let required: Vec<String> = self
+            .core
+            .get_branch_protection(owner, repo, base_ref)
+            .ok()?
+            .required_status_checks;
+        if required.is_empty() {
+            return None;
+        }
+        match crate::web::gate_verdict(&self.core, owner, repo, sha, &required) {
+            Some(true) => None,
+            Some(false) => Some(format!("failed {}", required.join(", "))),
+            None => Some(format!("has no result for {}", required.join(", "))),
         }
     }
 

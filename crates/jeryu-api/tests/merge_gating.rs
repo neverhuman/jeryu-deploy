@@ -1231,3 +1231,59 @@ fn fork_pull_head_resolves_in_the_source_repository() {
 
     fixture.cleanup();
 }
+
+#[test]
+fn linear_history_base_refuses_an_ungated_replay_and_main_is_unchanged() {
+    if !git_available() {
+        return;
+    }
+    // The gate ran on the PR head, but the replay onto the moved main is a new
+    // sha nobody gated. Landing it would leave main's tip without
+    // `demo/required`, which is what auto-pin and the tag cutter read, so the
+    // direct merge is refused and the pull request goes through the queue.
+    let (root, work, manager, repo, new_base, head_oid) =
+        diverged_fixture("linear-ungated", "NOTES.md");
+    let core = ForgeCore::new();
+    let router = GithubRouter::with_core(core).with_repo_manager(manager.clone());
+    let created = router.post(
+        "/repos",
+        r#"{"owner":"acme","name":"demo","private":false,"default_branch":"main"}"#,
+    );
+    assert_eq!(created.status, 201, "create repo: {}", created.body);
+    let opened = router.post(
+        "/repos/acme/demo/pulls",
+        &format!(
+            r#"{{"title":"diverged","head":"feature","base":"main","head_sha":"{head_oid}","base_sha":"{new_base}","actor":"alice"}}"#
+        ),
+    );
+    assert_eq!(opened.status, 201, "open pr: {}", opened.body);
+    let number = body(&opened)["number"].as_u64().expect("pr number");
+    let protect = router.put(
+        "/repos/acme/demo/branches/main/protection",
+        r#"{"required_linear_history":true,"required_status_checks":["demo/required"],"required_approving_review_count":0,"enforce_admins":false}"#,
+    );
+    assert_eq!(protect.status, 200, "set protection: {}", protect.body);
+    // Green on the PR head only, exactly as the gate runner leaves it.
+    let status = router.post(
+        &format!("/repos/acme/demo/statuses/{head_oid}"),
+        r#"{"state":"success","context":"demo/required"}"#,
+    );
+    assert_eq!(status.status, 201, "post status: {}", status.body);
+
+    let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(merged.status, 409, "ungated replay: {}", merged.body);
+    let message = body(&merged)["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        message.contains("linear history") && message.contains("demo/required"),
+        "refusal names the gate it is missing: {message}"
+    );
+    assert_eq!(main_oid(&manager, &repo), new_base, "main must not move");
+    let after = router.get(&format!("/repos/acme/demo/pulls/{number}"));
+    assert_eq!(body(&after)["merged"], false);
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&work);
+}

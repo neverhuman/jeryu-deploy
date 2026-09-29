@@ -527,10 +527,21 @@ fn gate_result(
     sha: &str,
     required: &[String],
 ) -> Option<bool> {
+    gate_verdict(&state.core, owner, repo, sha, required)
+}
+
+/// [`gate_result`] against a bare core handle, for callers outside the queue
+/// (a direct merge that replays onto a moved base must read the same verdict).
+pub(crate) fn gate_verdict(
+    core: &jeryu_core::ForgeCore,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    required: &[String],
+) -> Option<bool> {
     use jeryu_core::{CheckConclusion, CheckRunStatus, CommitStatusState};
-    let statuses = state.core.combined_status(owner, repo, sha).ok()?.statuses;
-    let checks = state
-        .core
+    let statuses = core.combined_status(owner, repo, sha).ok()?.statuses;
+    let checks = core
         .list_check_runs(owner, repo, Some(sha))
         .ok()?
         .check_runs;

@@ -200,3 +200,21 @@ A replay onto a moved base is a new sha and never borrows the head's result,
 even when the trees would match (`a_replay_never_borrows_the_head_result`).
 Reusing a result across different shas or gate inputs stays out of scope. The
 formal reviewer rejected it ("exact source authority", jain-deploy#55 v1).
+
+## The direct merge may not replay past the gate (2026-09-28)
+
+`merge_ready_pull_git` replays a diverged head onto a linear-history base so a
+mergeable PR still lands. That replay is a new sha, and the gate ran on the PR
+head, so on 2026-09-28 jeryu-web #63 and #64 and jeryu-core #17 put a commit on
+main with no `<repo>/required` at all: auto-pin, which needs a green status on
+exactly the web main commit, logged "gate is pending; waiting" forever, and the
+crate commits to be tagged carried no gate evidence. It took an empty pull
+request whose head was main (jeryu-web #65, jeryu-core #18) to get that exact
+commit gated.
+
+Invariant 1 above therefore binds the direct merge too. When the base declares
+required contexts and the replay's sha does not carry them green, the merge is
+refused with `409` naming what is missing, and the pull request goes through the
+queue, which builds the replay, has it gated at its exact sha, and only then
+fast-forwards the base. A base that declares no required contexts has no gate to
+wait for, and that path is unchanged.
