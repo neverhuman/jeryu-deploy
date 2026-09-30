@@ -93,25 +93,25 @@ pub(crate) fn jankurai_queued_output(ticket: &super::audit_queue::AuditTicket) -
     CheckRunOutput {
         title: "queued for a gate runner".to_string(),
         summary: format!(
-            "- head: {}\n- base: {}\n- state: waiting for a gate runner to claim and audit this head\n\nThe forge records audit work; it does not run the auditor. This check completes \
+            "- head: {}\n- base: {}{}\n- state: waiting for a gate runner to claim and audit this head\n\nThe forge records audit work; it does not run the auditor. This check completes \
              only when a runner submits a provenance-checked report for this exact head.",
-            ticket.head_sha, ticket.base_sha
+            ticket.head_sha,
+            ticket.base_sha,
+            if ticket.audit_mode == super::audit_queue::AUDIT_MODE_FULL {
+                " (none: this head has no commit base, so its whole tree is audited)"
+            } else {
+                ""
+            }
         ),
         text: None,
     }
 }
 
-/// The proof of a head with nothing to diff against. Not a tool failure, and
-/// not an excuse to audit the whole repository.
-pub(crate) fn jankurai_no_base_output() -> CheckRunOutput {
-    CheckRunOutput {
-        title: "no base branch yet".to_string(),
-        summary: "This head has no merge-base with `main`, so there is no diff to audit. \
-                  Land a `main` for this repository and the next push is audited against it."
-            .to_string(),
-        text: None,
-    }
-}
+/// The decision a report earns when the auditor had no base it could diff
+/// against: it exited 0 saying there was nothing to audit and handed back a
+/// report with no verdict in it. Its own outcome, not a generic tool failure —
+/// and still not a pass.
+pub(crate) const NO_BASE_DIFF_DECISION: &str = "no-base-diff";
 
 /// The proof of a head that needs an audit no ticket could be recorded for.
 pub(crate) fn jankurai_unqueued_output(reason: &str) -> CheckRunOutput {
@@ -231,6 +231,17 @@ pub(crate) fn jankurai_proof_output(
         let exit = request
             .tool_exit
             .map_or_else(|| "unknown".to_string(), |code| code.to_string());
+        if request.decision == NO_BASE_DIFF_DECISION {
+            return CheckRunOutput {
+                title: "no base to diff against".to_string(),
+                summary: "The auditor found nothing to audit against the base it was given and \
+                          returned a report with no verdict in it, so there is no score. The \
+                          base a head with no commit base is audited against is the empty root \
+                          commit; see docs/governed-jankurai.md."
+                    .to_string(),
+                text: None,
+            };
+        }
         let reason = tool_failure_reason(request);
         return CheckRunOutput {
             title: format!("jankurai audit produced no score: {reason}"),
@@ -279,6 +290,23 @@ pub(crate) fn jankurai_proof_output(
         ),
         text: (!pass).then(|| top_findings_text(request.report.as_ref())),
     }
+}
+
+/// A clean exit with a report that carries no verdict at all: no score, and a
+/// decision without the fields a verdict is read from. That is what the auditor
+/// writes when it had nothing to diff — a broken or truncated report, which
+/// does carry some of those fields, stays a tool failure.
+fn is_verdictless_report(report: Option<&serde_json::Value>, exit_code: i64) -> bool {
+    if exit_code != 0 {
+        return false;
+    }
+    let Some(report) = report else {
+        return false;
+    };
+    report.is_object()
+        && report.get("score").is_none()
+        && report.pointer("/decision/minimum_score").is_none()
+        && report.pointer("/decision/hard_findings").is_none()
 }
 
 /// How many findings a failing proof lists before it points at the report.
@@ -411,7 +439,11 @@ pub(super) fn jankurai_score_request_with_reason(
                 commit_sha: commit_sha.to_string(),
                 score: None,
                 hard_findings: None,
-                decision: "tool-failed".to_string(),
+                decision: if is_verdictless_report(report.as_ref(), exit_code) {
+                    NO_BASE_DIFF_DECISION.to_string()
+                } else {
+                    "tool-failed".to_string()
+                },
                 caps_applied: Vec::new(),
                 report: report_with_reason(report, reason),
                 tool_exit: Some(exit_code),

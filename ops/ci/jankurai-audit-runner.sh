@@ -74,7 +74,7 @@ doc = json.load(open(sys.argv[1]))
 for ticket in doc.get("tickets", []):
     print("\t".join([
         ticket["owner"], ticket["repo"], ticket["branch"],
-        ticket["headSha"], ticket["baseSha"],
+        ticket["headSha"], ticket["baseSha"], ticket.get("auditMode", "diff"),
     ]))
 PY
 )
@@ -87,12 +87,16 @@ fi
 # The audit is the heavy part of this machine's work and shares it with the PR
 # gate, so it runs niced, time-boxed, and one job after another.
 audit_one() {
-  local owner="$1" repo="$2" branch="$3" head="$4" base="$5"
+  local owner="$1" repo="$2" branch="$3" head="$4" base="$5" mode="$6"
   local src="${WORK_DIR}/${repo}-${head}"
   local out="${src}/target/jankurai/diff/diff-score.json"
   local exit_code=0
 
-  echo "[audit-runner] ${owner}/${repo}@${head} (${branch} vs ${base})"
+  if [ "${mode}" = "full" ]; then
+    echo "[audit-runner] ${owner}/${repo}@${head} (${branch}, whole tree: no commit base)"
+  else
+    echo "[audit-runner] ${owner}/${repo}@${head} (${branch} vs ${base})"
+  fi
   if ! git clone -q "${GIT_BASE}/${owner}/${repo}.git" "${src}" 2>&1; then
     echo "[audit-runner] clone failed for ${owner}/${repo}@${head}" >&2
     return 0
@@ -119,21 +123,39 @@ excluded_paths = [".jankurai/", "apps/web/dist/"]
 POLICY
   fi
   mkdir -p "$(dirname "${out}")"
-  # --advisory-only: always write the JSON and exit 0; the forge derives the
-  # strict verdict from the report itself.
-  timeout "${AUDIT_TIMEOUT}" nice -n 10 ionice -c3 \
-    "${JERYU_GOVERNED_JANKURAI_BIN}" diff-audit "${src}" \
-    --base-ref "${base}" --json "${out}" --advisory-only || exit_code=$?
+  if [ "${mode}" = "full" ]; then
+    # A first main, an orphan or unrelated branch: there is no commit to diff
+    # against, and the ticketed base is the "none" marker (the empty tree), so
+    # it is never passed to the auditor — `diff-audit` against a tree answers
+    # "nothing to audit" and scores nothing. The whole tree is audited instead,
+    # the same invocation the `<repo>/required` gate uses. A nonzero exit is
+    # not a tool failure here (a low score exits nonzero too); the forge reads
+    # the report.
+    ( cd "${src}" &&
+      timeout "${AUDIT_TIMEOUT}" nice -n 10 ionice -c3 \
+        "${JERYU_GOVERNED_JANKURAI_BIN}" audit . \
+        --json "${out}" --no-score-history ) || exit_code=$?
+    if [ -s "${out}" ]; then
+      exit_code=0
+    fi
+  else
+    # --advisory-only: always write the JSON and exit 0; the forge derives the
+    # strict verdict from the report itself.
+    timeout "${AUDIT_TIMEOUT}" nice -n 10 ionice -c3 \
+      "${JERYU_GOVERNED_JANKURAI_BIN}" diff-audit "${src}" \
+      --base-ref "${base}" --json "${out}" --advisory-only || exit_code=$?
+  fi
 
   JERYU_AUDIT_RUNNER_ID="${RUNNER_ID}" \
     bash "${ROOT}/ops/ci/submit-jankurai-score.sh" \
       --repo "${owner}/${repo}" --branch "${branch}" --head "${head}" \
-      --base "${base}" --score-json "${out}" --tool-exit "${exit_code}" ||
+      --base "${base}" --audit-mode "${mode}" \
+      --score-json "${out}" --tool-exit "${exit_code}" ||
     echo "[audit-runner] ${owner}/${repo}@${head} report refused" >&2
   rm -rf "${src}"
 }
 
 for job in "${JOBS[@]}"; do
-  IFS=$'\t' read -r owner repo branch head base <<<"${job}"
-  audit_one "${owner}" "${repo}" "${branch}" "${head}" "${base}"
+  IFS=$'\t' read -r owner repo branch head base mode <<<"${job}"
+  audit_one "${owner}" "${repo}" "${branch}" "${head}" "${base}" "${mode}"
 done

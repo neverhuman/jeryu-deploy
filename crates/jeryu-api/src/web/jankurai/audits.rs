@@ -21,7 +21,9 @@ use jeryu_core::AccountSummary;
 use serde::{Deserialize, Serialize};
 
 use super::{WebState, api_error};
-use crate::ci_bridge::audit_queue::{self, AuditTicket, MAX_CLAIM_BATCH};
+use crate::ci_bridge::audit_queue::{
+    self, AUDIT_MODE_FULL, AuditTicket, MAX_CLAIM_BATCH, NO_COMMIT_BASE_OID,
+};
 use crate::ci_bridge::{is_object_id, verify_reported_auditor};
 
 /// What a runner hands in for one audited head. The verdict is not part of it:
@@ -36,9 +38,9 @@ pub(crate) struct RunnerAuditSubmission {
     pub(crate) runner_id: String,
     pub(crate) jankurai_version: String,
     pub(crate) jankurai_sha256: String,
-    /// `diff` (the queued job's own audit against its base) or `full` (the
-    /// `<repo>/required` gate's whole-tree audit of the same head, which stands
-    /// in for it so the head is audited once).
+    /// `diff` (the queued job's own audit against its base) or `full` (a
+    /// whole-tree audit of the head: what the `<repo>/required` gate produces,
+    /// and the only audit a head with no commit base can get).
     #[serde(default = "default_audit_mode")]
     pub(crate) audit_mode: String,
     /// Content address of the runner's own installation receipt, kept with the
@@ -126,6 +128,16 @@ pub(crate) fn authorize_runner_submission(
             "no open audit job for this head",
         ));
     };
+    // A head with no commit base is ticketed for a whole-tree audit; a diff
+    // report for it can only be a diff against nothing, which scores nothing.
+    if ticket.audit_mode == AUDIT_MODE_FULL && submission.audit_mode != AUDIT_MODE_FULL {
+        let reason = format!(
+            "audit job for {} has no commit base and expects a full audit, not a diff against {NO_COMMIT_BASE_OID}",
+            ticket.head_sha
+        );
+        queue.enqueue(ticket);
+        return Err(SubmissionRejected::new(StatusCode::CONFLICT, reason));
+    }
     // The ticket is what the forge asked for; a report bound to anything else
     // is a different audit. Put the ticket back so the real one can still run.
     if ticket.branch != submission.branch || ticket.base_sha != submission.base_sha {

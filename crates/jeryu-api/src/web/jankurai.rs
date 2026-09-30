@@ -255,7 +255,8 @@ impl ScoredHead {
             .max(HOST_JANKURAI_MINIMUM_SCORE);
         // The same strict verdict the push-side proof publishes: score at or
         // above the effective floor, no hard finding, no cap applied. A score
-        // the auditor never produced (`tool-failed`) fails closed.
+        // the auditor never produced (`tool-failed`, `no-base-diff`) fails
+        // closed.
         let passed = score.decision == "scored"
             && score.score.is_some_and(|value| value >= floor)
             && score.hard_findings == 0

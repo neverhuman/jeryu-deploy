@@ -44,21 +44,47 @@ pushed head once wedged it during a bulk import of ~244 branches.
 The flow, per head:
 
 1. **The forge records work.** A push writes at most one audit job — owner,
-   repository, branch, head sha, base sha — into the in-process audit queue
+   repository, branch, head sha, base sha, audit mode — into the in-process
+   audit queue
    (`crates/jeryu-api/src/ci_bridge/audit_queue.rs`) and publishes
    `jankurai/proof` as *pending*. It runs no clone, no checkout and no auditor,
    so the push acknowledgement stays immediate. A newer tip of the same branch
    supersedes an unclaimed job; the same head is never queued twice.
 2. **What is audited.** The protected `main` and pull request heads. Branches
    under `import/`, `preserve/`, `archive/`, `archives/`, `bot/` and `auto/`
-   (and those names on their own) create no job at all. A head with no
-   merge-base against `main` gets no job either: its proof is *neutral* and says
-   `no base branch yet`, rather than a tool failure or an audit of the whole
-   repository against the empty tree.
+   (and those names on their own) create no job at all — no clone is made for
+   work that carries no review and no gate.
+
+   **A head with no commit base** — a first `main` (including one created by a
+   PR merge), an orphan branch, a branch unrelated to `main` — is audited
+   **whole**: the job carries audit mode `full` and the base
+   `4b825dc642cb6eb9a060e54bf8d69288fbee4904` (git's empty tree) purely as the
+   marker for *no base*, which is never handed to the auditor. The runner runs
+   `jankurai audit .` — the same whole-tree invocation `<repo>/required` and
+   `ops/jankurai/backfill-repo-scores.sh` use — and the head gets a real score
+   and a `jankurai/proof` that passes or fails on its findings.
+
+   It is not diffed against the empty tree: `git diff base...head` refuses a
+   tree (`object 4b825dc6... is a tree, not a commit`), so jankurai 1.6.11 reads
+   an empty change set, prints `nothing to audit`, exits 0 and writes a report
+   with no verdict in it. A parentless commit of that tree does not help either
+   — a three-dot diff needs a merge base, and an unrelated root has none. That
+   empty-tree base is why all 16 bootstrapped `root/jankurai*` mains recorded
+   `decision: tool-failed, score: null`.
+
+   The ingest keeps the two apart: a `full` job accepts only a `full` report
+   (a diff report for it could only be a diff against nothing), while a `diff`
+   job still accepts a `full` one, which is how `<repo>/required` stands in.
+   A report that comes back with nothing to audit and no verdict fields at all
+   is recorded under its own decision, `no-base-diff` — proof title *no base to
+   diff against* — never as a pass and no longer hidden inside a generic
+   `tool-failed`.
+
 3. **Runners do the work.** `ops/ci/jankurai-audit-runner.sh` claims jobs
    (`POST /api/v1/jankurai-audits/claim`), clones the head, runs the governed
-   `jankurai diff-audit` against the job's base — niced, ionice'd and
-   time-boxed — and submits the report with
+   auditor — `diff-audit` against the job's base, or a whole-tree `audit` for a
+   job with no commit base; niced, ionice'd and time-boxed — and submits the
+   report with
    `ops/ci/submit-jankurai-score.sh`.
 4. **One audit per head.** When `<repo>/required` (`ops/ci/pr-ci.sh`) already
    audits a head, that run submits its own report (`--audit-mode full`) against

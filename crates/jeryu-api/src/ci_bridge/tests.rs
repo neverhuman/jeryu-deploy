@@ -651,28 +651,62 @@ fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
         .take("jeryu", "demo", &head);
 }
 
-/// A branch with no merge-base is not audited against the empty tree: its
-/// check says so, and it is neither a tool failure nor a job.
+/// A stand-in auditor with jankurai 1.6.11's behaviour. `diff-audit` diffs
+/// `base...HEAD`, so a base that is not a commit — the empty tree — makes git
+/// refuse and the audit report nothing to audit: exit 0, and a report with no
+/// verdict in it. A whole-tree `audit` needs no base and always scores.
+fn stand_in_audit(src: &Path, mode: &str, base: &str) -> (serde_json::Value, i64) {
+    let audited = if mode == audit_queue::AUDIT_MODE_FULL {
+        git_out(src, &["ls-files"]).lines().count()
+    } else {
+        let output = Command::new("git")
+            .args(["diff", "--name-only", &format!("{base}...HEAD")])
+            .current_dir(src)
+            .output()
+            .expect("spawn git");
+        if !output.status.success() {
+            return (
+                serde_json::json!({
+                    "tool": "jankurai 1.6.11",
+                    "base_ref": base,
+                    "note": "nothing to audit",
+                }),
+                0,
+            );
+        }
+        String::from_utf8_lossy(&output.stdout).lines().count()
+    };
+    assert!(audited > 0, "an audit with a base it can use reads files");
+    (
+        serde_json::json!({
+            "score": 87,
+            "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 85},
+            "files_audited": audited,
+        }),
+        0,
+    )
+}
+
+/// A head with no commit base — a first main, an orphan branch — is real audit
+/// work: it is ticketed for a whole-tree audit and earns a real score, instead
+/// of being diffed against the empty tree, which scores nothing.
 #[test]
-fn a_head_without_a_base_is_not_audited_at_all() {
+fn a_head_without_a_commit_base_is_audited_whole() {
     let work = tempfile::tempdir().unwrap();
     let bare = tempfile::tempdir().unwrap();
     let (_, head) = init_version_repo(work.path());
     clone_bare(work.path(), bare.path());
-    git(bare.path(), &["update-ref", "refs/heads/orphan", &head]);
-    git(bare.path(), &["update-ref", "-d", "refs/heads/main"]);
-    let core = demo_core();
-    core.create_pull_request(
+    // Its own repository: the queue is process-wide, and a second ticket for
+    // the same branch supersedes the first.
+    let core = ForgeCore::new();
+    core.create_repository(
         "jeryu",
-        "demo",
-        "author",
-        jeryu_core::CreatePullRequestRequest {
-            title: "orphan".to_string(),
-            head: "orphan".to_string(),
-            base: "main".to_string(),
-            head_sha: Some(head.clone()),
-            base_sha: Some(head.clone()),
-            ..Default::default()
+        CreateRepositoryRequest {
+            name: "bootstrap".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
         },
     )
     .unwrap();
@@ -682,30 +716,87 @@ fn a_head_without_a_base_is_not_audited_at_all() {
         "git",
         bare.path(),
         "jeryu",
-        "demo",
-        &ref_update("refs/heads/orphan", ZERO_OID, &head),
+        "bootstrap",
+        &ref_update("refs/heads/main", ZERO_OID, &head),
         "http://forge.test",
     );
 
-    assert!(
-        !audit_queue::queue()
-            .lock()
-            .unwrap()
-            .tickets()
-            .iter()
-            // The queue is process-wide and other tests queue this same fixture
-            // head on their own branches, so look at this test's branch only.
-            .any(|ticket| ticket.branch == "orphan" && ticket.head_sha == head),
-        "a baseless head queues no whole-repository audit"
-    );
-    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let ticket = audit_queue::queue()
+        .lock()
+        .unwrap()
+        .tickets()
+        .iter()
+        // The queue is process-wide and other tests queue this same fixture
+        // head in `jeryu/demo`, so look at this test's repository only.
+        .find(|ticket| ticket.repo == "bootstrap" && ticket.head_sha == head)
+        .cloned()
+        .expect("a first main is audit work, not a tool failure");
+    assert_eq!(ticket.audit_mode, audit_queue::AUDIT_MODE_FULL);
+    assert_eq!(ticket.base_sha, audit_queue::NO_COMMIT_BASE_OID);
+    let checks = core
+        .list_check_runs("jeryu", "bootstrap", Some(&head))
+        .unwrap();
     let proof = checks
         .check_runs
         .iter()
         .find(|check| check.name == JANKURAI_PROOF_CHECK)
-        .expect("the head still gets a proof");
-    assert_eq!(proof.conclusion, Some(CheckConclusion::Neutral));
-    assert_eq!(proof.output.as_ref().unwrap().title, "no base branch yet");
+        .expect("a pending proof is published");
+    assert_eq!(proof.status, CheckRunStatus::InProgress);
+    assert_eq!(proof.conclusion, None);
+    let summary = &proof.output.as_ref().unwrap().summary;
+    assert!(summary.contains("whole tree is audited"), "{summary}");
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("jeryu", "bootstrap", &head);
+
+    // What a runner does with such a ticket, and what the ticketed base would
+    // have done: the whole-tree audit scores the head; the empty tree as a diff
+    // base is a clean exit with no verdict, named as such and never a pass.
+    let (report, exit_code) = stand_in_audit(work.path(), &ticket.audit_mode, &ticket.base_sha);
+    let (request, pass) = jankurai_score_request("main", &head, Some(report), exit_code);
+    assert_eq!(request.decision, "scored");
+    assert_eq!(request.score, Some(87));
+    assert!(pass, "a first main passes or fails on its findings");
+
+    let (report, exit_code) = stand_in_audit(
+        work.path(),
+        audit_queue::AUDIT_MODE_DIFF,
+        audit_queue::NO_COMMIT_BASE_OID,
+    );
+    assert_eq!(exit_code, 0, "the auditor exits 0 and claims success");
+    let (request, pass) = jankurai_score_request("main", &head, Some(report), exit_code);
+    assert!(!pass, "a report with no verdict is never a pass");
+    assert_eq!(request.score, None);
+    assert_eq!(request.decision, jankurai::NO_BASE_DIFF_DECISION);
+    assert_eq!(
+        jankurai_proof_output(&request, pass).title,
+        "no base to diff against"
+    );
+}
+
+/// A truncated or crashed run is still a tool failure: it is only "no base to
+/// diff against" when the report carries no verdict field at all.
+#[test]
+fn a_broken_report_stays_a_tool_failure() {
+    for report in [
+        serde_json::json!({"score": 87, "caps_applied": []}),
+        serde_json::json!({"decision": {"minimum_score": 85}}),
+    ] {
+        let (request, pass) = jankurai_score_request("main", "abc", Some(report), 0);
+        assert!(!pass);
+        assert_eq!(request.decision, "tool-failed");
+    }
+    let (request, _) = jankurai_score_request(
+        "main",
+        "abc",
+        Some(serde_json::json!({"note": "nothing to audit"})),
+        2,
+    );
+    assert_eq!(
+        request.decision, "tool-failed",
+        "a nonzero exit is a tool failure whatever it wrote"
+    );
 }
 
 /// Only pull request heads and the protected main are audited.

@@ -731,3 +731,61 @@ async fn quality_gate_head_explains_each_applied_cap() {
             .contains("1 `HLT-008` finding")
     );
 }
+
+/// The ingest will not take a diff report for a head that has no commit base:
+/// such a ticket asks for a whole-tree audit, and a diff against the "no base"
+/// marker is the empty change set that scored nothing for 16 repositories.
+#[test]
+fn a_head_with_no_commit_base_is_only_scored_by_a_full_audit() {
+    use crate::ci_bridge::audit_queue::{
+        self, AUDIT_MODE_DIFF, AUDIT_MODE_FULL, AuditTicket, NO_COMMIT_BASE_OID,
+    };
+    use crate::web::jankurai::audits::{RunnerAuditSubmission, authorize_runner_submission};
+    use jeryu_core::{AccountStatus, AccountSummary};
+
+    let head = "c".repeat(40);
+    let scorer = AccountSummary {
+        login: "gatebot".to_string(),
+        display_name: "gatebot".to_string(),
+        role: UserRole::User,
+        status: AccountStatus::Active,
+        auth_epoch: 0,
+        must_change_password: false,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    let submission = |mode: &str| RunnerAuditSubmission {
+        branch: "main".to_string(),
+        commit_sha: head.clone(),
+        base_sha: NO_COMMIT_BASE_OID.to_string(),
+        runner_id: "runner0".to_string(),
+        jankurai_version: "jankurai 1.6.11".to_string(),
+        jankurai_sha256: "9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c"
+            .to_string(),
+        audit_mode: mode.to_string(),
+        jankurai_receipt_sha256: None,
+        report: None,
+        tool_exit: Some(0),
+    };
+
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .enqueue(AuditTicket::whole_tree("alice", "jeryu", "main", &head));
+    let Err(refused) =
+        authorize_runner_submission(&scorer, "alice", "jeryu", &submission(AUDIT_MODE_DIFF))
+    else {
+        panic!("a diff report cannot score a head with no commit base");
+    };
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert!(refused.reason.contains("full audit"), "{}", refused.reason);
+
+    // Refusing put the job back, so the audit that can score this head still
+    // has one to submit against.
+    let Ok(ticket) =
+        authorize_runner_submission(&scorer, "alice", "jeryu", &submission(AUDIT_MODE_FULL))
+    else {
+        panic!("a whole-tree report scores a head with no commit base");
+    };
+    assert_eq!(ticket.audit_mode, AUDIT_MODE_FULL);
+}

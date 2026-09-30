@@ -167,8 +167,9 @@ pub(crate) fn on_push(
 ///
 /// Best-effort and cheap: at most a `merge-base` in the bare repository. The
 /// check is published pending, never green — only a runner's report completes
-/// it — and a head with no base says exactly that instead of failing as a tool
-/// error or being audited against the empty tree.
+/// it — and a head with no commit base (a first main, an orphan branch) is
+/// ticketed against the empty root commit rather than the empty tree, so it
+/// still gets a real score.
 pub(crate) fn queue_head_audit(
     core: &ForgeCore,
     git_bin: &str,
@@ -187,11 +188,6 @@ pub(crate) fn queue_head_audit(
             // or an open ticket, get no check of their own: the head keeps
             // whatever proof its single audit produced.
             PushAudit::Skipped(_) | PushAudit::AlreadyCovered => return,
-            PushAudit::NoBase => (
-                CheckRunStatus::Completed,
-                Some(CheckConclusion::Neutral),
-                jankurai::jankurai_no_base_output(),
-            ),
             PushAudit::Unqueued(reason) => (
                 CheckRunStatus::InProgress,
                 None,

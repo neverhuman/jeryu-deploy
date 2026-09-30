@@ -31,6 +31,23 @@ pub(crate) const CLAIM_LEASE_SECONDS: i64 = 1_800;
 /// Most tickets one claim call may take, so one runner cannot drain the queue.
 pub(crate) const MAX_CLAIM_BATCH: usize = 8;
 
+/// What a ticket records as the base of a head that has none: git's empty
+/// tree, "nothing to diff against" spelled as an object id.
+///
+/// It is a marker, never an argument to `diff-audit`. A tree cannot be a diff
+/// base — git refuses `base...head` with `object 4b825dc6... is a tree, not a
+/// commit`, and the auditor reads that as an empty change set, says `nothing to
+/// audit`, exits 0 and writes a report with no verdict in it. Nor can a
+/// parentless commit of that tree: a three-dot diff needs a merge base, and an
+/// unrelated root has none. So a head with no commit base is audited whole
+/// ([`AUDIT_MODE_FULL`]) rather than diffed at all.
+pub(crate) const NO_COMMIT_BASE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/// A head audited against its base: `jankurai diff-audit`.
+pub(crate) const AUDIT_MODE_DIFF: &str = "diff";
+/// A head audited whole: `jankurai audit`, which needs no base. The
+/// `<repo>/required` gate produces this too, so it already satisfies a ticket.
+pub(crate) const AUDIT_MODE_FULL: &str = "full";
+
 /// Branch classes that carry no review and no gate, so they get no audit:
 /// bulk imports, preserved history, archives, and the forge's own bot branches.
 const UNAUDITED_BRANCH_PREFIXES: &[&str] = &[
@@ -52,9 +69,13 @@ pub(crate) struct AuditTicket {
     pub(crate) repo: String,
     pub(crate) branch: String,
     pub(crate) head_sha: String,
-    /// The merge-base the audit diffs against. A ticket never carries the empty
-    /// tree: a head with no usable base is not audited at all.
+    /// The commit the audit diffs against, or [`NO_COMMIT_BASE_OID`] when the
+    /// head has none and is audited whole instead.
     pub(crate) base_sha: String,
+    /// [`AUDIT_MODE_DIFF`] or [`AUDIT_MODE_FULL`]: which audit this head needs.
+    /// A full audit may stand in for a diff one (it is strictly more work), a
+    /// diff audit never for a full one — there is nothing for it to diff.
+    pub(crate) audit_mode: String,
     pub(crate) enqueued_at: DateTime<Utc>,
     pub(crate) claimed_by: Option<String>,
     pub(crate) claimed_at: Option<DateTime<Utc>>,
@@ -74,9 +95,19 @@ impl AuditTicket {
             branch: branch.to_string(),
             head_sha: head_sha.to_string(),
             base_sha: base_sha.to_string(),
+            audit_mode: AUDIT_MODE_DIFF.to_string(),
             enqueued_at: Utc::now(),
             claimed_by: None,
             claimed_at: None,
+        }
+    }
+
+    /// Work for a head with no commit base — a first `main`, an orphan or
+    /// unrelated branch: the whole tree is audited, because there is no diff.
+    pub(crate) fn whole_tree(owner: &str, repo: &str, branch: &str, head_sha: &str) -> Self {
+        Self {
+            audit_mode: AUDIT_MODE_FULL.to_string(),
+            ..Self::new(owner, repo, branch, head_sha, NO_COMMIT_BASE_OID)
         }
     }
 
@@ -246,8 +277,6 @@ pub(crate) enum PushAudit {
     Skipped(&'static str),
     /// Already scored, or already waiting: exactly one audit per head.
     AlreadyCovered,
-    /// No merge-base to diff against — never a whole-repo audit.
-    NoBase,
     /// The head needs an audit but no ticket could be recorded; the proof stays
     /// pending and says why, and nothing on the forge runs the audit instead.
     Unqueued(&'static str),
@@ -280,10 +309,10 @@ pub(crate) fn plan_push_audit(
     if scored {
         return PushAudit::AlreadyCovered;
     }
-    let Some(base) = merge_base(git_bin, bare, branch, update) else {
-        return PushAudit::NoBase;
+    let ticket = match commit_base(git_bin, bare, branch, update) {
+        Some(base) => AuditTicket::new(owner, repo, branch, &update.new_oid, &base),
+        None => AuditTicket::whole_tree(owner, repo, branch, &update.new_oid),
     };
-    let ticket = AuditTicket::new(owner, repo, branch, &update.new_oid, &base);
     let Ok(mut queue) = queue().lock() else {
         return PushAudit::Unqueued("the audit queue is unavailable");
     };
@@ -294,10 +323,11 @@ pub(crate) fn plan_push_audit(
     }
 }
 
-/// The base a diff audit runs against: the previous tip for main, the
-/// merge-base with main for anything else. A head with neither has no base —
-/// the audit is skipped rather than turned into a whole-repository walk.
-fn merge_base(
+/// The commit a diff audit runs against: the previous tip for main, the
+/// merge-base with main for anything else. A first main, an orphan branch and
+/// a branch unrelated to main have neither, and get a whole-tree audit instead
+/// of a diff against nothing.
+fn commit_base(
     git_bin: &str,
     bare: &std::path::Path,
     branch: &str,
