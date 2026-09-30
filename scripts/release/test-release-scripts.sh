@@ -387,6 +387,7 @@ printf '%s\n' "\$*" >>"$D/curl-args"
 data=""; prev=""
 for arg in "\$@"; do [ "\$prev" = --data ] && data="\${arg#@}"; prev="\$arg"; done
 case "\${!#}" in
+  */health) [ -e "$D/forge-up" ] || exit 7; echo '{"service":"jeryu-api","status":"ok"}' ;;
   */statuses) jq -c . "\$data" >>"$D/statuses.jsonl"; jq -c '{state}' "\$data" ;;
   */deployments) echo '{"id":5}' ;;
 esac
@@ -423,6 +424,60 @@ jq -se '.[-1] | .state == "success" and (.log_path | endswith(".log")) and (has(
 [[ -s "$(jq -sr '.[-1].log_path' "$D/statuses.jsonl")" ]] || fail "the success log is empty"
 [[ "$(find "$logs" -name '*.log' | wc -l)" == 30 ]] || fail "the switch logs are not pruned to the newest 30"
 ok "deploy-release records the log path on success and keeps the newest 30 logs"
+
+# The switched forge holds no release board, so a successful deploy refreshes every family itself:
+# it waits for the forge's health endpoint before pushing, keeps the run's output beside the
+# boards, and says in a receipt whether the refresh landed. Stand-in collector; the stand-in curl
+# answers /health only while $D/forge-up exists.
+mkdir -p "$D/board"
+cat >"$D/board/collect.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$D/board/args"
+[ -e "$D/board/hang" ] && sleep 30
+[ -e "$D/board/fail" ] && { echo "acme: push failed" >&2; exit 1; }
+echo "acme: pushed (ok)"
+EOF
+chmod +x "$D/board/collect.sh"
+boards="$D/home/.local/state/jeryu-release-board/logs"
+deploy_board() { # [ARG...] — a deploy whose board collector is the stand-in, with a short wait
+  PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" \
+    JERYU_RELEASE_BOARD="$D/board/collect.sh" JERYU_BOARD_HEALTH_TRIES=2 \
+    JERYU_BOARD_REFRESH_TIMEOUT="${BOARD_TIMEOUT:-300}" bash "$here/deploy-release.sh" "$@" "$D_REL"
+}
+
+rm -f "$D/forge-up"; : >"$D/board/args"; : >"$D/curl-args"
+deploy_board >"$D/run.log" 2>&1 || { cat "$D/run.log" >&2; fail "a forge that never answers failed the deploy"; }
+grep -q "boards not refreshed" "$D/run.log" || fail "the deploy did not say the refresh never ran"
+[[ ! -s "$D/board/args" ]] || fail "the collector pushed to a forge that never answered"
+[[ "$(grep -c '/health' "$D/curl-args")" == 2 ]] || fail "the health wait is not bounded by JERYU_BOARD_HEALTH_TRIES"
+refresh="$(find "$boards" -name 'refresh-*.log' | head -1)"
+[[ -s "$refresh" && "$(stat -c %a "$refresh")" == 600 ]] || fail "the refresh log is missing or not 0600: $refresh"
+grep -q "never answered in 2 tries" "$refresh" || fail "the refresh log does not say the forge never answered"
+ok "deploy-release waits for the forge's health endpoint and reports a refresh that could not run"
+
+touch "$D/forge-up"; : >"$D/board/args"; rm -f "$boards"/refresh-*.log
+out="$(deploy_board --json 2>"$D/run.log")" || { cat "$D/run.log" >&2; fail "a deploy with a healthy forge failed"; }
+[[ "$(cat "$D/board/args")" == "--push --trigger release all" ]] || fail "the collector was not run for every family: $(cat "$D/board/args")"
+grep -q "boards refreshed: 1 pushed" "$D/run.log" || fail "the deploy did not report the landed refresh"
+jq -e '.board_refresh.state == "pushed" and (.board_refresh.log_path | test("/jeryu-release-board/logs/refresh-"))' <<<"$out" >/dev/null \
+  || fail "the success JSON does not say the boards were refreshed: $out"
+grep -q "acme: pushed (ok)" "$(jq -r .board_refresh.log_path <<<"$out")" || fail "the refresh log lacks the collector's output"
+ok "deploy-release pushes every family's board once the forge answers, and logs what the collector said"
+
+touch "$D/board/fail"
+out="$(deploy_board --json 2>"$D/run.log")" || { cat "$D/run.log" >&2; fail "a failed refresh failed the deploy"; }
+jq -e '.board_refresh.state == "failed"' <<<"$out" >/dev/null || fail "a failed refresh is not reported as failed: $out"
+grep -q "board refresh exited 1" "$D/run.log" || fail "the deploy did not report the failed refresh"
+rm -f "$D/board/fail"; touch "$D/board/hang"
+out="$(BOARD_TIMEOUT=1 deploy_board --json 2>"$D/run.log")" || { cat "$D/run.log" >&2; fail "a refresh that hung failed the deploy"; }
+jq -e '.board_refresh.state == "timeout"' <<<"$out" >/dev/null || fail "a refresh that hung is not reported as a timeout: $out"
+rm -f "$D/board/hang"
+out="$(PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" \
+  JERYU_RELEASE_BOARD="$D/board/missing.sh" bash "$here/deploy-release.sh" --json "$D_REL" 2>"$D/run.log")" \
+  || { cat "$D/run.log" >&2; fail "a deploy without a collector failed"; }
+jq -e '.board_refresh.state == "skipped" and .board_refresh.log_path == null' <<<"$out" >/dev/null \
+  || fail "a deploy without a collector does not say the refresh was skipped: $out"
+ok "a board refresh that fails, hangs or is not installed is reported and never fails the deploy"
 
 # Deploying what is already live: nothing recorded, nothing switched, no failure to alert on.
 echo "$D_REL" >"$D/live"; rm -f "$D/succeed"

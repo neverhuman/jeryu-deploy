@@ -28,7 +28,11 @@ Keep the env file and the token mode 600.
 - The collector runs every **5 minutes** (`jeryu-release-board.timer`).
 - Release scripts run it **at once** when they finish (`--trigger release`). jeryu's own
   `scripts/release/deploy-release.sh` refreshes every family, because a restarted forge holds no
-  boards; a site adds the same call to its own release scripts.
+  boards; a site adds the same call to its own release scripts. That refresh waits for the
+  switched forge's `/health` before it pushes (a push sent to a forge that is still starting is
+  lost), keeps its output in `~/.local/state/jeryu-release-board/logs/refresh-<release>-<UTC
+  stamp>.log` (0600, newest 30) and ends in a receipt line saying whether it landed, so an empty
+  `/releases` after a deploy is visible in the deploy's own output.
 - Stages that report deployments to the forge (a `forge` binding) are also read **live** by the
   page from `/api/v3/repos/{repo}/environments`, so a release that reports itself shows before any
   snapshot, marked "reported after this snapshot".

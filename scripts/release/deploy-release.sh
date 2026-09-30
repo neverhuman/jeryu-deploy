@@ -9,6 +9,16 @@
 #   2. Run the staged switch.sh on the forge host.
 #   3. Append success, or failure (switch.sh prints its own rollback command).
 #      The forge's auto_inactive retires the previous production deployment.
+#   4. After a success, refresh every family's release board, because the forge
+#      that just started holds none: wait for its health endpoint (up to
+#      JERYU_BOARD_HEALTH_TRIES tries, default 60, one a second) so the push is
+#      not lost on a starting forge, then run the collector
+#      (JERYU_RELEASE_BOARD, default ~/.local/share/jeryu-release-board/collect.sh)
+#      under a JERYU_BOARD_REFRESH_TIMEOUT (default 300s) limit. The wait and the
+#      collector's output go to a 0600 log (newest 30) in
+#      ~/.local/state/jeryu-release-board/logs/ (JERYU_RELEASE_BOARD_STATE
+#      overrides the directory), and a receipt says whether the refresh landed.
+#      None of this can fail the deploy: the release is already live.
 #
 # Everything switch.sh prints is shown live and kept in
 # ~/.local/state/jeryu-release/logs/<release>-<UTC stamp>.log (0600, newest 30;
@@ -35,8 +45,11 @@
 # --dry-run reads the staged metadata and prints the deployment it would record,
 # then stops: nothing is recorded, switched or logged.
 # --json prints exactly one JSON line on stdout (switch output and receipts go
-# to stderr): {"release","deployment_id","log_path","dry_run","already_live"}
-# on success (or on an already live release, where the ids are null),
+# to stderr): {"release","deployment_id","log_path","dry_run","already_live",
+# "board_refresh":{"state","log_path"}} on success, where state is pushed,
+# failed, timeout, unhealthy (the forge never answered) or skipped (no collector
+# installed); the same line without board_refresh and with null ids on an
+# already live release (nothing switched, so no board to refresh);
 # {"release","deployment","dry_run":true} on a dry run, or the API's error
 # envelope {"code","message","exit_code"} on a refusal or a failed switch.
 # Exit codes: 0 live, 64 usage (bad argument), 65 state (the release is not
@@ -143,6 +156,53 @@ status() { # STATE DESCRIPTION [LOG_PATH [LOG_TAIL]]
     | jq -r '"[receipt] status \(.state // "not recorded: \(.message // "?")")"'
 }
 
+# The forge that just started keeps release boards in memory, so it has none: refresh every
+# family now (scripts/release-board/) rather than leave /releases empty until the next timer
+# tick. The push has to reach the forge that was just switched, so wait for its health endpoint
+# first — a push sent while it is still starting is lost. The wait and everything the collector
+# prints are kept in a log beside the boards, and the outcome becomes a receipt line, so a
+# refresh that did not land is visible in the deploy instead of only in an empty page.
+board_state=skipped board_log=""
+refresh_boards() {
+  local board dir health tries wait i rc
+  board="${JERYU_RELEASE_BOARD:-$HOME/.local/share/jeryu-release-board/collect.sh}"
+  if [[ ! -x "$board" ]]; then
+    echo "[receipt] no board collector at $board; /releases fills at the next timer tick"
+    return 0
+  fi
+  dir="${JERYU_RELEASE_BOARD_STATE:-$HOME/.local/state/jeryu-release-board}/logs"
+  mkdir -p "$dir"; chmod 700 "$dir"
+  board_log="$dir/refresh-$rel-$(date -u +%Y%m%dT%H%M%SZ).log"
+  : >"$board_log"; chmod 600 "$board_log"
+  find "$dir" -maxdepth 1 -type f -name 'refresh-*.log' -printf '%T@ %p\n' | sort -rn | tail -n +31 \
+    | cut -d' ' -f2- | xargs -r rm -f --
+  health="${JERYU_FORGE_HEALTH_URL:-$forge/health}"
+  tries="${JERYU_BOARD_HEALTH_TRIES:-60}"
+  [[ "$tries" =~ ^[1-9][0-9]*$ ]] || tries=60
+  board_state=unhealthy
+  for ((i = 1; i <= tries; i++)); do
+    if curl -fsS --max-time 5 -o /dev/null "$health" 2>>"$board_log"; then board_state=healthy; break; fi
+    ((i == tries)) || sleep 1
+  done
+  if [[ "$board_state" != healthy ]]; then
+    echo "[refresh] $health never answered in $tries tries" >>"$board_log"
+    echo "[receipt] boards not refreshed: $health never answered in $tries tries; log $board_log"
+    return 0
+  fi
+  echo "[refresh] $health answered on try $i; collecting every family" >>"$board_log"
+  wait="${JERYU_BOARD_REFRESH_TIMEOUT:-300}"
+  rc=0
+  timeout "$wait" "$board" --push --trigger release all >>"$board_log" 2>&1 || rc=$?
+  case $rc in
+    0) board_state=pushed
+       echo "[receipt] boards refreshed: $(grep -c ': pushed' "$board_log" || true) pushed; log $board_log" ;;
+    124) board_state=timeout
+       echo "[receipt] board refresh timed out after ${wait}s; log $board_log" ;;
+    *) board_state=failed
+       echo "[receipt] board refresh exited $rc; log $board_log" ;;
+  esac
+}
+
 # Where a reader can see what switch.sh printed: the deploy.status events, whose
 # detail carries the status's log tail and the log's path on the release host.
 log_url="${JERYU_RELEASE_LOG_URL:-$forge/api/v1/events?kind=deploy.status&repo=jeryu/jeryu-deploy}"
@@ -173,14 +233,12 @@ if [[ $rc == 0 ]]; then
     record
   fi
   status success "live on $forge_host" "$log"
-  # The forge that just started keeps release boards in memory, so it has none: refresh every
-  # family now (scripts/release-board/) rather than leave /releases empty until the next timer
-  # tick. Detached and best-effort, like everything this script does after the switch.
-  board="${JERYU_RELEASE_BOARD:-$HOME/.local/share/jeryu-release-board/collect.sh}"
-  if [[ -x "$board" ]]; then nohup "$board" --push --trigger release all >/dev/null 2>&1 & fi
+  refresh_boards
   [[ $json == 0 ]] || jq -cn --arg rel "$rel" --arg id "$deployment_id" --arg log "$log" \
+    --arg state "$board_state" --arg blog "$board_log" \
     '{release:$rel, deployment_id:($id | tonumber? // null), log_path:$log, dry_run:false,
-      already_live:false}' >&3
+      already_live:false,
+      board_refresh:{state:$state, log_path:(if $blog == "" then null else $blog end)}}' >&3
 else
   why="$(clean_log | grep -v 'rollback: bash ' | tail -n 1 | cut -c1-300)"
   status failure "switch.sh exited $rc${why:+: $why}" "$log" "$(clean_log | tail -n 20)"
