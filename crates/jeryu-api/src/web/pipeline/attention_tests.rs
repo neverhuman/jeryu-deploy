@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::attention::{
-    Draft, Hosts, Item, LatestDeployment, MirrorFailure, ProductionFacts, PullFacts, Severity,
-    mirror_items, order, pull_items, queue_items, release_items, runner_items, shift_items,
-    todo_items, worker_items,
+    Draft, Hosts, Item, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts, PullFacts,
+    Severity, divergence_items, mirror_items, order, pull_items, queue_items, release_items,
+    runner_items, shift_items, todo_items, worker_items,
 };
 use super::tests::{body_json, request, shift_forge};
 use super::types::Event;
@@ -1087,5 +1087,60 @@ fn hosts_default_to_the_three_machines_and_ignore_blank_overrides() {
     assert_eq!(
         Hosts::checkout("xbabe0", "jeryu/jeryu-deploy"),
         "xbabe0, in a jeryu/jeryu-deploy checkout"
+    );
+}
+
+#[test]
+fn a_mirror_with_github_only_work_alarms_per_repository_and_names_the_commits() {
+    assert!(divergence_items(&[]).is_empty());
+    let drifts = [
+        MirrorDrift {
+            repo: "jeryu/jeryu-web".to_string(),
+            github_slug: "neverhuman/jeryu-web".to_string(),
+            branch_state: Some("diverged from the forge".to_string()),
+            github_head: Some("c0ffee".to_string()),
+            github_only_commits: vec!["c0ffee".to_string(), "decade".to_string()],
+            tag_drift: Vec::new(),
+            since: Some(now() - Duration::minutes(4)),
+        },
+        MirrorDrift {
+            repo: "jeryu/jeryu-core".to_string(),
+            github_slug: "neverhuman/jeryu-core".to_string(),
+            branch_state: None,
+            github_head: Some("beef01".to_string()),
+            github_only_commits: Vec::new(),
+            tag_drift: vec!["GitHub holds v5.0.0 at beef01 and the forge at 01beef".to_string()],
+            since: Some(now()),
+        },
+    ];
+    let items = divergence_items(&drifts);
+    assert_eq!(kinds(&items), ["mirror_diverged", "mirror_diverged"]);
+    let branch = &items[0];
+    assert_eq!(branch.id, "mirror-diverged-jeryu/jeryu-web");
+    assert_eq!(branch.severity, Severity::Critical);
+    assert_eq!(
+        branch.title,
+        "GitHub has work the forge does not for jeryu/jeryu-web"
+    );
+    assert!(
+        branch
+            .reason
+            .contains("2 commits the forge does not (c0ffee, decade)"),
+        "{}",
+        branch.reason
+    );
+    assert!(
+        branch.reason.contains("nothing was forced"),
+        "{}",
+        branch.reason
+    );
+    assert_eq!(branch.href, "/repos/jeryu/jeryu-web");
+
+    let tags = &items[1];
+    assert!(
+        tags.reason
+            .contains("GitHub holds v5.0.0 at beef01 and the forge at 01beef"),
+        "{}",
+        tags.reason
     );
 }

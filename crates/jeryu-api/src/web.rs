@@ -15,6 +15,7 @@ mod jankurai;
 mod markdown;
 mod merge_attempts;
 mod merge_queue;
+pub(crate) mod mirror_reconcile;
 mod operator_resources;
 mod paging;
 pub(crate) use merge_queue::{is_queue_owned_ref, rebase_onto};
@@ -148,6 +149,8 @@ pub(crate) struct WebState {
     pub(crate) events: pipeline::EventStore,
     /// Quality-gate disputes (`<data_dir>/shift.sqlite`, `jankurai_disputes`).
     pub(crate) disputes: jankurai::DisputeStore,
+    /// What the newest GitHub-mirror reconcile found per repository.
+    pub(crate) mirror_state: mirror_reconcile::MirrorStateStore,
     /// The attention inbox's last answer (`GET /api/v1/attention`).
     pub(crate) attention: pipeline::attention::AttentionCache,
     /// What every deploy repo pins (`GET /api/v1/pins`), cached for a minute.
@@ -299,6 +302,7 @@ impl WebState {
             shift,
             events,
             disputes,
+            mirror_state: mirror_reconcile::MirrorStateStore::default(),
             attention: pipeline::attention::AttentionCache::default(),
             pins: pipeline::pins::PinsCache::default(),
             repo_depends: control_plane::DependsCache::default(),
@@ -577,6 +581,7 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     let state = shared_state(state, &config.spa_dir);
     tool_finder_schedule::spawn(state.clone());
     merge_queue::spawn_worker(state.clone(), std::time::Duration::from_secs(10));
+    mirror_reconcile::spawn(state.clone());
     let app = router(state);
     let listener = TcpListener::bind(config.bind).await?;
     // ConnectInfo gives the git handlers the peer address so the gitd auth layer

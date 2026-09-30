@@ -1278,3 +1278,30 @@ fn jankurai_gate_script_prints_the_hosted_proof_verdict() {
         );
     }
 }
+
+/// A tag push is what the mirror acts on: created and moved tags, never a
+/// deletion (the mirror does not delete a tag on GitHub).
+#[test]
+fn tag_updates_report_created_and_moved_tags_only() {
+    let git_ref = |name: &str, oid: &str| GitRef {
+        name: name.to_owned(),
+        oid: oid.to_owned(),
+    };
+    let before = vec![
+        git_ref("refs/heads/main", "aaa"),
+        git_ref("refs/tags/v1", "111"),
+        git_ref("refs/tags/v2", "222"),
+    ];
+    let after = vec![
+        git_ref("refs/heads/main", "bbb"),
+        git_ref("refs/tags/v1", "111"),
+        git_ref("refs/tags/v2", "999"),
+        git_ref("refs/tags/v3", "333"),
+        git_ref("refs/tags/gone", crate::ci_bridge::ZERO_OID),
+    ];
+    assert_eq!(
+        crate::ci_bridge::tag_updates(&before, &after),
+        vec!["v2".to_string(), "v3".to_string()]
+    );
+    assert!(crate::ci_bridge::tag_updates(&after, &after).is_empty());
+}

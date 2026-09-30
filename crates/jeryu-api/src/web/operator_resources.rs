@@ -112,12 +112,16 @@ pub(super) async fn releases(
 }
 
 /// A repository's offsite push-mirror posture: the same value the repository
-/// summary carries in its `mirror` field.
+/// summary carries in its `mirror` field, plus what the last reconcile saw on
+/// GitHub. The repo page reads both: the push bookkeeping says whether the last
+/// attempt worked, `sync` says whether GitHub actually matches the forge.
 #[derive(Debug, Serialize)]
 pub(super) struct RepositoryMirror {
     pub(super) repo: RepositoryId,
     /// `null` when the repository has never been mirrored.
     pub(super) mirror: Option<RepositoryMirrorStatus>,
+    /// `null` until the reconcile loop has looked at this repository.
+    pub(super) sync: Option<crate::web::mirror_reconcile::MirrorRepoState>,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,6 +152,7 @@ pub(super) async fn mirrors(
             RepositoryMirror {
                 repo: repo_id(repo),
                 mirror: mirror_status(&checks),
+                sync: state.mirror_state.get(&repo.owner, &repo.name),
             }
         })
         .collect();

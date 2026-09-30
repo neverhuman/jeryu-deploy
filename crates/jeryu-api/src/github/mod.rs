@@ -182,6 +182,13 @@ impl GithubRouter {
         self
     }
 
+    /// Borrows the GitHub mirror, if one is attached. The reconcile loop needs
+    /// the same targets the merge push uses.
+    #[cfg(feature = "web")]
+    pub fn github_mirror(&self) -> Option<&std::sync::Arc<crate::github_mirror::GithubMirror>> {
+        self.github_mirror.as_ref()
+    }
+
     /// Borrows the backing forge store (used by tests and embedding callers).
     pub fn core(&self) -> &ForgeCore {
         &self.core

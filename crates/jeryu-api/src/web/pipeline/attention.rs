@@ -37,7 +37,7 @@ pub(crate) use flow::{
     runner_items,
 };
 pub(crate) use hosts::Hosts;
-pub(crate) use mirror::{MirrorFailure, mirror_items};
+pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
 pub(crate) use pins::pin_items;
 pub(crate) use work::{shift_items, todo_items, worker_items};
 
@@ -305,6 +305,9 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     items.extend(mirror_items(
         &super::super::repositories::mirror_failures(state),
         &hosts,
+    ));
+    items.extend(divergence_items(
+        &super::super::mirror_reconcile::drift_rows(state),
     ));
     let pulls = open_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();

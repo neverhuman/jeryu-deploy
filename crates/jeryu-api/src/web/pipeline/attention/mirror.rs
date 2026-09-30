@@ -86,3 +86,75 @@ pub(crate) fn mirror_items(failures: &[MirrorFailure], hosts: &Hosts) -> Vec<Ite
     item.repo = Some(oldest.repo.clone());
     vec![item]
 }
+
+/// A repository whose GitHub mirror holds something the forge does not: commits
+/// pushed or merged on GitHub, or a tag GitHub published at another commit.
+/// One item per repository, unlike a failing push: each one is its own history
+/// question and names its own commits.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MirrorDrift {
+    /// `owner/name` on the forge.
+    pub repo: String,
+    pub github_slug: String,
+    /// `ahead` or `diverged`; empty when only tags drifted.
+    pub branch_state: Option<String>,
+    pub github_head: Option<String>,
+    /// Commits GitHub has and the forge does not, newest first.
+    pub github_only_commits: Vec<String>,
+    /// One sentence per tag the mirror refuses to move.
+    pub tag_drift: Vec<String>,
+    pub since: Option<DateTime<Utc>>,
+}
+
+pub(crate) fn divergence_items(drifts: &[MirrorDrift]) -> Vec<Item> {
+    drifts
+        .iter()
+        .map(|drift| {
+            let mut reason = String::new();
+            if let Some(state) = drift.branch_state.as_deref() {
+                reason.push_str(&format!(
+                    "github.com/{} is {state}: it holds {} the forge does not ({}). ",
+                    drift.github_slug,
+                    if drift.github_only_commits.len() == 1 {
+                        "a commit".to_string()
+                    } else {
+                        format!("{} commits", drift.github_only_commits.len())
+                    },
+                    if drift.github_only_commits.is_empty() {
+                        drift
+                            .github_head
+                            .clone()
+                            .unwrap_or_else(|| "unlisted".to_string())
+                    } else {
+                        drift.github_only_commits.join(", ")
+                    },
+                ));
+            }
+            if !drift.tag_drift.is_empty() {
+                reason.push_str(&drift.tag_drift.join("; "));
+                reason.push_str(". ");
+            }
+            reason.push_str(
+                "The forge is the truth, so nothing was forced and nothing was deleted. Bring the \
+                 work onto the forge (or decide it is not wanted) and the next reconcile goes \
+                 quiet.",
+            );
+            let mut item = Draft {
+                id: format!("mirror-diverged-{}", drift.repo),
+                kind: "mirror_diverged",
+                severity: Severity::Critical,
+                title: format!("GitHub has work the forge does not for {}", drift.repo),
+                reason,
+                href: format!("/repos/{}", drift.repo),
+                label: "Decide what happens to the GitHub-only work",
+                command: None,
+            }
+            .build();
+            item.since = drift
+                .since
+                .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+            item.repo = Some(drift.repo.clone());
+            item
+        })
+        .collect()
+}

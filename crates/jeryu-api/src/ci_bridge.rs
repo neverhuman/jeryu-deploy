@@ -64,6 +64,21 @@ pub(crate) fn ref_updates(before: &[GitRef], after: &[GitRef]) -> Vec<RefUpdate>
         .collect()
 }
 
+/// Tags created or moved between two ref snapshots, by short name. A deleted
+/// tag is not reported: the mirror never deletes a tag on GitHub.
+pub(crate) fn tag_updates(before: &[GitRef], after: &[GitRef]) -> Vec<String> {
+    let previous: HashMap<&str, &str> = before
+        .iter()
+        .map(|b| (b.name.as_str(), b.oid.as_str()))
+        .collect();
+    after
+        .iter()
+        .filter(|r| r.name.starts_with("refs/tags/") && r.oid != ZERO_OID)
+        .filter(|r| previous.get(r.name.as_str()).copied() != Some(r.oid.as_str()))
+        .filter_map(|r| r.name.strip_prefix("refs/tags/").map(str::to_string))
+        .collect()
+}
+
 /// For each updated commit, compile its workflows, run each job in the sandbox,
 /// and record a completed check-run with the real conclusion.
 /// The bridge must preserve Git refs: version and changelog changes belong in

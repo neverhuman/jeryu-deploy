@@ -33,6 +33,15 @@ an input.
   pulled back.
 - A mirror target is explicit. A split-manifest `[[repo]]` is mirrored only
   when it carries `github_slug`, `jeryu_slug`, and `mirror_github_main = true`.
+- Tags mirror the same way. A tag push sends the tags GitHub does not have
+  yet; an existing GitHub tag is never moved and never deleted, because the
+  forge cannot know what was cut from it downstream. A tag that differs is
+  reported.
+- A reconcile every ten minutes compares each enrolled repository's branch and
+  tags with GitHub and fast-forwards GitHub when it is behind, so a mirror that
+  missed a push catches up without anyone asking. It never forces: when GitHub
+  is ahead or diverged it pushes nothing and alarms, naming the commits only
+  GitHub has (`mirror_diverged`, `docs/github-mirror.md`).
 - A mirror push failure never fails the merge. The outcome is recorded as a
   `jeryu/github-mirror` check-run on the merged tip, and the attention inbox
   raises `mirror_failing` (`docs/pipeline-events.md`) so a human sees it.
@@ -44,9 +53,10 @@ an input.
 
 - Merge authority, branch protection, and required checks are enforceable
   locally and keep working with no route to GitHub at all.
-- A mirror can silently fall behind the forge. That is accepted, and the cost
-  is paid by the `jeryu/github-mirror` check-run plus the `mirror_failing`
-  inbox item; the mirror's state is never read back as truth.
+- A mirror that falls behind the forge catches itself up on the next reconcile.
+  A mirror the forge cannot catch up — GitHub ahead or diverged — stays exactly
+  as it is until a person decides; the reconcile reads GitHub to report it and
+  never to adopt it, so the forge stays the truth.
 - Anyone reading GitHub — a person or a tool — may be reading a stale tree. A
   question about what is merged is answered by the forge.
 - Mirroring needs a credential on the forge host (the SSH rewrite and deploy
