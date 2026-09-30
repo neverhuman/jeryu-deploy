@@ -18,13 +18,14 @@
 │   ├── jeryu-api/
 │   │   └── src/
 │   │       ├── ci_bridge.rs
-│   │       ├── ci_bridge/jankurai.rs
+│   │       ├── ci_bridge/{audit_queue,jankurai}.rs
 │   │       ├── web.rs
 │   │       └── web/
 │   │           ├── bootstrap.rs
 │   │           ├── catalog.rs
 │   │           ├── request_id.rs
 │   │           ├── agent_runs/{export,handlers,store,tail_tests}.rs
+│   │           ├── jankurai/audits.rs
 │   │           ├── pulls/posture.rs
 │   │           ├── repositories/source.rs
 │   │           └── sessions/runtime.rs

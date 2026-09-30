@@ -124,6 +124,20 @@ echo "[pr-ci] jankurai score=${score} caps=${caps}" >&2
 jq -e '(.score // 0) >= 85 and ((.caps_applied // []) | length == 0)' \
   .jankurai/repo-score.json >/dev/null
 
+# One audit per head: this gate already ran the governed jankurai on this exact
+# head, so ITS report is the head's authoritative one. Submitting it here
+# satisfies the forge's open audit job, and no runner audits the head again.
+# Only when this run knows which forge head it is gating and holds a runner
+# credential; a local run posts nothing.
+if [ -n "${JERYU_CI_REPO:-}" ] && [ -n "${JERYU_CI_HEAD_SHA:-}" ] &&
+   [ -n "${JERYU_CI_BRANCH:-}" ] && [ -n "${JERYU_FORGE_TOKEN_FILE:-}" ]; then
+  echo "[pr-ci] submitting the jankurai report for ${JERYU_CI_REPO}@${JERYU_CI_HEAD_SHA}" >&2
+  bash "${repo_root}/ops/ci/submit-jankurai-score.sh" \
+    --repo "${JERYU_CI_REPO}" --branch "${JERYU_CI_BRANCH}" \
+    --head "${JERYU_CI_HEAD_SHA}" --score-json .jankurai/repo-score.json \
+    --audit-mode full
+fi
+
 # The pre-approval gate: the verdict the hosted jankurai/proof will publish for
 # this head, before the PR exists. Refuses only where the rollout is on
 # (agent/jankurai-gate.toml); elsewhere it reports and passes.

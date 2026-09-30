@@ -692,6 +692,24 @@ pub(crate) fn can_publish_gate_statuses(account: &AccountSummary) -> bool {
     account.role == UserRole::Admin || publishers.iter().any(|login| login == &account.login)
 }
 
+/// Accounts whose jankurai report the forge will treat as authoritative: the
+/// runner identities named in `JERYU_JANKURAI_SCORERS` (comma-separated,
+/// default `gatebot`), plus global admins for maintenance backfills.
+///
+/// Scoring moved off the forge host, so an identity here is trusted to have run
+/// the governed auditor. That is why it is a short, configured list and not
+/// "anyone who can write the repository": the ticket, the head, the base and
+/// the auditor digest are all checked on top of it.
+pub(crate) fn can_submit_runner_audit(account: &AccountSummary) -> bool {
+    static SCORERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let scorers = SCORERS.get_or_init(|| {
+        publisher_list(
+            &std::env::var("JERYU_JANKURAI_SCORERS").unwrap_or_else(|_| "gatebot".into()),
+        )
+    });
+    account.role == UserRole::Admin || scorers.iter().any(|login| login == &account.login)
+}
+
 /// Recording a deployment (or appending one of its statuses) is a claim about
 /// what an environment runs, which the release views and rollback decisions
 /// read as fact. Global admin alone is not enough: the automation identities

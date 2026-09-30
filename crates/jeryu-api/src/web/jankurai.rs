@@ -14,6 +14,7 @@
 //! [`quality_gate`] serves the same data under `/api/v1/quality-gate/*` in the
 //! shape the web console's Quality gate pages read.
 
+pub(crate) mod audits;
 mod disputes;
 pub(crate) mod quality_gate;
 #[cfg(test)]

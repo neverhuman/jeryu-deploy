@@ -27,6 +27,7 @@ use jeryu_readmodel::contracts::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::jankurai::audits::{RunnerAuditSubmission, authorize_runner_submission};
 use super::markdown::render_markdown;
 use super::paging::{PageInfo, PageParams, PageRejection};
 use super::{WebState, api_error};
@@ -496,22 +497,24 @@ pub(super) async fn fleet_tool_adoption(
     .into_response()
 }
 
-/// POST /api/v1/repos/:id/jankurai-scores — global-admin maintenance ingest for
-/// a server-side CI lane or backfill sweep. Idempotent per (branch, commit_sha).
-/// Ordinary repository writers cannot mint audit evidence.
+/// POST /api/v1/repos/:id/jankurai-scores — the one way a head gets an
+/// authoritative jankurai score.
+///
+/// Two callers, one route. A gate runner submits the report it produced for an
+/// open audit ticket: the ticket binds the report to an exact branch, head and
+/// base, the governed auditor's digest is checked, the forge derives the
+/// verdict from the report itself, and `jankurai/proof` is completed from that.
+/// A global admin may still ingest a raw score for a backfill sweep, which
+/// records the score and nothing else.
+///
+/// Anything that fails a check is rejected and nothing is recorded — a forged
+/// or mismatched report never becomes a pass.
 pub(super) async fn repo_jankurai_scores_ingest(
     State(state): State<std::sync::Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
     AxumPath(id): AxumPath<String>,
     body: Bytes,
 ) -> AxumResponse {
-    if !super::auth::can_publish_external_ci_evidence(&account) {
-        return api_error(
-            axum::http::StatusCode::FORBIDDEN,
-            "permission_denied",
-            "jankurai score publication requires global-admin access",
-        );
-    }
     let Some(repo) = find_repo(&state, &id) else {
         return api_error(
             axum::http::StatusCode::NOT_FOUND,
@@ -519,7 +522,98 @@ pub(super) async fn repo_jankurai_scores_ingest(
             "repository not found",
         );
     };
-    let request: RecordJankuraiScoreRequest = match serde_json::from_slice(&body) {
+    // A runner submission carries its provenance; anything without it can only
+    // be an admin backfill.
+    match serde_json::from_slice::<RunnerAuditSubmission>(&body) {
+        Ok(submission) => runner_audit_ingest(&state, &account, &repo, &submission),
+        Err(_) => admin_score_ingest(&state, &account, &repo, &body),
+    }
+}
+
+/// A gate runner's report for one ticketed head.
+fn runner_audit_ingest(
+    state: &WebState,
+    account: &AccountSummary,
+    repo: &Repository,
+    submission: &RunnerAuditSubmission,
+) -> AxumResponse {
+    let ticket = match authorize_runner_submission(account, &repo.owner, &repo.name, submission) {
+        Ok(ticket) => ticket,
+        Err(rejected) => {
+            return api_error(
+                rejected.status,
+                if rejected.status == axum::http::StatusCode::FORBIDDEN {
+                    "permission_denied"
+                } else {
+                    "invalid_input"
+                },
+                &rejected.reason,
+            );
+        }
+    };
+    // Keep the provenance with the score: which runner, which install, which
+    // base the report was produced against.
+    let report = submission.report.clone().map(|report| {
+        let mut report = report;
+        if let Some(object) = report.as_object_mut() {
+            object.insert(
+                "jeryu_audit_provenance".to_string(),
+                json!({
+                    "runner_id": submission.runner_id,
+                    "base_sha": ticket.base_sha,
+                    "audit_mode": submission.audit_mode,
+                    "jankurai_version": submission.jankurai_version,
+                    "jankurai_sha256": submission.jankurai_sha256,
+                    "jankurai_receipt_sha256": submission.jankurai_receipt_sha256,
+                }),
+            );
+        }
+        report
+    });
+    match crate::ci_bridge::record_audited_head(
+        state.github.core(),
+        &crate::ci_bridge::AuditedHead {
+            owner: &repo.owner,
+            repo: &repo.name,
+            branch: &ticket.branch,
+            head_sha: &ticket.head_sha,
+            origin_base_url: &crate::ci_bridge::default_origin_base_url(),
+        },
+        report,
+        submission.tool_exit.unwrap_or(0),
+    ) {
+        Ok(score) => (axum::http::StatusCode::CREATED, Json(score_summary(&score))).into_response(),
+        Err(ForgeError::Validation(reason)) => score_ingest_invalid(&reason),
+        Err(ForgeError::NotFound(_)) => api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found",
+            "repository not found",
+        ),
+        Err(error) => api_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_failed",
+            &format!("score could not be persisted: {error}"),
+        ),
+    }
+}
+
+/// Global-admin maintenance ingest for a backfill sweep. Idempotent per
+/// (branch, commit_sha). Ordinary repository writers cannot mint audit
+/// evidence, and this path publishes no check of its own.
+fn admin_score_ingest(
+    state: &WebState,
+    account: &AccountSummary,
+    repo: &Repository,
+    body: &Bytes,
+) -> AxumResponse {
+    if !super::auth::can_publish_external_ci_evidence(account) {
+        return api_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "permission_denied",
+            "jankurai score publication requires global-admin access",
+        );
+    }
+    let request: RecordJankuraiScoreRequest = match serde_json::from_slice(body) {
         Ok(request) => request,
         Err(error) => {
             return score_ingest_invalid(&format!("body failed to parse: {error}"));

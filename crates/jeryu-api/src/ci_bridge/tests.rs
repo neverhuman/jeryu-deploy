@@ -1,46 +1,11 @@
 use super::*;
+use audit_queue::{
+    AUDIT_QUEUE_CAPACITY, AuditQueue, AuditTicket, CLAIM_LEASE_SECONDS, EnqueueOutcome, skip_reason,
+};
+use chrono::{Duration, Utc};
 use jeryu_core::CreateRepositoryRequest;
 use jeryu_gitd::refs::GitRef;
 use std::fs;
-
-#[cfg(unix)]
-fn write_test_jankurai(path: &Path) {
-    use std::io::Write as _;
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut file = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .unwrap();
-    file.write_all(b"#!/usr/bin/env bash\nprintf 'jankurai 1.6.11\\n'\n")
-        .unwrap();
-    file.sync_all().unwrap();
-    drop(file);
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-
-    // llvm-cov can race an immediately created executable on Linux and return
-    // ETXTBSY even after the writer has closed. Stabilize only this disposable
-    // fixture; production identity verification deliberately remains a single
-    // fail-closed hash-and-execute attempt.
-    for attempt in 0..25 {
-        match Command::new(path).arg("--version").output() {
-            Ok(output) => {
-                assert!(output.status.success());
-                assert_eq!(
-                    String::from_utf8_lossy(&output.stdout).trim(),
-                    "jankurai 1.6.11"
-                );
-                return;
-            }
-            Err(error) if error.raw_os_error() == Some(26) && attempt < 24 => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(error) => panic!("test jankurai fixture did not become executable: {error}"),
-        }
-    }
-    unreachable!("bounded fixture readiness loop must return or panic");
-}
 
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -77,259 +42,6 @@ fn write(root: &Path, rel: &str, body: &str) {
         fs::create_dir_all(parent).unwrap();
     }
     fs::write(path, body).unwrap();
-}
-
-#[cfg(unix)]
-#[test]
-fn governed_jankurai_identity_rejects_version_digest_and_physical_substitution() {
-    use std::os::unix::fs::symlink;
-
-    let temp = tempfile::tempdir().unwrap();
-    let good = temp.path().join("jankurai-good");
-    write_test_jankurai(&good);
-    let good_sha = hex::encode(Sha256::digest(fs::read(&good).unwrap()));
-
-    let good_result = verify_jankurai_identity(&good, "jankurai 1.6.11", &good_sha);
-    assert!(good_result.is_ok(), "{good_result:?}");
-    assert!(verify_jankurai_identity(&good, "jankurai 1.6.10", &good_sha).is_err());
-    assert!(verify_jankurai_identity(&good, "jankurai 1.6.11", &"0".repeat(64)).is_err());
-
-    let linked = temp.path().join("jankurai-linked");
-    symlink(&good, &linked).unwrap();
-    assert!(verify_jankurai_identity(&linked, "jankurai 1.6.11", &good_sha).is_err());
-
-    let hard_target = temp.path().join("jankurai-hard-target");
-    let hard_alias = temp.path().join("jankurai-hard-alias");
-    fs::copy(&good, &hard_target).unwrap();
-    fs::hard_link(&hard_target, &hard_alias).unwrap();
-    assert!(verify_jankurai_identity(&hard_target, "jankurai 1.6.11", &good_sha).is_err());
-}
-
-fn governed_receipt(binary: &Path, binary_sha: &str) -> serde_json::Value {
-    let governed: serde_json::Value =
-        serde_json::from_str(GOVERNED_JANKURAI_INSTALLATION_RECEIPT_JSON).unwrap();
-    serde_json::json!({
-        "binary": {
-            "sha256": binary_sha,
-            "version_output": "jankurai 1.6.11"
-        },
-        "build": governed.pointer("/build").unwrap().clone(),
-        "conclusion": "success",
-        "governance": {
-            "manifest_commit": GOVERNED_JANKURAI_MANIFEST_COMMIT,
-            "manifest_repo": GOVERNED_JANKURAI_MANIFEST_REPO,
-            "manifest_sha256": GOVERNED_JANKURAI_MANIFEST_SHA256,
-            "manifest_tree": GOVERNED_JANKURAI_MANIFEST_TREE,
-            "protected_main": true,
-            "protection_policy": "immutable-main-v1",
-            "status": "governed"
-        },
-        "installation": {
-            "atomic": true,
-            "path": binary
-        },
-        "operator": "jeryu-verifier-test",
-        "run_id": "jeryu-verifier-test-run",
-        "schema": "jeryu.jankurai-installation/v2",
-        "source": {
-            "archive_sha256": GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256,
-            "cargo_lock_sha256": GOVERNED_JANKURAI_CARGO_LOCK_SHA256,
-            "commit": GOVERNED_JANKURAI_SOURCE_REV,
-            "remote": GOVERNED_JANKURAI_SOURCE_REPO,
-            "tag": GOVERNED_JANKURAI_SOURCE_TAG,
-            "tree": GOVERNED_JANKURAI_SOURCE_TREE,
-            "verification": "release-authoritative"
-        },
-        "test_mode": false
-    })
-}
-
-fn write_content_addressed_receipt(root: &Path, document: &serde_json::Value) -> PathBuf {
-    let bytes = serde_json::to_vec_pretty(document).unwrap();
-    let digest = hex::encode(Sha256::digest(&bytes));
-    let path = root.join(format!("{digest}.json"));
-    fs::write(&path, bytes).unwrap();
-    path
-}
-
-#[cfg(unix)]
-#[test]
-fn governed_jankurai_authority_requires_complete_content_addressed_receipt() {
-    let temp = tempfile::tempdir().unwrap();
-    let binary = temp.path().join("jankurai");
-    write_test_jankurai(&binary);
-    let binary_sha = hex::encode(Sha256::digest(fs::read(&binary).unwrap()));
-
-    let valid_document = governed_receipt(&binary, &binary_sha);
-    let valid = write_content_addressed_receipt(temp.path(), &valid_document);
-    let valid_result = verify_jankurai_authority(
-        &binary,
-        std::slice::from_ref(&valid),
-        "jankurai 1.6.11",
-        &binary_sha,
-    );
-    assert!(valid_result.is_ok(), "{valid_result:?}");
-    assert!(verify_jankurai_authority(&binary, &[], "jankurai 1.6.11", &binary_sha).is_err());
-
-    let tampered = write_content_addressed_receipt(temp.path(), &valid_document);
-    fs::write(&tampered, b"{}").unwrap();
-    assert!(
-        verify_jankurai_authority(&binary, &[tampered], "jankurai 1.6.11", &binary_sha,).is_err()
-    );
-
-    let mut wrong_schema = valid_document.clone();
-    wrong_schema["schema"] = serde_json::json!("jeryu.jankurai-installation/v1");
-    let wrong_schema_path = write_content_addressed_receipt(temp.path(), &wrong_schema);
-    assert!(
-        verify_jankurai_authority(
-            &binary,
-            &[wrong_schema_path],
-            "jankurai 1.6.11",
-            &binary_sha,
-        )
-        .is_err()
-    );
-
-    let build_fields = valid_document["build"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    for field in &build_fields {
-        let mut wrong = valid_document.clone();
-        wrong["build"][field.as_str()] = serde_json::json!("wrong-authority");
-        let wrong_path = write_content_addressed_receipt(temp.path(), &wrong);
-        assert!(
-            verify_jankurai_authority(&binary, &[wrong_path], "jankurai 1.6.11", &binary_sha,)
-                .is_err(),
-            "build-field mutation was accepted: {field}"
-        );
-
-        let mut missing = valid_document.clone();
-        missing["build"].as_object_mut().unwrap().remove(field);
-        let missing_path = write_content_addressed_receipt(temp.path(), &missing);
-        assert!(
-            verify_jankurai_authority(&binary, &[missing_path], "jankurai 1.6.11", &binary_sha,)
-                .is_err(),
-            "missing build field was accepted: {field}"
-        );
-    }
-
-    let mut unexpected_build_field = valid_document.clone();
-    unexpected_build_field["build"]["unexpected_authority"] = serde_json::json!(true);
-    let unexpected_build_path =
-        write_content_addressed_receipt(temp.path(), &unexpected_build_field);
-    assert!(
-        verify_jankurai_authority(
-            &binary,
-            &[unexpected_build_path],
-            "jankurai 1.6.11",
-            &binary_sha,
-        )
-        .is_err()
-    );
-
-    let mut installed_document = valid_document.clone();
-    installed_document["timestamp"] = serde_json::json!("2026-08-12T00:00:00Z");
-    installed_document["installation"]["previous_binary_sha256"] =
-        serde_json::json!("0".repeat(64));
-    installed_document["installation"]["rollback_artifact"] =
-        serde_json::json!("/tmp/jankurai-rollback");
-    installed_document["installation"]["lock"] = serde_json::json!({
-        "exclusive": true,
-        "held_through_receipt": true,
-        "identity": "1:2:3:4:600:1",
-        "path": "/tmp/jankurai-install.lock"
-    });
-    let installed_path = write_content_addressed_receipt(temp.path(), &installed_document);
-    assert!(
-        verify_jankurai_authority(&binary, &[installed_path], "jankurai 1.6.11", &binary_sha,)
-            .is_ok()
-    );
-
-    for (pointer, field) in [
-        ("", "unexpected_authority"),
-        ("/source", "unexpected_authority"),
-        ("/governance", "unexpected_authority"),
-        ("/binary", "unexpected_authority"),
-    ] {
-        let mut unexpected = valid_document.clone();
-        unexpected
-            .pointer_mut(pointer)
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .insert(field.to_string(), serde_json::json!(true));
-        let unexpected_path = write_content_addressed_receipt(temp.path(), &unexpected);
-        assert!(
-            verify_jankurai_authority(&binary, &[unexpected_path], "jankurai 1.6.11", &binary_sha,)
-                .is_err(),
-            "unexpected authority field was accepted: {pointer}/{field}"
-        );
-    }
-
-    let mut missing_operator = valid_document.clone();
-    missing_operator.as_object_mut().unwrap().remove("operator");
-    let missing_operator_path = write_content_addressed_receipt(temp.path(), &missing_operator);
-    assert!(
-        verify_jankurai_authority(
-            &binary,
-            &[missing_operator_path],
-            "jankurai 1.6.11",
-            &binary_sha,
-        )
-        .is_err()
-    );
-
-    let mut wrong_run_id = valid_document.clone();
-    wrong_run_id["run_id"] = serde_json::json!(42);
-    let wrong_run_id_path = write_content_addressed_receipt(temp.path(), &wrong_run_id);
-    assert!(
-        verify_jankurai_authority(
-            &binary,
-            &[wrong_run_id_path],
-            "jankurai 1.6.11",
-            &binary_sha,
-        )
-        .is_err()
-    );
-
-    let mut empty_timestamp = installed_document;
-    empty_timestamp["timestamp"] = serde_json::json!("");
-    let empty_timestamp_path = write_content_addressed_receipt(temp.path(), &empty_timestamp);
-    assert!(
-        verify_jankurai_authority(
-            &binary,
-            &[empty_timestamp_path],
-            "jankurai 1.6.11",
-            &binary_sha,
-        )
-        .is_err()
-    );
-
-    for pointer in [
-        "/source/remote",
-        "/source/tag",
-        "/source/commit",
-        "/source/tree",
-        "/source/archive_sha256",
-        "/source/cargo_lock_sha256",
-        "/governance/manifest_commit",
-        "/governance/manifest_tree",
-        "/governance/manifest_sha256",
-        "/binary/sha256",
-        "/installation/path",
-    ] {
-        let mut wrong = valid_document.clone();
-        *wrong.pointer_mut(pointer).unwrap() = serde_json::json!("wrong-authority");
-        let wrong_path = write_content_addressed_receipt(temp.path(), &wrong);
-        assert!(
-            verify_jankurai_authority(&binary, &[wrong_path], "jankurai 1.6.11", &binary_sha,)
-                .is_err(),
-            "receipt mutation was accepted: {pointer}"
-        );
-    }
 }
 
 fn init_version_repo(root: &Path) -> (String, String) {
@@ -390,231 +102,6 @@ fn ref_update(ref_name: &str, previous_oid: &str, new_oid: &str) -> RefUpdate {
         old_oid: previous_oid.to_owned(),
         new_oid: new_oid.to_owned(),
     }
-}
-
-#[cfg(unix)]
-#[test]
-fn push_audit_replaces_a_preexisting_tool_failure_at_the_same_head() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let work = tempfile::tempdir().unwrap();
-    let bare = tempfile::tempdir().unwrap();
-    let tool = tempfile::tempdir().unwrap();
-    let (_, head) = init_version_repo(work.path());
-    clone_bare(work.path(), bare.path());
-
-    let auditor = tool.path().join("jankurai");
-    let script = format!(
-        r#"#!/bin/sh
-set -eu
-output=
-base=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --json)
-      output=$2
-      shift 2
-      ;;
-    --base-ref)
-      base=$2
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-test -n "$output"
-test -n "$base"
-test "$base" != "{}"
-mkdir -p "$(dirname "$output")"
-printf '%s\n' '{{"score":92,"caps_applied":[],"decision":{{"hard_findings":0,"minimum_score":85}}}}' > "$output"
-"#,
-        head
-    );
-    fs::write(&auditor, script).unwrap();
-    fs::set_permissions(&auditor, fs::Permissions::from_mode(0o755)).unwrap();
-
-    let core = ForgeCore::new();
-    core.create_repository(
-        "jeryu",
-        CreateRepositoryRequest {
-            name: "demo".to_string(),
-            private: true,
-            description: None,
-            default_branch: Some("main".to_string()),
-        },
-    )
-    .unwrap();
-    core.record_jankurai_score(
-        "jeryu",
-        "demo",
-        RecordJankuraiScoreRequest {
-            branch: "main".to_string(),
-            commit_sha: head.clone(),
-            decision: "tool-failed".to_string(),
-            tool_exit: Some(2),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    core.create_check_run(
-        "jeryu",
-        "demo",
-        CreateCheckRunRequest {
-            name: "jankurai/proof".to_string(),
-            head_sha: head.clone(),
-            status: Some(CheckRunStatus::Completed),
-            conclusion: Some(CheckConclusion::Failure),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    record_authoritative_jankurai_score_with(
-        &core,
-        "git",
-        bare.path(),
-        &JankuraiRepo {
-            owner: "jeryu",
-            repo: "demo",
-            origin_base_url: "http://forge.test/",
-        },
-        &ref_update("refs/heads/main", ZERO_OID, &head),
-        || Ok(auditor),
-    );
-
-    let scores = core
-        .list_jankurai_scores("jeryu", "demo", Some("main"), Some(&head))
-        .unwrap();
-    assert_eq!(scores.len(), 1, "same-head recovery must remain an upsert");
-    assert_eq!(scores[0].decision, "scored");
-    assert_eq!(scores[0].score, Some(92));
-    assert_eq!(scores[0].hard_findings, 0);
-    assert!(scores[0].caps_applied.is_empty());
-
-    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
-    assert!(
-        checks.check_runs.iter().any(|check| {
-            check.name == "jankurai/proof"
-                && check.status == CheckRunStatus::Completed
-                && check.conclusion == Some(CheckConclusion::Success)
-        }),
-        "the recomputed score must publish a succeeding exact-head proof"
-    );
-    let latest = checks
-        .check_runs
-        .iter()
-        .max_by_key(|check| check.completed_at.unwrap_or(check.started_at))
-        .unwrap();
-    assert_eq!(latest.name, "jankurai/proof");
-    assert_eq!(latest.conclusion, Some(CheckConclusion::Success));
-    assert_eq!(
-        latest.details_url.as_deref(),
-        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str())
-    );
-    let output = latest.output.as_ref().expect("proof check carries output");
-    assert_eq!(output.title, "score 92 >= floor 85");
-    assert!(output.summary.contains("score: 92"), "{}", output.summary);
-    assert!(output.summary.contains("floor: 85"), "{}", output.summary);
-    assert!(
-        output.summary.contains("caps applied: none"),
-        "{}",
-        output.summary
-    );
-    assert!(
-        output.summary.contains("hard findings: 0"),
-        "{}",
-        output.summary
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn failing_push_audit_posts_score_floor_and_caps_on_the_proof_check() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let work = tempfile::tempdir().unwrap();
-    let bare = tempfile::tempdir().unwrap();
-    let tool = tempfile::tempdir().unwrap();
-    let (_, head) = init_version_repo(work.path());
-    clone_bare(work.path(), bare.path());
-
-    let auditor = tool.path().join("jankurai");
-    let script = r#"#!/bin/sh
-set -eu
-output=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --json)
-      output=$2
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-mkdir -p "$(dirname "$output")"
-printf '%s\n' '{"score":78,"caps_applied":["dead-language"],"decision":{"hard_findings":2,"minimum_score":80}}' > "$output"
-"#;
-    fs::write(&auditor, script).unwrap();
-    fs::set_permissions(&auditor, fs::Permissions::from_mode(0o755)).unwrap();
-
-    let core = ForgeCore::new();
-    core.create_repository(
-        "jeryu",
-        CreateRepositoryRequest {
-            name: "demo".to_string(),
-            private: true,
-            description: None,
-            default_branch: Some("main".to_string()),
-        },
-    )
-    .unwrap();
-
-    record_authoritative_jankurai_score_with(
-        &core,
-        "git",
-        bare.path(),
-        &JankuraiRepo {
-            owner: "jeryu",
-            repo: "demo",
-            origin_base_url: "http://forge.test",
-        },
-        &ref_update("refs/heads/main", ZERO_OID, &head),
-        || Ok(auditor),
-    );
-
-    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
-    let proof = checks
-        .check_runs
-        .iter()
-        .find(|check| check.name == "jankurai/proof")
-        .expect("proof check is posted");
-    assert_eq!(proof.conclusion, Some(CheckConclusion::Failure));
-    assert_eq!(
-        proof.details_url.as_deref(),
-        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str())
-    );
-    assert_eq!(
-        crate::github::check_runs::details_url_problem(proof.details_url.as_deref().unwrap()),
-        None
-    );
-    let output = proof.output.as_ref().expect("proof check carries output");
-    assert_eq!(output.title, "score 78 < floor 85");
-    assert!(output.summary.contains("score: 78"), "{}", output.summary);
-    assert!(output.summary.contains("floor: 85"), "{}", output.summary);
-    assert!(
-        output.summary.contains("caps applied: dead-language"),
-        "{}",
-        output.summary
-    );
-    assert!(
-        output.summary.contains("hard findings: 2"),
-        "{}",
-        output.summary
-    );
 }
 
 #[test]
@@ -1067,29 +554,9 @@ fn mock_flag_gates_workflow_check_run_seeding() {
     assert!(mock_flag_set(Some("true")));
 }
 
-/// A `tool-failed` proof exists to tell a reader what went wrong, and a
-/// re-audit of the same head must not leave two rows saying it.
-#[cfg(unix)]
-#[test]
-fn a_failed_audit_names_its_reason_and_posts_one_proof_per_head() {
-    use std::os::unix::fs::PermissionsExt;
+// --- the audit queue a push writes ---
 
-    let work = tempfile::tempdir().unwrap();
-    let bare = tempfile::tempdir().unwrap();
-    let tool = tempfile::tempdir().unwrap();
-    let (_, head) = init_version_repo(work.path());
-    clone_bare(work.path(), bare.path());
-
-    // The auditor fails the way the first push of a repository failed: it has
-    // no base ref to diff against, says so on stderr, and writes no report.
-    let auditor = tool.path().join("jankurai");
-    fs::write(
-        &auditor,
-        "#!/bin/sh\necho 'no usable base ref: refs/heads/main does not exist' >&2\nexit 3\n",
-    )
-    .unwrap();
-    fs::set_permissions(&auditor, fs::Permissions::from_mode(0o755)).unwrap();
-
+fn demo_core() -> ForgeCore {
     let core = ForgeCore::new();
     core.create_repository(
         "jeryu",
@@ -1101,96 +568,447 @@ fn a_failed_audit_names_its_reason_and_posts_one_proof_per_head() {
         },
     )
     .unwrap();
+    core
+}
 
-    let audit = || {
-        record_authoritative_jankurai_score_with(
+fn ticket(branch: &str, head: &str) -> AuditTicket {
+    AuditTicket::new("jeryu", "demo", branch, head, "0".repeat(40).as_str())
+}
+
+/// The push path writes work and publishes a pending proof. It runs no
+/// auditor: nothing here clones, checks out, or scores the head.
+#[test]
+fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let (base, head) = init_version_repo(work.path());
+    clone_bare(work.path(), bare.path());
+    let core = demo_core();
+
+    queue_head_audit(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "demo",
+        &ref_update("refs/heads/main", &base, &head),
+        "http://forge.test",
+    );
+
+    let queued: Vec<AuditTicket> = audit_queue::queue()
+        .lock()
+        .unwrap()
+        .tickets()
+        .iter()
+        .filter(|ticket| ticket.head_sha == head)
+        .cloned()
+        .collect();
+    assert_eq!(queued.len(), 1, "one ticket per head");
+    assert_eq!(queued[0].branch, "main");
+    assert_eq!(queued[0].base_sha, base);
+    assert!(queued[0].claimed_by.is_none());
+
+    assert!(
+        core.list_jankurai_scores("jeryu", "demo", None, Some(&head))
+            .unwrap()
+            .is_empty(),
+        "the forge records no score of its own"
+    );
+    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let proof = checks
+        .check_runs
+        .iter()
+        .find(|check| check.name == JANKURAI_PROOF_CHECK)
+        .expect("a pending proof is published");
+    assert_eq!(proof.status, CheckRunStatus::InProgress);
+    assert_eq!(proof.conclusion, None, "it must never go green by default");
+    assert_eq!(
+        proof.output.as_ref().unwrap().title,
+        "queued for a gate runner"
+    );
+
+    // A repeated push callback for the same head adds no second job.
+    queue_head_audit(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "demo",
+        &ref_update("refs/heads/main", &base, &head),
+        "http://forge.test",
+    );
+    let still_one = audit_queue::queue()
+        .lock()
+        .unwrap()
+        .tickets()
+        .iter()
+        .filter(|ticket| ticket.head_sha == head)
+        .count();
+    assert_eq!(still_one, 1);
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("jeryu", "demo", &head);
+}
+
+/// A branch with no merge-base is not audited against the empty tree: its
+/// check says so, and it is neither a tool failure nor a job.
+#[test]
+fn a_head_without_a_base_is_not_audited_at_all() {
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let (_, head) = init_version_repo(work.path());
+    clone_bare(work.path(), bare.path());
+    git(bare.path(), &["update-ref", "refs/heads/orphan", &head]);
+    git(bare.path(), &["update-ref", "-d", "refs/heads/main"]);
+    let core = demo_core();
+    core.create_pull_request(
+        "jeryu",
+        "demo",
+        "author",
+        jeryu_core::CreatePullRequestRequest {
+            title: "orphan".to_string(),
+            head: "orphan".to_string(),
+            base: "main".to_string(),
+            head_sha: Some(head.clone()),
+            base_sha: Some(head.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    queue_head_audit(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "demo",
+        &ref_update("refs/heads/orphan", ZERO_OID, &head),
+        "http://forge.test",
+    );
+
+    assert!(
+        !audit_queue::queue()
+            .lock()
+            .unwrap()
+            .tickets()
+            .iter()
+            // The queue is process-wide and other tests queue this same fixture
+            // head on their own branches, so look at this test's branch only.
+            .any(|ticket| ticket.branch == "orphan" && ticket.head_sha == head),
+        "a baseless head queues no whole-repository audit"
+    );
+    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let proof = checks
+        .check_runs
+        .iter()
+        .find(|check| check.name == JANKURAI_PROOF_CHECK)
+        .expect("the head still gets a proof");
+    assert_eq!(proof.conclusion, Some(CheckConclusion::Neutral));
+    assert_eq!(proof.output.as_ref().unwrap().title, "no base branch yet");
+}
+
+/// Only pull request heads and the protected main are audited.
+#[test]
+fn only_pull_heads_and_the_protected_main_are_audited() {
+    for branch in [
+        "import/2026-09-28",
+        "preserve/history",
+        "archive/old",
+        "archives/older",
+        "bot/auto-pin",
+        "auto/pin-web-0a7480c6fa87",
+        "import",
+        "archive",
+    ] {
+        assert!(
+            skip_reason(branch, false).is_some(),
+            "{branch} creates no audit job"
+        );
+        assert!(
+            skip_reason(branch, true).is_some(),
+            "{branch} creates no audit job even with a pull request"
+        );
+    }
+    assert_eq!(skip_reason("main", false), None);
+    assert_eq!(skip_reason("codex/feature", true), None);
+    assert!(
+        skip_reason("codex/feature", false).is_some(),
+        "a branch nobody opened a pull request for is not audited"
+    );
+}
+
+/// The queue keeps one ticket per head, drops superseded tips, hands claimed
+/// work to one runner at a time, and recovers a lease a runner abandoned.
+#[test]
+fn the_queue_deduplicates_supersedes_and_recovers_leases() {
+    let mut queue = AuditQueue::default();
+    assert_eq!(
+        queue.enqueue(ticket("codex/feature", &"a".repeat(40))),
+        EnqueueOutcome::Queued
+    );
+    assert_eq!(
+        queue.enqueue(ticket("codex/feature", &"a".repeat(40))),
+        EnqueueOutcome::AlreadyQueued
+    );
+    assert_eq!(
+        queue.enqueue(ticket("codex/feature", &"b".repeat(40))),
+        EnqueueOutcome::Superseded(1),
+        "only the branch tip is worth auditing"
+    );
+    assert_eq!(queue.tickets().len(), 1);
+
+    let claimed = queue.claim("xbabe2/slot0", 4);
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].head_sha, "b".repeat(40));
+    assert!(
+        queue.claim("xbabe2/slot1", 4).is_empty(),
+        "claimed work is not handed out twice"
+    );
+
+    // A claimed ticket is running work, so a newer tip does not evict it.
+    assert_eq!(
+        queue.enqueue(ticket("codex/feature", &"c".repeat(40))),
+        EnqueueOutcome::Queued
+    );
+    assert_eq!(queue.tickets().len(), 2);
+
+    // A runner that never reported loses the lease and the head is claimable
+    // again, so one lost runner does not strand a head as pending forever.
+    for ticket in queue.tickets_for_test() {
+        ticket.claimed_at = Some(Utc::now() - Duration::seconds(CLAIM_LEASE_SECONDS + 1));
+    }
+    let reclaimed = queue.claim("xbabe2/slot1", 4);
+    assert_eq!(reclaimed.len(), 2);
+
+    let taken = queue.take("jeryu", "demo", &"b".repeat(40)).unwrap();
+    assert_eq!(taken.branch, "codex/feature");
+    assert!(queue.take("jeryu", "demo", &"b".repeat(40)).is_none());
+}
+
+/// A bulk push cannot grow the forge without bound; the oldest unclaimed work
+/// is dropped, and those heads keep a pending proof rather than a green one.
+#[test]
+fn the_queue_is_bounded() {
+    let mut queue = AuditQueue::default();
+    for index in 0..(AUDIT_QUEUE_CAPACITY + 50) {
+        queue.enqueue(ticket(
+            &format!("codex/branch-{index}"),
+            &format!("{index:040x}"),
+        ));
+    }
+    assert_eq!(queue.tickets().len(), AUDIT_QUEUE_CAPACITY);
+}
+
+/// Only the governed auditor's own report is authoritative.
+#[test]
+fn a_report_from_another_binary_is_refused() {
+    let (version, sha256) = governed_auditor_identity().expect("the pinned receipt agrees");
+    assert!(verify_reported_auditor(&version, &sha256).is_ok());
+    assert!(verify_reported_auditor(&version, &sha256.to_uppercase()).is_ok());
+    assert!(verify_reported_auditor("jankurai 1.6.10", &sha256).is_err());
+    assert!(verify_reported_auditor(&version, &"0".repeat(64)).is_err());
+    assert!(verify_reported_auditor("", "").is_err());
+}
+
+/// A runner's report becomes the head's score and completes the proof — the
+/// forge reads the verdict out of the report rather than taking one on faith.
+#[test]
+fn a_recorded_report_completes_the_proof_from_the_report_itself() {
+    let core = demo_core();
+    let head = "d".repeat(40);
+    let score = record_audited_head(
+        &core,
+        &AuditedHead {
+            owner: "jeryu",
+            repo: "demo",
+            branch: "main",
+            head_sha: &head,
+            origin_base_url: "http://forge.test",
+        },
+        Some(serde_json::json!({
+            "score": 92,
+            "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 85}
+        })),
+        0,
+    )
+    .unwrap();
+    assert_eq!(score.score, Some(92));
+    assert_eq!(score.decision, "scored");
+
+    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let proof = checks
+        .check_runs
+        .iter()
+        .find(|check| check.name == JANKURAI_PROOF_CHECK)
+        .unwrap();
+    assert_eq!(proof.status, CheckRunStatus::Completed);
+    assert_eq!(proof.conclusion, Some(CheckConclusion::Success));
+    assert_eq!(
+        proof.details_url.as_deref(),
+        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str())
+    );
+
+    // A head that already carries a score is not queued again, whoever scored
+    // it: one audit per head across the forge and `<repo>/required`.
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let (base, _) = init_version_repo(work.path());
+    clone_bare(work.path(), bare.path());
+    queue_head_audit(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "demo",
+        &ref_update("refs/heads/main", &base, &head),
+        "http://forge.test",
+    );
+    assert!(
+        !audit_queue::queue()
+            .lock()
+            .unwrap()
+            .tickets()
+            .iter()
+            .any(|ticket| ticket.head_sha == head)
+    );
+}
+
+/// The bulk push that wedged the forge: hundreds of import branches in one
+/// go. Every head is decided from the refs alone, so nothing clones, nothing
+/// checks out, and nothing audits — the queue stays empty and the sandbox
+/// directory an audit would have needed is never created.
+#[test]
+fn a_bulk_push_of_two_hundred_branches_runs_no_audit_on_the_forge() {
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let (_, head) = init_version_repo(work.path());
+    clone_bare(work.path(), bare.path());
+    let core = demo_core();
+
+    let started = std::time::Instant::now();
+    let wall_clock_start = std::time::SystemTime::now();
+    for index in 0..220 {
+        queue_head_audit(
             &core,
             "git",
             bare.path(),
-            &JankuraiRepo {
+            "jeryu",
+            "demo",
+            &ref_update(&format!("refs/heads/import/batch-{index}"), ZERO_OID, &head),
+            "http://forge.test",
+        );
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "a bulk push must not do per-head work"
+    );
+
+    assert!(
+        !audit_queue::queue()
+            .lock()
+            .unwrap()
+            .tickets()
+            .iter()
+            // The queue is process-wide and other tests queue `jeryu/demo` heads
+            // in parallel, so only this test's import branches count.
+            .any(|ticket| ticket.owner == "jeryu"
+                && ticket.repo == "demo"
+                && ticket.branch.starts_with("import/batch-")),
+        "imported branches queue no audit"
+    );
+    assert_eq!(
+        core.list_check_runs("jeryu", "demo", Some(&head))
+            .unwrap()
+            .total_count,
+        0,
+        "and publish no check of their own"
+    );
+    let sandboxes = std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("jeryu-jankurai-")
+        })
+        // Only what this push created: an earlier build of the forge left its
+        // own audit sandboxes in the shared temp directory.
+        .filter(|entry| {
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| modified >= wall_clock_start)
+        })
+        .count();
+    assert_eq!(sandboxes, 0, "the forge materializes no audit sandbox");
+}
+
+/// A runner's report that produced no score still says why, and a second
+/// submission of the same verdict for the same head posts nothing new:
+/// `<repo>/required` and a runner may both report a head, and a head keeps one
+/// `jankurai/proof`.
+#[test]
+fn a_failed_report_names_its_reason_and_posts_one_proof_per_head() {
+    let core = demo_core();
+    let head = "f".repeat(40);
+    let submit = || {
+        record_audited_head(
+            &core,
+            &AuditedHead {
                 owner: "jeryu",
-                repo: "demo",
+                repo: "proof-once",
+                branch: "main",
+                head_sha: &head,
                 origin_base_url: "http://forge.test",
             },
-            &ref_update("refs/heads/main", ZERO_OID, &head),
-            || Ok(auditor.clone()),
+            None,
+            3,
         )
+        .unwrap()
     };
-    audit();
-    audit();
+    let first = submit();
+    let second = submit();
+    assert_eq!(first.decision, "tool-failed");
+    assert_eq!(second.decision, "tool-failed");
 
-    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let checks = core
+        .list_check_runs("jeryu", "proof-once", Some(&head))
+        .unwrap();
     let proofs: Vec<_> = checks
         .check_runs
         .iter()
-        .filter(|check| check.name == "jankurai/proof")
+        .filter(|check| check.name == JANKURAI_PROOF_CHECK)
         .collect();
-    assert_eq!(
-        proofs.len(),
-        1,
-        "one jankurai/proof per head, not one per audit: {:?}",
-        proofs
-            .iter()
-            .map(|check| check.details_url.clone())
-            .collect::<Vec<_>>()
-    );
+    assert_eq!(proofs.len(), 1, "one jankurai/proof per head, not one per report");
     let proof = proofs[0];
     assert_eq!(proof.conclusion, Some(CheckConclusion::Failure));
     assert_eq!(
         proof.details_url.as_deref(),
-        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str()),
+        Some(format!("https://forge.test/quality-gate/heads/jeryu/proof-once/{head}").as_str()),
         "the proof must link the report over a public https page"
     );
     let output = proof.output.as_ref().expect("proof check carries output");
-    assert!(
-        output.title.contains("no usable base ref"),
-        "the title must say why: {}",
-        output.title
+    assert_eq!(
+        output.title,
+        "jankurai audit produced no score: the audit wrote no report at all"
     );
-    assert!(
-        output
-            .summary
-            .contains("reason: the auditor exited 3: no usable base ref"),
-        "the summary must carry the auditor's own error: {}",
-        output.summary
-    );
-
-    // The same reason is stored with the score, so the Quality gate page of the
-    // head reads the same words as the check.
-    let scores = core
-        .list_jankurai_scores("jeryu", "demo", Some("main"), Some(&head))
-        .unwrap();
-    assert_eq!(scores.len(), 1);
-    assert_eq!(scores[0].decision, "tool-failed");
-    assert!(
-        scores[0]
-            .report_json
-            .as_deref()
-            .is_some_and(|report| report.contains("no usable base ref")),
-        "{:?}",
-        scores[0].report_json
-    );
+    assert!(output.summary.contains("exit 3"), "{}", output.summary);
 }
 
 #[test]
 fn tool_failed_proofs_explain_every_way_the_audit_can_produce_no_score() {
-    let missing_base = missing_base_reason("shift/2026-09-29");
-    let (request, pass) = jankurai_score_request_with_reason(
-        "shift/2026-09-29",
-        "abc",
-        None,
-        -1,
-        Some(missing_base.clone()),
-    );
+    // A reason the host recorded travels to the title, the summary and the text.
+    let reason = "the auditor exited 101: thread panicked".to_string();
+    let (request, pass) =
+        jankurai_score_request_with_reason("shift/2026-09-29", "abc", None, -1, Some(reason.clone()));
     assert!(!pass);
     let output = jankurai_proof_output(&request, pass);
-    assert!(output.title.contains(&missing_base), "{}", output.title);
-    assert!(output.summary.contains(&missing_base), "{}", output.summary);
-    assert!(
-        output
-            .text
-            .is_some_and(|text| text.contains("no usable base ref"))
-    );
+    assert!(output.title.contains(&reason), "{}", output.title);
+    assert!(output.summary.contains(&reason), "{}", output.summary);
+    assert!(output.text.is_some_and(|text| text.contains("thread panicked")));
 
     // An audit that wrote a report the host cannot read says that instead of
     // repeating the bare decision word.

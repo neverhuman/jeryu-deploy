@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Jankurai scoring runs on the gate runners, not on the forge host. A push now
+  records at most one audit job per head (branch, head sha, base sha) in the
+  forge's audit queue and publishes `jankurai/proof` as pending; it runs no
+  clone, no checkout and no auditor. Runners claim jobs
+  (`POST /api/v1/jankurai-audits/claim`, `GET /api/v1/jankurai-audits`) with
+  `ops/ci/jankurai-audit-runner.sh` and submit the report through
+  `POST /api/v1/repos/:id/jankurai-scores`, which accepts it only from a runner
+  identity allowed to score (`JERYU_JANKURAI_SCORERS`, default `gatebot`), only
+  against an open job for exactly that branch, head and base, and only from the
+  governed auditor's version and sha256 — and derives the verdict from the
+  report itself. Only pull request heads and the protected `main` are audited;
+  `import/`, `preserve/`, `archive/`, `archives/`, `bot/` and `auto/` branches
+  create no job; a head with no merge-base gets a neutral `no base branch yet`
+  instead of a whole-repository audit; and with no runner the proof stays
+  pending rather than going green. `<repo>/required` submits its own audit of
+  the head (`ops/ci/pr-ci.sh`), so a head is audited once. Flow:
+  `docs/governed-jankurai.md`.
 - `jankurai/proof` is a gate, not a report: `ops/ci/jankurai-gate.sh` gives every
   repository the hosted verdict locally before a PR is opened, and for a
   repository under the rollout (`JERYU_AUDIT_GATE_REPOS`,

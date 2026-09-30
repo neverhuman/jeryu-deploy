@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+#
+# jankurai-audit-runner.sh - claim queued audit jobs and run them here.
+#
+# Authoritative jankurai scoring runs on the gate runners, not on the forge.
+# A push records one audit job per head (branch, head sha, base sha); this
+# script claims jobs, runs the governed `diff-audit` against the job's base in a
+# throwaway clone, and submits the report through the authenticated ingest,
+# which is what records the score and completes `jankurai/proof`.
+#
+# One pass, one claim batch: run it from a slot loop or a timer, never as an
+# unbounded fan-out. Each audit is niced and time-boxed, because this machine
+# also runs the PR gate.
+#
+# Usage:
+#   ops/ci/jankurai-audit-runner.sh [--max N] [--once]
+#
+# Env:
+#   JERYU_API                forge API base        (default http://127.0.0.1:8787)
+#   JERYU_FORGE_GIT_BASE     git base for clones   (default "$JERYU_API/git")
+#   JERYU_FORGE_TOKEN_FILE   runner PAT file, mode 0600 (required)
+#   JERYU_AUDIT_RUNNER_ID    runner id reported with each claim and report
+#   JERYU_AUDIT_TIMEOUT      seconds per audit     (default 900)
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=ops/ci/lib.sh
+source "${ROOT}/ops/ci/lib.sh"
+
+API="${JERYU_API:-http://127.0.0.1:8787}"
+API="${API%/}"
+GIT_BASE="${JERYU_FORGE_GIT_BASE:-${API}/git}"
+GIT_BASE="${GIT_BASE%/}"
+RUNNER_ID="${JERYU_AUDIT_RUNNER_ID:-$(hostname)/audit0}"
+AUDIT_TIMEOUT="${JERYU_AUDIT_TIMEOUT:-900}"
+MAX=1
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --max) MAX="$2"; shift 2 ;;
+    # Accepted so a slot loop and a one-shot timer share one entrypoint.
+    --once) shift ;;
+    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[[ "${MAX}" =~ ^[1-8]$ ]] || { echo "--max must be 1..8" >&2; exit 2; }
+
+require_jankurai
+
+TOKEN_FILE="${JERYU_FORGE_TOKEN_FILE:-}"
+[ -n "${TOKEN_FILE}" ] || { echo "JERYU_FORGE_TOKEN_FILE is required (runner PAT)" >&2; exit 2; }
+[ -f "${TOKEN_FILE}" ] && [ ! -L "${TOKEN_FILE}" ] || { echo "token file must be a regular file" >&2; exit 2; }
+[ "$(stat -c '%a' "${TOKEN_FILE}")" = "600" ] || { echo "token file must be mode 0600" >&2; exit 2; }
+WORK_DIR="$(mktemp -d -t jankurai-audit-XXXXXX)"
+trap 'rm -rf "${WORK_DIR}"' EXIT
+AUTH_CONFIG="${WORK_DIR}/curl-auth.conf"
+token="$(cat "${TOKEN_FILE}")"
+[[ "${token}" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || { echo "token file must contain one nonempty bearer value" >&2; exit 2; }
+( umask 077; printf 'header = "Authorization: Bearer %s"\n' "${token}" > "${AUTH_CONFIG}" )
+unset token
+api_curl() { curl --disable --config "${AUTH_CONFIG}" "$@"; }
+
+claimed="${WORK_DIR}/claimed.json"
+api_curl -fsS -X POST -H 'Content-Type: application/json' \
+  --data-binary "$(printf '{"runner_id":"%s","max":%s}' "${RUNNER_ID}" "${MAX}")" \
+  "${API}/api/v1/jankurai-audits/claim" -o "${claimed}"
+
+mapfile -t JOBS < <(python3 - "${claimed}" <<'PY'
+import json
+import sys
+
+doc = json.load(open(sys.argv[1]))
+for ticket in doc.get("tickets", []):
+    print("\t".join([
+        ticket["owner"], ticket["repo"], ticket["branch"],
+        ticket["headSha"], ticket["baseSha"],
+    ]))
+PY
+)
+
+if [ "${#JOBS[@]}" -eq 0 ]; then
+  echo "[audit-runner] no audit work claimed"
+  exit 0
+fi
+
+# The audit is the heavy part of this machine's work and shares it with the PR
+# gate, so it runs niced, time-boxed, and one job after another.
+audit_one() {
+  local owner="$1" repo="$2" branch="$3" head="$4" base="$5"
+  local src="${WORK_DIR}/${repo}-${head}"
+  local out="${src}/target/jankurai/diff/diff-score.json"
+  local exit_code=0
+
+  echo "[audit-runner] ${owner}/${repo}@${head} (${branch} vs ${base})"
+  if ! git clone -q "${GIT_BASE}/${owner}/${repo}.git" "${src}" 2>&1; then
+    echo "[audit-runner] clone failed for ${owner}/${repo}@${head}" >&2
+    return 0
+  fi
+  if ! git -C "${src}" checkout -q --detach "${head}" 2>&1; then
+    echo "[audit-runner] ${head} is not in the clone" >&2
+    return 0
+  fi
+  # Forced scoring for unconfigured repositories: a head that carries no policy
+  # of its own is audited against the jeryu-managed default, dropped into the
+  # throwaway clone only (untracked files do not enter the diff set).
+  if [ ! -f "${src}/agent/audit-policy.toml" ]; then
+    mkdir -p "${src}/agent"
+    cat > "${src}/agent/audit-policy.toml" <<'POLICY'
+schema_version = "1.0.0"
+workspace = "unconfigured"
+minimum_score = 85
+hard_findings_allowed = 0
+required_tool = "jankurai"
+required_tool_version = "1.6.11"
+
+[scan]
+excluded_paths = [".jankurai/", "apps/web/dist/"]
+POLICY
+  fi
+  mkdir -p "$(dirname "${out}")"
+  # --advisory-only: always write the JSON and exit 0; the forge derives the
+  # strict verdict from the report itself.
+  timeout "${AUDIT_TIMEOUT}" nice -n 10 ionice -c3 \
+    "${JERYU_GOVERNED_JANKURAI_BIN}" diff-audit "${src}" \
+    --base-ref "${base}" --json "${out}" --advisory-only || exit_code=$?
+
+  JERYU_AUDIT_RUNNER_ID="${RUNNER_ID}" \
+    bash "${ROOT}/ops/ci/submit-jankurai-score.sh" \
+      --repo "${owner}/${repo}" --branch "${branch}" --head "${head}" \
+      --base "${base}" --score-json "${out}" --tool-exit "${exit_code}" ||
+    echo "[audit-runner] ${owner}/${repo}@${head} report refused" >&2
+  rm -rf "${src}"
+}
+
+for job in "${JOBS[@]}"; do
+  IFS=$'\t' read -r owner repo branch head base <<<"${job}"
+  audit_one "${owner}" "${repo}" "${branch}" "${head}" "${base}"
+done

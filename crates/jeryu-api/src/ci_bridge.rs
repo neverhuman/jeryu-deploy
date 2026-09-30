@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jeryu_ci_compiler::{CiKind, CompileContext, Compiler};
@@ -24,11 +24,12 @@ use jeryu_runner_core::job::{NetworkPolicy, SecretPolicy, TokenPolicy};
 use jeryu_runner_core::receipt::ReceiptStatus;
 use jeryu_runner_core::trust::{RunnerClass, TrustTier};
 use jeryu_runnerd::submit as submit_runner_job;
-use sha2::{Digest, Sha256};
 
 /// All-zero oid: a ref delete, which carries no commit to build.
 const ZERO_OID: &str = "0000000000000000000000000000000000000000";
 pub(crate) const HOST_JANKURAI_MINIMUM_SCORE: u32 = 85;
+/// The one check every audited head carries, whatever audited it.
+pub(crate) const JANKURAI_PROOF_CHECK: &str = "jankurai/proof";
 
 /// A branch ref whose tip a push moved to a new commit.
 pub(crate) struct RefUpdate {
@@ -86,11 +87,12 @@ pub(crate) fn on_push(
         if let Some(branch) = update.ref_name.strip_prefix("refs/heads/") {
             let _ = core.refresh_pull_request_heads_for_ref(owner, repo, branch, &update.new_oid);
         }
-        // Compute the host-authoritative jankurai diff-score for every changed
-        // branch head and publish `jankurai/proof` from that result. Push
-        // transport, merge, and seeded PR-head exports all route here; failures
-        // stay visibly red or unproven rather than becoming synthetic success.
-        record_authoritative_jankurai_score(
+        // Record the audit this head needs and publish a pending
+        // `jankurai/proof` for it. The forge runs no auditor: a gate runner
+        // claims the ticket, and its provenance-checked report is what
+        // completes the check. A push must stay cheap on the host that serves
+        // git for the whole family.
+        queue_head_audit(
             core,
             &git_bin,
             &resolved.path,
@@ -161,6 +163,124 @@ pub(crate) fn on_push(
     }
 }
 
+/// Record the audit a pushed head needs, and say so on `jankurai/proof`.
+///
+/// Best-effort and cheap: at most a `merge-base` in the bare repository. The
+/// check is published pending, never green — only a runner's report completes
+/// it — and a head with no base says exactly that instead of failing as a tool
+/// error or being audited against the empty tree.
+pub(crate) fn queue_head_audit(
+    core: &ForgeCore,
+    git_bin: &str,
+    bare: &Path,
+    owner: &str,
+    repo: &str,
+    update: &RefUpdate,
+    origin_base_url: &str,
+) {
+    if update.new_oid == ZERO_OID {
+        return; // ref delete: nothing to audit
+    }
+    let (status, conclusion, output) =
+        match plan_push_audit(core, git_bin, bare, owner, repo, update) {
+            // Branch classes nobody gates, and heads already covered by a score
+            // or an open ticket, get no check of their own: the head keeps
+            // whatever proof its single audit produced.
+            PushAudit::Skipped(_) | PushAudit::AlreadyCovered => return,
+            PushAudit::NoBase => (
+                CheckRunStatus::Completed,
+                Some(CheckConclusion::Neutral),
+                jankurai::jankurai_no_base_output(),
+            ),
+            PushAudit::Unqueued(reason) => (
+                CheckRunStatus::InProgress,
+                None,
+                jankurai::jankurai_unqueued_output(reason),
+            ),
+            PushAudit::Queued(ticket) => (
+                CheckRunStatus::InProgress,
+                None,
+                jankurai::jankurai_queued_output(&ticket),
+            ),
+        };
+    let _ = core.create_check_run(
+        owner,
+        repo,
+        CreateCheckRunRequest {
+            name: JANKURAI_PROOF_CHECK.to_string(),
+            head_sha: update.new_oid.clone(),
+            status: Some(status),
+            conclusion,
+            details_url: jankurai_score_details_url(origin_base_url, owner, repo, &update.new_oid),
+            output: Some(output),
+        },
+    );
+}
+
+/// The head a submitted report is about, and the forge origin its check links
+/// back to.
+pub(crate) struct AuditedHead<'a> {
+    pub(crate) owner: &'a str,
+    pub(crate) repo: &'a str,
+    pub(crate) branch: &'a str,
+    pub(crate) head_sha: &'a str,
+    pub(crate) origin_base_url: &'a str,
+}
+
+/// Record a runner's audit of one head and complete its proof.
+///
+/// The verdict is the forge's own reading of the report JSON — the submitter
+/// supplies evidence, not a conclusion — so a report that parses badly, exits
+/// non-zero or scores under the floor is recorded and shown red, never green.
+pub(crate) fn record_audited_head(
+    core: &ForgeCore,
+    head: &AuditedHead<'_>,
+    report: Option<serde_json::Value>,
+    tool_exit: i64,
+) -> Result<jeryu_core::JankuraiScore, jeryu_core::ForgeError> {
+    let AuditedHead {
+        owner,
+        repo,
+        branch,
+        head_sha,
+        origin_base_url,
+    } = *head;
+    let (request, pass) = jankurai_score_request(branch, head_sha, report, tool_exit);
+    let output = jankurai_proof_output(&request, pass);
+    let score = core.record_jankurai_score(owner, repo, request)?;
+    let conclusion = if pass {
+        CheckConclusion::Success
+    } else {
+        CheckConclusion::Failure
+    };
+    let details_url = jankurai_score_details_url(origin_base_url, owner, repo, head_sha);
+    // `<repo>/required` and a runner may both report a head, and a runner may
+    // retry: the same verdict posts nothing new, so a head keeps one proof.
+    if !jankurai::proof_already_posted(
+        core,
+        owner,
+        repo,
+        head_sha,
+        &conclusion,
+        &details_url,
+        &output,
+    ) {
+        let _ = core.create_check_run(
+            owner,
+            repo,
+            CreateCheckRunRequest {
+                name: JANKURAI_PROOF_CHECK.to_string(),
+                head_sha: head_sha.to_string(),
+                status: Some(CheckRunStatus::Completed),
+                conclusion: Some(conclusion),
+                details_url,
+                output: Some(output),
+            },
+        );
+    }
+    Ok(score)
+}
+
 /// Seed CI for a PR head that was created without going through the git push
 /// transport. This preserves GitHub-like parity for branch exports and other
 /// local PR creation paths: if the head already has check-runs, leave them
@@ -198,18 +318,6 @@ pub(crate) fn default_origin_base_url() -> String {
         .unwrap_or_else(|| "http://127.0.0.1:8787".to_string())
 }
 
-fn run_git_status(git_bin: &str, cwd: Option<&Path>, args: &[&str]) -> bool {
-    let mut command = Command::new(git_bin);
-    command.args(args);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    command
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
 fn run_git_stdout(git_bin: &str, cwd: Option<&Path>, args: &[&str]) -> Option<String> {
     let mut command = Command::new(git_bin);
     command.args(args);
@@ -221,20 +329,6 @@ fn run_git_stdout(git_bin: &str, cwd: Option<&Path>, args: &[&str]) -> Option<St
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn write_empty_tree(git_bin: &str, repo: &Path) -> Option<String> {
-    let output = Command::new(git_bin)
-        .args(["hash-object", "-t", "tree", "-w", "--stdin"])
-        .current_dir(repo)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let oid = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!oid.is_empty()).then_some(oid)
 }
 
 /// Files changed by `oid` relative to its first parent (root commit → all
@@ -264,28 +358,7 @@ fn changed_paths(git_bin: &str, bare: &Path, oid: &str) -> Vec<String> {
         .collect()
 }
 
-/// jeryu-managed fallback audit policy, written into the throwaway worktree when a
-/// pushed head carries none of its own — "forced scoring for unconfigured repos".
-/// Mirrors jeryu-tool/policy/default-audit-policy.toml; the `required_tool_version`
-/// is kept in lockstep with tool-manifest.toml by ops/render-tool-manifest.sh.
-const DEFAULT_AUDIT_POLICY_TOML: &str = r#"schema_version = "1.0.0"
-workspace = "unconfigured"
-minimum_score = 85
-hard_findings_allowed = 0
-required_tool = "jankurai"
-required_tool_version = "1.6.11"
-
-[scan]
-excluded_paths = [".jankurai/", "apps/web/dist/"]
-"#;
-
-#[cfg_attr(test, allow(dead_code))] // only the non-test push auditor reads it
-const GOVERNED_JANKURAI_PATH: &str = "/home/ubuntu/.jeryu/bin/jankurai";
-#[cfg_attr(test, allow(dead_code))] // only the non-test push auditor reads it
-const GOVERNED_JANKURAI_RECEIPT_DIR: &str = "/home/ubuntu/.jeryu/receipts/jankurai/sha256";
-#[cfg_attr(test, allow(dead_code))] // only the non-test push auditor reads it
 const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
-#[cfg_attr(test, allow(dead_code))] // only the non-test push auditor reads it
 const GOVERNED_JANKURAI_SHA256: &str =
     "9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c";
 const GOVERNED_JANKURAI_SOURCE_REPO: &str = "https://git.neverhuman.org/git/jeryu/jankurai.git";
@@ -308,11 +381,16 @@ const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "5ece10f6852c45a76986bad23f3857e41
 const GOVERNED_JANKURAI_MANIFEST_SHA256: &str =
     "a0ebad202c00d79dd0c4e4dd7f3b5af60fc8aa76b2577150e10992b41755a1fa";
 
-mod jankurai;
+pub(crate) mod audit_queue;
+pub(crate) mod jankurai;
 
-use jankurai::record_authoritative_jankurai_score;
+use audit_queue::{PushAudit, plan_push_audit};
 #[cfg(test)]
 use jankurai::*;
+pub(crate) use jankurai::{
+    is_object_id, jankurai_proof_output, jankurai_score_details_url, jankurai_score_request,
+    verify_reported_auditor,
+};
 
 /// Execute a compiled job's `run` steps in the sandboxed runner and map the
 /// receipt to a check-run conclusion.

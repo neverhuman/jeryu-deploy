@@ -860,6 +860,14 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/repos/:id/jankurai-scores",
             get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),
         ),
+        // The audit queue a push writes and the gate runners drain. Runners
+        // claim work here and submit the report to the score ingest above;
+        // the forge itself never runs the auditor.
+        ("/api/v1/jankurai-audits", get(jankurai::audits::list)),
+        (
+            "/api/v1/jankurai-audits/claim",
+            post(jankurai::audits::claim),
+        ),
         ("/api/v1/fleet/tool-adoption", get(fleet_tool_adoption)),
         // Quality-gate visibility: how the jankurai/proof gate has behaved,
         // before anyone makes it required. Reads need a login; filing a
