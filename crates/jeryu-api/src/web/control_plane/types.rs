@@ -71,6 +71,15 @@ pub(crate) struct ControlPlaneSummary {
     pub running_check_count: usize,
     pub failing_check_count: usize,
     pub missing_check_pr_count: usize,
+    /// Open pull requests whose checks have not reported a failure yet: none
+    /// recorded, or some queued or running. Counted per pull request so a
+    /// header can say "N waiting on checks" without listing them.
+    #[serde(default)]
+    pub waiting_check_pr_count: usize,
+    /// Open pull requests with at least one failing check. `failing_check_count`
+    /// counts check runs, which is a different number when a lane breaks twice.
+    #[serde(default)]
+    pub failing_check_pr_count: usize,
     pub priority_count: usize,
     /// The repeated causes behind `failing_check_count`, largest first, so a
     /// backlog reads as "one broken lane" or "many" without fetching every
@@ -137,6 +146,12 @@ pub(crate) struct ControlPullRequest {
     pub checks: CheckSummary,
     pub state_evidence: EvidenceState,
     pub source_links: Vec<SourceLink>,
+    /// When the forge last touched the pull request (RFC 3339, UTC). The
+    /// collection is ordered by it, newest first, within the open ones and
+    /// within the finished ones. Defaulted so a payload written before the
+    /// field existed still reads.
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

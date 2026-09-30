@@ -145,6 +145,7 @@ fn active_view_drops_merged_and_closed_prs_and_their_checks() {
         },
         state_evidence: EvidenceState::Fresh,
         source_links: Vec::new(),
+        updated_at: format!("2026-09-{:02}T00:00:00+00:00", number),
     };
     let check = |head: &str| ControlCheckRun {
         id: head.to_string(),
@@ -676,4 +677,48 @@ fn seed_failing_head(
         },
     )
     .unwrap();
+}
+
+#[test]
+fn open_pull_requests_sort_ahead_of_finished_ones() {
+    let pr = |number: u64, state: &str, repo: &str, updated: &str| ControlPullRequest {
+        repo: repo.to_string(),
+        number,
+        title: String::new(),
+        author: "alice".to_string(),
+        draft: false,
+        state: state.to_string(),
+        head_ref: String::new(),
+        head_sha: String::new(),
+        base_ref: "main".to_string(),
+        base_sha: String::new(),
+        mergeable: false,
+        mergeable_state: String::new(),
+        changed_files: Vec::new(),
+        checks: CheckSummary {
+            total: 0,
+            queued: 0,
+            running: 0,
+            failing: 0,
+            successful: 0,
+            missing: true,
+        },
+        state_evidence: EvidenceState::Missing,
+        source_links: Vec::new(),
+        updated_at: updated.to_string(),
+    };
+    // Repository order would put the merged jeryu/* rows first and push the
+    // open root/* ones past a 100-row page.
+    let mut prs = vec![
+        pr(1, "merged", "jeryu/a", "2026-09-01T00:00:00+00:00"),
+        pr(2, "merged", "jeryu/a", "2026-09-05T00:00:00+00:00"),
+        pr(3, "open", "root/z", "2026-09-02T00:00:00+00:00"),
+        pr(4, "blockedbychecks", "veox/y", "2026-09-04T00:00:00+00:00"),
+    ];
+    sort_open_first(&mut prs);
+    assert_eq!(
+        prs.iter().map(|pr| pr.number).collect::<Vec<_>>(),
+        vec![4, 3, 2, 1],
+        "open newest first, then the finished ones newest first"
+    );
 }

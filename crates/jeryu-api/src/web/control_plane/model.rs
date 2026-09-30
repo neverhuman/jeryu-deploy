@@ -257,10 +257,26 @@ pub(crate) fn collect_pull_requests(
                     label: format!("{}#{}", repo.full_name, pr.number),
                     url: format!("/repos/jeryu/{}/pulls/{}", repo.full_name, pr.number),
                 }],
+                updated_at: pr.updated_at.to_rfc3339(),
             });
         }
     }
+    sort_open_first(&mut out);
     out
+}
+
+/// Open and draft pull requests first, then the finished ones, each part
+/// newest first. A reader of the first page asks "what is open"; repository
+/// order would answer with whatever merged in the alphabetically first repos,
+/// so the page size decides how much open work is visible.
+pub(crate) fn sort_open_first(prs: &mut [ControlPullRequest]) {
+    prs.sort_by(|a, b| {
+        is_active_pr(b)
+            .cmp(&is_active_pr(a))
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| a.repo.cmp(&b.repo))
+            .then_with(|| a.number.cmp(&b.number))
+    });
 }
 
 pub(crate) fn collect_check_runs(core: &ForgeCore, repos: &[ControlRepo]) -> Vec<ControlCheckRun> {
@@ -500,6 +516,14 @@ fn summary(
             .filter(|check| check.state == EvidenceState::Failed)
             .count(),
         missing_check_pr_count: prs.iter().filter(|pr| pr.checks.missing).count(),
+        waiting_check_pr_count: prs
+            .iter()
+            .filter(|pr| {
+                pr.checks.failing == 0
+                    && (pr.checks.missing || pr.checks.queued + pr.checks.running > 0)
+            })
+            .count(),
+        failing_check_pr_count: prs.iter().filter(|pr| pr.checks.failing > 0).count(),
         failing_check_causes: failing_check_causes(checks),
         priority_count: priorities.len(),
         critical_priority_count: priorities

@@ -4,7 +4,9 @@
 use std::path::Path;
 
 use axum::http::{Method as HttpMethod, Request, StatusCode, header};
-use jeryu_core::{CreatePullRequestRequest, CreateRepositoryRequest, ForgeCore, UserRole};
+use jeryu_core::{
+    CreatePullRequestRequest, CreateRepositoryRequest, ForgeCore, MergePullRequestRequest, UserRole,
+};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -139,4 +141,112 @@ async fn big_collections_page_and_refuse_out_of_range_values() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
         assert_eq!(body["code"], "invalid_page_parameter", "{uri}");
     }
+}
+
+/// A forge with more merged pull requests than a page holds, and the open ones
+/// in the repository that sorts last: the default page must still carry every
+/// open one, so a reader of page 1 is not told "0 open".
+#[tokio::test]
+async fn the_first_snapshot_page_carries_every_open_pull_request() {
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    for name in ["aaa-done", "zzz-open"] {
+        core.create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    // 120 merged pull requests in the repository whose name sorts first.
+    for n in 0..120u64 {
+        core.create_pull_request(
+            "alice",
+            "aaa-done",
+            "alice",
+            CreatePullRequestRequest {
+                title: format!("done {n}"),
+                head: format!("done-{n}"),
+                base: "main".to_string(),
+                head_sha: Some(format!("{n:040}")),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+        core.merge_pull_request(
+            "alice",
+            "aaa-done",
+            n + 1,
+            MergePullRequestRequest {
+                merge_method: "merge".to_string(),
+                ..MergePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    }
+    for n in 0..7u64 {
+        core.create_pull_request(
+            "alice",
+            "zzz-open",
+            "alice",
+            CreatePullRequestRequest {
+                title: format!("open {n}"),
+                head: format!("open-{n}"),
+                base: "main".to_string(),
+                head_sha: Some(format!("{:040}", n + 1000)),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    }
+    let token = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new(core).with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    let (status, snapshot) = get(&router, "/api/v1/control-plane/status", &token).await;
+    assert_eq!(status, StatusCode::OK, "{snapshot}");
+    assert_eq!(snapshot["summary"]["openPrCount"], 7);
+    // The header reads these, so they count pull requests, not check runs.
+    assert_eq!(snapshot["summary"]["waitingCheckPrCount"], 7);
+    assert_eq!(snapshot["summary"]["failingCheckPrCount"], 0);
+    let pulls = snapshot["pullRequests"].as_array().unwrap();
+    assert_eq!(pulls.len(), 100, "the page is still 100 rows");
+    assert_eq!(
+        snapshot["page"]["collections"]["pull_requests"]["total"],
+        127
+    );
+    assert_eq!(
+        snapshot["page"]["collections"]["pull_requests"]["has_more"],
+        true
+    );
+    let open: Vec<&Value> = pulls
+        .iter()
+        .filter(|pr| pr["state"] != "merged" && pr["state"] != "closed")
+        .collect();
+    assert_eq!(
+        open.len(),
+        7,
+        "every open pull request is on the first page, not only the ones the repository order left room for"
+    );
+    assert!(
+        open.iter().all(|pr| pr["repo"] == "alice/zzz-open"),
+        "{open:?}"
+    );
+    // They lead the page: the finished ones follow.
+    assert!(
+        pulls[..7]
+            .iter()
+            .all(|pr| pr["state"] != "merged" && pr["state"] != "closed"),
+        "open pull requests sort first"
+    );
 }
