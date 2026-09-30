@@ -1279,3 +1279,93 @@ fn proof_links_the_public_report_page_and_never_a_local_address() {
         );
     }
 }
+
+/// The local pre-approval gate (`ops/ci/jankurai-gate.sh`) and the hosted
+/// `jankurai/proof` must reach the same verdict, in the same words, from the
+/// same report — that is the whole promise of running it before the PR. The
+/// script renders the report; this compares what it printed against what the
+/// hosted check would carry for the same report.
+#[cfg(unix)]
+#[test]
+fn jankurai_gate_script_prints_the_hosted_proof_verdict() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let script = repo_root.join("ops/ci/jankurai-gate.sh");
+    let sandbox = tempfile::tempdir().unwrap();
+
+    let cases = [
+        serde_json::json!({
+            "score": 92, "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 85}
+        }),
+        // Below the floor, with the findings a reader must fix.
+        serde_json::json!({
+            "score": 47, "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 85},
+            "findings": (0..7).map(|index| serde_json::json!({
+                "rule_id": "dead-language", "path": format!("src/a{index}.rs"),
+                "line": index + 1, "problem": "the word is not neutral"
+            })).collect::<Vec<_>>()
+        }),
+        // Over the floor but capped, and over it with a hard finding.
+        serde_json::json!({
+            "score": 96, "caps_applied": ["missing-agent-readable-docs", "no-proof-lanes"],
+            "decision": {"hard_findings": 0, "minimum_score": 85}
+        }),
+        serde_json::json!({
+            "score": 96, "caps_applied": [],
+            "decision": {"hard_findings": 2, "minimum_score": 85}
+        }),
+        // A repository floor stricter than the host's own wins; a laxer one loses.
+        serde_json::json!({
+            "score": 92, "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 95}
+        }),
+        serde_json::json!({
+            "score": 80, "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 60}
+        }),
+        // An audit whose report the host cannot read fails closed, with the reason.
+        serde_json::json!({"score": 101}),
+        serde_json::json!({"host_error": "the auditor exited 101: thread panicked"}),
+    ];
+
+    for (index, report) in cases.iter().enumerate() {
+        let path = sandbox.path().join(format!("report-{index}.json"));
+        fs::write(&path, serde_json::to_vec(report).unwrap()).unwrap();
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg("--report")
+            .arg(&path)
+            // The rollout switch decides whether a failing verdict refuses the
+            // PR; this asserts the verdict itself, so the gate is on.
+            .env("JERYU_JANKURAI_GATE", "1")
+            .current_dir(&repo_root)
+            .output()
+            .unwrap();
+        let printed = String::from_utf8_lossy(&output.stdout);
+        // The script's own last paragraph reports the per-repo rollout; the
+        // verdict itself is everything before it.
+        let verdict = printed
+            .split_once("\njankurai-gate:")
+            .map(|(verdict, _)| verdict)
+            .unwrap_or(&printed)
+            .trim()
+            .to_string();
+
+        let (request, pass) = jankurai_score_request("main", "abc", Some(report.clone()), 0);
+        let hosted = jankurai_proof_output(&request, pass);
+        let mut expected = format!("{}\n\n{}", hosted.title, hosted.summary);
+        if let Some(text) = hosted.text.as_deref() {
+            expected.push_str(&format!("\n\n{text}"));
+        }
+        assert_eq!(verdict, expected.trim(), "report {index}: {report}");
+        assert_eq!(
+            output.status.success(),
+            pass,
+            "report {index} exit status must be the hosted verdict: {printed}"
+        );
+    }
+}

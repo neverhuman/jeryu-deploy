@@ -695,6 +695,149 @@ fn pulls_audit_enforcement_spellings_match_protected_core() {
     }
 }
 
+/// The gate rolls out per repository: veox-telemetry's main scored 47 against a
+/// floor of 85 on 2026-09-29, so turning the gate on family-wide would have
+/// blocked every pull request it has. A repo is under the gate only when it is
+/// named (or its whole owner is).
+#[test]
+fn pulls_audit_gate_rollout_names_the_repositories_it_covers() {
+    let listed = crate::web::pulls::audit_gate_repo_listed;
+    let setting = Some("jeryu/jeryu-deploy, jeryu/jeryu-ci-runner\nveox-ai/*");
+    assert!(listed(setting, "jeryu", "jeryu-deploy"));
+    assert!(listed(setting, "jeryu", "jeryu-ci-runner"));
+    assert!(
+        listed(setting, "JERYU", "Jeryu-Deploy"),
+        "names are not case"
+    );
+    assert!(
+        listed(setting, "veox-ai", "veox-telemetry"),
+        "a whole owner"
+    );
+    assert!(!listed(setting, "jeryu", "jeryu-web"));
+    assert!(!listed(setting, "other", "jeryu-deploy"));
+    for empty in [None, Some(""), Some(" , ")] {
+        assert!(!listed(empty, "jeryu", "jeryu-deploy"), "{empty:?}");
+    }
+}
+
+/// With the gate on for a repository, an approval on a head whose
+/// `jankurai/proof` is red, missing or unfinished is refused, and the refusal
+/// carries the proof's own verdict so the pull request shows why. A scorer
+/// failure is one of the red cases, not a pass.
+#[tokio::test]
+async fn pulls_jankurai_gate_refuses_approval_until_the_proof_passes() {
+    use jeryu_core::{CheckRunOutput, CheckRunStatus};
+
+    let proof = |status: Option<CheckRunStatus>,
+                 conclusion: Option<CheckConclusion>,
+                 title: Option<&'static str>| {
+        let core = ForgeCore::new();
+        core.create_repository(
+            "veox-ai",
+            CreateRepositoryRequest {
+                name: "veox-telemetry".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+        let pr = core
+            .create_pull_request(
+                "veox-ai",
+                "veox-telemetry",
+                "alice",
+                CreatePullRequestRequest {
+                    title: "under the gate".to_string(),
+                    head: "feature".to_string(),
+                    base: "main".to_string(),
+                    head_sha: Some("gated-head".to_string()),
+                    ..CreatePullRequestRequest::default()
+                },
+            )
+            .unwrap();
+        if status.is_some() || conclusion.is_some() {
+            core.create_check_run(
+                "veox-ai",
+                "veox-telemetry",
+                CreateCheckRunRequest {
+                    name: "jankurai/proof".to_string(),
+                    head_sha: "gated-head".to_string(),
+                    status,
+                    conclusion,
+                    output: title.map(|title| CheckRunOutput {
+                        title: title.to_string(),
+                        summary: "- score: 47\n- floor: 85".to_string(),
+                        text: None,
+                    }),
+                    ..CreateCheckRunRequest::default()
+                },
+            )
+            .unwrap();
+        }
+        (WebState::new(core), pr)
+    };
+
+    // Off for this repository: the verdict is reported, never a refusal.
+    let (state, pr) = proof(
+        Some(CheckRunStatus::Completed),
+        Some(CheckConclusion::Failure),
+        Some("score 47 < floor 85"),
+    );
+    assert!(
+        crate::web::pulls::jankurai_gate_refusal_with(&state, &pr, false).is_none(),
+        "a repository outside the rollout is not frozen by the gate"
+    );
+
+    // A passing proof is the only thing that clears the gate.
+    let (state, pr) = proof(
+        Some(CheckRunStatus::Completed),
+        Some(CheckConclusion::Success),
+        Some("score 92 >= floor 85"),
+    );
+    assert!(crate::web::pulls::jankurai_gate_refusal_with(&state, &pr, true).is_none());
+
+    let cases = [
+        (None, None, None, "has not run on this head", "missing"),
+        (
+            Some(CheckRunStatus::InProgress),
+            None,
+            None,
+            "is still running on this head",
+            "pending",
+        ),
+        (
+            Some(CheckRunStatus::Completed),
+            Some(CheckConclusion::Failure),
+            Some("score 47 < floor 85"),
+            "score 47 < floor 85",
+            "failing",
+        ),
+        (
+            Some(CheckRunStatus::Completed),
+            Some(CheckConclusion::Failure),
+            Some("jankurai audit produced no score: the auditor exited 101"),
+            "the auditor exited 101",
+            "failing",
+        ),
+    ];
+    for (status, conclusion, title, expected, expected_state) in cases {
+        let (state, pr) = proof(status, conclusion, title);
+        let response = crate::web::pulls::jankurai_gate_refusal_with(&state, &pr, true)
+            .unwrap_or_else(|| panic!("{expected_state}: the gate must refuse the approval"));
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{expected_state}");
+        let body = response_json(response).await;
+        assert_eq!(body["code"], "approval_blocked_jankurai_proof");
+        assert_eq!(body["error"]["details"]["check_state"], expected_state);
+        assert_eq!(body["error"]["details"]["head_sha"], "gated-head");
+        let reason = body["reason"].as_str().unwrap().to_string();
+        assert!(
+            reason.contains(expected) && reason.contains("jankurai/proof"),
+            "{expected_state}: {reason}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn pulls_mutations_submit_review_and_comment() {
     let core = ForgeCore::new();
@@ -1467,7 +1610,16 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     assert_eq!(proof["kind"], "check_run");
     assert_eq!(proof["title"], "score 42 < floor 85");
     assert_eq!(proof["required"], false);
-    assert_eq!(proof["advisory"]["label"], "advisory - shadow mode");
+    assert_eq!(
+        proof["advisory"]["label"],
+        "advisory - gate not enabled here"
+    );
+    assert!(
+        proof["advisory"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("not one of them yet")),
+        "the row says why the gate does not bind here: {proof}"
+    );
     assert_eq!(proof["advisory"]["url"], "/quality-gate");
     assert_eq!(proof["web_url"], "/quality-gate/heads/alice/jeryu/deadbeef");
     // The link is only useful if the row shows it, and the reason is only

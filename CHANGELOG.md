@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `jankurai/proof` is a gate, not a report: `ops/ci/jankurai-gate.sh` gives every
+  repository the hosted verdict locally before a PR is opened, and for a
+  repository under the rollout (`JERYU_AUDIT_GATE_REPOS`,
+  `agent/jankurai-gate.toml`) an approval and a merge are refused while the proof
+  on the exact head fails, is missing, or failed to score. See
+  `docs/jankurai-gate.md`.
 - `jankurai/proof` says why it failed and links a report a reader can open. A
   `tool-failed` check carries the audit's own error in its title and summary
   (`the auditor exited 3: no usable base ref: refs/heads/main does not exist`)

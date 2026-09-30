@@ -177,7 +177,7 @@ fn blocker(code: &str, message: &str, details: Option<&str>) -> MergePassportBlo
 }
 
 pub(super) fn required_contexts(state: &WebState, pr: &PullRequest) -> Vec<RequiredContextPosture> {
-    required_contexts_with_enforcement(state, pr, audit_merge_enforced())
+    required_contexts_with_enforcement(state, pr, audit_gate_enforced_for(&pr.owner, &pr.repo))
 }
 
 pub(super) fn required_contexts_with_enforcement(
@@ -317,6 +317,114 @@ pub(in crate::web) fn audit_merge_enforced_value(value: Option<&str>) -> bool {
     )
 }
 
+/// Which repositories the `jankurai/proof` gate is on for, when it is not on
+/// family-wide: `owner/name` entries separated by commas or whitespace, and
+/// `owner/*` for a whole owner. The rollout is per repo on purpose — a repo
+/// whose main does not clear the floor yet would otherwise have every one of
+/// its pull requests blocked from the moment the gate went on.
+const AUDIT_GATE_REPOS_ENV: &str = "JERYU_AUDIT_GATE_REPOS";
+
+/// Whether a failing or missing `jankurai/proof` blocks approval and merge for
+/// this repository. `JERYU_AUDIT_ENFORCE_MERGE` turns it on family-wide; until
+/// then each repo opts in by name.
+pub(super) fn audit_gate_enforced_for(owner: &str, repo: &str) -> bool {
+    audit_merge_enforced()
+        || audit_gate_repo_listed(
+            std::env::var(AUDIT_GATE_REPOS_ENV).ok().as_deref(),
+            owner,
+            repo,
+        )
+}
+
+pub(in crate::web) fn audit_gate_repo_listed(value: Option<&str>, owner: &str, repo: &str) -> bool {
+    let full = format!("{owner}/{repo}");
+    let whole_owner = format!("{owner}/*");
+    value
+        .unwrap_or_default()
+        .split([',', ' ', '\t', '\n'])
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .any(|entry| entry.eq_ignore_ascii_case(&full) || entry.eq_ignore_ascii_case(&whole_owner))
+}
+
+/// Why an approval or a merge is refused while this repository is under the
+/// gate: what the exact head's `jankurai/proof` says, in its own words.
+pub(super) struct JankuraiGateVerdict {
+    pub(super) state: RequiredContextState,
+    pub(super) reason: String,
+    pub(super) details_url: Option<String>,
+}
+
+impl JankuraiGateVerdict {
+    /// How the check's state reads in a sentence about the refusal.
+    pub(super) fn state_phrase(&self) -> &'static str {
+        match self.state {
+            RequiredContextState::Missing => "has not run on this head",
+            RequiredContextState::Pending => "is still running on this head",
+            RequiredContextState::Failing => "fails on this head",
+            RequiredContextState::Passing => "passes on this head",
+        }
+    }
+}
+
+/// The exact head's `jankurai/proof` verdict when it stands in the way.
+/// `None` when the gate is off for this repository, or the proof passed.
+///
+/// A scorer failure is not a pass: the push records a `tool-failed` score and
+/// publishes a failing check whose title is the reason, and that reason is what
+/// blocks here.
+pub(super) fn jankurai_gate_blocker(
+    state: &WebState,
+    pr: &PullRequest,
+) -> Option<JankuraiGateVerdict> {
+    jankurai_gate_blocker_with(state, pr, audit_gate_enforced_for(&pr.owner, &pr.repo))
+}
+
+pub(super) fn jankurai_gate_blocker_with(
+    state: &WebState,
+    pr: &PullRequest,
+    enforced: bool,
+) -> Option<JankuraiGateVerdict> {
+    if !enforced {
+        return None;
+    }
+    let runs = state
+        .github
+        .core()
+        .list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha))
+        .map(|list| latest_check_runs_by_name(list.check_runs))
+        .unwrap_or_default();
+    let Some(run) = runs.into_iter().find(|run| run.name == JANKURAI_PROOF) else {
+        return Some(JankuraiGateVerdict {
+            state: RequiredContextState::Missing,
+            reason: format!(
+                "no `{JANKURAI_PROOF}` has been published for {}; nothing has scored this head",
+                &pr.head.sha
+            ),
+            details_url: None,
+        });
+    };
+    let details_url = run.details_url.clone();
+    let reason = run
+        .output
+        .as_ref()
+        .map(|output| output.title.clone())
+        .unwrap_or_else(|| format!("`{JANKURAI_PROOF}` published no verdict text"));
+    match (run.status, run.conclusion) {
+        (CheckRunStatus::Completed, Some(CheckConclusion::Success)) => None,
+        (CheckRunStatus::Completed, _) => Some(JankuraiGateVerdict {
+            state: RequiredContextState::Failing,
+            reason,
+            details_url,
+        }),
+        _ => Some(JankuraiGateVerdict {
+            state: RequiredContextState::Pending,
+            reason: format!("`{JANKURAI_PROOF}` is queued or running on this head"),
+            details_url,
+        }),
+    }
+}
+
 pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestChecks {
     let core = state.github.core();
     let runs = match core.list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha)) {
@@ -409,7 +517,7 @@ fn required_context_names(state: &WebState, pr: &PullRequest) -> BTreeSet<String
             names.insert(JANKURAI_PROOF.to_string());
         }
     }
-    if audit_merge_enforced() {
+    if audit_gate_enforced_for(&pr.owner, &pr.repo) {
         names.insert(JANKURAI_PROOF.to_string());
     }
     names
@@ -421,9 +529,10 @@ const JANKURAI_PROOF: &str = "jankurai/proof";
 fn check_advisory(pr: &PullRequest, name: &str) -> CheckAdvisory {
     if name == JANKURAI_PROOF {
         return CheckAdvisory {
-            label: "advisory - shadow mode".to_string(),
-            reason: "jankurai/proof runs in shadow mode by owner decision: it is not \
-                     required until the Quality gate view has about a week of data."
+            label: "advisory - gate not enabled here".to_string(),
+            reason: "jankurai/proof is a pre-approval gate in the repositories it has \
+                     been rolled out to; this repository is not one of them yet, so its \
+                     verdict is reported and does not block."
                 .to_string(),
             url: Some("/quality-gate".to_string()),
         };

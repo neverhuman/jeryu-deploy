@@ -124,6 +124,12 @@ echo "[pr-ci] jankurai score=${score} caps=${caps}" >&2
 jq -e '(.score // 0) >= 85 and ((.caps_applied // []) | length == 0)' \
   .jankurai/repo-score.json >/dev/null
 
+# The pre-approval gate: the verdict the hosted jankurai/proof will publish for
+# this head, before the PR exists. Refuses only where the rollout is on
+# (agent/jankurai-gate.toml); elsewhere it reports and passes.
+echo "[pr-ci] jankurai gate (hosted jankurai/proof verdict for this head)" >&2
+bash "${repo_root}/ops/ci/jankurai-gate.sh"
+
 echo "[pr-ci] security lane"
 JERYU_SECURITY_NETWORK=1 bash "${repo_root}/ops/ci/security.sh"
 assert_cargo_lock_unchanged

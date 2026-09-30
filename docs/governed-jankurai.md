@@ -32,3 +32,7 @@ self-referential. Those
 bytes become accepted only through detached exact-head review and protected
 merge; candidate output can never replace its own baseline.
 
+
+The gate this identity feeds — the local pre-approval command and the per-repo
+rollout of `jankurai/proof` as a required context — is described in
+[`docs/jankurai-gate.md`](jankurai-gate.md).

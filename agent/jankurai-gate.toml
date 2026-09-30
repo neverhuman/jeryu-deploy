@@ -1,0 +1,13 @@
+# Whether a failing hosted `jankurai/proof` refuses a pull request in this
+# repository — the pre-approval gate, per-repo by owner decision (2026-09-29) so
+# that a repository whose main does not clear the floor yet is not frozen.
+#
+# `ops/ci/jankurai-gate.sh` reads this before the PR, and the forge reads the
+# same rollout for the repository (JERYU_AUDIT_GATE_REPOS) before it lets an
+# approval or a merge through. Turn both on together: a local refusal with a
+# hosted approval, or the reverse, is worse than either state.
+#
+# On here since 2026-09-30: `ops/ci/jankurai-gate.sh` passes on this repository's
+# head (the report is in jeryu-deploy's docs/jankurai-gate.md). A repository whose
+# main does not pass stays false until its caps are cleared.
+enabled = true

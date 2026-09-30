@@ -89,6 +89,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "no API route matches the request path",
     ),
     entry(
+        "approval_blocked_jankurai_proof",
+        409,
+        "`jankurai/proof` on this head fails, has not run, or has not finished, and this repository is under the gate",
+    ),
+    entry(
         "attention_collect_failed",
         500,
         "the attention inbox could not be collected",

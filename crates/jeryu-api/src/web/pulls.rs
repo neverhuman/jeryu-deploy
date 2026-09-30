@@ -461,6 +461,13 @@ pub(super) async fn approve(
     if let Some(response) = self_approval_forbidden(&pr, &account.login) {
         return response;
     }
+    // The gate, on the exact head: nothing approves a head whose
+    // `jankurai/proof` fails, is missing, or has not finished. It is refused
+    // here rather than left to the merge passport, because an approval already
+    // on a red head reads as a human having accepted it.
+    if let Some(verdict) = posture::jankurai_gate_blocker(&state, &pr) {
+        return jankurai_gate_refusal(&pr, &verdict);
+    }
     match state.github.core().create_review(
         &repo.owner,
         &repo.name,
@@ -610,6 +617,33 @@ fn resolve_pr(
     Some((repo, pr))
 }
 
+/// Why an approval was refused by the quality gate, with the proof's own words
+/// and a link to the report, so the pull request shows why without a hunt.
+fn jankurai_gate_refusal(pr: &PullRequest, verdict: &posture::JankuraiGateVerdict) -> AxumResponse {
+    repair_error(
+        StatusCode::CONFLICT,
+        "approval_blocked_jankurai_proof",
+        "approve pull request",
+        &format!(
+            "`jankurai/proof` {}: {}",
+            verdict.state_phrase(),
+            verdict.reason
+        ),
+        &[
+            "open the Quality gate page of this head and clear what the audit lists",
+            "push the fix; the new head is scored and can then be approved",
+        ],
+        PROOF_LANE,
+        Some(json!({
+            "head_sha": pr.head.sha,
+            "check": "jankurai/proof",
+            "check_state": verdict.state.wire_name(),
+            "reason": verdict.reason,
+            "report_url": verdict.details_url,
+        })),
+    )
+}
+
 fn self_approval_forbidden(pr: &PullRequest, reviewer: &str) -> Option<AxumResponse> {
     if pr.author != reviewer {
         return None;
@@ -676,6 +710,18 @@ pub(super) fn queue_gate(state: &WebState, pr: &PullRequest) -> (bool, Vec<Strin
         blockers,
         required.into_iter().map(|context| context.name).collect(),
     )
+}
+
+/// The refusal an approval would get from the gate, with the enforcement
+/// decision injected: the process environment is never mutated by a test.
+#[cfg(test)]
+pub(super) fn jankurai_gate_refusal_with(
+    state: &WebState,
+    pr: &PullRequest,
+    enforced: bool,
+) -> Option<AxumResponse> {
+    posture::jankurai_gate_blocker_with(state, pr, enforced)
+        .map(|verdict| jankurai_gate_refusal(pr, &verdict))
 }
 
 #[cfg(test)]
@@ -902,9 +948,9 @@ mod diff;
 mod posture;
 
 #[cfg(test)]
-pub(super) use posture::audit_merge_enforced_value;
-#[cfg(test)]
 use posture::required_contexts_with_enforcement;
+#[cfg(test)]
+pub(super) use posture::{audit_gate_repo_listed, audit_merge_enforced_value};
 use posture::{
     checks_for_pr, comment_input, commit_tree_sha, passport, passport_blockers, passport_hash,
     required_contexts, review_posture, review_state, reviews_for_pr, threads_for_pr, web_pr_state,

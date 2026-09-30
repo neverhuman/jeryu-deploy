@@ -53,6 +53,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `agent_run_workcell_state_denied` | 409 | the workcell state does not allow this agent run step |
 | `already_exists` | 409 | the resource the request would create already exists |
 | `api_route_not_found` | 404 | no API route matches the request path |
+| `approval_blocked_jankurai_proof` | 409 | `jankurai/proof` on this head fails, has not run, or has not finished, and this repository is under the gate |
 | `attention_collect_failed` | 500 | the attention inbox could not be collected |
 | `bad_head` | 409 | the pull request head does not match the queued head |
 | `bad_request` | 422 | the request was rejected before it reached a handler |

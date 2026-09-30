@@ -30,6 +30,10 @@ cache-status:
 score:
   ./ops/ci/score.sh # jankurai audit repo-score
 
+# The pre-approval gate: the hosted jankurai/proof verdict for this head, locally.
+jankurai-gate:
+  ./ops/ci/jankurai-gate.sh
+
 security:
   ./tools/security-lane.sh # gitleaks actionlint env-file locked-cargo-metadata
 
