@@ -22,6 +22,13 @@
 //! `/runners` lists them as automation; they hold no gate slot and their beats
 //! emit no pipeline events, because the scripts post their own.
 //!
+//! Host deploy timers report through the same contract with the
+//! [`DEPLOY_LABEL`] label and a `last.target` naming where they put the sha
+//! (`pages-preview`, `staging`, ...). Their `last.conclusion` says how that
+//! went (`deployed`, `failed`, `skipped`). They hold no gate slot and emit no
+//! pipeline events either; the repository page reads them through
+//! `GET /api/v1/repos/:id/automation` so a reader can see what a merge starts.
+//!
 //! Who may report: logins named in `JERYU_RUNNER_REPORTERS` (comma-separated,
 //! default `gatebot,pragent`), or any forge admin. The rule exists so an
 //! ordinary account cannot paint fake runners; admins are not ordinary
@@ -45,6 +52,8 @@ const DEFAULT_REPORTERS: &str = "gatebot,pragent";
 pub(crate) const REVIEWER_LABEL: &str = "redteam";
 /// Heartbeat label that marks a background timer (auto-pin, auto-stage).
 pub(crate) const AUTOMATION_LABEL: &str = "automation";
+/// Heartbeat label that marks a host deploy timer.
+pub(crate) const DEPLOY_LABEL: &str = "deploy";
 const GATE_CONCLUSIONS: &[&str] = &["success", "failure", "error"];
 /// Every decision pr-redteam records for a finished review pass.
 const REVIEW_CONCLUSIONS: &[&str] = &[
@@ -58,6 +67,8 @@ const REVIEW_CONCLUSIONS: &[&str] = &[
 /// What a background timer last did: opened a pull request, staged a release,
 /// is waiting behind earlier work, or gave up on a head.
 const AUTOMATION_CONCLUSIONS: &[&str] = &["opened", "staged", "waiting", "failed"];
+/// What a deploy timer last did with the sha it picked up.
+const DEPLOY_CONCLUSIONS: &[&str] = &["deployed", "failed", "skipped"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -89,6 +100,9 @@ pub(crate) struct GateRunnerTask {
     pub pr: Option<u64>,
     pub sha: String,
     pub recipe: String,
+    /// Where a deploy timer is putting this sha; absent for every other label.
+    #[serde(default)]
+    pub target: Option<String>,
     /// `started_at` is accepted too: pr-redteam spells it that way, and the
     /// contract denies unknown fields, so every one of its beats was refused.
     #[serde(alias = "started_at")]
@@ -105,6 +119,9 @@ pub(crate) struct GateRunnerResult {
     pub sha: String,
     pub recipe: String,
     pub conclusion: String,
+    /// Where a deploy timer put this sha; absent for every other label.
+    #[serde(default)]
+    pub target: Option<String>,
     /// Why a pass that needs a person ended the way it did, in the runner's own
     /// words (`no usable base ref: refs/heads/main does not exist`). Optional:
     /// a runner that sends none still gets a reason derived from `conclusion`.
@@ -239,10 +256,21 @@ pub(crate) fn is_automation(heartbeat: &GateRunnerHeartbeat) -> bool {
         .any(|label| label == AUTOMATION_LABEL)
 }
 
-/// A gate runner slot: neither the reviewer nor a background timer. Only these
-/// count as gate capacity, and only these keep `gate_runner_down` quiet.
+/// A heartbeat from a host deploy timer rather than a gate runner slot.
+pub(crate) fn is_deploy(heartbeat: &GateRunnerHeartbeat) -> bool {
+    heartbeat.labels.iter().any(|label| label == DEPLOY_LABEL)
+}
+
+/// Where a finished pass put its sha, for the labels that have a target.
+pub(crate) fn gate_runner_target(result: &GateRunnerResult) -> Option<&str> {
+    result.target.as_deref()
+}
+
+/// A gate runner slot: not the reviewer, a background timer or a deploy timer.
+/// Only these count as gate capacity, and only these keep `gate_runner_down`
+/// quiet.
 pub(crate) fn holds_gate_slot(heartbeat: &GateRunnerHeartbeat) -> bool {
-    !is_reviewer(heartbeat) && !is_automation(heartbeat)
+    !is_reviewer(heartbeat) && !is_automation(heartbeat) && !is_deploy(heartbeat)
 }
 
 fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
@@ -254,10 +282,18 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
     for label in &heartbeat.labels {
         check_token("labels", label, 64, "._/:- ")?;
     }
-    if is_reviewer(heartbeat) && is_automation(heartbeat) {
-        return Err(format!(
-            "labels: {REVIEWER_LABEL} and {AUTOMATION_LABEL} are exclusive"
-        ));
+    let kinds = [
+        (is_reviewer(heartbeat), REVIEWER_LABEL),
+        (is_automation(heartbeat), AUTOMATION_LABEL),
+        (is_deploy(heartbeat), DEPLOY_LABEL),
+    ];
+    let claimed: Vec<&str> = kinds
+        .iter()
+        .filter(|(present, _)| *present)
+        .map(|(_, label)| *label)
+        .collect();
+    if claimed.len() > 1 {
+        return Err(format!("labels: {} are exclusive", claimed.join(" and ")));
     }
     if let Some(interval) = heartbeat.interval_seconds
         && !INTERVAL_SECONDS.contains(&interval)
@@ -270,10 +306,14 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
     }
     if let Some(task) = &heartbeat.current {
         check_gate("current", &task.repo, &task.sha, &task.recipe)?;
+        check_target("current", task.target.as_deref(), is_deploy(heartbeat))?;
     }
     if let Some(result) = &heartbeat.last {
         check_gate("last", &result.repo, &result.sha, &result.recipe)?;
-        let (allowed, expected) = if is_automation(heartbeat) {
+        check_target("last", result.target.as_deref(), is_deploy(heartbeat))?;
+        let (allowed, expected) = if is_deploy(heartbeat) {
+            (DEPLOY_CONCLUSIONS, DEPLOY_CONCLUSIONS.join(", "))
+        } else if is_automation(heartbeat) {
             (AUTOMATION_CONCLUSIONS, AUTOMATION_CONCLUSIONS.join(", "))
         } else if is_reviewer(heartbeat) {
             (REVIEW_CONCLUSIONS, REVIEW_CONCLUSIONS.join(", "))
@@ -298,6 +338,21 @@ fn check_gate(field: &str, repo: &str, sha: &str, recipe: &str) -> Result<(), St
         return Err(format!("{field}.sha: expected 7-64 hex digits"));
     }
     check_token(&format!("{field}.recipe"), recipe, 64, "._/ -")
+}
+
+/// A deploy beat must name its target; no other label may carry one, so the
+/// page never shows a target for a pass that did not deploy anything.
+fn check_target(field: &str, target: Option<&str>, deploy: bool) -> Result<(), String> {
+    match (target, deploy) {
+        (Some(target), true) => check_token(&format!("{field}.target"), target, 64, "._/:- "),
+        (None, true) => Err(format!(
+            "{field}.target: required with the {DEPLOY_LABEL} label"
+        )),
+        (Some(_), false) => Err(format!(
+            "{field}.target: only the {DEPLOY_LABEL} label carries a target"
+        )),
+        (None, false) => Ok(()),
+    }
 }
 
 fn check_token(field: &str, value: &str, max: usize, extra: &str) -> Result<(), String> {
@@ -330,6 +385,7 @@ mod tests {
                 pr: Some(13),
                 sha: "abc30d78ca5eadc15694dd1434d9f8f99c44a0d3".to_string(),
                 recipe: "just required".to_string(),
+                target: None,
                 started_at: Utc::now(),
             }),
             last: Some(GateRunnerResult {
@@ -338,6 +394,7 @@ mod tests {
                 sha: "3926cbd".to_string(),
                 recipe: "just required".to_string(),
                 conclusion: "success".to_string(),
+                target: None,
                 reason: None,
                 seconds: 46,
                 finished_at: Utc::now(),
@@ -369,6 +426,43 @@ mod tests {
         assert_eq!(runners.len(), 2);
         assert_eq!(runners[0].heartbeat.runner_id, "xbabe2/slot0");
         assert!(runners[0].heartbeat.current.is_none());
+    }
+
+    /// A deploy timer says where it put the sha and how that went. Its target
+    /// is mandatory, its verdicts are its own, it holds no gate slot, and no
+    /// other label may claim a target.
+    #[test]
+    fn deploy_beats_carry_a_target_and_a_deploy_verdict() {
+        let store = GateRunnerStore::with_reporters(["alton2"]);
+        let now = Utc::now();
+        let mut deploy = beat("buildhost1/publish");
+        deploy.labels = vec![DEPLOY_LABEL.to_string()];
+        deploy.current = None;
+        deploy.last.as_mut().unwrap().target = Some("edge-pages".to_string());
+        for conclusion in ["deployed", "failed", "skipped"] {
+            deploy.last.as_mut().unwrap().conclusion = conclusion.to_string();
+            assert!(store.record(deploy.clone(), "alton2", now).is_ok());
+        }
+        assert!(!holds_gate_slot(&deploy), "a deployer holds no gate slot");
+
+        // A gate verdict is not a deploy verdict.
+        deploy.last.as_mut().unwrap().conclusion = "success".to_string();
+        assert!(store.record(deploy.clone(), "alton2", now).is_err());
+
+        // A deploy beat with no target says nothing useful.
+        deploy.last.as_mut().unwrap().conclusion = "deployed".to_string();
+        deploy.last.as_mut().unwrap().target = None;
+        assert!(store.record(deploy.clone(), "alton2", now).is_err());
+
+        // Only a deploy beat carries a target.
+        let mut gate = beat("xbabe2/slot0");
+        gate.last.as_mut().unwrap().target = Some("edge-pages".to_string());
+        assert!(store.record(gate, "alton2", now).is_err());
+
+        // Two kinds at once is a contradiction, not a runner.
+        let mut both = beat("buildhost1/publish");
+        both.labels = vec![DEPLOY_LABEL.to_string(), REVIEWER_LABEL.to_string()];
+        assert!(store.record(both, "alton2", now).is_err());
     }
 
     #[test]

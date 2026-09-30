@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A repository page can say what runs on it.
+  `GET /api/v1/repos/:id/automation` answers with the repository's checks (and
+  every required context that has never reported), the reviewer and merge
+  identities with the grant each needs — a merger without its write grant is
+  flagged, because its merges answer 403 — the gate runners and deployers that
+  touched the repository, its push mirrors with the sha each holds and how far
+  behind the forge it is, and its grants for a caller who may administer it.
+  Host deploy timers report through the existing runner heartbeat with the new
+  `deploy` label and a mandatory `last.target`, so a timer can say it deployed a
+  sha to a target and whether that worked. See `docs/repo-automation.md`.
 - Jankurai scoring runs on the gate runners, not on the forge host. A push now
   records at most one audit job per head (branch, head sha, base sha) in the
   forge's audit queue and publishes `jankurai/proof` as pending; it runs no

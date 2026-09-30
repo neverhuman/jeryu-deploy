@@ -410,13 +410,15 @@ fn open_pr_at_head(state: &WebState, repo: &str, sha: &str) -> Option<i64> {
 ///
 /// A background timer's beat (`automation` label) emits nothing at all: the
 /// release scripts post their own `pin.*` and release events, and a second
-/// `gate.*` line for the same fact would misreport it as a gate.
+/// `gate.*` line for the same fact would misreport it as a gate. A deploy
+/// timer's beat (`deploy` label) is silent for the same reason: what it did is
+/// a deployment, not a gate, and the repository page reads it as one.
 pub(crate) fn runner_heartbeat(
     state: &WebState,
     previous: Option<&GateRunnerHeartbeat>,
     current: &GateRunnerHeartbeat,
 ) {
-    if is_automation(current) {
+    if is_automation(current) || super::super::control_plane::is_deploy(current) {
         return;
     }
     let reviewer = is_reviewer(current);

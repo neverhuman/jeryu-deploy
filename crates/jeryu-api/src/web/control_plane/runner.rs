@@ -114,6 +114,9 @@ pub(crate) const REVIEWER_SOURCE: &str = "pr-redteam";
 /// `source` of a node reported by a background timer (auto-pin, auto-stage).
 pub(crate) const AUTOMATION_SOURCE: &str = "automation";
 
+/// `source` of a node reported by a host deploy timer.
+pub(crate) const DEPLOY_SOURCE: &str = "deployer";
+
 /// `repo#pr`, or `repo@sha` for work that has no pull request.
 pub(crate) fn work_label(repo: &str, pr: Option<u64>, sha: &str) -> String {
     match pr {
@@ -136,6 +139,7 @@ pub(crate) fn gate_runner_nodes(
             let online = is_online(record, now);
             let reviewer = is_reviewer(beat);
             let automation = is_automation(beat);
+            let deploy = crate::web::control_plane::is_deploy(beat);
             let received = record.received_at.to_rfc3339();
             let mut labels = vec![beat.host.clone(), format!("slot {}", beat.slot)];
             for label in &beat.labels {
@@ -166,7 +170,9 @@ pub(crate) fn gate_runner_nodes(
                 .collect();
             RunnerNodeSummary {
                 runner_id: beat.runner_id.clone(),
-                source: if automation {
+                source: if deploy {
+                    DEPLOY_SOURCE
+                } else if automation {
                     AUTOMATION_SOURCE
                 } else if reviewer {
                     REVIEWER_SOURCE
@@ -175,11 +181,13 @@ pub(crate) fn gate_runner_nodes(
                 }
                 .to_string(),
                 state: if online { "active" } else { "offline" }.to_string(),
-                capacity: u32::from(!reviewer && !automation),
+                capacity: u32::from(crate::web::control_plane::holds_gate_slot(beat)),
                 in_flight: count(active_tasks.len()),
                 labels,
                 classes: vec![
-                    if automation {
+                    if deploy {
+                        "deployer"
+                    } else if automation {
                         "automation"
                     } else if reviewer {
                         "reviewer"

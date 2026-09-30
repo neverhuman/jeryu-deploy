@@ -26,6 +26,7 @@ mod pulls;
 mod release_board;
 mod repo_address;
 mod repo_admin;
+mod repo_automation;
 mod repositories;
 mod repository_create;
 mod request_id;
@@ -860,6 +861,9 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             get(merge_attempts::show),
         ),
         ("/api/v1/repos/:id/merge-queue", get(merge_queue::list_repo)),
+        // What acts on the repository (checks, reviewer, merger and their
+        // grants, runners, deployers) and where it is mirrored to.
+        ("/api/v1/repos/:id/automation", get(repo_automation::show)),
         ("/api/v1/merge-queue", get(merge_queue::list_all)),
         (
             "/api/v1/repos/:id/jankurai-scores",
