@@ -1050,7 +1050,7 @@ fn a_failed_report_names_its_reason_and_posts_one_proof_per_head() {
             &core,
             &AuditedHead {
                 owner: "jeryu",
-                repo: "proof-once",
+                repo: "demo",
                 branch: "main",
                 head_sha: &head,
                 origin_base_url: "http://forge.test",
@@ -1065,20 +1065,22 @@ fn a_failed_report_names_its_reason_and_posts_one_proof_per_head() {
     assert_eq!(first.decision, "tool-failed");
     assert_eq!(second.decision, "tool-failed");
 
-    let checks = core
-        .list_check_runs("jeryu", "proof-once", Some(&head))
-        .unwrap();
+    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
     let proofs: Vec<_> = checks
         .check_runs
         .iter()
         .filter(|check| check.name == JANKURAI_PROOF_CHECK)
         .collect();
-    assert_eq!(proofs.len(), 1, "one jankurai/proof per head, not one per report");
+    assert_eq!(
+        proofs.len(),
+        1,
+        "one jankurai/proof per head, not one per report"
+    );
     let proof = proofs[0];
     assert_eq!(proof.conclusion, Some(CheckConclusion::Failure));
     assert_eq!(
         proof.details_url.as_deref(),
-        Some(format!("https://forge.test/quality-gate/heads/jeryu/proof-once/{head}").as_str()),
+        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str()),
         "the proof must link the report over a public https page"
     );
     let output = proof.output.as_ref().expect("proof check carries output");
@@ -1093,13 +1095,22 @@ fn a_failed_report_names_its_reason_and_posts_one_proof_per_head() {
 fn tool_failed_proofs_explain_every_way_the_audit_can_produce_no_score() {
     // A reason the host recorded travels to the title, the summary and the text.
     let reason = "the auditor exited 101: thread panicked".to_string();
-    let (request, pass) =
-        jankurai_score_request_with_reason("shift/2026-09-29", "abc", None, -1, Some(reason.clone()));
+    let (request, pass) = jankurai_score_request_with_reason(
+        "shift/2026-09-29",
+        "abc",
+        None,
+        -1,
+        Some(reason.clone()),
+    );
     assert!(!pass);
     let output = jankurai_proof_output(&request, pass);
     assert!(output.title.contains(&reason), "{}", output.title);
     assert!(output.summary.contains(&reason), "{}", output.summary);
-    assert!(output.text.is_some_and(|text| text.contains("thread panicked")));
+    assert!(
+        output
+            .text
+            .is_some_and(|text| text.contains("thread panicked"))
+    );
 
     // An audit that wrote a report the host cannot read says that instead of
     // repeating the bare decision word.

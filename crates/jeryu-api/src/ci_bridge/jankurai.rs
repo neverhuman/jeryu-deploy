@@ -303,7 +303,10 @@ fn is_verdictless_report(report: Option<&serde_json::Value>, exit_code: i64) -> 
     let Some(report) = report else {
         return false;
     };
+    // A report that carries the host's own failure reason is a tool failure with
+    // a reason to show, not "nothing to diff".
     report.is_object()
+        && report.pointer(HOST_ERROR_POINTER).is_none()
         && report.get("score").is_none()
         && report.pointer("/decision/minimum_score").is_none()
         && report.pointer("/decision/hard_findings").is_none()
