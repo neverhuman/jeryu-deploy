@@ -17,7 +17,8 @@ use jeryu_core::{
     AccountSummary, CheckConclusion, CheckRun, CheckRunStatus, CommitStatus, CommitStatusState,
     CreateReviewRequest, ForgeError, MergeBlocker,
     MergePullRequestRequest as CoreMergePullRequestRequest, PullRequest, ReviewCommentInput,
-    ReviewState, check_conclusion_wire_value, effective_reviews_for_head,
+    ReviewState, UpdatePullRequestRequest, UserRole, check_conclusion_wire_value,
+    effective_reviews_for_head,
 };
 use jeryu_readmodel::contracts::{
     AgentPosture, AvailableAction, CheckPosture, CreateReviewCommentRequest, EntityHandle,
@@ -603,6 +604,113 @@ pub(super) async fn merge(
     }
 }
 
+/// `POST /api/v1/repos/:id/pulls/:number/ready`: the draft is ready for review.
+pub(super) async fn ready_for_review(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath((id, number)): AxumPath<(String, u64)>,
+) -> AxumResponse {
+    set_draft(&state, &account, &id, number, false)
+}
+
+/// `POST /api/v1/repos/:id/pulls/:number/draft`: back to a draft.
+pub(super) async fn convert_to_draft(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath((id, number)): AxumPath<(String, u64)>,
+) -> AxumResponse {
+    set_draft(&state, &account, &id, number, true)
+}
+
+/// Both draft transitions. They are idempotent: a pull request already in the
+/// asked-for state answers 200 with its current detail and records nothing, so
+/// a double click neither fails nor writes a second audit row.
+///
+/// `PATCH /api/v3/repos/{owner}/{repo}/pulls/{number}` with `{"draft": …}`
+/// stays the `gh`-compatible way in; it lands on the same core transition and
+/// the same timeline event through [`super::pipeline::emit::github_edge`].
+fn set_draft(
+    state: &WebState,
+    account: &AccountSummary,
+    id: &str,
+    number: u64,
+    draft: bool,
+) -> AxumResponse {
+    let purpose = if draft {
+        "convert pull request to draft"
+    } else {
+        "mark pull request ready for review"
+    };
+    let Some((repo, pr)) = resolve_pr(state, id, number) else {
+        return not_found(purpose, "pull request not found");
+    };
+    // A merged or closed pull request has no draft question left.
+    if !matches!(web_pr_state(&pr), WebPullRequestState::Open) {
+        return repair_error(
+            StatusCode::CONFLICT,
+            "pull_draft_not_open",
+            purpose,
+            "only an open pull request can change its draft state",
+            &[
+                "reopen the pull request before changing its draft state",
+                "open a new pull request for the same head",
+            ],
+            PROOF_LANE,
+            Some(json!({ "state": web_pr_state(&pr) })),
+        );
+    }
+    // The author owns their own draft; an admin can move anyone's, which is
+    // how a stranded draft gets unstuck when its author is away.
+    if pr.author != account.login && account.role != UserRole::Admin {
+        return repair_error(
+            StatusCode::FORBIDDEN,
+            "pull_draft_forbidden",
+            purpose,
+            "only the pull request author or an admin can change its draft state",
+            &[
+                "ask the pull request author to mark it ready for review",
+                "act as an admin account to move someone else's draft",
+            ],
+            PROOF_LANE,
+            Some(json!({ "author": pr.author, "actor": account.login })),
+        );
+    }
+    if pr.draft == draft {
+        return Json(detail_for_pr(state, &pr, Some(&account.login))).into_response();
+    }
+    let updated = match state.github.core().update_pull_request(
+        &repo.owner,
+        &repo.name,
+        pr.number,
+        UpdatePullRequestRequest {
+            draft: Some(draft),
+            ..UpdatePullRequestRequest::default()
+        },
+    ) {
+        Ok(updated) => updated,
+        Err(error) => return core_error(error, purpose),
+    };
+    // The audit row is the transition's own record, separate from the pipeline
+    // event the PR timeline renders; neither failing can fail the request.
+    let _ = state.github.core().append_audit_as(
+        &account.login,
+        if draft {
+            "pull_request.convert_to_draft"
+        } else {
+            "pull_request.ready_for_review"
+        },
+        &format!("{}/{}#{}", repo.owner, repo.name, pr.number),
+        "completed",
+        json!({
+            "draft": draft,
+            "head_sha": updated.head.sha,
+            "author": updated.author,
+        }),
+    );
+    super::pipeline::emit::pull_draft_changed(state, &updated, &account.login);
+    Json(detail_for_pr(state, &updated, Some(&account.login))).into_response()
+}
+
 fn resolve_pr(
     state: &WebState,
     id: &str,
@@ -836,7 +944,7 @@ fn summary_with_required_contexts(
         base_ref: pr.base.ref_name.clone(),
         head_sha: pr.head.sha.clone(),
         base_sha: pr.base.sha.clone(),
-        state: web_state,
+        state: web_state.clone(),
         draft: pr.draft,
         mergeable: Mergeability {
             level: if mergeable { "mergeable" } else { "blocked" }.to_string(),
@@ -866,23 +974,46 @@ fn summary_with_required_contexts(
         labels: Vec::new(),
         updated_at: pr.updated_at.to_rfc3339(),
         passport_hash: Some(passport_hash),
-        available_actions: vec![
-            AvailableAction {
-                action_id: "pull.approve".to_string(),
-                label: "Approve".to_string(),
-                risk: None,
-                method: None,
-                href: None,
-            },
-            AvailableAction {
-                action_id: "pull.merge".to_string(),
-                label: "Merge".to_string(),
-                risk: Some("medium".to_string()),
-                method: None,
-                href: None,
-            },
-        ],
+        available_actions: available_actions(pr, &web_state),
     }
+}
+
+/// The route that marks a draft ready for review. The passport's
+/// `passport_blocked_draft` blocker and the `pull.ready_for_review` action
+/// both name it, so a client that sees the rule also sees how to clear it.
+pub(super) fn ready_route(pr: &PullRequest) -> String {
+    format!(
+        "/api/v1/repos/{}/{}/pulls/{}/ready",
+        pr.owner, pr.repo, pr.number
+    )
+}
+
+/// The route that puts an open pull request back into draft.
+fn draft_route(pr: &PullRequest) -> String {
+    format!(
+        "/api/v1/repos/{}/{}/pulls/{}/draft",
+        pr.owner, pr.repo, pr.number
+    )
+}
+
+/// What the viewer may do with this pull request, each action carrying the
+/// route that performs it. The draft pair is exclusive: a draft offers "Ready
+/// for review", an open pull request offers "Convert to draft".
+fn available_actions(pr: &PullRequest, state: &WebPullRequestState) -> Vec<AvailableAction> {
+    let mut actions = vec![
+        AvailableAction::new("pull.approve", "Approve", None),
+        AvailableAction::new("pull.merge", "Merge", Some("medium")),
+    ];
+    if *state == WebPullRequestState::Open {
+        actions.push(if pr.draft {
+            AvailableAction::new("pull.ready_for_review", "Ready for review", None)
+                .route("POST", ready_route(pr))
+        } else {
+            AvailableAction::new("pull.convert_to_draft", "Convert to draft", Some("low"))
+                .route("POST", draft_route(pr))
+        });
+    }
+    actions
 }
 
 /// Where an open pull request's merge gate stands, for the attention inbox.

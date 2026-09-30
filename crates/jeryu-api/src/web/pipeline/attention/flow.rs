@@ -27,6 +27,60 @@ pub(crate) struct PullFacts {
     pub posture: PullPosture,
 }
 
+/// An open draft pull request. A draft is outside the merge flow, so the only
+/// question about it is how long it has sat without a push.
+#[derive(Clone, Debug)]
+pub(crate) struct DraftFacts {
+    /// `owner/name`.
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub base_ref: String,
+    pub head_sha: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Drafts nobody has touched for `idle_days`. A draft says "not yet", which is
+/// fine for a day or two and a stranded change after that: no gate runs on it,
+/// no automation reviews it, and nothing else in the inbox would ever mention
+/// it. Marking it ready is a person's decision, so the item waits on one.
+pub(crate) fn draft_items(drafts: &[DraftFacts], idle_days: i64, now: DateTime<Utc>) -> Vec<Item> {
+    let mut items = Vec::new();
+    for draft in drafts {
+        let idle = now - draft.updated_at;
+        if idle.num_days() < idle_days {
+            continue;
+        }
+        let label = format!("{}#{}", draft.repo, draft.number);
+        let mut item = Draft {
+            id: format!("pr-draft-waiting:{}:{}", draft.repo, draft.number),
+            kind: "pr_draft_waiting",
+            severity: Severity::Action,
+            title: format!("{label} is a draft waiting to be marked ready"),
+            reason: format!(
+                "\"{}\" by {} into {} has been a draft with no push for {} day(s). A draft \
+                 does not merge, is not reviewed by an automation and is not queued, so it \
+                 waits until somebody marks it ready for review or closes it.",
+                draft.title,
+                draft.author,
+                draft.base_ref,
+                idle.num_days()
+            ),
+            href: pull_href(&draft.repo, draft.number),
+            label: "Mark the draft ready for review, or close it",
+            command: None,
+        }
+        .build();
+        item.since = Some(draft.updated_at.to_rfc3339());
+        item.repo = Some(draft.repo.clone());
+        item.pr = Some(draft.number);
+        item.sha = Some(draft.head_sha.clone());
+        items.push(item);
+    }
+    items
+}
+
 /// Open pull requests waiting on a person: changes requested, red checks,
 /// missing approvals, or mergeable and simply not merged.
 pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {

@@ -106,10 +106,12 @@ pub(super) fn passport_blockers(
     }
     let mut blockers = Vec::new();
     if pr.draft {
+        // `details` carries the route that clears this blocker, so the panel
+        // showing it can also offer the button instead of only stating a rule.
         blockers.push(blocker(
             "passport_blocked_draft",
-            "Draft pull requests cannot be merged.",
-            None,
+            "Draft pull requests cannot be merged: mark it ready for review.",
+            Some(&format!("POST {}", super::ready_route(pr))),
         ));
     }
     for context in required_contexts {

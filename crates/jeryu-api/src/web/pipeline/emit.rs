@@ -174,6 +174,95 @@ pub(crate) fn pull_merged(state: &WebState, pr: &PullRequest, actor: &str, via: 
     );
 }
 
+/// `pr.ready_for_review` / `pr.draft`: the draft lifecycle, in the timeline in
+/// the author's or the admin's name, so "marked ready by X" is on the record
+/// wherever the transition came from.
+pub(crate) fn pull_draft_changed(state: &WebState, pr: &PullRequest, actor: &str) {
+    let (kind, summary) = if pr.draft {
+        (
+            "pr.draft",
+            format!("{actor} converted {} back to a draft", pr_label(pr)),
+        )
+    } else {
+        (
+            "pr.ready_for_review",
+            format!("{} marked ready by {actor}", pr_label(pr)),
+        )
+    };
+    pull(
+        state,
+        pr,
+        PullEvent {
+            kind,
+            actor,
+            outcome: Some(if pr.draft { "draft" } else { "ready" }),
+            needs_human: false,
+            summary,
+            reason: None,
+            sha: None,
+            detail: Some(json!({
+                "draft": pr.draft,
+                "title": pr.title,
+                "author": pr.author,
+                "base": pr.base.ref_name,
+            })),
+        },
+    );
+}
+
+/// `pr.skipped`: an automation looked at this pull request and did nothing,
+/// saying so once per head instead of leaving a draft with no signal at all.
+/// `automation` is the tool that skipped it ("pr-redteam", "merge-queue") and
+/// `reason` the short why ("draft").
+pub(crate) fn pull_skipped(state: &WebState, pr: &PullRequest, automation: &str, reason: &str) {
+    if already_skipped(state, pr, automation, reason) {
+        return;
+    }
+    pull(
+        state,
+        pr,
+        PullEvent {
+            kind: "pr.skipped",
+            actor: automation,
+            outcome: Some("skipped"),
+            needs_human: false,
+            summary: format!("{automation} skipped {}: {reason}", pr_label(pr)),
+            reason: None,
+            sha: None,
+            detail: Some(json!({
+                "automation": automation,
+                "skipped": reason,
+                "head_sha": pr.head.sha,
+            })),
+        },
+    );
+}
+
+/// Whether this automation already said it skipped this exact head for this
+/// reason. Automations look at a pull request on every pass; without this the
+/// timeline would carry one identical line per pass.
+fn already_skipped(state: &WebState, pr: &PullRequest, automation: &str, reason: &str) -> bool {
+    state
+        .events
+        .query(&super::types::EventsQuery {
+            kind: Some("pr.skipped".to_string()),
+            repo: Some(format!("{}/{}", pr.owner, pr.repo)),
+            pr: i64::try_from(pr.number).ok(),
+            limit: Some(50),
+            ..Default::default()
+        })
+        .unwrap_or_default()
+        .iter()
+        .any(|event| {
+            event.actor.as_deref() == Some(automation)
+                && event.sha.as_deref() == Some(pr.head.sha.as_str())
+                && event
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail["skipped"].as_str() == Some(reason))
+        })
+}
+
 /// `pr.opened`.
 pub(crate) fn pull_opened(state: &WebState, pr: &PullRequest, actor: &str) {
     pull(
@@ -240,6 +329,18 @@ pub(crate) fn github_edge(
             let number = response["number"].as_u64().unwrap_or_default().to_string();
             if let Some(pr) = pull_request(owner, repo, &number) {
                 pull_opened(state, &pr, actor);
+            }
+        }
+        // The only write on this path is the `gh`-compatible `PATCH`; a draft
+        // transition through it lands on the same timeline event as the
+        // named `/ready` and `/draft` routes.
+        ["repos", owner, repo, "pulls", number] => {
+            let request: Value = serde_json::from_str(request_body).unwrap_or(Value::Null);
+            if let Some(draft) = request["draft"].as_bool()
+                && let Some(pr) = pull_request(owner, repo, number)
+                && pr.draft == draft
+            {
+                pull_draft_changed(state, &pr, actor);
             }
         }
         ["repos", owner, repo, "pulls", number, "merge"] => {

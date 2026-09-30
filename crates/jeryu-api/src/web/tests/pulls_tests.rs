@@ -1645,3 +1645,267 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     assert_eq!(gate["web_url"], "https://forge.invalid/gate/runs/7");
     assert_eq!(gate["web_url_label"], "View log");
 }
+
+/// A draft opened with an invented repository, so the fixture says nothing
+/// about any deployment's own repositories. The core is backed by SQLite:
+/// the in-memory one keeps no audit trail, and the transition's audit row is
+/// part of what is under test. The returned directory has to outlive it.
+fn draft_fixture() -> (
+    tempfile::TempDir,
+    Arc<WebState>,
+    jeryu_core::Repository,
+    u64,
+) {
+    let dir = tempdir().unwrap();
+    let core = ForgeCore::open_sqlite(dir.path().join("forge.sqlite")).unwrap();
+    let repo = core
+        .create_repository(
+            "acme",
+            CreateRepositoryRequest {
+                name: "widget-shop".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let pr = core
+        .create_pull_request(
+            "acme",
+            "widget-shop",
+            "dana",
+            CreatePullRequestRequest {
+                title: "cart totals".to_string(),
+                head: "cart-totals".to_string(),
+                base: "rc/auto".to_string(),
+                head_sha: Some("d".repeat(40)),
+                base_sha: Some("e".repeat(40)),
+                draft: true,
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    (dir, Arc::new(WebState::new(core)), repo, pr.number)
+}
+
+fn action_ids(detail: &Value) -> Vec<String> {
+    detail["summary"]["available_actions"]
+        .as_array()
+        .expect("available_actions is an array")
+        .iter()
+        .map(|action| action["action_id"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn blocker_codes(detail: &Value) -> Vec<String> {
+    detail["merge_passport"]["blockers"]
+        .as_array()
+        .expect("blockers is an array")
+        .iter()
+        .map(|blocker| blocker["code"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn draft_advertises_the_ready_route_and_the_passport_blocker_names_it() {
+    let (_dir, state, repo, number) = draft_fixture();
+    let detail = response_json(
+        crate::web::pulls::detail(
+            State(state),
+            authenticated_account("dana"),
+            AxumPath((repo.id.to_string(), number)),
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(detail["summary"]["draft"], true);
+    assert!(action_ids(&detail).contains(&"pull.ready_for_review".to_string()));
+    assert!(!action_ids(&detail).contains(&"pull.convert_to_draft".to_string()));
+    let ready = detail["summary"]["available_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["action_id"] == "pull.ready_for_review")
+        .expect("the draft offers the ready action");
+    assert_eq!(ready["method"], "POST");
+    assert_eq!(
+        ready["href"],
+        format!("/api/v1/repos/acme/widget-shop/pulls/{number}/ready")
+    );
+
+    // The blocker states the rule and carries the route that clears it, so a
+    // panel showing it can offer the button rather than only the sentence.
+    let draft_blocker = detail["merge_passport"]["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|blocker| blocker["code"] == "passport_blocked_draft")
+        .expect("a draft is blocked as a draft");
+    assert_eq!(
+        draft_blocker["details"],
+        format!("POST /api/v1/repos/acme/widget-shop/pulls/{number}/ready")
+    );
+}
+
+#[tokio::test]
+async fn author_marks_a_draft_ready_and_the_draft_blocker_clears() {
+    let (_dir, state, repo, number) = draft_fixture();
+    let path = || AxumPath((repo.id.to_string(), number));
+
+    let ready = response_json(
+        crate::web::pulls::ready_for_review(
+            State(state.clone()),
+            authenticated_account("dana"),
+            path(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(ready["summary"]["draft"], false);
+    assert!(!blocker_codes(&ready).contains(&"passport_blocked_draft".to_string()));
+    assert!(action_ids(&ready).contains(&"pull.convert_to_draft".to_string()));
+
+    // The transition is on the pipeline timeline in the actor's name.
+    let events = state
+        .events
+        .query(&crate::web::pipeline::EventsQuery {
+            kind: Some("pr.ready_for_review".to_string()),
+            ..Default::default()
+        })
+        .expect("events read");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor.as_deref(), Some("dana"));
+    assert_eq!(events[0].summary, "acme/widget-shop#1 marked ready by dana");
+    assert_eq!(events[0].outcome.as_deref(), Some("ready"));
+
+    // And it has its own audit row, separate from the timeline event.
+    let audit = state
+        .core
+        .list_audit(&format!("acme/widget-shop#{number}"))
+        .expect("audit read");
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].action, "pull_request.ready_for_review");
+    assert_eq!(audit[0].actor, "dana");
+    assert_eq!(audit[0].detail["draft"], false);
+
+    // Repeating it changes nothing and records nothing a second time.
+    let again = response_json(
+        crate::web::pulls::ready_for_review(
+            State(state.clone()),
+            authenticated_account("dana"),
+            path(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(again["summary"]["draft"], false);
+    assert_eq!(
+        state
+            .core
+            .list_audit(&format!("acme/widget-shop#{number}"))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Back to a draft: the blocker returns, with a fresh audit row.
+    let drafted = response_json(
+        crate::web::pulls::convert_to_draft(
+            State(state.clone()),
+            authenticated_account("dana"),
+            path(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(drafted["summary"]["draft"], true);
+    assert!(blocker_codes(&drafted).contains(&"passport_blocked_draft".to_string()));
+    let audit = state
+        .core
+        .list_audit(&format!("acme/widget-shop#{number}"))
+        .expect("audit read");
+    assert_eq!(audit.len(), 2);
+    assert_eq!(audit[1].action, "pull_request.convert_to_draft");
+}
+
+#[tokio::test]
+async fn an_admin_moves_someone_elses_draft_and_a_stranger_cannot() {
+    let (_dir, state, repo, number) = draft_fixture();
+    let path = || AxumPath((repo.id.to_string(), number));
+
+    let refused = crate::web::pulls::ready_for_review(
+        State(state.clone()),
+        authenticated_account("mallory"),
+        path(),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    let body = response_json(refused).await;
+    assert_eq!(body["code"], "pull_draft_forbidden");
+
+    let by_admin = response_json(
+        crate::web::pulls::ready_for_review(
+            State(state.clone()),
+            authenticated_admin_account("root"),
+            path(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(by_admin["summary"]["draft"], false);
+    let audit = state
+        .core
+        .list_audit(&format!("acme/widget-shop#{number}"))
+        .expect("audit read");
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].actor, "root");
+}
+
+#[tokio::test]
+async fn a_closed_pull_request_has_no_draft_transition_left() {
+    let (_dir, state, repo, number) = draft_fixture();
+    state
+        .core
+        .update_pull_request(
+            "acme",
+            "widget-shop",
+            number,
+            jeryu_core::UpdatePullRequestRequest {
+                state: Some(jeryu_core::PullRequestState::Closed),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let refused = crate::web::pulls::ready_for_review(
+        State(state.clone()),
+        authenticated_account("dana"),
+        AxumPath((repo.id.to_string(), number)),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(response_json(refused).await["code"], "pull_draft_not_open");
+}
+
+#[tokio::test]
+async fn the_pull_list_carries_drafts_and_their_non_main_base() {
+    let (_dir, state, repo, number) = draft_fixture();
+    let list = response_json(
+        crate::web::pulls::list(
+            State(state),
+            AxumPath(repo.id.to_string()),
+            Query(crate::web::pulls::PullListQuery {
+                state: Some("open".to_string()),
+                paging: Default::default(),
+            }),
+        )
+        .await,
+    )
+    .await;
+    // `state=open` is the default view: a draft into a branch that is not the
+    // default one is in it, or the owner cannot find their own pull request.
+    assert_eq!(list["total"], 1);
+    assert_eq!(list["items"][0]["number"], number);
+    assert_eq!(list["items"][0]["draft"], true);
+    assert_eq!(list["items"][0]["base_ref"], "rc/auto");
+}

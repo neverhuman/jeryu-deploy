@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::attention::{
-    Draft, Hosts, Item, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts, PullFacts,
-    Severity, divergence_items, mirror_items, order, pull_items, queue_items, release_items,
-    runner_items, shift_items, todo_items, worker_items,
+    Draft, DraftFacts, Hosts, Item, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts,
+    PullFacts, Severity, divergence_items, draft_items, mirror_items, order, pull_items,
+    queue_items, release_items, runner_items, shift_items, todo_items, worker_items,
 };
 use super::tests::{body_json, request, shift_forge};
 use super::types::Event;
@@ -394,6 +394,55 @@ fn pull_requests_waiting_on_a_person() {
     assert!(items[2].reason.contains("0 of 1 required approval"));
     assert!(items[3].reason.contains("45 minutes"));
     assert_eq!(items[3].pr, Some(4));
+}
+
+fn draft(number: u64, days_old: i64, base_ref: &str) -> DraftFacts {
+    DraftFacts {
+        repo: "acme/widget-shop".to_string(),
+        number,
+        title: format!("draft {number}"),
+        author: "dana".to_string(),
+        base_ref: base_ref.to_string(),
+        head_sha: "3f1c9e0b6a2d4857c1b0e9f7a4d2c6b8e0f1a3d5".to_string(),
+        updated_at: now() - Duration::days(days_old),
+    }
+}
+
+#[test]
+fn a_draft_idle_past_the_threshold_is_waiting_on_a_person() {
+    let drafts = [
+        // Fresh, and one day short: a draft is allowed to be a draft.
+        draft(1, 0, "main"),
+        draft(2, 2, "main"),
+        // Past the threshold, including into a base that is not the default
+        // branch: the base has nothing to do with being stranded.
+        draft(3, 3, "main"),
+        draft(4, 11, "rc/auto"),
+    ];
+    let items = draft_items(&drafts, 3, now());
+    assert_eq!(kinds(&items), ["pr_draft_waiting", "pr_draft_waiting"]);
+    assert_eq!(items[0].pr, Some(3));
+    assert_eq!(items[1].pr, Some(4));
+    assert_eq!(items[0].severity, Severity::Action);
+    assert_eq!(items[0].href, "/repos/jeryu/acme/widget-shop/pulls/3");
+    assert!(
+        items[1].reason.contains("into rc/auto"),
+        "{}",
+        items[1].reason
+    );
+    assert!(
+        items[1].reason.contains("no push for 11 day(s)"),
+        "{}",
+        items[1].reason
+    );
+    assert!(
+        items[1]
+            .next_step
+            .starts_with("Mark the draft ready for review")
+    );
+
+    // The threshold is what decides it, so raising it empties the list.
+    assert!(draft_items(&drafts, 30, now()).is_empty());
 }
 
 fn queue_entry(number: u64, state: QueueState, hours_old: i64) -> QueueEntry {

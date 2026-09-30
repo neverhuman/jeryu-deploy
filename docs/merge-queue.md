@@ -177,6 +177,17 @@ Doing this needs three changes that belong to other owners:
 3. **Gate runner**: stop gating PR heads on those branches, or rank them below
    queue commits. Otherwise the head gate still uses runner capacity.
 
+### Drafts
+
+A draft pull request cannot be queued, and the refusal says so on the pull
+request's own timeline as one `pr.skipped` event per head
+(`detail.automation = "merge-queue"`, `detail.skipped = "draft"`) rather than
+only in the response body. `pr-redteam` reports its own draft skip the same
+way. Marking a draft ready for review is the author's or an admin's move:
+`POST /api/v1/repos/{id}/pulls/{number}/ready` (and `/draft` back again). The
+`gh`-compatible `PATCH /api/v3/repos/{owner}/{repo}/pulls/{number}` with
+`{"draft": false}` does the same thing and lands on the same event.
+
 ### Fast-forward PRs: no second gate
 
 If the PR head already contains the base tip, `replay` returns the head sha

@@ -657,3 +657,71 @@ fn a_reviewer_row_flags_a_repo_the_merge_identity_cannot_write() {
     assert_eq!(gaps[0].repo, "alice/jeryu");
     assert_eq!(gaps[0].identity, "jain-merge-bot");
 }
+
+#[tokio::test]
+async fn the_queue_says_on_the_timeline_that_it_skipped_a_draft_once_per_head() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "acme",
+            CreateRepositoryRequest {
+                name: "widget-shop".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let pr = core
+        .create_pull_request(
+            "acme",
+            "widget-shop",
+            "dana",
+            CreatePullRequestRequest {
+                title: "cart totals".to_string(),
+                head: "cart-totals".to_string(),
+                base: "rc/auto".to_string(),
+                head_sha: Some("d".repeat(40)),
+                base_sha: Some("e".repeat(40)),
+                draft: true,
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let state = Arc::new(WebState::new(core));
+    let enqueue = || {
+        merge_queue::enqueue(
+            State(state.clone()),
+            account("dana", UserRole::Admin),
+            AxumPath((repo.id.to_string(), pr.number)),
+        )
+    };
+
+    let refused = enqueue().await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+
+    let skipped = |state: &WebState| {
+        state
+            .events
+            .query(&crate::web::pipeline::EventsQuery {
+                kind: Some("pr.skipped".to_string()),
+                ..Default::default()
+            })
+            .expect("events read")
+    };
+    let events = skipped(&state);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor.as_deref(), Some("merge-queue"));
+    assert_eq!(
+        events[0].summary,
+        "merge-queue skipped acme/widget-shop#1: draft"
+    );
+    assert_eq!(
+        events[0].detail.as_ref().unwrap()["skipped"],
+        serde_json::json!("draft")
+    );
+
+    // The queue is asked again on every pass; the timeline keeps one line.
+    assert_eq!(enqueue().await.status(), StatusCode::CONFLICT);
+    assert_eq!(skipped(&state).len(), 1);
+}

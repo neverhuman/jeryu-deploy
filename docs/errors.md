@@ -114,6 +114,8 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `pull_approve_invalid_request` | 422 | the approval body failed validation |
 | `pull_comment_body_required` | 422 | a pull request comment needs a body |
 | `pull_comment_invalid_request` | 422 | the pull request comment body failed validation |
+| `pull_draft_forbidden` | 403 | only the author or an admin can change a pull request's draft state |
+| `pull_draft_not_open` | 409 | only an open pull request can change its draft state |
 | `pull_merge_invalid_request` | 422 | the merge body failed validation |
 | `pull_request_serialize_failed` | 500 | the pull request could not be serialized |
 | `pull_review_invalid_request` | 422 | the review body failed validation |

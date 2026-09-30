@@ -335,6 +335,16 @@ pub(super) async fn enqueue(
         Err(_) => return api_error(StatusCode::NOT_FOUND, "not_found", "pull request not found"),
     };
     if !is_open(&pr) {
+        // A draft is the one refusal a reader can act on, so the queue says so
+        // on the pull request's own timeline instead of only in this response.
+        if pr.draft {
+            super::pipeline::emit::pull_skipped(&state, &pr, "merge-queue", "draft");
+            return api_error(
+                StatusCode::CONFLICT,
+                "not_open",
+                "a draft pull request cannot be queued: mark it ready for review first",
+            );
+        }
         return api_error(
             StatusCode::CONFLICT,
             "not_open",

@@ -33,8 +33,8 @@ mod pins;
 mod work;
 
 pub(crate) use flow::{
-    LatestDeployment, ProductionFacts, PullFacts, pull_items, queue_items, release_items,
-    runner_items,
+    DraftFacts, LatestDeployment, ProductionFacts, PullFacts, draft_items, pull_items, queue_items,
+    release_items, runner_items,
 };
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
@@ -48,6 +48,9 @@ pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
 /// A mergeable PR left open this long is waiting on somebody to merge it.
 pub(super) const READY_TO_MERGE_MINUTES: i64 = 10;
 pub(super) const QUEUE_LOOKBACK_HOURS: i64 = 24;
+/// A draft with no push for this many days is waiting on somebody to mark it
+/// ready for review; `JERYU_DRAFT_IDLE_DAYS` overrides it per deployment.
+pub(super) const DRAFT_IDLE_DAYS: i64 = 3;
 const MAX_REASON_CHARS: usize = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -218,6 +221,53 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     pulls
 }
 
+/// How many idle days make a draft an attention item. A value that is not a
+/// positive whole number of days is ignored in favour of [`DRAFT_IDLE_DAYS`],
+/// so a typo in the environment cannot silence the rule or fire it at once.
+pub(super) fn draft_idle_days() -> i64 {
+    std::env::var("JERYU_DRAFT_IDLE_DAYS")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|days| *days > 0)
+        .unwrap_or(DRAFT_IDLE_DAYS)
+}
+
+/// Every open draft, whatever its base branch. A draft is not part of the
+/// merge flow, so it has no [`PullFacts`] posture; the one question about it is
+/// how long it has sat.
+fn draft_facts(state: &WebState) -> Vec<DraftFacts> {
+    let mut drafts = Vec::new();
+    for repo in state.core.list_repositories(None) {
+        if repo.archived {
+            continue;
+        }
+        let Ok(listed) = state.core.list_pull_requests(&repo.owner, &repo.name, None) else {
+            continue;
+        };
+        for pr in listed {
+            if !pr.draft || pr.merged {
+                continue;
+            }
+            if matches!(
+                pr.state,
+                jeryu_core::PullRequestState::Closed | jeryu_core::PullRequestState::Merged
+            ) {
+                continue;
+            }
+            drafts.push(DraftFacts {
+                repo: format!("{}/{}", pr.owner, pr.repo),
+                number: pr.number,
+                title: pr.title.clone(),
+                author: pr.author.clone(),
+                base_ref: pr.base.ref_name.clone(),
+                head_sha: pr.head.sha.clone(),
+                updated_at: pr.updated_at,
+            });
+        }
+    }
+    drafts
+}
+
 fn production_facts(state: &WebState) -> Vec<ProductionFacts> {
     let mut all = Vec::new();
     for repo in state.core.list_repositories(None) {
@@ -312,6 +362,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     let pulls = open_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
     items.extend(pull_items(&pulls, now));
+    items.extend(draft_items(&draft_facts(state), draft_idle_days(), now));
     let entries = state.merge_queue.entries(state, |_| true);
     let building = entries.iter().any(|e| e.state == QueueState::Building);
     items.extend(queue_items(&entries, &open, now));

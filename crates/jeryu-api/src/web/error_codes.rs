@@ -342,6 +342,16 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the pull request comment body failed validation",
     ),
     entry(
+        "pull_draft_forbidden",
+        403,
+        "only the author or an admin can change a pull request's draft state",
+    ),
+    entry(
+        "pull_draft_not_open",
+        409,
+        "only an open pull request can change its draft state",
+    ),
+    entry(
         "pull_merge_invalid_request",
         422,
         "the merge body failed validation",

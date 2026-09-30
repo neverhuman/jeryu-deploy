@@ -636,6 +636,10 @@ mod tests {
             "POST /api/v1/work",
             "PATCH /api/v1/work/{key}",
             "DELETE /api/v1/repos/{id}",
+            // The draft lifecycle is documented by being routed: an owner
+            // reading the index finds how to mark a draft ready.
+            "POST /api/v1/repos/{id}/pulls/{number}/ready",
+            "POST /api/v1/repos/{id}/pulls/{number}/draft",
         ] {
             assert!(routes.contains(&expected), "{expected} missing: {routes:?}");
         }

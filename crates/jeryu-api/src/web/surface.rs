@@ -644,6 +644,7 @@ fn guided_github_edge_response(
                 "GET /repos",
                 "GET /repos/{owner}/{repo}",
                 "GET /repos/{owner}/{repo}/pulls",
+                "PATCH /repos/{owner}/{repo}/pulls/{number} (draft: bool, title, body, state; author or admin. The named Jeryu routes are POST /api/v1/repos/{id}/pulls/{number}/ready and /draft)",
                 "GET /repos/{owner}/{repo}/issues",
                 "GET /repos/{owner}/{repo}/commits",
                 "GET /repos/{owner}/{repo}/commits/{ref}/status",

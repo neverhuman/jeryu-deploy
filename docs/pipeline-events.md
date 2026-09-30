@@ -89,6 +89,8 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 | `worker.stage` | a worker slot's state, stage or todo differs from its previous heartbeat; summary like `w1 jeryu: agent -> gate on <todo>`. An unchanged beat, or an idle slot appearing, emits nothing |
 | `shift.pr_opened` | the Shift page opened a shift's review PR |
 | `pr.opened`, `pr.review`, `pr.approved`, `pr.merged` | pull request steps on the v1 routes and the GitHub-compatible edge; `pr.review` has `outcome` `approve`, `request_changes` or `comment`, and `needs_human` for `request_changes`. Tagged with `family` and `shift` when the head is a shift branch |
+| `pr.ready_for_review`, `pr.draft` | the draft lifecycle: `POST /api/v1/repos/{id}/pulls/{number}/ready` or `/draft`, or the `gh`-compatible `PATCH /api/v3/repos/{owner}/{repo}/pulls/{number}` with `{"draft": …}`. The summary names the actor ("acme/app#7 marked ready by dana"); `outcome` is `ready` or `draft`. Only the author and admins may make either transition, and each one also appends a `pull_request.ready_for_review` / `pull_request.convert_to_draft` audit row |
+| `pr.skipped` | an automation looked at a pull request and did nothing, once per head: `detail.automation` is the tool (`merge-queue`, `pr-redteam`) and `detail.skipped` the reason (`draft`). Without it a draft sits with no signal at all |
 | `queue.enqueued`, `queue.building`, `queue.landed`, `queue.failed`, `queue.dequeued`, `queue.refused` | merge-queue transitions. `queue.building` is a rebuild (moved base, or a retry after a red gate). `queue.landed` is followed by `pr.merged` with `detail.via = "merge_queue"`. `queue.refused` means the PR could not be replayed onto the base and somebody has to rebase it |
 | `gate.started`, `gate.finished`, `review.started`, `review.finished` | a runner heartbeat's `current` or `last` differs from that runner's previous beat (`review.*` for the `redteam` label; never for the `automation` label, see [Runner heartbeats](#runner-heartbeats)). A reviewer verdict of `hold`, `failed`, `publication_rejected` or `too_large` sets `needs_human` |
 | `deploy.created`, `deploy.status` | a write to the Deployments API; `outcome` is the deployment status state, `needs_human` for `failure` and `error`; `reason` is the status description, which `deploy-release.sh` ends with the last meaningful line of switch.sh's output on failure. The status request may also carry `log_path` (the operator's kept switch log on the release host) and `log_tail`: the Deployments API stores neither, and the event's `detail` carries both (the tail cut to its last 20 lines and at most 6000 bytes of JSON, so the event fits the 8 KiB `detail` limit) |
@@ -243,6 +245,7 @@ pushes leave from there).
 | `mirror_diverged` | critical | the newest reconcile found GitHub holding commits the forge does not, or a tag GitHub published at another commit; ONE item PER repository, naming the commits, because each one is its own history question. Nothing was forced and nothing was deleted (`docs/github-mirror.md`) |
 | `mirror_failing` | action | the newest `jeryu/github-mirror` push failed for one or more repositories; ONE item for the whole forge, naming up to four of them and what git said; the step is on the forge host (SSH rewrite and deploy key) |
 | `pr_changes_requested`, `pr_checks_failing`, `pr_awaiting_approval`, `pr_ready_to_merge` | action | an open, non-draft pull request; the first that applies, in this order. `pr_checks_failing` is `action` only when a context the base branch **requires** failed. `pr_awaiting_approval` needs green required checks; `pr_ready_to_merge` needs the PR unchanged for 10 minutes. When none of those applies and only checks the branch does not require failed, `pr_checks_failing` is a `watch` item whose reason names the check and says it does not block the merge |
+| `pr_draft_waiting` | action | an open draft with no push for `JERYU_DRAFT_IDLE_DAYS` days (default 3), whatever its base branch. A draft does not merge, is not reviewed by an automation and is not queued, so nothing else in the inbox would mention it; the step is to mark it ready for review or close it |
 | `queue_failed` | action | a merge-queue entry failed or was dropped in the last 24 hours and its PR is still open |
 | `reviewer_stuck` | action | the automated reviewer's last verdict on a still-open PR is `hold`, `too_large`, `publication_rejected` or `failed` |
 | `gate_runner_down` | critical | no gate runner slot is online while a PR is open or the merge queue is building |
@@ -462,7 +465,9 @@ may be older than the client.
   `xbabe2`; the `pr-gate-runner@` slots) and `JERYU_FORGE_HOST` (default
   `atomicsoul`; the forge itself, where mirror pushes are made by the user the
   forge runs as). A blank value counts as unset. They only change the text of
-  `action.run_in`; nothing connects to these hosts.
+  `action.run_in`; nothing connects to these hosts. `JERYU_DRAFT_IDLE_DAYS`
+  (default 3) is how many days a draft may sit before `pr_draft_waiting`
+  reports it; a value that is not a positive whole number is ignored.
 - **auto-stage.** After this lands on main, re-run
   `scripts/release/install-auto-stage.sh` on the release host so the installed
   copy posts `release.staged`; until then the inbox cannot know about a staged

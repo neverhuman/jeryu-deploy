@@ -471,3 +471,66 @@ fn a_long_log_tail_is_cut_to_fit_the_detail_and_never_drops_the_event() {
         assert!(event.detail.as_ref().unwrap().to_string().len() <= 8 * 1024);
     }
 }
+
+#[test]
+fn the_gh_compatible_patch_lands_on_the_same_draft_events_as_the_named_routes() {
+    let (state, pr) = forge();
+    let path = format!("/repos/jeryu/jeryu-deploy/pulls/{}", pr.number);
+
+    // A PATCH that changes only the title says nothing about drafts.
+    emit::github_edge(
+        &state,
+        true,
+        &path,
+        "alton2",
+        &json!({"title": "Fix the header again"}).to_string(),
+        200,
+        "{}",
+    );
+    assert!(events(&state).is_empty());
+
+    for draft in [true, false] {
+        state
+            .core
+            .update_pull_request(
+                "jeryu",
+                "jeryu-deploy",
+                pr.number,
+                jeryu_core::UpdatePullRequestRequest {
+                    draft: Some(draft),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        emit::github_edge(
+            &state,
+            true,
+            &path,
+            "alton2",
+            &json!({"draft": draft}).to_string(),
+            200,
+            "{}",
+        );
+    }
+
+    let all = events(&state);
+    let lines: Vec<(&str, Option<&str>, &str)> = all
+        .iter()
+        .map(|e| (e.kind.as_str(), e.outcome.as_deref(), e.summary.as_str()))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            (
+                "pr.draft",
+                Some("draft"),
+                "alton2 converted jeryu/jeryu-deploy#1 back to a draft"
+            ),
+            (
+                "pr.ready_for_review",
+                Some("ready"),
+                "jeryu/jeryu-deploy#1 marked ready by alton2"
+            ),
+        ]
+    );
+}
