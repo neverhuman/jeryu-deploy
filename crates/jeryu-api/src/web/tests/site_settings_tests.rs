@@ -1,6 +1,6 @@
 //! `/api/v1/site-settings` and `/api/v1/admin/site-settings` through the full
-//! router: only admins change the wiki, and a private wiki is reported only to
-//! callers who may read it.
+//! router: only admins change the wiki (another user is forbidden), and a
+//! private wiki is reported only to callers who may read it.
 
 use std::path::Path;
 
@@ -9,7 +9,7 @@ use jeryu_core::{CreateRepositoryRequest, ForgeCore, RepoAccessLevel, UserRole};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::{WebState, app};
+use super::super::{WebState, app};
 
 async fn call(
     router: &axum::Router,
