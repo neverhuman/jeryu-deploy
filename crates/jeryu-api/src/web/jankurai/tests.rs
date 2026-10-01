@@ -633,6 +633,20 @@ async fn quality_gate_routes_serve_the_console_contract() {
             .iter()
             .any(|rule| rule["rule"] == "HLT-008" && rule["failures"] == 1)
     );
+    assert_eq!(overview["repos_scored"], 1);
+    assert!(
+        rules.iter().any(|rule| rule["rule"] == "HLT-008"
+            && rule["findings_all_heads"] == 1
+            && rule["latest_findings"] == 1
+            && rule["latest_repos"] == 1),
+        "the latest head of alice/jeryu is ccc: {overview}"
+    );
+    assert!(
+        overview["dimensions_below_floor"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 
     let rule = get_json(&router, "/api/v1/quality-gate/rules/HLT-008?days=30", &user).await;
     assert_eq!(rule["rule"], "HLT-008");
@@ -788,4 +802,162 @@ fn a_head_with_no_commit_base_is_only_scored_by_a_full_audit() {
         panic!("a whole-tree report scores a head with no commit base");
     };
     assert_eq!(ticket.audit_mode, AUDIT_MODE_FULL);
+}
+
+/// One auditor report with explicit findings and, like the auditor's, the
+/// `dimensions` it scored.
+fn report_with(findings: Value, dimensions: &[(&str, u32)]) -> RecordJankuraiScoreRequest {
+    RecordJankuraiScoreRequest {
+        branch: "main".to_string(),
+        commit_sha: String::new(),
+        score: Some(70),
+        hard_findings: Some(0),
+        decision: "scored".to_string(),
+        caps_applied: Vec::new(),
+        report: Some(json!({
+            "score": 70,
+            "decision": {"minimum_score": 85, "hard_findings": 0},
+            "dimensions": dimensions
+                .iter()
+                .map(|(name, score)| json!({"name": name, "score": score}))
+                .collect::<Vec<_>>(),
+            "findings": findings,
+        })),
+        tool_exit: None,
+    }
+}
+
+fn rule_finding(rule: &str, path: &str, line: i64) -> Value {
+    json!({
+        "rule_id": rule,
+        "check_id": format!("{rule}:shape"),
+        "hardness": "soft",
+        "path": path,
+        "line": line,
+        "problem": "a marker left in product code",
+        "evidence": [],
+    })
+}
+
+fn dimension_finding(rule: Option<&str>, dimension: &str, score: u32) -> Value {
+    let mut finding = json!({
+        "check_id": format!("{}:proof", rule.unwrap_or("HLT-000-SCORE-DIMENSION")),
+        "severity": "medium",
+        "hardness": "soft",
+        "path": "Justfile",
+        "problem": format!("`{dimension}` scored {score} below the standard floor of 85"),
+        "evidence": [],
+    });
+    if let Some(rule) = rule {
+        finding["rule_id"] = json!(rule);
+    }
+    finding
+}
+
+/// Rule rows count what is open on each repository's latest head, not every
+/// push that carried it; dimension-floor results leave the rule rows and are
+/// reported per dimension; rule-less checks keep their own `unknown` row.
+#[tokio::test]
+async fn quality_gate_overview_counts_latest_heads_and_separates_dimensions() {
+    let (core, admin, _user) = forge();
+    for owner in ["acme", "globex"] {
+        core.create_account(owner, "owner-password", UserRole::User)
+            .unwrap();
+        core.create_repository(
+            owner,
+            CreateRepositoryRequest {
+                name: "app".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+    let dims = [("Build speed signals", 50), ("Code shape", 70)];
+    let rule_less = json!({
+        "check_id": "HLT-000-SCORE-DIMENSION:docs",
+        "hardness": "soft",
+        "path": "docs/",
+        "problem": "agent-readable documentation is incomplete",
+        "evidence": [],
+    });
+    // acme/app: the same finding on three pushes, then a fourth that also
+    // carries a second, distinct one plus the same one twice in the report.
+    for sha in ["a1", "a2", "a3"] {
+        let mut request = report_with(
+            json!([
+                rule_finding("HLT-001", "src/lib.rs", 3),
+                dimension_finding(Some("HLT-018"), "Build speed signals", 40),
+            ]),
+            &dims,
+        );
+        request.commit_sha = sha.to_string();
+        core.record_jankurai_score("acme", "app", request).unwrap();
+    }
+    let mut latest = report_with(
+        json!([
+            rule_finding("HLT-001", "src/lib.rs", 3),
+            rule_finding("HLT-001", "src/lib.rs", 3),
+            rule_finding("HLT-001", "src/main.rs", 9),
+            dimension_finding(Some("HLT-018"), "Build speed signals", 50),
+            dimension_finding(Some("HLT-001"), "Code shape", 70),
+            rule_less.clone(),
+        ]),
+        &dims,
+    );
+    latest.commit_sha = "a4".to_string();
+    core.record_jankurai_score("acme", "app", latest).unwrap();
+    // globex/app: one head, one dimension result, and a title that only looks
+    // like one because its dimension is not in the report.
+    let mut globex = report_with(
+        json!([
+            dimension_finding(Some("HLT-018"), "Build speed signals", 70),
+            dimension_finding(Some("HLT-007"), "Not a scored dimension", 10),
+        ]),
+        &dims,
+    );
+    globex.commit_sha = "g1".to_string();
+    core.record_jankurai_score("globex", "app", globex).unwrap();
+    let router = router(core);
+
+    let overview = get_json(&router, "/api/v1/quality-gate/overview?days=30", &admin).await;
+    assert_eq!(overview["repos_scored"], 2, "{overview}");
+    let rule = |id: &str| {
+        overview["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["rule"] == id)
+            .cloned()
+    };
+    let hlt001 = rule("HLT-001").expect("HLT-001 row");
+    assert_eq!(
+        hlt001["failures"], 6,
+        "three pushes once, the fourth thrice"
+    );
+    assert_eq!(hlt001["findings_all_heads"], 6);
+    assert_eq!(hlt001["repos"], 1);
+    assert_eq!(hlt001["latest_findings"], 2, "two distinct findings open");
+    assert_eq!(hlt001["latest_repos"], 1);
+    assert!(
+        rule("HLT-018").is_none(),
+        "only dimension results named HLT-018: {overview}"
+    );
+    let hlt007 = rule("HLT-007").expect("an unlisted dimension stays a finding");
+    assert_eq!(hlt007["latest_findings"], 1);
+    let unknown = rule("unknown").expect("rule-less checks keep their own row");
+    assert_eq!(unknown["latest_findings"], 1);
+    assert_eq!(unknown["latest_repos"], 1);
+
+    let dimensions = overview["dimensions_below_floor"].as_array().unwrap();
+    assert_eq!(dimensions.len(), 2, "{overview}");
+    assert_eq!(dimensions[0]["dimension"], "Build speed signals");
+    assert_eq!(dimensions[0]["repos"], 2);
+    assert_eq!(dimensions[0]["median_score"], 60.0, "latest 50 and 70");
+    assert_eq!(dimensions[0]["floor"], 85);
+    assert_eq!(dimensions[0]["attributed_rule"], "HLT-018");
+    assert_eq!(dimensions[1]["dimension"], "Code shape");
+    assert_eq!(dimensions[1]["repos"], 1);
+    assert_eq!(dimensions[1]["median_score"], 70.0);
 }

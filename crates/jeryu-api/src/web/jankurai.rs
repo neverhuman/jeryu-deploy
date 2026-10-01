@@ -15,6 +15,7 @@
 //! shape the web console's Quality gate pages read.
 
 pub(crate) mod audits;
+mod dimension_floor;
 mod disputes;
 pub(crate) mod quality_gate;
 #[cfg(test)]

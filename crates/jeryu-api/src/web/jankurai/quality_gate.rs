@@ -17,6 +17,7 @@ use chrono::{Duration, Utc};
 use jeryu_core::{AccountSummary, UserRole};
 use serde::{Deserialize, Serialize};
 
+use super::dimension_floor::{DimensionResult, dimension_result, median};
 use super::disputes::{Dispute, NewDispute};
 use super::{
     DEFAULT_DAYS, FindingDetail, RULE_DEFAULT_DAYS, RuleQuery, ScoredHead, api_error,
@@ -40,14 +41,43 @@ struct Day {
     failed: u32,
 }
 
+/// How one rule behaved over the window. Dimension-floor results are not
+/// rule findings and are counted in [`DimensionSummary`] instead.
 #[derive(Debug, Serialize)]
 struct RuleSummary {
     rule: String,
     title: String,
+    /// Findings summed over every scored head in the window: one problem left
+    /// standing for ten pushes counts ten times. Kept for older readers; the
+    /// same number as `findings_all_heads`.
     failures: u32,
+    /// Repositories with any scored head in the window carrying the rule.
     repos: u32,
+    /// Same as `failures`, named for what it counts.
+    findings_all_heads: u32,
+    /// Distinct findings on each repository's latest scored head in the
+    /// window, summed over repositories: what is open now.
+    latest_findings: u32,
+    /// Repositories whose latest scored head carries the rule.
+    latest_repos: u32,
     disputes: u32,
     dispute_rate: f64,
+}
+
+/// A scoring dimension below the floor on repositories' latest heads. These
+/// are scores, not detections: the auditor files them under a rule id, but
+/// no rule raised them.
+#[derive(Debug, Serialize)]
+struct DimensionSummary {
+    dimension: String,
+    /// Repositories whose latest scored head has the dimension below the floor.
+    repos: u32,
+    /// The median of those repositories' scores for the dimension.
+    median_score: f64,
+    /// The floor the auditor compared against (the highest seen).
+    floor: u32,
+    /// The rule id the auditor filed the results under, when it named one.
+    attributed_rule: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,7 +98,12 @@ struct Overview {
     heads_failed: u32,
     fail_rate: f64,
     disputes: u32,
+    /// Repositories with a scored head in the window; the base of every
+    /// `latest_*` count and of `dimensions_below_floor`.
+    repos_scored: u32,
     rules: Vec<RuleSummary>,
+    /// Dimension-floor results on the latest heads, kept out of `rules`.
+    dimensions_below_floor: Vec<DimensionSummary>,
     repos: Vec<RepoSummary>,
     daily: Vec<Day>,
 }
@@ -151,11 +186,118 @@ fn count(len: usize) -> u32 {
     u32::try_from(len).unwrap_or(u32::MAX)
 }
 
-/// Every rule a head carries: each applied cap once, each finding once.
-fn head_rules(head: &ScoredHead) -> Vec<String> {
-    let mut rules = head.score.caps_applied.clone();
-    rules.extend(head.findings().into_iter().map(|finding| finding.rule_id));
-    rules
+/// What one head carries, split: rule findings (each applied cap once, each
+/// finding once, keyed so a repeated identical finding can be told apart from
+/// a distinct one) and dimension-floor results.
+struct HeadCarries {
+    rules: Vec<(String, String)>,
+    dimensions: Vec<(DimensionResult, String)>,
+}
+
+fn head_carries(head: &ScoredHead) -> HeadCarries {
+    let mut rules: Vec<(String, String)> = head
+        .score
+        .caps_applied
+        .iter()
+        .map(|cap| (cap.clone(), format!("cap:{cap}")))
+        .collect();
+    let mut dimensions = Vec::new();
+    for finding in head.findings() {
+        if let Some(result) = dimension_result(head, &finding) {
+            dimensions.push((result, finding.rule_id));
+            continue;
+        }
+        let key = format!(
+            "finding:{}|{}|{}|{}",
+            finding.check_id.as_deref().unwrap_or_default(),
+            finding.path.as_deref().unwrap_or_default(),
+            finding.line.unwrap_or(0),
+            finding.problem.as_deref().unwrap_or_default(),
+        );
+        rules.push((finding.rule_id, key));
+    }
+    HeadCarries { rules, dimensions }
+}
+
+/// Each repository's newest scored head among `heads`.
+fn latest_heads(heads: &[ScoredHead]) -> Vec<&ScoredHead> {
+    let mut latest: BTreeMap<&str, &ScoredHead> = BTreeMap::new();
+    for head in heads {
+        let slot = latest.entry(head.repo.as_str()).or_insert(head);
+        if head.score.created_at > slot.score.created_at {
+            *slot = head;
+        }
+    }
+    latest.into_values().collect()
+}
+
+#[derive(Default)]
+struct RuleTally {
+    all_heads: u32,
+    repos: BTreeSet<String>,
+    latest_findings: u32,
+    latest_repos: u32,
+}
+
+#[derive(Default)]
+struct DimensionTally {
+    /// Per repository, the lowest score seen on its latest head.
+    scores: BTreeMap<String, u32>,
+    floor: u32,
+    rule: Option<String>,
+}
+
+/// Rule counts on the latest heads, and the dimensions below the floor there.
+fn tally_latest(
+    heads: &[ScoredHead],
+    rules: &mut BTreeMap<String, RuleTally>,
+) -> Vec<DimensionSummary> {
+    let mut dimensions: BTreeMap<String, DimensionTally> = BTreeMap::new();
+    for head in latest_heads(heads) {
+        let carries = head_carries(head);
+        let mut distinct: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (rule, key) in carries.rules {
+            distinct.entry(rule).or_default().insert(key);
+        }
+        for (rule, keys) in distinct {
+            let tally = rules.entry(rule).or_default();
+            tally.latest_findings += count(keys.len());
+            tally.latest_repos += 1;
+        }
+        for (result, rule) in carries.dimensions {
+            let tally = dimensions.entry(result.dimension).or_default();
+            let score = tally
+                .scores
+                .entry(head.repo.clone())
+                .or_insert(result.score);
+            *score = (*score).min(result.score);
+            tally.floor = tally.floor.max(result.floor);
+            if tally.rule.is_none() && rule != "unknown" {
+                tally.rule = Some(rule);
+            }
+        }
+    }
+    let mut summaries: Vec<DimensionSummary> = dimensions
+        .into_iter()
+        .map(|(dimension, tally)| {
+            let mut scores: Vec<u32> = tally.scores.into_values().collect();
+            DimensionSummary {
+                dimension,
+                repos: count(scores.len()),
+                median_score: median(&mut scores),
+                floor: tally.floor,
+                attributed_rule: tally.rule,
+            }
+        })
+        .collect();
+    // Most repositories first, then the lowest median, then by name.
+    summaries.sort_by(|a, b| {
+        b.repos
+            .cmp(&a.repos)
+            .then(a.median_score.total_cmp(&b.median_score))
+            .then_with(|| a.dimension.cmp(&b.dimension))
+    });
+    summaries
 }
 
 /// GET /api/v1/quality-gate/overview?days=7|30
@@ -190,7 +332,7 @@ pub(crate) async fn overview(
         })
         .collect();
     let mut repos: BTreeMap<String, (u32, u32, BTreeMap<String, u32>)> = BTreeMap::new();
-    let mut rules: BTreeMap<String, (u32, BTreeSet<String>)> = BTreeMap::new();
+    let mut rules: BTreeMap<String, RuleTally> = BTreeMap::new();
     let mut failed = 0;
     for head in &heads {
         let day = daily
@@ -208,12 +350,14 @@ pub(crate) async fn overview(
                 *repo.2.entry(rule).or_insert(0) += 1;
             }
         }
-        for rule in head_rules(head) {
+        for (rule, _) in head_carries(head).rules {
             let entry = rules.entry(rule).or_default();
-            entry.0 += 1;
-            entry.1.insert(head.repo.clone());
+            entry.all_heads += 1;
+            entry.repos.insert(head.repo.clone());
         }
     }
+    let dimensions_below_floor = tally_latest(&heads, &mut rules);
+    let repos_scored = count(repos.len());
     let mut disputes_by_rule: BTreeMap<&str, u32> = BTreeMap::new();
     for dispute in &disputes {
         *disputes_by_rule
@@ -231,20 +375,25 @@ pub(crate) async fn overview(
         heads_failed: failed,
         fail_rate: rate(failed, scored),
         disputes: count(disputes.len()),
+        repos_scored,
         rules: rules
             .into_iter()
-            .map(|(rule, (failures, repos))| {
+            .map(|(rule, tally)| {
                 let disputes = disputes_by_rule.get(rule.as_str()).copied().unwrap_or(0);
                 RuleSummary {
                     title: rule.clone(),
                     rule,
-                    failures,
-                    repos: count(repos.len()),
+                    failures: tally.all_heads,
+                    repos: count(tally.repos.len()),
+                    findings_all_heads: tally.all_heads,
+                    latest_findings: tally.latest_findings,
+                    latest_repos: tally.latest_repos,
                     disputes,
-                    dispute_rate: rate(disputes, failures),
+                    dispute_rate: rate(disputes, tally.all_heads),
                 }
             })
             .collect(),
+        dimensions_below_floor,
         repos: repos
             .into_iter()
             .map(|(repo, (scored, failed, failing_rules))| RepoSummary {
