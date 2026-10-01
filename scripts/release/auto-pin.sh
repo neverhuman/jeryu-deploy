@@ -169,9 +169,17 @@ emit() {
 
 branch="auto/pin-web-${head:0:12}"
 title="release: pin jeryu-web ${head:0:7}"
-pulls="$(api GET "/api/v3/repos/$repo_path/pulls?state=all&per_page=100")" \
-  || { say "could not list $repo_path pull requests"; exit 1; }
-jq -e 'type == "array"' <<<"$pulls" >/dev/null || { say "the pull request list is not JSON"; exit 1; }
+# Every page: the forge lists oldest first and ignores sort and head filters, so page 1 alone stops
+# showing new pull requests once the repo has more than 100, and every tick opened a duplicate.
+pulls='[]'
+for page in $(seq 1 50); do
+  batch="$(api GET "/api/v3/repos/$repo_path/pulls?state=all&per_page=100&page=$page")" \
+    || { say "could not list $repo_path pull requests"; exit 1; }
+  jq -e 'type == "array"' <<<"$batch" >/dev/null || { say "the pull request list is not JSON"; exit 1; }
+  pulls="$(jq -s 'add' <(printf '%s' "$pulls") <(printf '%s' "$batch"))"
+  (( $(jq length <<<"$batch") < 100 )) && break
+  (( page < 50 )) || { say "more than 5000 $repo_path pull requests; not guessing which exist"; exit 1; }
+done
 mine="$(jq -r --arg b "$branch" '[.[] | select(.head.ref == $b)][0].number // empty' <<<"$pulls")"
 if [ -n "$mine" ]; then exit 0; fi # this head already has its pull request, open or decided
 other="$(jq -r '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))][0].number // empty' <<<"$pulls")"

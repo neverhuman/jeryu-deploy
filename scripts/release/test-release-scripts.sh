@@ -253,7 +253,9 @@ case "\$method \$url" in
     [ -e "$P/refuse-beats" ] && exit 22; cat >>"$P/beats.jsonl"; echo >>"$P/beats.jsonl"; echo '{"accepted":true}' ;;
   "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls")
     [ -e "$P/refuse-pr" ] && exit 22; cat >>"$P/prs.jsonl"; echo >>"$P/prs.jsonl"; echo '{"number":7}' ;;
-  "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls?"*) cat "$P/pulls.json" ;;
+  "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls?"*)
+    page="\${url##*page=}"; page="\${page%%&*}"
+    if [ -e "$P/pulls.json.\$page" ]; then cat "$P/pulls.json.\$page"; elif [ "\$page" = 1 ]; then cat "$P/pulls.json"; else echo '[]'; fi ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-web/commits/"*"/status") echo "{\"state\":\"\$(cat "$P/gate")\"}" ;;
   *) echo "unexpected curl: \$method \$url" >&2; exit 22 ;;
 esac
@@ -309,6 +311,11 @@ ok "auto-pin builds, changes exactly two lock lines, and opens one pull request 
 jq -n --arg b "$b1" '[{number: 7, state: "closed", title: "x", head: {ref: $b}}]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick with the pull request present failed"
 [[ "$(posted "$P/prs.jsonl")" == 1 && "$(lines "$P/builds")" == 1 ]] || fail "auto-pin proposed a head that already has its pull request"
+jq -n '[range(1; 101) | {number: ., state: "closed", title: "x", head: {ref: "old/\(.)"}}]' >"$P/pulls.json"
+jq -n --arg b "$b1" '[{number: 101, state: "open", title: "x", head: {ref: $b}}]' >"$P/pulls.json.2"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick with the pull request on page 2 failed"
+[[ "$(posted "$P/prs.jsonl")" == 1 ]] || fail "auto-pin missed its pull request past the first page and opened another"
+rm "$P/pulls.json.2"
 echo '[]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "opening the pull request for a pushed branch failed"; }
 [[ "$(posted "$P/prs.jsonl")" == 2 && "$(lines "$P/builds")" == 1 ]] || fail "a pushed branch without a pull request must get one without a rebuild"
@@ -321,7 +328,7 @@ beat_is '.last.conclusion == "waiting" and .last.pr == 53 and .last.sha == $sha'
 since="$(newest "$P/beats.jsonl" | jq -r .last.finishedAt)"; sleep 1
 auto_pin >/dev/null 2>&1 || fail "a second tick behind an open bump failed"
 beat_is '.last.finishedAt == $since' --arg since "$since" || fail "a wait must keep the time it began"
-ok "auto-pin never proposes twice: an existing pull request, a pushed branch, or any open bump"
+ok "auto-pin never proposes twice: an existing pull request (on any page), a pushed branch, or any open bump"
 
 echo '[]' >"$P/pulls.json"; touch "$P/fail"; : >"$P/events.jsonl"
 if auto_pin >"$P/run.log" 2>&1; then fail "a failed build reported success"; fi
