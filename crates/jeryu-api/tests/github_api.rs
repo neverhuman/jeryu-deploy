@@ -84,6 +84,13 @@ fn version_and_health_are_github_shaped() {
     let parsed = body(&version);
     assert_eq!(parsed["version"], jeryu_api::JERYU_API_VERSION);
     assert_eq!(parsed["name"], "jeryu-api");
+    // Additive build identity: a string when the build knew it, else null.
+    assert_eq!(
+        parsed["commit"].as_str(),
+        jeryu_api::JERYU_BUILD_COMMIT,
+        "commit is the build's"
+    );
+    assert_eq!(parsed["webCommit"].as_str(), jeryu_api::JERYU_WEB_COMMIT);
 
     let user = router.get("/user");
     assert_eq!(user.status, 200);

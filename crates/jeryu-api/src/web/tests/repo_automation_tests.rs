@@ -208,6 +208,7 @@ fn a_deploy_timer_reports_what_it_shipped_and_where() {
             seconds: 42,
             finished_at: chrono::Utc::now(),
         }),
+        code: None,
     };
     state
         .gate_runners

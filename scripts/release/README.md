@@ -15,7 +15,9 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
 - **`stage-release.sh [COMMIT]`** builds the pinned web dist with
   `build-web-dist.sh` (below), then `jeryu-cli` in the glibc 2.35 builder
   image on xbabe2 with no network (`cargo --locked --offline`, dependencies fetched
-  first through `.cargo/hosted-gitconfig`), refuses a binary needing a newer glibc
+  first through `.cargo/hosted-gitconfig`; `JERYU_BUILD_COMMIT=<COMMIT>` passed in, so
+  the binary reports its own commit at `/api/v1/version` and as `forge.commit` on
+  `/runners`), refuses a binary needing a newer glibc
   than the forge host has, and stages `bundle/jeryu`, the web dist,
   `RELEASE.txt` (with the jeryu-web commit and dist hash), `RELEASE.env` (`REL`,
   and `PREV` read from the live symlink; a live name not in `prod-…-unsigned` form

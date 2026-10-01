@@ -360,6 +360,7 @@ Unknown fields are refused. A malformed beat is `422 invalid_input` whose
 | `last.reason` | optional: why a pass that went wrong ended that way, in the runner's own words (`no usable base ref: refs/heads/main does not exist`). It becomes the event's `reason`; without it the event still carries one derived from `conclusion` |
 | `pr` | optional in both, for every label: absent or `null` when the work has no pull request (auto-stage stages a commit) |
 | `last.conclusion` | by label. Gate slot: `success`, `failure`, `error`. `redteam`: `approve`, `hold`, `failed`, `interrupted`, `publication_rejected`, `too_large`. `automation`: `opened` (a pull request), `staged` (a release), `waiting` (behind `pr`, or for the gate of `sha` when there is no `pr`), `failed` |
+| `code` | optional: `{repo, commit, version?, installedAt?}`, the code the runner itself runs. `repo` is where it comes from (`acme/gate-scripts`, 1-200 characters, no control characters), `commit` the installed commit (7-64 lowercase hex digits), `version` a free-form label such as a tag (at most 100 characters), `installedAt` (or `installed_at`) when it was installed. Unknown fields inside are refused too. Leave it out when the runner does not know |
 
 The answer is `{"accepted": true, "runnerId": "…", "offlineAfterSeconds": 900}`
 with the threshold that now applies to this runner.
@@ -396,6 +397,25 @@ Reviewers and timers hold no gate slot: `capacity` is 0 and they are left out
 of `onlineRunners`, `offlineRunners`, the slot totals and the inbox's
 `gate_runner_down` rule. `offlineAfterSeconds` is absent on workcell nodes,
 which do not report by heartbeat.
+
+A node whose beat carried `code` repeats it as
+`"code": {"repo": "acme/gate-scripts", "commit": "0123456789ab…", "version": "gate-scripts-v1.2.0", "installedAt": "2026-09-30T12:00:00+00:00"}`
+(`version` and `installedAt` only when sent). A runner that sent none, and every
+workcell node, has no `code` key.
+
+The response also says what code the forge itself runs, at the top level:
+
+```json
+"forge": {"version": "5.0.0", "commit": "<40-hex jeryu-deploy commit>",
+          "webCommit": "<40-hex jeryu-web commit>"}
+```
+
+`version` is jeryu-api's crate version; `commit` is the jeryu-deploy commit the
+binary was built from (`JERYU_BUILD_COMMIT` at build time, which the release
+build passes, else the checkout's `git rev-parse HEAD`) and `null` when the
+build could not tell; `webCommit` is the jeryu-web commit `jeryu-split.lock.toml`
+pinned, and so the SPA embedded. `GET /api/v1/version` carries the same
+`commit` and `webCommit` beside `version` and `name`.
 
 ## Release boards
 

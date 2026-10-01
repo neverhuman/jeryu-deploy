@@ -227,8 +227,46 @@ pub(crate) struct ArtifactEvidence {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RunnerFabricResponse {
     pub schema_version: String,
+    /// The forge's own build: what code serves this page.
+    #[serde(default)]
+    pub forge: ForgeBuild,
     pub local: RunnerLocalFabric,
     pub mirror: MirrorEvidence,
+}
+
+/// What code the forge itself runs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForgeBuild {
+    /// `CARGO_PKG_VERSION` of jeryu-api.
+    pub version: String,
+    /// The full jeryu-deploy commit this binary was built from; `null` when
+    /// the build could not tell.
+    pub commit: Option<String>,
+    /// The jeryu-web commit pinned by the split lock at build time.
+    pub web_commit: Option<String>,
+}
+
+impl ForgeBuild {
+    pub(crate) fn current() -> Self {
+        Self {
+            version: crate::JERYU_API_VERSION.to_string(),
+            commit: crate::JERYU_BUILD_COMMIT.map(str::to_string),
+            web_commit: crate::JERYU_WEB_COMMIT.map(str::to_string),
+        }
+    }
+}
+
+/// The code a heartbeat runner says it runs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunnerCodeSummary {
+    pub repo: String,
+    pub commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -272,6 +310,10 @@ pub(crate) struct RunnerNodeSummary {
     /// cannot land.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merge_grant_gaps: Vec<crate::web::merge_attempts::MergeGrantGap>,
+    /// The code this runner says it runs; absent when it sent none, and on
+    /// nodes that do not report by heartbeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<RunnerCodeSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

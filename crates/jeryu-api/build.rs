@@ -5,6 +5,11 @@
 //! `build-web-dist.sh`) and refuses to build unless its manifest hash matches
 //! the lock. Tests and dev builds may name an unverified dist with
 //! `JERYU_WEB_DIST_LOCAL`, or embed none; both say so as a cargo warning.
+//!
+//! It also stamps the build's identity for `/api/v1/version` and `/runners`:
+//! `JERYU_BUILD_COMMIT` (this repository's commit: the env var of that name if
+//! set, else `git rev-parse HEAD`, else nothing) and `JERYU_WEB_COMMIT` (the
+//! jeryu-web commit the split lock pins).
 
 #[path = "build/web_dist.rs"]
 mod web_dist;
@@ -12,6 +17,7 @@ mod web_dist;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use web_dist::{WEB_DIST_ENV, WEB_DIST_LOCAL_ENV, WebDistSource};
 
@@ -25,6 +31,7 @@ fn main() {
 
     let lock_text = fs::read_to_string(&lock_path)
         .unwrap_or_else(|err| panic!("read {}: {err}", lock_path.display()));
+    emit_build_identity(&manifest_dir, &lock_text);
     let dir_from = |name: &str| {
         env::var_os(name)
             .filter(|v| !v.is_empty())
@@ -82,6 +89,75 @@ fn main() {
     generated.push_str("];\n");
 
     fs::write(out, generated).expect("write embedded web asset table");
+}
+
+/// Explicit build commit, for builds whose checkout has no usable `.git`.
+const BUILD_COMMIT_ENV: &str = "JERYU_BUILD_COMMIT";
+
+fn emit_build_identity(manifest_dir: &Path, lock_text: &str) {
+    println!("cargo:rerun-if-env-changed={BUILD_COMMIT_ENV}");
+    let explicit = env::var(BUILD_COMMIT_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let commit = match explicit {
+        Some(commit) => {
+            assert!(
+                is_commit(&commit),
+                "{BUILD_COMMIT_ENV} must be 7-64 lowercase hex digits, found {commit:?}"
+            );
+            Some(commit)
+        }
+        None => git_head(manifest_dir),
+    };
+    match commit {
+        Some(commit) => println!("cargo:rustc-env={BUILD_COMMIT_ENV}={commit}"),
+        None => println!(
+            "cargo:warning=build commit unknown: no {BUILD_COMMIT_ENV} and no git checkout; \
+             /api/v1/version reports commit null"
+        ),
+    }
+    // A malformed lock is refused (with its own message) by web_dist::resolve.
+    if let Ok(pin) = web_dist::read_pin(lock_text) {
+        println!("cargo:rustc-env=JERYU_WEB_COMMIT={}", pin.commit);
+    }
+}
+
+fn is_commit(value: &str) -> bool {
+    (7..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// `git rev-parse HEAD` of the checkout holding this crate, and a rerun on the
+/// files that move when HEAD does. Works in a linked worktree (where `.git` is
+/// a file) and quietly gives `None` where there is no git or no repository.
+fn git_head(dir: &Path) -> Option<String> {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .ok()?;
+        out.status.success().then_some(())?;
+        let text = String::from_utf8(out.stdout).ok()?;
+        Some(text.trim().to_string()).filter(|text| !text.is_empty())
+    };
+    let head = git(&["rev-parse", "HEAD"]).filter(|head| is_commit(head))?;
+    let git_path = |name: &str| {
+        git(&["rev-parse", "--path-format=absolute", "--git-path", name]).map(PathBuf::from)
+    };
+    let mut watch = vec![git_path("HEAD"), git_path("packed-refs")];
+    if let Some(branch) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        watch.push(git_path(&branch));
+    }
+    // Only existing files: a missing one would rerun this script on every build.
+    for path in watch.into_iter().flatten().filter(|path| path.is_file()) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    Some(head)
 }
 
 fn collect_assets(root: &Path, dir: &Path, assets: &mut Vec<(String, PathBuf)>) {

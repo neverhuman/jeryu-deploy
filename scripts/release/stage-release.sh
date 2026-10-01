@@ -11,6 +11,9 @@
 #      glibc 2.35 builder image with no network and JERYU_WEB_DIST mounted
 #      read-only, so jeryu-api's build.rs re-verifies the dist hash against the
 #      lock before embedding it, and the binary runs on the forge host's glibc.
+#      JERYU_BUILD_COMMIT=<COMMIT> is passed in too, so the binary reports the
+#      commit it was built from (/api/v1/version, /runners) without relying on
+#      git working inside the container.
 #   2. Refuse a binary that needs a newer glibc than the forge host has.
 #   3. Stage bundle/jeryu, that same web dist, RELEASE.txt (with the jeryu-web
 #      commit and dist hash), RELEASE.env
@@ -132,7 +135,7 @@ web_commit="\${web%% *}"; web_sha="\${web##* }"
 web_dist="\$root/web-dist/\$web_commit/dist"
 GIT_CONFIG_GLOBAL="\$PWD/.cargo/hosted-gitconfig" PATH="\$HOME/.cargo/bin:\$PATH" cargo fetch --locked >/dev/null
 docker run --rm --network none --user "\$(id -u):\$(id -g)" \
-  -v "\$web_dist":/web-dist:ro -e JERYU_WEB_DIST=/web-dist \
+  -v "\$web_dist":/web-dist:ro -e JERYU_WEB_DIST=/web-dist -e JERYU_BUILD_COMMIT="$commit" \
   -e HOME=/tmp -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/src/target-release -e CARGO_INCREMENTAL=0 \
   -e PATH=/opt/rust/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin \
   -e RUSTUP_HOME=/opt/rust/rustup -e RUSTUP_TOOLCHAIN=1.95.0 \

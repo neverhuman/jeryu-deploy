@@ -64,6 +64,7 @@ pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFa
     };
     RunnerFabricResponse {
         schema_version: "jeryu.runner_fabric/v1".to_string(),
+        forge: ForgeBuild::current(),
         local: RunnerLocalFabric {
             state: if online_runners == 0 {
                 EvidenceState::Unknown
@@ -211,6 +212,12 @@ pub(crate) fn gate_runner_nodes(
                 }),
                 offline_after_seconds: Some(offline_after_secs(beat)),
                 merge_grant_gaps: Vec::new(),
+                code: beat.code.as_ref().map(|code| RunnerCodeSummary {
+                    repo: code.repo.clone(),
+                    commit: code.commit.clone(),
+                    version: code.version.clone(),
+                    installed_at: code.installed_at.map(|at| at.to_rfc3339()),
+                }),
             }
         })
         .collect()
@@ -270,6 +277,7 @@ fn build_runner_nodes(
                 last_activity: None,
                 offline_after_seconds: None,
                 merge_grant_gaps: Vec::new(),
+                code: None,
             });
     }
 
@@ -306,6 +314,7 @@ fn build_runner_nodes(
                 last_activity: None,
                 offline_after_seconds: None,
                 merge_grant_gaps: Vec::new(),
+                code: None,
             });
         node.active_tasks.push(task);
     }

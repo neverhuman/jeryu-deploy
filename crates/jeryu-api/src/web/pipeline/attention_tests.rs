@@ -517,6 +517,7 @@ fn runner(
                 seconds: 12,
                 finished_at: now() - Duration::minutes(3),
             }),
+            code: None,
         },
         reporter: "gatebot".to_string(),
         received_at: now() - Duration::seconds(seconds_ago),

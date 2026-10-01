@@ -89,6 +89,27 @@ pub(crate) struct GateRunnerHeartbeat {
     /// The last gate this slot finished.
     #[serde(default)]
     pub last: Option<GateRunnerResult>,
+    /// The runner's own code: which repository and commit it runs. Absent
+    /// when the runner does not know (or predates the field).
+    #[serde(default)]
+    pub code: Option<RunnerCode>,
+}
+
+/// What code a runner runs: its own repository and installed commit.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RunnerCode {
+    /// `owner/name` of the repository the runner's code comes from, or any
+    /// other 1-200 character label without control characters.
+    pub repo: String,
+    /// The installed commit, 7 to 64 lowercase hex digits.
+    pub commit: String,
+    /// A free-form version label (a tag, `5.0.0`), at most 100 characters.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// When this code was installed on the runner.
+    #[serde(default, alias = "installed_at")]
+    pub installed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -324,6 +345,39 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
             return Err(format!("last.conclusion: expected {expected}"));
         }
     }
+    if let Some(code) = &heartbeat.code {
+        check_code(code)?;
+    }
+    Ok(())
+}
+
+const CODE_REPO_MAX: usize = 200;
+const CODE_VERSION_MAX: usize = 100;
+
+fn check_code(code: &RunnerCode) -> Result<(), String> {
+    check_text("code.repo", &code.repo, CODE_REPO_MAX)?;
+    if !(7..=64).contains(&code.commit.len())
+        || !code
+            .commit
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err("code.commit: expected 7-64 lowercase hex digits".to_string());
+    }
+    if let Some(version) = &code.version {
+        check_text("code.version", version, CODE_VERSION_MAX)?;
+    }
+    Ok(())
+}
+
+/// Free text for display: 1 to `max` characters, no control characters.
+fn check_text(field: &str, value: &str, max: usize) -> Result<(), String> {
+    if value.is_empty() || value.chars().count() > max {
+        return Err(format!("{field}: expected 1-{max} characters"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{field}: unexpected character"));
+    }
     Ok(())
 }
 
@@ -399,6 +453,7 @@ mod tests {
                 seconds: 46,
                 finished_at: Utc::now(),
             }),
+            code: None,
         }
     }
 
@@ -671,5 +726,107 @@ mod tests {
         }
         assert!(store.record(beat("xbabe2/extra"), "gatebot", now).is_err());
         assert!(store.record(beat("xbabe2/slot0"), "gatebot", now).is_ok());
+    }
+
+    #[test]
+    fn code_is_accepted_and_kept() {
+        let parsed: GateRunnerHeartbeat = serde_json::from_str(
+            r#"{"runnerId":"gate-a/slot0","host":"gate-a","slot":0,
+                "code":{"repo":"acme/gate-scripts","commit":"0123456789abcdef0123456789abcdef01234567",
+                        "version":"gate-scripts-v1.2.0","installedAt":"2026-09-30T12:00:00Z"}}"#,
+        )
+        .expect("a beat with code parses");
+        let code = parsed.code.clone().expect("code kept");
+        assert_eq!(code.repo, "acme/gate-scripts");
+        assert_eq!(code.version.as_deref(), Some("gate-scripts-v1.2.0"));
+        assert!(code.installed_at.is_some());
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        assert!(store.record(parsed, "gatebot", Utc::now()).is_ok());
+        assert!(store.snapshot()[0].heartbeat.code.is_some());
+
+        // Only repo and commit are required; snake_case installed_at is accepted.
+        let minimal: GateRunnerHeartbeat = serde_json::from_str(
+            r#"{"runnerId":"gate-a/slot1","host":"gate-a","slot":1,
+                "code":{"repo":"acme/gate-scripts","commit":"abc1234","installed_at":"2026-09-30T12:00:00Z"}}"#,
+        )
+        .expect("a minimal code parses");
+        assert!(store.record(minimal, "gatebot", Utc::now()).is_ok());
+    }
+
+    #[test]
+    fn code_is_strict() {
+        let unknown: Result<GateRunnerHeartbeat, _> = serde_json::from_str(
+            r#"{"runnerId":"gate-a/slot0","host":"gate-a","slot":0,
+                "code":{"repo":"acme/gate-scripts","commit":"abc1234","branch":"main"}}"#,
+        );
+        assert!(unknown.is_err(), "unknown code fields are refused");
+        let missing: Result<GateRunnerHeartbeat, _> = serde_json::from_str(
+            r#"{"runnerId":"gate-a/slot0","host":"gate-a","slot":0,"code":{"repo":"acme/gate-scripts"}}"#,
+        );
+        assert!(missing.is_err(), "commit is required");
+
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let now = Utc::now();
+        let with = |repo: &str, commit: &str, version: Option<&str>| {
+            let mut beat = beat("gate-a/slot0");
+            beat.code = Some(RunnerCode {
+                repo: repo.to_string(),
+                commit: commit.to_string(),
+                version: version.map(str::to_string),
+                installed_at: None,
+            });
+            beat
+        };
+        let cases = [
+            (with("acme/gate-scripts", "abc1234", None), None),
+            (
+                with(&"r".repeat(200), &"a".repeat(64), Some(&"v".repeat(100))),
+                None,
+            ),
+            (
+                with("", "abc1234", None),
+                Some("code.repo: expected 1-200 characters"),
+            ),
+            (
+                with(&"r".repeat(201), "abc1234", None),
+                Some("code.repo: expected 1-200 characters"),
+            ),
+            (
+                with("acme/gate\nscripts", "abc1234", None),
+                Some("code.repo: unexpected character"),
+            ),
+            (
+                with("acme/gate-scripts", "abc123", None),
+                Some("code.commit: expected 7-64 lowercase hex digits"),
+            ),
+            (
+                with("acme/gate-scripts", &"a".repeat(65), None),
+                Some("code.commit: expected 7-64 lowercase hex digits"),
+            ),
+            (
+                with("acme/gate-scripts", "ABC1234", None),
+                Some("code.commit: expected 7-64 lowercase hex digits"),
+            ),
+            (
+                with("acme/gate-scripts", "not-a-sha", None),
+                Some("code.commit: expected 7-64 lowercase hex digits"),
+            ),
+            (
+                with("acme/gate-scripts", "abc1234", Some("")),
+                Some("code.version: expected 1-100 characters"),
+            ),
+            (
+                with("acme/gate-scripts", "abc1234", Some(&"v".repeat(101))),
+                Some("code.version: expected 1-100 characters"),
+            ),
+            (
+                with("acme/gate-scripts", "abc1234", Some("v1\t2")),
+                Some("code.version: unexpected character"),
+            ),
+        ];
+        for (beat, expected) in cases {
+            let recorded = store.record(beat, "gatebot", now);
+            assert_eq!(recorded.err().as_deref(), expected);
+        }
     }
 }

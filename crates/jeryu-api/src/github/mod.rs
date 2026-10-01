@@ -53,6 +53,13 @@ use work_bridge_repairs::WorkBridgeRepairQueue;
 /// Semantic version reported by `GET /api/v1/version`.
 pub const JERYU_API_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The jeryu-deploy commit this binary was built from, if the build knew it
+/// (`JERYU_BUILD_COMMIT` at build time, else the checkout's `git rev-parse HEAD`).
+pub const JERYU_BUILD_COMMIT: Option<&str> = option_env!("JERYU_BUILD_COMMIT");
+
+/// The jeryu-web commit pinned in `jeryu-split.lock.toml` at build time.
+pub const JERYU_WEB_COMMIT: Option<&str> = option_env!("JERYU_WEB_COMMIT");
+
 /// HTTP method understood by the GitHub-compatible edge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Method {
@@ -295,7 +302,12 @@ impl GithubRouter {
             ) => Ok(gh_auth_workaround_response(route_path)),
             (Get, ["api", "v1", "version"]) => Ok(json_response(
                 200,
-                &json!({ "version": JERYU_API_VERSION, "name": "jeryu-api" }),
+                &json!({
+                    "version": JERYU_API_VERSION,
+                    "name": "jeryu-api",
+                    "commit": JERYU_BUILD_COMMIT,
+                    "webCommit": JERYU_WEB_COMMIT,
+                }),
             )),
             (Get, ["user"]) => Ok(self.service_user()),
             (Post, ["graphql"]) => Ok(self.graphql(body)),

@@ -451,6 +451,93 @@ async fn runner_heartbeats_are_reporter_only_and_reach_the_fleet() {
     );
 }
 
+/// A runner that says what code it runs gets that code on its node; one that
+/// says nothing gets no `code` key; and the response names the forge's own
+/// build next to them.
+#[tokio::test]
+async fn runner_code_and_forge_build_reach_the_fleet() {
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "test", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let post = |beat: serde_json::Value| {
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/api/v1/runners/heartbeat")
+            .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(beat.to_string()))
+            .unwrap()
+    };
+    let with_code = serde_json::json!({
+        "runnerId": "gate-a/slot0", "host": "gate-a", "slot": 0,
+        "code": {
+            "repo": "acme/gate-scripts",
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "version": "gate-scripts-v1.2.0",
+            "installedAt": "2026-09-30T12:00:00Z"
+        }
+    });
+    let accepted = router.clone().oneshot(post(with_code)).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let without = serde_json::json!({"runnerId": "gate-a/slot1", "host": "gate-a", "slot": 1});
+    let accepted = router.clone().oneshot(post(without)).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let bad = serde_json::json!({
+        "runnerId": "gate-a/slot2", "host": "gate-a", "slot": 2,
+        "code": {"repo": "acme/gate-scripts", "commit": "NOT-HEX"}
+    });
+    let refused = router.clone().oneshot(post(bad)).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let refusal = response_json(refused).await;
+    assert!(
+        refusal.to_string().contains("code.commit"),
+        "the refusal names the field: {refusal}"
+    );
+
+    let fleet = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/control-plane/runners")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fleet.status(), StatusCode::OK);
+    let body = response_json(fleet).await;
+    let nodes = body["local"]["nodeDetails"].as_array().unwrap();
+    assert_eq!(nodes.len(), 2, "the refused beat painted nothing");
+    assert_eq!(
+        nodes[0]["code"],
+        serde_json::json!({
+            "repo": "acme/gate-scripts",
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "version": "gate-scripts-v1.2.0",
+            "installedAt": "2026-09-30T12:00:00+00:00"
+        })
+    );
+    assert!(
+        nodes[1].get("code").is_none(),
+        "no code key for a runner that sent none"
+    );
+    assert_eq!(body["forge"]["version"], crate::JERYU_API_VERSION);
+    assert_eq!(body["forge"]["commit"].as_str(), crate::JERYU_BUILD_COMMIT);
+    assert_eq!(body["forge"]["webCommit"].as_str(), crate::JERYU_WEB_COMMIT);
+    assert!(body["forge"].as_object().unwrap().contains_key("commit"));
+    assert!(body["forge"].as_object().unwrap().contains_key("webCommit"));
+}
+
 #[tokio::test]
 async fn redteam_heartbeats_from_pragent_reach_the_fleet_as_a_reviewer() {
     use tower::ServiceExt;
