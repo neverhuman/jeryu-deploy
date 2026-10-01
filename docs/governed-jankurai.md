@@ -2,9 +2,9 @@
 
 Release and score lanes consume Jankurai only through `ops/ci/lib.sh`. The
 release-authoritative source is the local Jeryu tag
-`v1.6.11-deadlang-precision-split.3`; the installed binary must report
+`v1.6.11-deadlang-precision-split.4`; the installed binary must report
 `jankurai 1.6.11` and match SHA-256
-`9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c`.
+`b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103`.
 The verifier rejects missing files, symlinks, version drift, byte substitution,
 and missing or mismatched content-addressed installation receipts. It
 deterministically neutralizes an earlier ambient PATH entry by prepending the

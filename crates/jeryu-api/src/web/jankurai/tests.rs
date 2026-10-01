@@ -774,7 +774,7 @@ fn a_head_with_no_commit_base_is_only_scored_by_a_full_audit() {
         base_sha: NO_COMMIT_BASE_OID.to_string(),
         runner_id: "runner0".to_string(),
         jankurai_version: "jankurai 1.6.11".to_string(),
-        jankurai_sha256: "9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c"
+        jankurai_sha256: "b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103"
             .to_string(),
         audit_mode: mode.to_string(),
         jankurai_receipt_sha256: None,
