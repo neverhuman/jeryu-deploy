@@ -28,8 +28,10 @@ verify_at "${GOVERNED}"
 
 # The networkless agent image carries a distinct path-bound copy of the same
 # authority. Keep its static receipt content-addressed and prove that the image
-# and smoke test consume the exact rendered identity, not a prior pin.
+# and smoke test consume the host-verified identity, not a prior pin.
 source "${ROOT}/ops/ci/lib.sh"
+# The image receipt must describe the same binary the host receipt verifies.
+require_jankurai >/dev/null
 image_receipt="${ROOT}/images/agent-sandbox/jankurai-installation-receipt.json"
 image_receipt_sha="$(sha256sum "${image_receipt}" | awk '{print $1}')"
 image_receipt_path="/opt/jeryu/receipts/jankurai/sha256/${image_receipt_sha}.json"
@@ -41,8 +43,8 @@ image_receipt_path="/opt/jeryu/receipts/jankurai/sha256/${image_receipt_sha}.jso
 [[ "$(jq -r '.source.tree' "${image_receipt}")" == "${JERYU_JANKURAI_SOURCE_TREE}" ]]
 [[ "$(jq -r '.source.archive_sha256' "${image_receipt}")" == "${JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256}" ]]
 [[ "$(jq -r '.source.cargo_lock_sha256' "${image_receipt}")" == "${JERYU_JANKURAI_CARGO_LOCK_SHA256}" ]]
-[[ "$(jq -r '.governance.manifest_commit' "${image_receipt}")" == "d72015817326c6a197de60f5e07d200f9a327231" ]]
-[[ "$(jq -r '.governance.manifest_tree' "${image_receipt}")" == "0d5bb5b25ba6c43efb706d9480539f462f446655" ]]
+[[ "$(jq -r '.governance.manifest_commit' "${image_receipt}")" == "d604f1f5d67379a20cc0e877b8199f77e41aec4a" ]]
+[[ "$(jq -r '.governance.manifest_tree' "${image_receipt}")" == "554722da6bd0cae9510fadbe1feda73141500b06" ]]
 [[ "$(jq -r '.governance.manifest_sha256' "${image_receipt}")" == "591667a86ca55813071f415c444c19e1d196fab7ab4639b1e62eedd08cce80d9" ]]
 [[ "$(jq -r '.installation.path' "${image_receipt}")" == "/opt/rust/cargo/bin/jankurai" ]]
 grep -Fq -- "${image_receipt_path}" "${ROOT}/images/agent-sandbox/Dockerfile"

@@ -7,11 +7,11 @@ const REV: &str = "2b8312215573eb225075ca0556f1208ae5265b8c";
 const TREE: &str = "bc15c67053db2d1e87e25e71276766d055130701";
 const ARCHIVE_SHA256: &str = "2c8fbbd71a73c978b58bf038f30008b937a16969ec52a528f21ce2d7fa404cf6";
 const BINARY_SHA256: &str = "b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103";
-const MANIFEST_COMMIT: &str = "d72015817326c6a197de60f5e07d200f9a327231";
-const MANIFEST_TREE: &str = "0d5bb5b25ba6c43efb706d9480539f462f446655";
+const MANIFEST_COMMIT: &str = "d604f1f5d67379a20cc0e877b8199f77e41aec4a";
+const MANIFEST_TREE: &str = "554722da6bd0cae9510fadbe1feda73141500b06";
 const MANIFEST_SHA256: &str = "591667a86ca55813071f415c444c19e1d196fab7ab4639b1e62eedd08cce80d9";
 const IMAGE_RECEIPT_SHA256: &str =
-    "ee9ab9372957bfbb6f744ba901614ba95079d2562e87720314c6ce5a3a7180f0";
+    "0ccf0ac8b05e1add41356dca9fa1a8b39ccdad1b9c9fd0919c3545ad40096612";
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -24,21 +24,12 @@ fn read(relative: &str) -> String {
 
 #[test]
 fn proptest_equivalent_generated_jankurai_consumers_share_one_closed_identity() {
+    // The forge bridge and the sandbox image bake a binary in, so they carry the pin.
     let full_identity_consumers = [
-        ".github/workflows/ci-fast.yml",
-        ".github/workflows/jankurai.yml",
-        ".github/workflows/proof-evidence.yml",
-        ".github/workflows/release.yml",
-        ".github/workflows/security.yml",
         "crates/jeryu-api/src/ci_bridge.rs",
         "images/agent-sandbox/Dockerfile",
         "images/agent-sandbox/jankurai-installation-receipt.json",
         "ops/agent-sandbox/smoke.sh",
-        "ops/ci/common.sh",
-        "ops/ci/ensure-jankurai.sh",
-        "ops/ci/lib.sh",
-        "ops/ci/pr-ci.sh",
-        "scripts/ci-doctor.sh",
     ];
     let identity_properties = [TAG, REV, TREE, ARCHIVE_SHA256, BINARY_SHA256];
 
@@ -50,6 +41,27 @@ fn proptest_equivalent_generated_jankurai_consumers_share_one_closed_identity() 
                 "{relative} omitted governed identity property {expected}"
             );
         }
+    }
+
+    // Host CI verifies the installed auditor and its receipt instead: no pin of its own.
+    let pin_free_consumers = [
+        ".github/workflows/ci-fast.yml",
+        ".github/workflows/jankurai.yml",
+        ".github/workflows/proof-evidence.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/security.yml",
+        "ops/ci/common.sh",
+        "ops/ci/ensure-jankurai.sh",
+        "ops/ci/lib.sh",
+        "ops/ci/pr-ci.sh",
+        "scripts/ci-doctor.sh",
+    ];
+    for relative in pin_free_consumers {
+        let content = read(relative);
+        assert!(
+            !content.contains(BINARY_SHA256),
+            "{relative} carries a Jankurai pin; it must verify the installed receipt"
+        );
     }
 
     let active_projection = [
