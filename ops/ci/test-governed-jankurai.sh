@@ -28,8 +28,10 @@ verify_at "${GOVERNED}"
 
 # The networkless agent image carries a distinct path-bound copy of the same
 # authority. Keep its static receipt content-addressed and prove that the image
-# and smoke test consume the exact rendered identity, not a prior pin.
+# and smoke test consume the host-verified identity, not a prior pin.
 source "${ROOT}/ops/ci/lib.sh"
+# The image receipt must describe the same binary the host receipt verifies.
+require_jankurai >/dev/null
 image_receipt="${ROOT}/images/agent-sandbox/jankurai-installation-receipt.json"
 image_receipt_sha="$(sha256sum "${image_receipt}" | awk '{print $1}')"
 image_receipt_path="/opt/jeryu/receipts/jankurai/sha256/${image_receipt_sha}.json"

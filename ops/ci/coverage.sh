@@ -145,11 +145,10 @@ if ! ensure_cargo_subcommand mutants cargo-mutants "${CARGO_MUTANTS_VERSION}"; t
   skip_with_receipt "cargo-mutants ${CARGO_MUTANTS_VERSION} could not be installed"
 fi
 
-# jankurai is what consumes the artifacts; without the pinned binary there is
-# no audit to run. Use the Cargo-installed path directly so ~/.local/bin cannot
-# shadow a different auditor version.
+# jankurai is what consumes the artifacts; without the governed, receipt-verified
+# binary there is no audit to run.
 if ! require_jankurai; then
-  skip_with_receipt "pinned ${JERYU_JANKURAI_VERSION} unavailable"
+  skip_with_receipt "governed Jankurai unavailable"
 fi
 
 # --- 2. Line coverage (cargo-llvm-cov) -------------------------------------
