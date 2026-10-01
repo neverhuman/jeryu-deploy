@@ -1,20 +1,34 @@
-//! `GET /api/v1/repos/:id/commits?ref=&limit=&page=`: a branch's commit
+//! `GET /api/v1/repos/:id/commits?ref=&path=&limit=&page=`: a branch's commit
 //! history, newest first, read from the forge's bare repository.
 //!
 //! The web UI shows a branch's commits; this is the same list over the API.
 //! `ref` defaults to the repository's default branch and accepts a branch,
 //! tag or sha (see [`is_revision`]). Paging follows the other `/api/v1`
 //! collections: `limit` / `per_page` and a 1-based `page`, echoed in `page`.
+//! `path` narrows the history to the commits that touched that file or
+//! directory, as `git log -- <path>` does (the wiki's page history).
 
 use super::compare::{CompareCommit, is_revision, parse_log};
+use super::source::normalize_git_path;
 use super::*;
 
 #[derive(Debug, Default, Deserialize)]
 pub(in crate::web) struct CommitsQuery {
     #[serde(rename = "ref")]
     ref_name: Option<String>,
+    path: Option<String>,
     #[serde(flatten)]
     paging: PageParams,
+}
+
+#[cfg(test)]
+impl CommitsQuery {
+    pub(in crate::web) fn for_path(path: &str) -> Self {
+        Self {
+            path: Some(path.to_string()),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +63,10 @@ pub(in crate::web) async fn repo_commits(
             "ref must be a commit sha or a branch/tag name",
         );
     }
+    let path = match normalize_git_path(query.path.as_deref()) {
+        Ok(path) => path,
+        Err(response) => return *response,
+    };
     let Ok(resolved) = state.repo_manager.resolve_parts(&repo.owner, &repo.name) else {
         return api_error(
             StatusCode::NOT_FOUND,
@@ -76,9 +94,21 @@ pub(in crate::web) async fn repo_commits(
     ]) else {
         return api_error(StatusCode::NOT_FOUND, "not_found", "ref not found");
     };
-    let Some(total) = git(&["rev-list", "--count", "--end-of-options", &sha])
-        .and_then(|n| n.parse::<usize>().ok())
-    else {
+    // An empty path keeps the whole history; `--` still ends the revisions.
+    let pathspec: &[&str] = if path.is_empty() {
+        &[]
+    } else {
+        &[path.as_str()]
+    };
+    let mut count_args = vec![
+        "rev-list",
+        "--count",
+        "--end-of-options",
+        sha.as_str(),
+        "--",
+    ];
+    count_args.extend_from_slice(pathspec);
+    let Some(total) = git(&count_args).and_then(|n| n.parse::<usize>().ok()) else {
         return api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "git_error",
@@ -86,14 +116,19 @@ pub(in crate::web) async fn repo_commits(
         );
     };
     let skip = (page.page - 1).saturating_mul(page.limit).min(total);
-    let Some(log) = git(&[
+    let max_count = format!("--max-count={}", page.limit);
+    let skip_arg = format!("--skip={skip}");
+    let mut log_args = vec![
         "log",
-        &format!("--max-count={}", page.limit),
-        &format!("--skip={skip}"),
+        max_count.as_str(),
+        skip_arg.as_str(),
         "--format=%H%x1f%s%x1f%an%x1f%cI",
         "--end-of-options",
-        &sha,
-    ]) else {
+        sha.as_str(),
+        "--",
+    ];
+    log_args.extend_from_slice(pathspec);
+    let Some(log) = git(&log_args) else {
         return api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "git_error",
@@ -181,6 +216,7 @@ mod tests {
             let state = state.clone();
             let query = CommitsQuery {
                 ref_name: ref_name.map(str::to_string),
+                path: None,
                 paging: PageParams {
                     limit: limit.map(str::to_string),
                     per_page: None,

@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn source_ref<'a>(repo: &'a Repository, query: &'a SourceQuery) -> &'a str {
+pub(super) fn source_ref<'a>(repo: &'a Repository, query: &'a SourceQuery) -> &'a str {
     query
         .ref_name
         .as_deref()
@@ -10,13 +10,13 @@ fn source_ref<'a>(repo: &'a Repository, query: &'a SourceQuery) -> &'a str {
         .unwrap_or(&repo.default_branch)
 }
 
-fn required_param(value: Option<&str>) -> Option<&str> {
+pub(super) fn required_param(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.trim().is_empty())
 }
 
 /// A blob read without a path or ref must not guess: an empty or README
 /// answer reads as a real file to a caller that typoed a parameter.
-fn missing_param_error(name: &str) -> AxumResponse {
+pub(super) fn missing_param_error(name: &str) -> AxumResponse {
     api_error(
         StatusCode::UNPROCESSABLE_ENTITY,
         "invalid_input",
@@ -24,7 +24,7 @@ fn missing_param_error(name: &str) -> AxumResponse {
     )
 }
 
-fn normalize_git_path(path: Option<&str>) -> SourceResult<String> {
+pub(super) fn normalize_git_path(path: Option<&str>) -> SourceResult<String> {
     let raw = path.unwrap_or("");
     if raw.starts_with('/') || raw.contains('\0') {
         return Err(Box::new(api_error(
@@ -266,7 +266,7 @@ fn git_readme_path(
     Ok(candidates.into_iter().next())
 }
 
-fn resolve_commit(
+pub(super) fn resolve_commit(
     state: &WebState,
     bare: &jeryu_gitd::repo::Repository,
     ref_name: &str,
@@ -283,7 +283,11 @@ fn resolve_commit(
         })
 }
 
-fn git_output(state: &WebState, cwd: &std::path::Path, args: &[&str]) -> SourceResult<Vec<u8>> {
+pub(super) fn git_output(
+    state: &WebState,
+    cwd: &std::path::Path,
+    args: &[&str],
+) -> SourceResult<Vec<u8>> {
     let out = Command::new(&state.repo_manager.config().git_bin)
         .args(args)
         .current_dir(cwd)
@@ -299,7 +303,7 @@ fn git_output(state: &WebState, cwd: &std::path::Path, args: &[&str]) -> SourceR
 
 /// Like [`git_output`] for a lookup that may legitimately find nothing:
 /// `Ok(None)` when git exits non-zero, an error only when git cannot be run.
-fn git_lookup(
+pub(super) fn git_lookup(
     state: &WebState,
     cwd: &std::path::Path,
     args: &[&str],
@@ -312,7 +316,11 @@ fn git_lookup(
     Ok(out.status.success().then_some(out.stdout))
 }
 
-fn git_object_size(state: &WebState, cwd: &std::path::Path, sha: &str) -> SourceResult<u64> {
+pub(super) fn git_object_size(
+    state: &WebState,
+    cwd: &std::path::Path,
+    sha: &str,
+) -> SourceResult<u64> {
     let out = git_output(state, cwd, &["cat-file", "-s", sha])?;
     let text = String::from_utf8_lossy(&out);
     text.trim()
@@ -332,7 +340,7 @@ fn git_source_response(context: &str, detail: &str) -> AxumResponse {
     )
 }
 
-fn is_markdown_path(path: &str) -> bool {
+pub(super) fn is_markdown_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".md") || lower.ends_with(".markdown")
 }

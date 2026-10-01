@@ -35,6 +35,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0004_work_bridge_repairs",
         include_str!("../../../../../db/migrations/0004_work_bridge_repairs.sql"),
     ),
+    (
+        5,
+        "0005_site_settings",
+        include_str!("../../../../../db/migrations/0005_site_settings.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;

@@ -35,6 +35,7 @@ mod route_index;
 mod search;
 mod sessions;
 pub(crate) mod shift;
+mod site_settings;
 mod surface;
 mod tool_build;
 mod tool_finder;
@@ -80,9 +81,9 @@ use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
 use jeryu_runnerd::{WarmPool, WorkcellManager};
 use repositories::{
-    deployed_repositories, fleet_tool_adoption, repo_blob, repo_commits, repo_compare, repo_detail,
-    repo_jankurai_scores_ingest, repo_jankurai_scores_list, repo_raw, repo_readme,
-    repo_readme_update, repo_refs, repo_release_tag, repo_tree, repo_update, repos,
+    deployed_repositories, fleet_tool_adoption, repo_blame, repo_blob, repo_commits, repo_compare,
+    repo_detail, repo_jankurai_scores_ingest, repo_jankurai_scores_list, repo_pages, repo_raw,
+    repo_readme, repo_readme_update, repo_refs, repo_release_tag, repo_tree, repo_update, repos,
 };
 use surface::{bootstrap_payload_for_user, github_forward, graphql, markdown_render, repo_entry};
 
@@ -151,6 +152,8 @@ pub(crate) struct WebState {
     pub(crate) events: pipeline::EventStore,
     /// Quality-gate disputes (`<data_dir>/shift.sqlite`, `jankurai_disputes`).
     pub(crate) disputes: jankurai::DisputeStore,
+    /// Instance-wide admin settings (`<data_dir>/shift.sqlite`, `site_settings`).
+    pub(crate) site_settings: site_settings::SiteSettingsStore,
     /// What the newest GitHub-mirror reconcile found per repository.
     pub(crate) mirror_state: mirror_reconcile::MirrorStateStore,
     /// The attention inbox's last answer (`GET /api/v1/attention`).
@@ -278,6 +281,8 @@ impl WebState {
         let events = pipeline::EventStore::open(&shift_path).expect("open pipeline event store");
         let disputes =
             jankurai::DisputeStore::open(&shift_path).expect("open jankurai dispute store");
+        let site_settings =
+            site_settings::SiteSettingsStore::open(&shift_path).expect("open site settings store");
         // Pre-warm the agent pool over the real CLI lifecycle. With the OCI gate
         // closed this only records planned cells (no daemon), so construction is
         // infallible in every environment the web edge boots in.
@@ -304,6 +309,7 @@ impl WebState {
             shift,
             events,
             disputes,
+            site_settings,
             mirror_state: mirror_reconcile::MirrorStateStore::default(),
             attention: pipeline::attention::AttentionCache::default(),
             pins: pipeline::pins::PinsCache::default(),
@@ -758,6 +764,14 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         ("/api/v1/admin/users", get(auth::admin_users)),
         (
+            "/api/v1/admin/site-settings",
+            get(site_settings::admin_get_site_settings).put(site_settings::admin_put_site_settings),
+        ),
+        (
+            "/api/v1/site-settings",
+            get(site_settings::get_site_settings),
+        ),
+        (
             "/api/v1/admin/users/:login/reset-password",
             post(auth::admin_reset_password),
         ),
@@ -936,6 +950,8 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/repos/:id/tree", get(repo_tree)),
         ("/api/v1/repos/:id/blob", get(repo_blob)),
         ("/api/v1/repos/:id/raw", get(repo_raw)),
+        ("/api/v1/repos/:id/pages", get(repo_pages)),
+        ("/api/v1/repos/:id/blame", get(repo_blame)),
         ("/api/v1/repos/:id/codegraph/query", post(codegraph::query)),
         (
             "/api/v1/codegraph/tool-build/status",
@@ -1328,6 +1344,9 @@ mod paging_tests;
 
 #[cfg(test)]
 mod operator_resources_tests;
+
+#[cfg(test)]
+mod site_settings_tests;
 
 #[cfg(test)]
 mod anonymous_read_tests;

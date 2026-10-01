@@ -939,6 +939,8 @@ const ANONYMOUS_REPO_READS: &[&str] = &[
     "blob",
     "raw",
     "readme",
+    "pages",
+    "blame",
     "compare",
     "release-tag",
     "pulls",
@@ -951,7 +953,9 @@ fn anonymous_read_allowed(state: &WebState, method: &Method, path: &str) -> bool
     if !matches!(*method, Method::GET | Method::HEAD) {
         return false;
     }
-    if path == "/api/v1/repos" {
+    // The site settings answer filters the wiki by the caller's access, so
+    // an anonymous visitor only ever learns about a public wiki.
+    if path == "/api/v1/repos" || path == "/api/v1/site-settings" {
         return true;
     }
     let Some(rest) = path.strip_prefix("/api/v1/repos/") else {

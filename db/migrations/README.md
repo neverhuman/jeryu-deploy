@@ -11,6 +11,7 @@ file for an applied version stops the server at startup.
 | `0002_pipeline_events.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/store.rs` |
 | `0003_jankurai_disputes.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/jankurai/disputes.rs` |
 | `0004_work_bridge_repairs.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/github/work_bridge_repairs.rs` |
+| `0005_site_settings.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/site_settings.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. Every later migration must be ordered, immutable after
