@@ -91,16 +91,15 @@ fn ahead_behind(git_bin: &str, dir: &std::path::Path, base: &str, branch: &str) 
     .unwrap_or((0, 0))
 }
 
-/// Todo ids carried by commits in `base..branch` that no base commit carries.
-/// A linear-history merge replays commits under new shas, so `ahead` alone
-/// cannot tell merged work from work that never landed; the trailer can.
-pub(super) fn unmerged_todos(
+/// Todo ids trailed by the commits in `base..branch`.
+fn trailers_in_range(
     git_bin: &str,
     dir: &std::path::Path,
     base: &str,
     branch: &str,
-) -> Vec<String> {
+) -> std::collections::BTreeSet<String> {
     let range = format!("refs/heads/{base}..refs/heads/{branch}");
+    let mut ids = std::collections::BTreeSet::new();
     let Ok(out) = git(
         git_bin,
         dir,
@@ -114,18 +113,65 @@ pub(super) fn unmerged_todos(
         &[],
         None,
     ) else {
-        return Vec::new();
+        return ids;
     };
-    let on_base = super::truth::scan_trailers(git_bin, dir, &format!("refs/heads/{base}"));
-    let mut ids = std::collections::BTreeSet::new();
     for line in String::from_utf8_lossy(&out).lines() {
         for id in line.split(',').map(str::trim).filter(|id| !id.is_empty()) {
-            if !on_base.contains_key(id) {
-                ids.insert(id.to_string());
-            }
+            ids.insert(id.to_string());
         }
     }
-    ids.into_iter().collect()
+    ids
+}
+
+/// Todo ids carried by commits in `base..branch` that no base commit carries.
+/// A linear-history merge replays commits under new shas, so `ahead` alone
+/// cannot tell merged work from work that never landed; the trailer can.
+pub(super) fn unmerged_todos(
+    git_bin: &str,
+    dir: &std::path::Path,
+    base: &str,
+    branch: &str,
+) -> Vec<String> {
+    let on_base = super::truth::scan_trailers(git_bin, dir, &format!("refs/heads/{base}"));
+    trailers_in_range(git_bin, dir, base, branch)
+        .into_iter()
+        .filter(|id| !on_base.contains_key(id))
+        .collect()
+}
+
+/// The open pull request, on another head than `branch`, that carries the most
+/// of `todos`. When a shift PR hits a queue conflict the operator closes it and
+/// opens a replacement from a branch cherry-picked onto the base: those todos
+/// are under review there, not waiting for a pull request of their own.
+pub(super) fn review_elsewhere(
+    git_bin: &str,
+    dir: &std::path::Path,
+    base: &str,
+    branch: &str,
+    todos: &[String],
+    prs: &[PullRequest],
+) -> Option<(ShiftPr, Vec<String>)> {
+    prs.iter()
+        .filter(|pr| is_open(pr) && pr.base.ref_name == base && pr.head.ref_name != branch)
+        .filter_map(|pr| {
+            let carried = trailers_in_range(git_bin, dir, base, &pr.head.ref_name);
+            let found: Vec<String> = todos
+                .iter()
+                .filter(|id| carried.contains(id.as_str()))
+                .cloned()
+                .collect();
+            (!found.is_empty()).then(|| {
+                (
+                    ShiftPr {
+                        number: pr.number,
+                        state: state_name(&pr.state),
+                        url: pull_request_web_path(&pr.owner, &pr.repo, pr.number),
+                    },
+                    found,
+                )
+            })
+        })
+        .max_by_key(|(pr, found)| (found.len(), pr.number))
 }
 
 /// Shift branches of one family, newest date first.
@@ -189,6 +235,25 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
             } else {
                 Vec::new()
             };
+            // Only a closed pull request means the branch was replaced; while
+            // its own is open or merged, that one is the review.
+            let replaced = pr.as_ref().is_some_and(|pr| pr.state == "closed");
+            let (review_pr, reviewed_todos) = if replaced && !unmerged_todos.is_empty() {
+                review_elsewhere(
+                    &git_bin,
+                    &repository.path,
+                    base,
+                    branch,
+                    &unmerged_todos,
+                    &state
+                        .core
+                        .list_pull_requests(&owner, &repo.name, None)
+                        .unwrap_or_default(),
+                )
+                .map_or((None, Vec::new()), |(pr, todos)| (Some(pr), todos))
+            } else {
+                (None, Vec::new())
+            };
             entry.repos.push(ShiftRepo {
                 repo: repo.name.clone(),
                 head: head.to_string(),
@@ -196,6 +261,8 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
                 behind,
                 pr,
                 unmerged_todos,
+                review_pr,
+                reviewed_todos,
             });
         }
     }

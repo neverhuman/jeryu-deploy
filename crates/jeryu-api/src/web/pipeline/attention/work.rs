@@ -176,6 +176,22 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
             if !unreviewed {
                 continue;
             }
+            // When the branch's own pull request was closed and replaced, the
+            // todos the replacement carries are under review already; only the
+            // ones no open pull request carries still wait for one.
+            let waiting: Vec<&String> = repo
+                .unmerged_todos
+                .iter()
+                .filter(|id| !repo.reviewed_todos.contains(id))
+                .collect();
+            if waiting.is_empty() {
+                continue;
+            }
+            let ids = waiting
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<&str>>()
+                .join(", ");
             let mut item = Draft {
                 id: format!("shift-without-pr:{family}:{}:{}", repo.repo, shift.branch),
                 kind: "shift_without_pr",
@@ -184,16 +200,33 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
                     "{} has work on {} and no pull request",
                     repo.repo, shift.branch
                 ),
-                reason: format!(
-                    "{} finished todo(s) ({}) sit on {} in {} and no open pull request asks \
-                     for a review, so the work cannot land.",
-                    repo.unmerged_todos.len(),
-                    repo.unmerged_todos.join(", "),
-                    shift.branch,
-                    repo.repo
+                reason: match &repo.review_pr {
+                    Some(pr) => format!(
+                        "{} finished todo(s) ({ids}) sit on {} in {} and no open pull request \
+                         asks for a review: the shift's own pull request was closed \
+                         and the open #{} that replaces it carries the rest of its \
+                         todos, not these.",
+                        waiting.len(),
+                        shift.branch,
+                        repo.repo,
+                        pr.number
+                    ),
+                    None => format!(
+                        "{} finished todo(s) ({ids}) sit on {} in {} and no open pull request \
+                         asks for a review, so the work cannot land.",
+                        waiting.len(),
+                        shift.branch,
+                        repo.repo
+                    ),
+                },
+                href: repo.review_pr.as_ref().map_or_else(
+                    || format!("/work/shift?family={family}"),
+                    |pr| pr.url.clone(),
                 ),
-                href: format!("/work/shift?family={family}"),
-                label: "Open the shift's review PR",
+                label: match repo.review_pr {
+                    Some(_) => "Add the missing todo(s) to the open review PR",
+                    None => "Open the shift's review PR",
+                },
                 command: None,
             }
             .build();

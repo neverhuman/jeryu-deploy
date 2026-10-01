@@ -1183,3 +1183,88 @@ fn unmerged_todos_are_found_by_trailer_not_by_sha() {
     assert_eq!(found, ["20260919-000002-bbbbbb"]);
     assert!(super::shifts::unmerged_todos("git", repo, "main", "main").is_empty());
 }
+
+/// A shift pull request closed on a queue conflict, replaced by one opened
+/// from another branch cherry-picked onto the base: the replacement's commits
+/// carry the shift's `Todo:` trailers, so the work is under review there.
+#[test]
+fn a_replacement_pull_request_is_found_by_the_trailers_it_carries() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    run_git(repo, &["init", "-q", "."]);
+    let commit = |file: &str, message: &str| {
+        std::fs::write(repo.join(file), file).unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-q", "-m", message]);
+    };
+    commit("base.txt", "base");
+    run_git(repo, &["checkout", "-q", "-b", "nightshift/2026-09-28"]);
+    commit("a.txt", "first todo\n\nTodo: 20260928-000001-aaaaaa");
+    commit("b.txt", "second todo\n\nTodo: 20260928-000002-bbbbbb");
+    // The replacement branch: the same work cherry-picked onto the base.
+    run_git(repo, &["checkout", "-q", "main"]);
+    run_git(
+        repo,
+        &["checkout", "-q", "-b", "alton/nightshift-2026-09-28-web"],
+    );
+    commit("a2.txt", "first todo again\n\nTodo: 20260928-000001-aaaaaa");
+    commit(
+        "b2.txt",
+        "second todo again\n\nTodo: 20260928-000002-bbbbbb",
+    );
+    // A third branch that carries only one of them.
+    run_git(repo, &["checkout", "-q", "main"]);
+    run_git(repo, &["checkout", "-q", "-b", "alton/partial"]);
+    commit("a3.txt", "first todo only\n\nTodo: 20260928-000001-aaaaaa");
+
+    let pr = |number: u64, head: &str, state: &str| {
+        serde_json::from_value::<jeryu_core::PullRequest>(json!({
+            "id": "00000000-0000-0000-0000-00000000000f",
+            "owner": "jeryu",
+            "repo": "jeryu-web",
+            "number": number,
+            "issue_number": number,
+            "title": format!("PR {number}"),
+            "body": null,
+            "state": state,
+            "draft": false,
+            "author": "alton2",
+            "head": {"label": format!("jeryu:{head}"), "ref": head, "sha": "a".repeat(40)},
+            "base": {"label": "jeryu:main", "ref": "main", "sha": "b".repeat(40)},
+            "mergeable": true,
+            "mergeable_state": "clean",
+            "merged": false,
+            "merged_at": null,
+            "merge_commit_sha": null,
+            "created_at": "2026-09-28T00:00:00Z",
+            "updated_at": "2026-09-28T00:00:00Z",
+        }))
+        .unwrap()
+    };
+    let todos = vec![
+        "20260928-000001-aaaaaa".to_string(),
+        "20260928-000002-bbbbbb".to_string(),
+    ];
+    let find = |prs: &[jeryu_core::PullRequest]| {
+        super::shifts::review_elsewhere("git", repo, "main", "nightshift/2026-09-28", &todos, prs)
+    };
+
+    let closed = pr(71, "nightshift/2026-09-28", "closed");
+    let whole = pr(78, "alton/nightshift-2026-09-28-web", "mergeable");
+    let partial = pr(79, "alton/partial", "open");
+    let (found, carried) = find(&[closed.clone(), whole.clone()]).unwrap();
+    assert_eq!(found.number, 78);
+    assert_eq!(carried, todos, "the replacement carries every todo");
+
+    let (found, carried) = find(&[closed.clone(), partial.clone()]).unwrap();
+    assert_eq!(found.number, 79);
+    assert_eq!(carried, ["20260928-000001-aaaaaa"]);
+
+    // The one carrying the most wins, and a closed replacement is no review.
+    let (found, _) = find(&[partial, whole]).unwrap();
+    assert_eq!(found.number, 78);
+    assert!(
+        find(&[closed, pr(80, "alton/nightshift-2026-09-28-web", "closed")]).is_none(),
+        "only an open pull request is a review"
+    );
+}

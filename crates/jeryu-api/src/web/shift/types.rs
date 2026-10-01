@@ -286,6 +286,15 @@ pub(crate) struct ShiftRepo {
     /// landed on the branch too late to ride that pull request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unmerged_todos: Vec<String>,
+    /// When this branch's own pull request is closed: an open pull request in
+    /// the same repo whose commits carry some of the unmerged todos. The
+    /// operator closes a shift PR and opens a replacement from another branch,
+    /// cherry-picked onto the base; the work is under review there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_pr: Option<ShiftPr>,
+    /// The unmerged todos that [`ShiftRepo::review_pr`] carries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviewed_todos: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

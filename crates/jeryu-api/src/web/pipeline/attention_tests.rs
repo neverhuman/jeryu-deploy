@@ -202,6 +202,8 @@ fn a_shift_branch_with_work_and_no_pull_request() {
             url: "/repos/jeryu/jeryu/x/pulls/7".to_string(),
         }),
         unmerged_todos: Vec::new(),
+        review_pr: None,
+        reviewed_todos: Vec::new(),
     };
     let stranded = |name: &str, state: &str, todos: &[&str]| ShiftRepo {
         unmerged_todos: todos.iter().map(|id| (*id).to_string()).collect(),
@@ -258,6 +260,71 @@ fn a_shift_branch_with_work_and_no_pull_request() {
     assert_eq!(items[1].repo.as_deref(), Some("jeryu-web"));
     assert_eq!(items[0].shift.as_deref(), Some("bulletshift/2026-09-19"));
     assert_eq!(items[0].action.label, "Open the shift's review PR");
+}
+
+/// A shift PR closed on a queue conflict and replaced by an open PR from
+/// another branch, cherry-picked onto the base: the todos the replacement
+/// carries are under review, not waiting for a pull request of their own.
+#[test]
+fn a_shift_whose_todos_ride_a_replacement_pull_request() {
+    let replaced = |name: &str, todos: &[&str], reviewed: &[&str]| ShiftRepo {
+        repo: name.to_string(),
+        head: "9f8214948f1a8508fb95b1d3b941c162bf76a73a".to_string(),
+        ahead: 19,
+        behind: 0,
+        pr: Some(ShiftPr {
+            number: 71,
+            state: "closed".to_string(),
+            url: "/repos/jeryu/jeryu-web/x/pulls/71".to_string(),
+        }),
+        unmerged_todos: todos.iter().map(|id| (*id).to_string()).collect(),
+        review_pr: Some(ShiftPr {
+            number: 78,
+            state: "mergeable".to_string(),
+            url: "/repos/jeryu/jeryu-web/x/pulls/78".to_string(),
+        }),
+        reviewed_todos: reviewed.iter().map(|id| (*id).to_string()).collect(),
+    };
+    let shift = |repos: Vec<ShiftRepo>| ShiftBranch {
+        branch: "nightshift/2026-09-28".to_string(),
+        kind: "nightshift".to_string(),
+        date: "2026-09-28".to_string(),
+        repos,
+        todo_ids: vec!["t1".to_string(), "t2".to_string(), "t3".to_string()],
+    };
+
+    let all = shift(vec![replaced(
+        "jeryu-web",
+        &["t1", "t2", "t3"],
+        &["t1", "t2", "t3"],
+    )]);
+    assert!(
+        shift_items("jeryu", &[all]).is_empty(),
+        "every todo is in the open replacement PR"
+    );
+
+    let items = shift_items(
+        "jeryu",
+        &[shift(vec![replaced(
+            "jeryu-web",
+            &["t1", "t2", "t3"],
+            &["t1", "t3"],
+        )])],
+    );
+    assert_eq!(kinds(&items), ["shift_without_pr"]);
+    assert!(
+        items[0]
+            .reason
+            .starts_with("1 finished todo(s) (t2) sit on"),
+        "only the todo no open PR carries: {}",
+        items[0].reason
+    );
+    assert!(items[0].reason.contains("open #78 that replaces it"));
+    assert_eq!(items[0].href, "/repos/jeryu/jeryu-web/x/pulls/78");
+    assert_eq!(
+        items[0].action.label,
+        "Add the missing todo(s) to the open review PR"
+    );
 }
 
 fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
