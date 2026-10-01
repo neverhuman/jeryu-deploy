@@ -583,14 +583,26 @@ fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
     let bare = tempfile::tempdir().unwrap();
     let (base, head) = init_version_repo(work.path());
     clone_bare(work.path(), bare.path());
-    let core = demo_core();
+    // Its own repository: the queue is process-wide, and tests running in the
+    // same second build this same fixture head and queue it in `jeryu/demo`.
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "pushed-main".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
 
     queue_head_audit(
         &core,
         "git",
         bare.path(),
         "jeryu",
-        "demo",
+        "pushed-main",
         &ref_update("refs/heads/main", &base, &head),
         "http://forge.test",
     );
@@ -600,7 +612,7 @@ fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
         .unwrap()
         .tickets()
         .iter()
-        .filter(|ticket| ticket.head_sha == head)
+        .filter(|ticket| ticket.repo == "pushed-main" && ticket.head_sha == head)
         .cloned()
         .collect();
     assert_eq!(queued.len(), 1, "one ticket per head");
@@ -609,12 +621,12 @@ fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
     assert!(queued[0].claimed_by.is_none());
 
     assert!(
-        core.list_jankurai_scores("jeryu", "demo", None, Some(&head))
+        core.list_jankurai_scores("jeryu", "pushed-main", None, Some(&head))
             .unwrap()
             .is_empty(),
         "the forge records no score of its own"
     );
-    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let checks = core.list_check_runs("jeryu", "pushed-main", Some(&head)).unwrap();
     let proof = checks
         .check_runs
         .iter()
@@ -633,7 +645,7 @@ fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
         "git",
         bare.path(),
         "jeryu",
-        "demo",
+        "pushed-main",
         &ref_update("refs/heads/main", &base, &head),
         "http://forge.test",
     );
@@ -642,13 +654,13 @@ fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
         .unwrap()
         .tickets()
         .iter()
-        .filter(|ticket| ticket.head_sha == head)
+        .filter(|ticket| ticket.repo == "pushed-main" && ticket.head_sha == head)
         .count();
     assert_eq!(still_one, 1);
     audit_queue::queue()
         .lock()
         .unwrap()
-        .take("jeryu", "demo", &head);
+        .take("jeryu", "pushed-main", &head);
 }
 
 /// A stand-in auditor with jankurai 1.6.11's behaviour. `diff-audit` diffs
