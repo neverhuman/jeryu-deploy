@@ -38,10 +38,10 @@
   },
   "conclusion": "success",
   "governance": {
-    "manifest_commit": "d72015817326c6a197de60f5e07d200f9a327231",
+    "manifest_commit": "a61f103188637c4c32f54431b4782258a67dfe07",
     "manifest_repo": "https://git.neverhuman.org/git/jeryu/jeryu-tool.git",
     "manifest_sha256": "591667a86ca55813071f415c444c19e1d196fab7ab4639b1e62eedd08cce80d9",
-    "manifest_tree": "0d5bb5b25ba6c43efb706d9480539f462f446655",
+    "manifest_tree": "5d541b96def0f21a908d25c555b1a1cecc415ac4",
     "protected_main": true,
     "protection_policy": "immutable-main-v1",
     "status": "governed"
