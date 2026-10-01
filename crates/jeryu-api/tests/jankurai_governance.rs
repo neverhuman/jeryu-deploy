@@ -24,21 +24,12 @@ fn read(relative: &str) -> String {
 
 #[test]
 fn proptest_equivalent_generated_jankurai_consumers_share_one_closed_identity() {
+    // The forge bridge and the sandbox image bake a binary in, so they carry the pin.
     let full_identity_consumers = [
-        ".github/workflows/ci-fast.yml",
-        ".github/workflows/jankurai.yml",
-        ".github/workflows/proof-evidence.yml",
-        ".github/workflows/release.yml",
-        ".github/workflows/security.yml",
         "crates/jeryu-api/src/ci_bridge.rs",
         "images/agent-sandbox/Dockerfile",
         "images/agent-sandbox/jankurai-installation-receipt.json",
         "ops/agent-sandbox/smoke.sh",
-        "ops/ci/common.sh",
-        "ops/ci/ensure-jankurai.sh",
-        "ops/ci/lib.sh",
-        "ops/ci/pr-ci.sh",
-        "scripts/ci-doctor.sh",
     ];
     let identity_properties = [TAG, REV, TREE, ARCHIVE_SHA256, BINARY_SHA256];
 
@@ -50,6 +41,27 @@ fn proptest_equivalent_generated_jankurai_consumers_share_one_closed_identity() 
                 "{relative} omitted governed identity property {expected}"
             );
         }
+    }
+
+    // Host CI verifies the installed auditor and its receipt instead: no pin of its own.
+    let pin_free_consumers = [
+        ".github/workflows/ci-fast.yml",
+        ".github/workflows/jankurai.yml",
+        ".github/workflows/proof-evidence.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/security.yml",
+        "ops/ci/common.sh",
+        "ops/ci/ensure-jankurai.sh",
+        "ops/ci/lib.sh",
+        "ops/ci/pr-ci.sh",
+        "scripts/ci-doctor.sh",
+    ];
+    for relative in pin_free_consumers {
+        let content = read(relative);
+        assert!(
+            !content.contains(BINARY_SHA256),
+            "{relative} carries a Jankurai pin; it must verify the installed receipt"
+        );
     }
 
     let active_projection = [
