@@ -209,9 +209,9 @@ shipped="$(git -C "$web_cache" log --format='- %h %s' -n 30 "$pin..$head")"
 if [ -z "$pushed" ]; then
   say "building jeryu-web ${head:0:12} (gate success; pin is ${pin:0:12})"
   git -C "$cache" archive "$main" scripts/release "$lock_file" | tar -x -C "$work"
-  pair="$(JERYU_WEB_REMOTE="$web_remote" "$work/scripts/release/build-web-dist.sh" --commit "$head" "$state/web-dist" \
-    2> >(tee -a "$log" >&2) | tee -a "$log" | tail -1)" || give_up "build-web-dist.sh failed"
-  wait 2>/dev/null || true # let the tee drain before the log is read
+  # Pipes, not 2> >(tee …): a process substitution can still be writing when give_up reads the log.
+  pair="$( { JERYU_WEB_REMOTE="$web_remote" "$work/scripts/release/build-web-dist.sh" --commit "$head" "$state/web-dist" \
+    2>&1 >&3 | tee -a "$log" >&2; } 3>&1 | tee -a "$log" | tail -1)" || give_up "build-web-dist.sh failed"
   read -r built hash <<<"$pair"
   [[ "$built" == "$head" && "$hash" =~ ^[0-9a-f]{64}$ ]] || give_up "build-web-dist.sh did not print '<commit> <hash>' for ${head:0:12}"
 

@@ -150,8 +150,9 @@ log="$state/logs/${main:0:12}-attempt$attempt.log"
 say "staging main ${main:0:12} (gate success)"
 started="$(date +%s)"
 rc=0
-"$work/scripts/release/stage-release.sh" "$main" >"$work/stage.out" 2> >(tee -a "$log" >&2) || rc=$?
-wait 2>/dev/null || true # let the tee drain before the log is read
+# A pipe, not 2> >(tee …): a pipeline waits for its tee, a process substitution does not (even
+# after `wait`), so a fast failure was reported with an empty log tail. pipefail keeps the rc.
+{ "$work/scripts/release/stage-release.sh" "$main" 2>&1 >"$work/stage.out"; } | tee -a "$log" >&2 || rc=$?
 cat "$work/stage.out" >>"$log"
 rel="$(tail -1 "$work/stage.out")"
 seconds=$(( $(date +%s) - started ))
