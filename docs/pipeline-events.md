@@ -327,7 +327,8 @@ unique repository name.
 ## Runner heartbeats
 
 `/runners` is drawn from heartbeats, not from the event log. Gate runner slots,
-the pr-redteam reviewer and the release timers (`auto-pin.sh`, `auto-stage.sh`)
+the pr-redteam reviewer, the release timers (`auto-pin.sh`, `auto-stage.sh`),
+host deploy timers and the jankurai audit runner (`ops/ci/jankurai-audit-runner.sh`)
 all report through one route; the forge keeps the latest beat per `runnerId` in
 memory, so a restarted forge repopulates within one tick of each reporter.
 Implementation: `crates/jeryu-api/src/web/control_plane/gate_runners.rs`.
@@ -353,14 +354,15 @@ Unknown fields are refused. A malformed beat is `422 invalid_input` whose
 | Field | Meaning |
 |---|---|
 | `runnerId`, `host`, `slot` | required. `runnerId` is the stable key, `<host>/<name>` by convention (`xbabe2/slot0`, `xbabe0/redteam`, `xbabe0/auto-stage`) |
-| `labels` | optional. `redteam` marks the reviewer and `automation` marks a background timer (the two are exclusive); anything else is a gate slot |
+| `labels` | optional. `redteam` marks the reviewer, `automation` a background timer, `deploy` a host deploy timer and `jankurai-audit` the jankurai audit runner (these four are exclusive); anything else is a gate slot |
 | `intervalSeconds` | optional integer, 30 to 86400: how often this runner beats. Absent means the runner is offline after 180 seconds of silence; present, after `max(180, 3 * intervalSeconds)` |
 | `current` | optional: `{repo, pr?, sha, recipe, startedAt}`, the work in hand |
 | `last` | optional: `{repo, pr?, sha, recipe, conclusion, reason?, seconds, finishedAt}`, the newest finished work. Leave it out when there is no history |
 | `last.reason` | optional: why a pass that went wrong ended that way, in the runner's own words (`no usable base ref: refs/heads/main does not exist`). It becomes the event's `reason`; without it the event still carries one derived from `conclusion` |
 | `pr` | optional in both, for every label: absent or `null` when the work has no pull request (auto-stage stages a commit) |
-| `last.conclusion` | by label. Gate slot: `success`, `failure`, `error`. `redteam`: `approve`, `hold`, `failed`, `interrupted`, `publication_rejected`, `too_large`. `automation`: `opened` (a pull request), `staged` (a release), `waiting` (behind `pr`, or for the gate of `sha` when there is no `pr`), `failed` |
+| `last.conclusion` | by label. Gate slot: `success`, `failure`, `error`. `redteam`: `approve`, `hold`, `failed`, `interrupted`, `publication_rejected`, `too_large`. `automation`: `opened` (a pull request), `staged` (a release), `waiting` (behind `pr`, or for the gate of `sha` when there is no `pr`), `failed`. `deploy`: `deployed`, `failed`, `skipped`. `jankurai-audit`: `scored` (the forge recorded the governed report; the verdict itself is on `jankurai/proof`), `tool-failed` (the auditor exited nonzero with no usable report), `refused` (the forge refused the submission), `failed` (the head could not be fetched, so nothing ran) |
 | `code` | optional: `{repo, commit, version?, installedAt?}`, the code the runner itself runs. `repo` is where it comes from (`acme/gate-scripts`, 1-200 characters, no control characters), `commit` the installed commit (7-64 lowercase hex digits), `version` a free-form label such as a tag (at most 100 characters), `installedAt` (or `installed_at`) when it was installed. Unknown fields inside are refused too. Leave it out when the runner does not know |
+| `tools` | optional: `[{name, version?, sha256?}]`, the evaluation tools the runner uses, as it measured them (`{"name": "jankurai", "version": "1.6.11", "sha256": "<64 hex>"}`). At most 32; `name` 1-64 characters of `[a-z0-9._@-]`, unique within the list; `version` 1-100 characters, no control characters; `sha256` exactly 64 lowercase hex digits, the digest of the binary the runner invokes. Unknown fields inside are refused; a refusal names the entry (`tools[2].sha256: expected 64 lowercase hex digits`) |
 
 The answer is `{"accepted": true, "runnerId": "…", "offlineAfterSeconds": 900}`
 with the threshold that now applies to this runner.
@@ -371,15 +373,49 @@ that did not go well always carries a `reason`. The same verdict on the same
 head, beaten again after a restart or a retry, collapses onto the event already
 stored: the `event_id` is derived from the runner, the head, the recipe and the
 conclusion, so a retried pass does not repeat in the feed. An `automation` beat never emits an
-event: the release scripts post their own `pin.*` and `release.*` events.
+event: the release scripts post their own `pin.*` and `release.*` events. Neither does a
+`deploy` beat, nor a `jankurai-audit` beat: the score the audit runner submits is the record.
+
+#### The jankurai audit runner
+
+`ops/ci/jankurai-audit-runner.sh` (a 30-second timer on a gate host, installed by
+`ops/ci/install-jankurai-audit-runner.sh`) beats on every run through
+`ops/ci/jankurai-audit-heartbeat.sh`, with the token it already uses to claim
+audits, so that login must be allowed to report too:
+
+```json
+{"runnerId": "gate-a/jankurai-audit", "host": "gate-a", "slot": 0,
+ "labels": ["jankurai-audit"], "intervalSeconds": 30,
+ "current": {"repo": "acme/widgets", "sha": "89abcdef01…", "recipe": "jankurai audit",
+             "startedAt": "2026-09-30T12:00:00Z"},
+ "last": {"repo": "acme/widgets", "sha": "0123456789…", "recipe": "jankurai audit",
+          "conclusion": "scored", "seconds": 41, "finishedAt": "2026-09-30T11:59:20Z"},
+ "code": {"repo": "acme/gate-scripts", "commit": "<VERSION commit>",
+          "installedAt": "2026-09-29T08:00:00Z"},
+ "tools": [{"name": "jankurai", "version": "1.6.11", "sha256": "<64 hex>"}]}
+```
+
+`runnerId` is `<short hostname>/jankurai-audit`. A run that claims nothing beats
+with no `current` and the previous `last` unchanged (kept in
+`$XDG_STATE_HOME/jeryu-jankurai-audit-runner/last.json`), so an idle runner never
+invents a result. An audit beats `current` when it starts, again every 60 seconds
+while it runs (`JERYU_AUDIT_BEAT_EVERY`; an audit can outlast the 180-second
+offline threshold), and `last` when it ends; `last.reason` says why one that went
+wrong did. Audit jobs are per head, so `pr` is left out. `code` is sent only when
+`JERYU_AUDIT_RUNNER_REPO` is set, with `commit` from the install's `VERSION` file
+and `installedAt` from its mtime. `tools` names the governed binary the runner
+actually invokes (`$JERYU_GOVERNED_JANKURAI_BIN`): `version` from its
+`--version`, `sha256` of the file. Beats are best-effort (5-second curl
+timeout, never fail the run); a `422` is retried once without `code` and `tools`
+for an older forge. `JERYU_AUDIT_HEARTBEAT=0` turns them off.
 
 ### Reading them: `GET /api/v1/control-plane/runners`
 
 Each reporting runner is one entry of `local.nodeDetails`:
 
 ```json
-{"runnerId": "xbabe0/auto-stage", "source": "automation", "state": "active",
- "capacity": 0, "inFlight": 0, "labels": ["xbabe0", "slot 0", "automation"],
+{"runnerId": "ops-a/auto-stage", "kind": "automation", "source": "automation", "state": "active",
+ "capacity": 0, "inFlight": 0, "labels": ["ops-a", "slot 0", "automation"],
  "classes": ["automation"], "activeTaskCount": 0,
  "lastUpdated": "2026-09-20T04:15:02+00:00", "activeTasks": [],
  "lastActivity": {"repo": "jeryu/jeryu-deploy", "pr": null, "sha": "77dc3310aa…",
@@ -388,20 +424,26 @@ Each reporting runner is one entry of `local.nodeDetails`:
  "offlineAfterSeconds": 900}
 ```
 
-`source` is `pr-gate-runner`, `pr-redteam` or `automation` (`classes` says the
-same as `pr-gate`, `reviewer`, `automation`). `state` is `offline` once
+`kind` is what the node is, one of `gate`, `reviewer`, `automation`,
+`deployer`, `jankurai-audit` (from the beat's labels) or `workcell`; group rows
+by it rather than by labels. `source` is `pr-gate-runner`, `pr-redteam`,
+`automation`, `deployer`, `jankurai-audit-runner` or `workcell`, and `classes`
+says the same as `pr-gate`, `reviewer`, `automation`, `deployer`,
+`jankurai-audit`. `state` is `offline` once
 `lastUpdated` is older than `offlineAfterSeconds`; an offline runner is kept and
 shown, never dropped. `lastActivity.pr` is `null` for work without a pull
 request, and a task's `label` is then `<repo>@<sha7>` instead of `<repo>#<pr>`.
-Reviewers and timers hold no gate slot: `capacity` is 0 and they are left out
-of `onlineRunners`, `offlineRunners`, the slot totals and the inbox's
+Only `gate` nodes hold a gate slot: reviewers, timers, deployers and the audit
+runner have `capacity` 0 and are left out of `onlineRunners`, `offlineRunners`, the slot totals and the inbox's
 `gate_runner_down` rule. `offlineAfterSeconds` is absent on workcell nodes,
 which do not report by heartbeat.
 
 A node whose beat carried `code` repeats it as
 `"code": {"repo": "acme/gate-scripts", "commit": "0123456789ab…", "version": "gate-scripts-v1.2.0", "installedAt": "2026-09-30T12:00:00+00:00"}`
 (`version` and `installedAt` only when sent). A runner that sent none, and every
-workcell node, has no `code` key.
+workcell node, has no `code` key. Likewise a node whose beat carried `tools`
+repeats them as `"tools": [{"name": "jankurai", "version": "1.6.11", "sha256": "<64 hex>"}]`
+(`version` and `sha256` only when sent); with none there is no `tools` key.
 
 The response also says what code the forge itself runs, at the top level:
 

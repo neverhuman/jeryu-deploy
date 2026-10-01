@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::super::WebState;
-use super::super::control_plane::{GateRunnerHeartbeat, is_automation, is_reviewer, work_label};
+use super::super::control_plane::{GateRunnerHeartbeat, is_reviewer, runner_kind, work_label};
 use super::{NewEvent, emit};
 
 /// A pull request event, tagged with the family and shift branch when the
@@ -513,13 +513,15 @@ fn open_pr_at_head(state: &WebState, repo: &str, sha: &str) -> Option<i64> {
 /// release scripts post their own `pin.*` and release events, and a second
 /// `gate.*` line for the same fact would misreport it as a gate. A deploy
 /// timer's beat (`deploy` label) is silent for the same reason: what it did is
-/// a deployment, not a gate, and the repository page reads it as one.
+/// a deployment, not a gate, and the repository page reads it as one. The
+/// jankurai audit runner's beat (`jankurai-audit` label) is silent too: the
+/// score it submits is the record, and an audit is not a gate.
 pub(crate) fn runner_heartbeat(
     state: &WebState,
     previous: Option<&GateRunnerHeartbeat>,
     current: &GateRunnerHeartbeat,
 ) {
-    if is_automation(current) || super::super::control_plane::is_deploy(current) {
+    if !matches!(runner_kind(current), "gate" | "reviewer") {
         return;
     }
     let reviewer = is_reviewer(current);

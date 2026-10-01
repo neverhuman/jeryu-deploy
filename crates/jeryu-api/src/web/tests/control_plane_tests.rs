@@ -538,6 +538,106 @@ async fn runner_code_and_forge_build_reach_the_fleet() {
     assert!(body["forge"].as_object().unwrap().contains_key("webCommit"));
 }
 
+/// The jankurai audit runner reports as its own kind with the tools it uses:
+/// a default reporter (not an admin) may send it, it holds no gate slot, its
+/// tools come back verbatim, and a bad tool is refused naming its path.
+#[tokio::test]
+async fn jankurai_audit_runner_reaches_the_fleet_with_its_tools() {
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("gatebot", "gatebot-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "test", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, gatebot) = (token("alice"), token("gatebot"));
+    let mut state = WebState::new(core.clone()).with_auth(true, false, false);
+    state.gate_runners =
+        crate::web::control_plane::GateRunnerStore::with_reporters(["gatebot", "pragent"]);
+    let router = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
+    let post = |beat: serde_json::Value| {
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/api/v1/runners/heartbeat")
+            .header(header::AUTHORIZATION, format!("Bearer {gatebot}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(beat.to_string()))
+            .unwrap()
+    };
+    let digest = "ab".repeat(32);
+    let audit = serde_json::json!({
+        "runnerId": "gate-a/jankurai-audit", "host": "gate-a", "slot": 0,
+        "labels": ["jankurai-audit"], "intervalSeconds": 30,
+        "last": {"repo": "acme/widgets", "sha": "0123456789abcdef0123456789abcdef01234567",
+                 "recipe": "jankurai audit", "conclusion": "scored", "seconds": 41,
+                 "finishedAt": "2026-09-30T12:00:00Z"},
+        "code": {"repo": "acme/gate-scripts", "commit": "abc1234"},
+        "tools": [{"name": "jankurai", "version": "1.6.11", "sha256": digest}]
+    });
+    let accepted = router.clone().oneshot(post(audit.clone())).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(response_json(accepted).await["offlineAfterSeconds"], 180);
+    let gate = serde_json::json!({"runnerId": "gate-a/slot0", "host": "gate-a", "slot": 0,
+                                  "labels": ["pr-gate"]});
+    let accepted = router.clone().oneshot(post(gate)).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+
+    let mut bad = audit.clone();
+    bad["tools"] = serde_json::json!([{"name": "jankurai"}, {"name": "jq", "sha256": "ABC"}]);
+    let refused = router.clone().oneshot(post(bad)).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        response_json(refused).await["message"],
+        "tools[1].sha256: expected 64 lowercase hex digits"
+    );
+    let mut gate_verdict = audit.clone();
+    gate_verdict["last"]["conclusion"] = "success".into();
+    let refused = router.clone().oneshot(post(gate_verdict)).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let fleet = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/control-plane/runners")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fleet.status(), StatusCode::OK);
+    let body = response_json(fleet).await;
+    let nodes = body["local"]["nodeDetails"].as_array().unwrap();
+    assert_eq!(nodes.len(), 2);
+    let audit_node = &nodes[0];
+    assert_eq!(audit_node["runnerId"], "gate-a/jankurai-audit");
+    assert_eq!(audit_node["kind"], "jankurai-audit");
+    assert_eq!(audit_node["source"], "jankurai-audit-runner");
+    assert_eq!(audit_node["classes"], serde_json::json!(["jankurai-audit"]));
+    assert_eq!(audit_node["capacity"], 0);
+    assert_eq!(audit_node["offlineAfterSeconds"], 180);
+    assert_eq!(audit_node["lastActivity"]["conclusion"], "scored");
+    assert_eq!(
+        audit_node["tools"],
+        serde_json::json!([{"name": "jankurai", "version": "1.6.11", "sha256": digest}])
+    );
+    assert_eq!(nodes[1]["kind"], "gate");
+    assert!(
+        nodes[1].get("tools").is_none(),
+        "no tools key when none were sent"
+    );
+    assert_eq!(
+        body["local"]["onlineRunners"], 1,
+        "the auditor is not gate capacity"
+    );
+    assert_eq!(body["local"]["totalSlots"], 1);
+}
+
 #[tokio::test]
 async fn redteam_heartbeats_from_pragent_reach_the_fleet_as_a_reviewer() {
     use tower::ServiceExt;

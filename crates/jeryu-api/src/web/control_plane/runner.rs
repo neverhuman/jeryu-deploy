@@ -35,8 +35,9 @@ pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFa
         .cloned();
     // Reviewers and background timers are listed but hold no gate slot, so
     // they stay out of the gate capacity figures.
-    let holds_slot =
-        |node: &&RunnerNodeSummary| ![REVIEWER_SOURCE, AUTOMATION_SOURCE].contains(&&*node.source);
+    let holds_slot = |node: &&RunnerNodeSummary| {
+        !["reviewer", "automation", "deployer", "jankurai-audit"].contains(&&*node.kind)
+    };
     let online: Vec<&RunnerNodeSummary> = node_details
         .iter()
         .filter(holds_slot)
@@ -118,6 +119,9 @@ pub(crate) const AUTOMATION_SOURCE: &str = "automation";
 /// `source` of a node reported by a host deploy timer.
 pub(crate) const DEPLOY_SOURCE: &str = "deployer";
 
+/// `source` of a node reported by the jankurai audit runner.
+pub(crate) const JANKURAI_AUDIT_SOURCE: &str = "jankurai-audit-runner";
+
 /// `repo#pr`, or `repo@sha` for work that has no pull request.
 pub(crate) fn work_label(repo: &str, pr: Option<u64>, sha: &str) -> String {
     match pr {
@@ -138,9 +142,7 @@ pub(crate) fn gate_runner_nodes(
         .map(|record| {
             let beat = &record.heartbeat;
             let online = is_online(record, now);
-            let reviewer = is_reviewer(beat);
-            let automation = is_automation(beat);
-            let deploy = crate::web::control_plane::is_deploy(beat);
+            let kind = runner_kind(beat);
             let received = record.received_at.to_rfc3339();
             let mut labels = vec![beat.host.clone(), format!("slot {}", beat.slot)];
             for label in &beat.labels {
@@ -171,32 +173,20 @@ pub(crate) fn gate_runner_nodes(
                 .collect();
             RunnerNodeSummary {
                 runner_id: beat.runner_id.clone(),
-                source: if deploy {
-                    DEPLOY_SOURCE
-                } else if automation {
-                    AUTOMATION_SOURCE
-                } else if reviewer {
-                    REVIEWER_SOURCE
-                } else {
-                    "pr-gate-runner"
+                kind: kind.to_string(),
+                source: match kind {
+                    "deployer" => DEPLOY_SOURCE,
+                    "automation" => AUTOMATION_SOURCE,
+                    "reviewer" => REVIEWER_SOURCE,
+                    "jankurai-audit" => JANKURAI_AUDIT_SOURCE,
+                    _ => "pr-gate-runner",
                 }
                 .to_string(),
                 state: if online { "active" } else { "offline" }.to_string(),
                 capacity: u32::from(crate::web::control_plane::holds_gate_slot(beat)),
                 in_flight: count(active_tasks.len()),
                 labels,
-                classes: vec![
-                    if deploy {
-                        "deployer"
-                    } else if automation {
-                        "automation"
-                    } else if reviewer {
-                        "reviewer"
-                    } else {
-                        "pr-gate"
-                    }
-                    .to_string(),
-                ],
+                classes: vec![if kind == "gate" { "pr-gate" } else { kind }.to_string()],
                 active_task_count: count(active_tasks.len()),
                 last_updated: Some(received),
                 active_tasks,
@@ -218,6 +208,15 @@ pub(crate) fn gate_runner_nodes(
                     version: code.version.clone(),
                     installed_at: code.installed_at.map(|at| at.to_rfc3339()),
                 }),
+                tools: beat
+                    .tools
+                    .iter()
+                    .map(|tool| RunnerToolSummary {
+                        name: tool.name.clone(),
+                        version: tool.version.clone(),
+                        sha256: tool.sha256.clone(),
+                    })
+                    .collect(),
             }
         })
         .collect()
@@ -265,6 +264,7 @@ fn build_runner_nodes(
             .entry(lease.runner_id.clone())
             .or_insert_with(|| RunnerNodeSummary {
                 runner_id: lease.runner_id.clone(),
+                kind: "workcell".to_string(),
                 source: "workcell".to_string(),
                 state: "active".to_string(),
                 capacity: 0,
@@ -278,6 +278,7 @@ fn build_runner_nodes(
                 offline_after_seconds: None,
                 merge_grant_gaps: Vec::new(),
                 code: None,
+                tools: Vec::new(),
             });
     }
 
@@ -302,6 +303,7 @@ fn build_runner_nodes(
             .entry(lease.runner_id.clone())
             .or_insert_with(|| RunnerNodeSummary {
                 runner_id: lease.runner_id.clone(),
+                kind: "workcell".to_string(),
                 source: "workcell".to_string(),
                 state: "active".to_string(),
                 capacity: 0,
@@ -315,6 +317,7 @@ fn build_runner_nodes(
                 offline_after_seconds: None,
                 merge_grant_gaps: Vec::new(),
                 code: None,
+                tools: Vec::new(),
             });
         node.active_tasks.push(task);
     }

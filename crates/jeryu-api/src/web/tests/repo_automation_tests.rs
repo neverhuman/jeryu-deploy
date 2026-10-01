@@ -209,6 +209,7 @@ fn a_deploy_timer_reports_what_it_shipped_and_where() {
             finished_at: chrono::Utc::now(),
         }),
         code: None,
+        tools: Vec::new(),
     };
     state
         .gate_runners

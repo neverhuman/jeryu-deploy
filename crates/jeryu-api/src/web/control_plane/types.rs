@@ -289,6 +289,10 @@ pub(crate) struct RunnerLocalFabric {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RunnerNodeSummary {
     pub runner_id: String,
+    /// What this node is: `gate`, `reviewer`, `automation`, `deployer`,
+    /// `jankurai-audit` (from the heartbeat's labels) or `workcell`. Only
+    /// `gate` nodes hold gate slots.
+    pub kind: String,
     pub source: String,
     pub state: String,
     pub capacity: u32,
@@ -314,6 +318,20 @@ pub(crate) struct RunnerNodeSummary {
     /// nodes that do not report by heartbeat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<RunnerCodeSummary>,
+    /// The evaluation tools this runner says it uses; absent when it sent none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<RunnerToolSummary>,
+}
+
+/// One evaluation tool a heartbeat runner reported (`tools[]`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunnerToolSummary {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

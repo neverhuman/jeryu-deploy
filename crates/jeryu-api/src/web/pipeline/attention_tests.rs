@@ -518,6 +518,7 @@ fn runner(
                 finished_at: now() - Duration::minutes(3),
             }),
             code: None,
+            tools: Vec::new(),
         },
         reporter: "gatebot".to_string(),
         received_at: now() - Duration::seconds(seconds_ago),

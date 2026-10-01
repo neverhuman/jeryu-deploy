@@ -12,6 +12,13 @@
 # unbounded fan-out. Each audit is niced and time-boxed, because this machine
 # also runs the PR gate.
 #
+# Each run reports a runner heartbeat as "<short host>/jankurai-audit" (see
+# ops/ci/jankurai-audit-heartbeat.sh): `current` while an audit runs, and the
+# last audit's conclusion — scored (the forge recorded the governed report),
+# tool-failed (the auditor wrote no usable report), refused (the forge refused
+# the submission) or failed (the head could not be fetched; nothing ran). A run
+# that claims nothing beats with the previous result unchanged.
+#
 # Usage:
 #   ops/ci/jankurai-audit-runner.sh [--max N] [--once]
 #
@@ -21,11 +28,15 @@
 #   JERYU_FORGE_TOKEN_FILE   runner PAT file, mode 0600 (required)
 #   JERYU_AUDIT_RUNNER_ID    runner id reported with each claim and report
 #   JERYU_AUDIT_TIMEOUT      seconds per audit     (default 900)
+#   JERYU_AUDIT_RUNNER_REPO  owner/name of this runner's code, for the heartbeat
+#   JERYU_AUDIT_HEARTBEAT    0 to send no heartbeat (default 1)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=ops/ci/lib.sh
 source "${ROOT}/ops/ci/lib.sh"
+# shellcheck source=ops/ci/jankurai-audit-heartbeat.sh
+source "${ROOT}/ops/ci/jankurai-audit-heartbeat.sh"
 
 API="${JERYU_API:-http://127.0.0.1:8787}"
 API="${API%/}"
@@ -53,13 +64,14 @@ TOKEN_FILE="${JERYU_FORGE_TOKEN_FILE:-}"
 [ -f "${TOKEN_FILE}" ] && [ ! -L "${TOKEN_FILE}" ] || { echo "token file must be a regular file" >&2; exit 2; }
 [ "$(stat -c '%a' "${TOKEN_FILE}")" = "600" ] || { echo "token file must be mode 0600" >&2; exit 2; }
 WORK_DIR="$(mktemp -d -t jankurai-audit-XXXXXX)"
-trap 'rm -rf "${WORK_DIR}"' EXIT
+trap 'audit_beat_stop_keepalive; rm -rf "${WORK_DIR}"' EXIT
 AUTH_CONFIG="${WORK_DIR}/curl-auth.conf"
 token="$(cat "${TOKEN_FILE}")"
 [[ "${token}" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || { echo "token file must contain one nonempty bearer value" >&2; exit 2; }
 ( umask 077; printf 'header = "Authorization: Bearer %s"\n' "${token}" > "${AUTH_CONFIG}" )
 unset token
 api_curl() { curl --disable --config "${AUTH_CONFIG}" "$@"; }
+audit_beat_init
 
 claimed="${WORK_DIR}/claimed.json"
 api_curl -fsS -X POST -H 'Content-Type: application/json' \
@@ -81,6 +93,7 @@ PY
 
 if [ "${#JOBS[@]}" -eq 0 ]; then
   echo "[audit-runner] no audit work claimed"
+  audit_beat
   exit 0
 fi
 
@@ -90,19 +103,24 @@ audit_one() {
   local owner="$1" repo="$2" branch="$3" head="$4" base="$5" mode="$6"
   local src="${WORK_DIR}/${repo}-${head}"
   local out="${src}/target/jankurai/diff/diff-score.json"
-  local exit_code=0
+  local exit_code=0 started="${SECONDS}"
 
   if [ "${mode}" = "full" ]; then
     echo "[audit-runner] ${owner}/${repo}@${head} (${branch}, whole tree: no commit base)"
   else
     echo "[audit-runner] ${owner}/${repo}@${head} (${branch} vs ${base})"
   fi
+  audit_beat_start "${owner}/${repo}" "${head}"
   if ! git clone -q "${GIT_BASE}/${owner}/${repo}.git" "${src}" 2>&1; then
     echo "[audit-runner] clone failed for ${owner}/${repo}@${head}" >&2
+    audit_beat_finish "${owner}/${repo}" "${head}" failed "$((SECONDS - started))" "clone failed"
     return 0
   fi
   if ! git -C "${src}" checkout -q --detach "${head}" 2>&1; then
     echo "[audit-runner] ${head} is not in the clone" >&2
+    audit_beat_finish "${owner}/${repo}" "${head}" failed "$((SECONDS - started))" \
+      "head is not in the clone"
+    rm -rf "${src}"
     return 0
   fi
   # Forced scoring for unconfigured repositories: a head that carries no policy
@@ -146,12 +164,19 @@ POLICY
       --base-ref "${base}" --json "${out}" --advisory-only || exit_code=$?
   fi
 
-  JERYU_AUDIT_RUNNER_ID="${RUNNER_ID}" \
+  local conclusion=scored reason=""
+  if [ "${exit_code}" -ne 0 ]; then
+    conclusion=tool-failed reason="jankurai exited ${exit_code}"
+  fi
+  if ! JERYU_AUDIT_RUNNER_ID="${RUNNER_ID}" \
     bash "${ROOT}/ops/ci/submit-jankurai-score.sh" \
       --repo "${owner}/${repo}" --branch "${branch}" --head "${head}" \
       --base "${base}" --audit-mode "${mode}" \
-      --score-json "${out}" --tool-exit "${exit_code}" ||
+      --score-json "${out}" --tool-exit "${exit_code}"; then
     echo "[audit-runner] ${owner}/${repo}@${head} report refused" >&2
+    conclusion=refused reason="the forge refused the report"
+  fi
+  audit_beat_finish "${owner}/${repo}" "${head}" "${conclusion}" "$((SECONDS - started))" "${reason}"
   rm -rf "${src}"
 }
 

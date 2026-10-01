@@ -44,6 +44,8 @@ bash "${repo_root}/ops/ci/test-ci-env.sh"
 bash "${repo_root}/scripts/release/test-release-scripts.sh"
 # The release-board collector (/releases) against a throwaway forge and stand-in todoq/curl.
 bash "${repo_root}/scripts/release-board/test-release-board.sh"
+# The jankurai audit runner's heartbeat against a stand-in curl.
+bash "${repo_root}/ops/ci/test-jankurai-audit-heartbeat.sh"
 
 # jankurai pin: jeryu-tool/tool-manifest.toml is the family-wide source of truth.
 # When the control-plane repo is reachable (on-host family layout), fail fast if

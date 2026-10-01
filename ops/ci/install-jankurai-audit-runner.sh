@@ -10,7 +10,10 @@
 # What it needs is yours to configure, in ~/.config/jeryu/jankurai-audit-runner.env (mode 600,
 # created empty on the first run): JERYU_FORGE_TOKEN_FILE (the PAT of a runner identity the forge
 # allows to score, JERYU_JANKURAI_SCORERS on the forge; mode 600; required), JERYU_API (the forge's
-# API base; the runner's default otherwise) and JERYU_AUDIT_RUNNER_ID (optional). The governed
+# API base; the runner's default otherwise), JERYU_AUDIT_RUNNER_ID (optional) and
+# JERYU_AUDIT_RUNNER_REPO (optional: owner/name of this repository on the forge; with it the
+# runner's heartbeat names its code as that repository at the VERSION commit). The token's login
+# also sends the heartbeat, so it must be a forge admin or in JERYU_RUNNER_REPORTERS. The governed
 # jankurai must already be installed on the host (ops/ci/lib.sh `require_jankurai` checks it).
 #
 # Env: JERYU_SYSTEMCTL (default systemctl; tests point it at a stand-in).
@@ -23,8 +26,8 @@ systemctl="${JERYU_SYSTEMCTL:-systemctl}"
 dest="$HOME/.local/share/jeryu-jankurai-audit-runner"
 env_file="$HOME/.config/jeryu/jankurai-audit-runner.env"
 units="$HOME/.config/systemd/user"
-files=(ops/ci/jankurai-audit-runner.sh ops/ci/submit-jankurai-score.sh ops/ci/lib.sh ops/ci/hosted-git-env.sh
-  .cargo/hosted-gitconfig)
+files=(ops/ci/jankurai-audit-runner.sh ops/ci/jankurai-audit-heartbeat.sh ops/ci/submit-jankurai-score.sh
+  ops/ci/lib.sh ops/ci/hosted-git-env.sh .cargo/hosted-gitconfig)
 
 commit="$(git -C "$repo" rev-parse --verify HEAD)"
 git -C "$repo" diff --quiet HEAD -- "${files[@]}" \

@@ -101,6 +101,11 @@ pipeline events: what it did is a deployment, not a gate. Who may report is the
 runner rule (`JERYU_RUNNER_REPORTERS`, default `gatebot,pragent`, plus any forge
 admin).
 
+The jankurai audit runner reports the same way with the `jankurai-audit` label
+([pipeline events](pipeline-events.md#the-jankurai-audit-runner)); a repository
+it is auditing, or last audited, lists it as an actor of kind `jankurai-audit`
+whose `lastRun.conclusion` is `scored`, `tool-failed`, `refused` or `failed`.
+
 A deployer that writes the forge's own deployment trail
 (`POST /repos/{owner}/{repo}/deployments` and its statuses) needs no heartbeat:
 each environment's newest deployment is listed as a deployer too.

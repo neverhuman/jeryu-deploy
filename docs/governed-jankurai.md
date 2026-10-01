@@ -91,7 +91,14 @@ The flow, per head:
    never overlapping, niced, idle I/O and memory-capped, from files unpacked
    with `git archive` at an exact commit (`VERSION`). The timer stays off until
    `~/.config/jeryu/jankurai-audit-runner.env` names the runner's token file;
-   re-run the installer to update.
+   re-run the installer to update. Every run also posts a runner heartbeat
+   (`jankurai-audit` label, `<host>/jankurai-audit`), so `/runners` shows the
+   auditor, what it is auditing, how its last audit went, the runner's own
+   commit (`code`, when `JERYU_AUDIT_RUNNER_REPO` is set) and the digest of the
+   jankurai binary it really invokes (`tools`). The same token sends it, so the
+   scoring identity must also be allowed to report heartbeats (a forge admin or
+   a `JERYU_RUNNER_REPORTERS` login; the defaults of both lists share
+   `gatebot`). See docs/pipeline-events.md, "The jankurai audit runner".
 4. **One audit per head.** When `<repo>/required` (`ops/ci/pr-ci.sh`) already
    audits a head, that run submits its own report (`--audit-mode full`) against
    the same job, and the job is spent: no runner audits the head again.

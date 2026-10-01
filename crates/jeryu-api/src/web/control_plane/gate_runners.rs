@@ -29,6 +29,17 @@
 //! pipeline events either; the repository page reads them through
 //! `GET /api/v1/repos/:id/automation` so a reader can see what a merge starts.
 //!
+//! The jankurai audit runner (`ops/ci/jankurai-audit-runner.sh`, a 30-second
+//! timer on a gate host) reports with the [`JANKURAI_AUDIT_LABEL`] label. It
+//! claims one queued audit, runs the governed jankurai on that head and submits
+//! the report; its `last.conclusion` says how the last audit went (`scored`,
+//! `tool-failed`, `refused`, `failed`). A run that claims nothing beats with
+//! its previous `last` unchanged. It holds no gate slot and its beats emit no
+//! pipeline events: the score submission is the record.
+//!
+//! Any beat may list the evaluation `tools` the runner uses (name, version,
+//! sha256), so a reader can see which auditor binary a runner really invokes.
+//!
 //! Who may report: logins named in `JERYU_RUNNER_REPORTERS` (comma-separated,
 //! default `gatebot,pragent`), or any forge admin. The rule exists so an
 //! ordinary account cannot paint fake runners; admins are not ordinary
@@ -54,6 +65,8 @@ pub(crate) const REVIEWER_LABEL: &str = "redteam";
 pub(crate) const AUTOMATION_LABEL: &str = "automation";
 /// Heartbeat label that marks a host deploy timer.
 pub(crate) const DEPLOY_LABEL: &str = "deploy";
+/// Heartbeat label that marks the jankurai audit runner.
+pub(crate) const JANKURAI_AUDIT_LABEL: &str = "jankurai-audit";
 const GATE_CONCLUSIONS: &[&str] = &["success", "failure", "error"];
 /// Every decision pr-redteam records for a finished review pass.
 const REVIEW_CONCLUSIONS: &[&str] = &[
@@ -69,6 +82,14 @@ const REVIEW_CONCLUSIONS: &[&str] = &[
 const AUTOMATION_CONCLUSIONS: &[&str] = &["opened", "staged", "waiting", "failed"];
 /// What a deploy timer last did with the sha it picked up.
 const DEPLOY_CONCLUSIONS: &[&str] = &["deployed", "failed", "skipped"];
+/// How the audit runner's last claimed audit went: the forge recorded the
+/// governed report (`scored`; the verdict is on `jankurai/proof`), the auditor
+/// wrote no usable report (`tool-failed`), the forge refused the submission
+/// (`refused`), or the head could not be fetched so nothing ran (`failed`).
+const JANKURAI_AUDIT_CONCLUSIONS: &[&str] = &["scored", "tool-failed", "refused", "failed"];
+const MAX_TOOLS: usize = 32;
+const TOOL_NAME_MAX: usize = 64;
+const TOOL_VERSION_MAX: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,6 +114,23 @@ pub(crate) struct GateRunnerHeartbeat {
     /// when the runner does not know (or predates the field).
     #[serde(default)]
     pub code: Option<RunnerCode>,
+    /// The evaluation tools this runner uses (the governed jankurai, ...).
+    #[serde(default)]
+    pub tools: Vec<RunnerTool>,
+}
+
+/// One evaluation tool a runner uses, as the runner itself measured it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RunnerTool {
+    /// 1-64 characters of `[a-z0-9._@-]`, unique within the beat.
+    pub name: String,
+    /// What the tool says its version is, 1-100 characters.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Digest of the binary the runner invokes, 64 lowercase hex digits.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// What code a runner runs: its own repository and installed commit.
@@ -282,16 +320,41 @@ pub(crate) fn is_deploy(heartbeat: &GateRunnerHeartbeat) -> bool {
     heartbeat.labels.iter().any(|label| label == DEPLOY_LABEL)
 }
 
+/// A heartbeat from the jankurai audit runner rather than a gate runner slot.
+pub(crate) fn is_jankurai_audit(heartbeat: &GateRunnerHeartbeat) -> bool {
+    heartbeat
+        .labels
+        .iter()
+        .any(|label| label == JANKURAI_AUDIT_LABEL)
+}
+
+/// What kind of runner sent this beat, as `GET /api/v1/control-plane/runners`
+/// names it in `nodeDetails[].kind`: `gate`, `reviewer`, `automation`,
+/// `deployer` or `jankurai-audit`. The labels are exclusive, so this is total.
+pub(crate) fn runner_kind(heartbeat: &GateRunnerHeartbeat) -> &'static str {
+    if is_deploy(heartbeat) {
+        "deployer"
+    } else if is_automation(heartbeat) {
+        "automation"
+    } else if is_reviewer(heartbeat) {
+        "reviewer"
+    } else if is_jankurai_audit(heartbeat) {
+        "jankurai-audit"
+    } else {
+        "gate"
+    }
+}
+
 /// Where a finished pass put its sha, for the labels that have a target.
 pub(crate) fn gate_runner_target(result: &GateRunnerResult) -> Option<&str> {
     result.target.as_deref()
 }
 
-/// A gate runner slot: not the reviewer, a background timer or a deploy timer.
-/// Only these count as gate capacity, and only these keep `gate_runner_down`
-/// quiet.
+/// A gate runner slot: not the reviewer, a background timer, a deploy timer
+/// or the audit runner. Only these count as gate capacity, and only these keep
+/// `gate_runner_down` quiet.
 pub(crate) fn holds_gate_slot(heartbeat: &GateRunnerHeartbeat) -> bool {
-    !is_reviewer(heartbeat) && !is_automation(heartbeat) && !is_deploy(heartbeat)
+    runner_kind(heartbeat) == "gate"
 }
 
 fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
@@ -307,6 +370,7 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
         (is_reviewer(heartbeat), REVIEWER_LABEL),
         (is_automation(heartbeat), AUTOMATION_LABEL),
         (is_deploy(heartbeat), DEPLOY_LABEL),
+        (is_jankurai_audit(heartbeat), JANKURAI_AUDIT_LABEL),
     ];
     let claimed: Vec<&str> = kinds
         .iter()
@@ -338,6 +402,11 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
             (AUTOMATION_CONCLUSIONS, AUTOMATION_CONCLUSIONS.join(", "))
         } else if is_reviewer(heartbeat) {
             (REVIEW_CONCLUSIONS, REVIEW_CONCLUSIONS.join(", "))
+        } else if is_jankurai_audit(heartbeat) {
+            (
+                JANKURAI_AUDIT_CONCLUSIONS,
+                JANKURAI_AUDIT_CONCLUSIONS.join(", "),
+            )
         } else {
             (GATE_CONCLUSIONS, "success, failure or error".to_string())
         };
@@ -347,6 +416,41 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
     }
     if let Some(code) = &heartbeat.code {
         check_code(code)?;
+    }
+    check_tools(&heartbeat.tools)
+}
+
+fn check_tools(tools: &[RunnerTool]) -> Result<(), String> {
+    if tools.len() > MAX_TOOLS {
+        return Err(format!("tools: at most {MAX_TOOLS}"));
+    }
+    for (index, tool) in tools.iter().enumerate() {
+        let field = format!("tools[{index}]");
+        if tool.name.is_empty()
+            || tool.name.len() > TOOL_NAME_MAX
+            || !tool
+                .name
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'@' | b'-'))
+        {
+            return Err(format!(
+                "{field}.name: expected 1-{TOOL_NAME_MAX} characters of a-z, 0-9, '.', '_', '@', '-'"
+            ));
+        }
+        if tools[..index].iter().any(|seen| seen.name == tool.name) {
+            return Err(format!("{field}.name: {} is listed twice", tool.name));
+        }
+        if let Some(version) = &tool.version {
+            check_text(&format!("{field}.version"), version, TOOL_VERSION_MAX)?;
+        }
+        if let Some(sha256) = &tool.sha256
+            && (sha256.len() != 64
+                || !sha256
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        {
+            return Err(format!("{field}.sha256: expected 64 lowercase hex digits"));
+        }
     }
     Ok(())
 }
@@ -454,6 +558,7 @@ mod tests {
                 finished_at: Utc::now(),
             }),
             code: None,
+            tools: Vec::new(),
         }
     }
 
@@ -827,6 +932,177 @@ mod tests {
         for (beat, expected) in cases {
             let recorded = store.record(beat, "gatebot", now);
             assert_eq!(recorded.err().as_deref(), expected);
+        }
+    }
+
+    fn auditor() -> GateRunnerHeartbeat {
+        serde_json::from_str(
+            r#"{"runnerId":"gate-a/jankurai-audit","host":"gate-a","slot":0,
+                "labels":["jankurai-audit"],"intervalSeconds":30,
+                "last":{"repo":"acme/widgets","sha":"0123456789abcdef","recipe":"jankurai audit",
+                        "conclusion":"scored","seconds":41,"finishedAt":"2026-09-30T12:00:00Z"},
+                "tools":[{"name":"jankurai","version":"1.6.11","sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}"#,
+        )
+        .expect("an audit runner beat parses")
+    }
+
+    /// The audit runner has its own verdicts, holds no gate slot, cannot also
+    /// claim another kind, and a 30-second beat keeps the flat threshold.
+    #[test]
+    fn audit_runner_beats_carry_audit_verdicts() {
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let now = Utc::now();
+        let mut audit = auditor();
+        assert_eq!(runner_kind(&audit), "jankurai-audit");
+        assert!(!holds_gate_slot(&audit));
+        assert_eq!(offline_after_secs(&audit), RUNNER_OFFLINE_AFTER_SECS);
+        for conclusion in JANKURAI_AUDIT_CONCLUSIONS {
+            audit.last.as_mut().unwrap().conclusion = (*conclusion).to_string();
+            assert!(store.record(audit.clone(), "gatebot", now).is_ok());
+        }
+        audit.last.as_mut().unwrap().conclusion = "success".to_string();
+        assert_eq!(
+            store.record(audit.clone(), "gatebot", now).unwrap_err(),
+            "last.conclusion: expected scored, tool-failed, refused, failed"
+        );
+        let mut gate = beat("gate-a/slot0");
+        gate.last.as_mut().unwrap().conclusion = "scored".to_string();
+        assert!(store.record(gate, "gatebot", now).is_err());
+        let mut both = auditor();
+        both.labels.push(AUTOMATION_LABEL.to_string());
+        assert_eq!(
+            store.record(both, "gatebot", now).unwrap_err(),
+            "labels: automation and jankurai-audit are exclusive"
+        );
+        // An idle audit runner beats with no current task and no result yet.
+        let mut idle = auditor();
+        idle.last = None;
+        assert!(store.record(idle, "gatebot", now).is_ok());
+    }
+
+    #[test]
+    fn every_kind_is_named() {
+        let mut node = beat("gate-a/slot0");
+        assert_eq!(runner_kind(&node), "gate");
+        for (label, kind) in [
+            (REVIEWER_LABEL, "reviewer"),
+            (AUTOMATION_LABEL, "automation"),
+            (DEPLOY_LABEL, "deployer"),
+            (JANKURAI_AUDIT_LABEL, "jankurai-audit"),
+        ] {
+            node.labels = vec![label.to_string()];
+            assert_eq!(runner_kind(&node), kind);
+        }
+    }
+
+    #[test]
+    fn tools_are_kept_and_optional() {
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let audit = auditor();
+        assert_eq!(audit.tools.len(), 1);
+        assert_eq!(audit.tools[0].version.as_deref(), Some("1.6.11"));
+        assert!(store.record(audit, "gatebot", Utc::now()).is_ok());
+        assert_eq!(store.snapshot()[0].heartbeat.tools[0].name, "jankurai");
+        let bare: GateRunnerHeartbeat = serde_json::from_str(
+            r#"{"runnerId":"gate-a/slot0","host":"gate-a","slot":0,"tools":[{"name":"jq@1"}]}"#,
+        )
+        .expect("only the name is required");
+        assert!(store.record(bare, "gatebot", Utc::now()).is_ok());
+        let unknown: Result<GateRunnerHeartbeat, _> = serde_json::from_str(
+            r#"{"runnerId":"gate-a/slot0","host":"gate-a","slot":0,"tools":[{"name":"jq","path":"/bin/jq"}]}"#,
+        );
+        assert!(unknown.is_err(), "unknown tool fields are refused");
+    }
+
+    #[test]
+    fn tools_are_strict_and_name_the_path() {
+        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let now = Utc::now();
+        let tool = |name: &str, version: Option<&str>, sha256: Option<&str>| RunnerTool {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            sha256: sha256.map(str::to_string),
+        };
+        let with = |tools: Vec<RunnerTool>| {
+            let mut beat = beat("gate-a/slot0");
+            beat.tools = tools;
+            beat
+        };
+        let digest = "a".repeat(64);
+        let names = "expected 1-64 characters of a-z, 0-9, '.', '_', '@', '-'";
+        let cases: Vec<(Vec<RunnerTool>, Option<String>)> = vec![
+            (vec![tool("jankurai", Some("1.6.11"), Some(&digest))], None),
+            (
+                vec![
+                    tool("a._@-9", None, None),
+                    tool(&"n".repeat(64), Some(&"v".repeat(100)), None),
+                ],
+                None,
+            ),
+            (
+                (0..32)
+                    .map(|i| tool(&format!("t{i}"), None, None))
+                    .collect(),
+                None,
+            ),
+            (
+                (0..33)
+                    .map(|i| tool(&format!("t{i}"), None, None))
+                    .collect(),
+                Some("tools: at most 32".to_string()),
+            ),
+            (
+                vec![tool("", None, None)],
+                Some(format!("tools[0].name: {names}")),
+            ),
+            (
+                vec![tool(&"n".repeat(65), None, None)],
+                Some(format!("tools[0].name: {names}")),
+            ),
+            (
+                vec![tool("ok", None, None), tool("Jankurai", None, None)],
+                Some(format!("tools[1].name: {names}")),
+            ),
+            (
+                vec![tool("has space", None, None)],
+                Some(format!("tools[0].name: {names}")),
+            ),
+            (
+                vec![tool("jq", None, None), tool("jq", None, None)],
+                Some("tools[1].name: jq is listed twice".to_string()),
+            ),
+            (
+                vec![tool("jq", Some(""), None)],
+                Some("tools[0].version: expected 1-100 characters".to_string()),
+            ),
+            (
+                vec![tool("jq", Some(&"v".repeat(101)), None)],
+                Some("tools[0].version: expected 1-100 characters".to_string()),
+            ),
+            (
+                vec![tool("jq", Some("1\n2"), None)],
+                Some("tools[0].version: unexpected character".to_string()),
+            ),
+            (
+                vec![
+                    tool("a", None, None),
+                    tool("b", None, None),
+                    tool("jq", None, Some(&"A".repeat(64))),
+                ],
+                Some("tools[2].sha256: expected 64 lowercase hex digits".to_string()),
+            ),
+            (
+                vec![tool("jq", None, Some(&"a".repeat(63)))],
+                Some("tools[0].sha256: expected 64 lowercase hex digits".to_string()),
+            ),
+            (
+                vec![tool("jq", None, Some(&"g".repeat(64)))],
+                Some("tools[0].sha256: expected 64 lowercase hex digits".to_string()),
+            ),
+        ];
+        for (tools, expected) in cases {
+            let recorded = store.record(with(tools), "gatebot", now);
+            assert_eq!(recorded.err(), expected);
         }
     }
 }

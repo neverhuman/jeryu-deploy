@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- The jankurai audit runner shows on `/runners`, with the tools it evaluates
+  with. A runner heartbeat may now carry `tools: [{name, version?, sha256?}]`
+  (at most 32, names unique, `sha256` 64 lowercase hex; a refusal names the
+  entry, `tools[2].sha256: …`), echoed per node in
+  `GET /api/v1/control-plane/runners`. A new `jankurai-audit` label marks the
+  audit runner, with its own conclusions (`scored`, `tool-failed`, `refused`,
+  `failed`); it holds no gate slot and emits no pipeline events. Every node now
+  carries `kind` (`gate`, `reviewer`, `automation`, `deployer`,
+  `jankurai-audit`, `workcell`), and deploy timers no longer count toward
+  `onlineRunners`. `ops/ci/jankurai-audit-runner.sh` beats on every run as
+  `<host>/jankurai-audit` (`current` while auditing, the last result kept
+  between runs, `code` from `JERYU_AUDIT_RUNNER_REPO` and the install's
+  `VERSION`, `tools` measured from the governed binary), best-effort, retrying a
+  `422` once without `code`/`tools`.
 - A repository page can say what runs on it.
   `GET /api/v1/repos/:id/automation` answers with the repository's checks (and
   every required context that has never reported), the reviewer and merge

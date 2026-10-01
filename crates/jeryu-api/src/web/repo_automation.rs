@@ -33,7 +33,8 @@
 use jeryu_core::{CheckRun, CheckRunStatus, RepoAccessLevel, Repository};
 
 use super::control_plane::{
-    GateRunnerRecord, gate_runner_target, is_automation, is_deploy, is_online, is_reviewer,
+    GateRunnerRecord, gate_runner_target, is_automation, is_deploy, is_jankurai_audit, is_online,
+    is_reviewer,
 };
 use super::*;
 
@@ -98,7 +99,8 @@ pub(crate) struct ActorRun {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AutomationActor {
-    /// `reviewer`, `merger`, `gate-runner` or `deployer`.
+    /// `reviewer`, `merger`, `gate-runner`, `deployer`, `automation` or
+    /// `jankurai-audit`.
     pub kind: &'static str,
     /// The login, runner id or environment name that identifies this actor.
     pub identity: String,
@@ -404,6 +406,11 @@ fn runner_actor(record: &GateRunnerRecord, now: chrono::DateTime<chrono::Utc>) -
         ("reviewer", "reviews pull requests off the forge")
     } else if is_automation(beat) {
         ("automation", "a background timer acting on this repository")
+    } else if is_jankurai_audit(beat) {
+        (
+            "jankurai-audit",
+            "audits pushed heads with the governed jankurai and submits the score",
+        )
     } else {
         (
             "gate-runner",
