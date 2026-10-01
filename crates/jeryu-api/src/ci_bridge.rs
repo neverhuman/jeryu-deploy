@@ -371,13 +371,13 @@ fn changed_paths(git_bin: &str, bare: &Path, oid: &str) -> Vec<String> {
 
 const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
 const GOVERNED_JANKURAI_SHA256: &str =
-    "9e6b8857a26f6004d4c74e510e13b06d880f2e2ae0c89502698889ed690c5d6c";
+    "b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103";
 const GOVERNED_JANKURAI_SOURCE_REPO: &str = "https://git.neverhuman.org/git/jeryu/jankurai.git";
-const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.6.11-deadlang-precision-split.3";
-const GOVERNED_JANKURAI_SOURCE_REV: &str = "b88562fdb124aa86dedd70ab972e7d0d87e58be1";
-const GOVERNED_JANKURAI_SOURCE_TREE: &str = "611229e54938c0e8808896e369fd54d095d258f7";
+const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.6.11-deadlang-precision-split.4";
+const GOVERNED_JANKURAI_SOURCE_REV: &str = "2b8312215573eb225075ca0556f1208ae5265b8c";
+const GOVERNED_JANKURAI_SOURCE_TREE: &str = "bc15c67053db2d1e87e25e71276766d055130701";
 const GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256: &str =
-    "903a231eca8f6a1f050953b603d5a278a1606abcdf47434eb1b45262d74068aa";
+    "2c8fbbd71a73c978b58bf038f30008b937a16969ec52a528f21ce2d7fa404cf6";
 const GOVERNED_JANKURAI_CARGO_LOCK_SHA256: &str =
     "b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a";
 const GOVERNED_JANKURAI_RUSTC_VERSION: &str = "rustc 1.95.0 (59807616e 2026-04-14)";
@@ -387,10 +387,10 @@ const GOVERNED_JANKURAI_BUILD_MODE: &str = "oci-vendor-locked-offline-workspace-
 const GOVERNED_JANKURAI_INSTALLATION_RECEIPT_JSON: &str =
     include_str!("../../../images/agent-sandbox/jankurai-installation-receipt.json");
 const GOVERNED_JANKURAI_MANIFEST_REPO: &str = "https://git.neverhuman.org/git/jeryu/jeryu-tool.git";
-const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "630a37b358bc558fb7e696f25571db7951078a6b";
-const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "11dc750b2a2563250a549716da09c18f5cdb0dc3";
+const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "d72015817326c6a197de60f5e07d200f9a327231";
+const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "0d5bb5b25ba6c43efb706d9480539f462f446655";
 const GOVERNED_JANKURAI_MANIFEST_SHA256: &str =
-    "a0ebad202c00d79dd0c4e4dd7f3b5af60fc8aa76b2577150e10992b41755a1fa";
+    "591667a86ca55813071f415c444c19e1d196fab7ab4639b1e62eedd08cce80d9";
 
 pub(crate) mod audit_queue;
 pub(crate) mod jankurai;
