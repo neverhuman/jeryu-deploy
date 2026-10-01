@@ -85,7 +85,13 @@ The flow, per head:
    auditor — `diff-audit` against the job's base, or a whole-tree `audit` for a
    job with no commit base; niced, ionice'd and time-boxed — and submits the
    report with
-   `ops/ci/submit-jankurai-score.sh`.
+   `ops/ci/submit-jankurai-score.sh`. On a gate runner host,
+   `ops/ci/install-jankurai-audit-runner.sh` installs it as
+   `jeryu-jankurai-audit-runner.timer` (user unit): one claim every 30 seconds,
+   never overlapping, niced, idle I/O and memory-capped, from files unpacked
+   with `git archive` at an exact commit (`VERSION`). The timer stays off until
+   `~/.config/jeryu/jankurai-audit-runner.env` names the runner's token file;
+   re-run the installer to update.
 4. **One audit per head.** When `<repo>/required` (`ops/ci/pr-ci.sh`) already
    audits a head, that run submits its own report (`--audit-mode full`) against
    the same job, and the job is spent: no runner audits the head again.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Claim queued jankurai audits every 30 seconds (one at a time, never overlapping)
+
+[Timer]
+OnBootSec=2min
+# Counted from when the last run finished, so a long audit is never overlapped by the next claim.
+OnUnitInactiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=Claim one queued jankurai audit from the forge, run it here and submit the report
+After=network-online.target
+
+[Service]
+Type=oneshot
+# install-jankurai-audit-runner.sh unpacks the runner and its libraries here and writes the env file:
+# JERYU_FORGE_TOKEN_FILE (a scoring runner's PAT, mode 0600; required), JERYU_API, JERYU_AUDIT_RUNNER_ID.
+EnvironmentFile=%h/.config/jeryu/jankurai-audit-runner.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/jeryu-jankurai-audit-runner/ops/ci/jankurai-audit-runner.sh --max 1 --once
+# This machine also runs the PR gate: audits yield to it and can never take the machine down.
+Nice=10
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryHigh=25%
+MemoryMax=40%
+# The runner time-boxes each audit (JERYU_AUDIT_TIMEOUT, default 900 s); this bounds clone + submit too.
+TimeoutStartSec=20min
