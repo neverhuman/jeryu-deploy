@@ -189,3 +189,117 @@ async fn an_oversized_board_is_refused_before_it_is_parsed() {
         .unwrap();
     assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+/// The example board with `runners` set on lane 0, stage 1, target 0.
+fn with_runners(runners: serde_json::Value) -> String {
+    let mut example: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    example["lanes"][0]["stages"][1]["targets"][0]["runners"] = runners;
+    example.to_string()
+}
+
+#[tokio::test]
+async fn target_runners_round_trip_and_an_empty_list_is_omitted() {
+    use tower::ServiceExt;
+    let board = board_router();
+
+    let accepted = board
+        .router
+        .clone()
+        .oneshot(put(
+            &board.gatebot,
+            "acme",
+            with_runners(serde_json::json!(["gate-a/slot0", "gate-a/slot1"])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let one = response_json(
+        board
+            .router
+            .clone()
+            .oneshot(get(&board.admin, "/api/v1/release-board/acme"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let stage = &one["lanes"][0]["stages"][1];
+    assert_eq!(
+        stage["targets"][0]["runners"],
+        serde_json::json!(["gate-a/slot0", "gate-a/slot1"])
+    );
+    assert!(stage["targets"][1].get("runners").is_none(), "{stage}");
+
+    let empty = board
+        .router
+        .clone()
+        .oneshot(put(
+            &board.gatebot,
+            "acme",
+            with_runners(serde_json::json!([])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::OK);
+    let one = response_json(
+        board
+            .router
+            .clone()
+            .oneshot(get(&board.admin, "/api/v1/release-board/acme"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let target = &one["lanes"][0]["stages"][1]["targets"][0];
+    assert!(target.get("runners").is_none(), "{target}");
+}
+
+#[tokio::test]
+async fn bad_target_runners_are_refused_with_the_path() {
+    use tower::ServiceExt;
+    let board = board_router();
+    let too_many: Vec<String> = (0..65).map(|n| format!("gate-a/slot{n}")).collect();
+    let cases = [
+        (
+            serde_json::json!(too_many),
+            "lanes[0].stages[1].targets[0].runners has 65 entries",
+        ),
+        (
+            serde_json::json!(["gate-a/slot0", "gate-a/\u{7}"]),
+            "lanes[0].stages[1].targets[0].runners[1]",
+        ),
+        (
+            serde_json::json!(["gate-a/slot0", "gate-b/slot0", "gate-a/slot0"]),
+            "lanes[0].stages[1].targets[0].runners[2] \"gate-a/slot0\" is listed twice",
+        ),
+        (
+            serde_json::json!([""]),
+            "lanes[0].stages[1].targets[0].runners[0] is 0 characters",
+        ),
+        (
+            serde_json::json!(["x".repeat(201)]),
+            "lanes[0].stages[1].targets[0].runners[0] is 201 characters",
+        ),
+    ];
+    for (runners, expected) in cases {
+        let answer = board
+            .router
+            .clone()
+            .oneshot(put(&board.gatebot, "acme", with_runners(runners)))
+            .await
+            .unwrap();
+        assert_eq!(
+            answer.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{expected}"
+        );
+        let body = response_json(answer).await;
+        assert_eq!(body["code"], "invalid_input");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(expected),
+            "{expected}: {body}"
+        );
+    }
+}

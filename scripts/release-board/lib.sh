@@ -55,8 +55,13 @@ contains() { git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; }
 
 # ---- JSON builders --------------------------------------------------------------------------
 
-# target NAME RUNNING STATE
-target() { jq -cn --arg n "$1" --arg r "$2" --arg s "$3" '{name: $n, running: (if $r == "" then null else $r end), state: $s}'; }
+# target NAME RUNNING STATE [RUNNERS] — RUNNERS is an optional JSON array of runner ids (as
+# `runnerId` on /api/v1/control-plane/runners); empty or absent leaves the key out.
+target() {
+  jq -cn --arg n "$1" --arg r "$2" --arg s "$3" --argjson runners "${4:-[]}" \
+    '{name: $n, running: (if $r == "" then null else $r end), state: $s}
+     + (if ($runners | length) > 0 then {runners: $runners} else {} end)'
+}
 
 # stage KEY=VALUE... — one stage. Keys: id name version state status known parallel never_deployed
 # column (one of the board's columns) targets (a JSON array) promote_cmd human_only automatic ships

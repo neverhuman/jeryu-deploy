@@ -29,7 +29,7 @@ collect_demo() {
   lane app "App" "demo/app" demo false \
     "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived column=main)" \
     "$(stage id=prod name=prod column=prod version="$(short "$prod")" state=warn status="$(behind "$m" "$prod" "$main") behind" known=host \
-        targets="[$(target node-a "$(short "$prod")" ok),$(target node-b old bad)]" human_only=true promote_cmd="tag it" \
+        targets="[$(target node-a "$(short "$prod")" ok '["gate-a/slot0","gate-a/slot1"]'),$(target node-b old bad '[]')]" human_only=true promote_cmd="tag it" \
         ships="$(git -C "$m" log --format='%h · %s' "$prod..$main" | lines_json)" forge_repo=demo/app forge_env=production)"
   lane tool-a "Tool A" "demo/app" demo false group=Tools \
     "$(stage id=installed name=installed version="$(short "$main")" state=ok status="= main" known=host column=prod)"
@@ -102,7 +102,8 @@ jq -e '.schema == "jeryu.release_board.v1" and .family == "demo" and (.lanes | l
   || fail "the board has the v1 shape"
 ok "collect.sh writes a v1 board for the family"
 jq -e '.lanes[0].stages[1] | .forge == {repo: "demo/app", environment: "production"} and .promote.human_only == true
-  and (.targets | map(.state)) == ["ok", "bad"] and (.ships | length) == 2' "$b" >/dev/null \
+  and (.targets | map(.state)) == ["ok", "bad"] and (.ships | length) == 2
+  and .targets[0].runners == ["gate-a/slot0", "gate-a/slot1"] and (.targets[1] | has("runners") | not)' "$b" >/dev/null \
   || fail "the prod stage carries its binding, promote, targets and ships"
 ok "a stage carries its forge binding, promote action, targets and what promoting ships"
 jq -e '.columns == [{id: "main", name: "main"}, {id: "stage", name: "stage"}, {id: "prod", name: "production"}]

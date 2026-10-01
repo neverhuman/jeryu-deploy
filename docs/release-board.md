@@ -72,6 +72,11 @@ minutes ahead of the forge's clock.
   targets[], promote?, ships?, rollback?, forge?}`. `column` must be one of the board's
   `columns`.
   - `state` is `ok | warn | bad | none`; a stage is only `ok` when every target is.
+  - `targets[]`: `{name, running, state, runners?}`. `running` is what the target runs, or null.
+    `runners` names the forge runners that serve the target, each exactly as `runnerId` on
+    `GET /api/v1/control-plane/runners` (e.g. `gate-a/slot0`), so `/releases` and `/runners` can
+    link to each other. At most 64 per target, each 1–200 characters with no control
+    characters and no duplicates; an empty list is omitted.
   - `known_by` says how the collector knows: `reported` (a forge deployment), `host` (read from
     the machine or service), `derived` (computed from git), `unverified`.
   - `parallel` marks a stage that runs beside the previous one instead of after it;
@@ -101,7 +106,8 @@ An adapter defines `collect_<family>` (dashes become underscores) and uses `lib.
 
 - `mirror owner/repo` — a bare mirror of a forge repository, fetched once per run.
 - `stage key=value…` / `lane id name source owner read_only [group=name] stage…` /
-  `target name running state` — the board's pieces; `board_columns id=name…` declares the grid
+  `target name running state [runners]` — the board's pieces (`runners` is an optional JSON
+  array of runner ids; empty or absent leaves the key out); `board_columns id=name…` declares the grid
   and `stage … column=id` places a stage on it.
 - `behind`, `contains`, `worst`, `worst_of`, `short`, `lines_json` — comparisons and formatting.
 - `work_summary family method unlinked mirror=tip…` — the work bar; set `main_specs` first.

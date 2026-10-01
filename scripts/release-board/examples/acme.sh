@@ -29,6 +29,8 @@ collect_acme() {
     # shellcheck disable=SC2059  # the URL template is this file's own setting
     running="$(curl --silent --fail --max-time 10 "$(printf "$ACME_HEALTH" "$node")" | jq -r '.commit // empty' 2>/dev/null)" \
       || problem "$node" "health endpoint did not answer"
+    # A 4th argument, a JSON array of runner ids such as '["gate-a/slot0"]', links the target
+    # to the runners that serve it on /runners.
     targets+=("$(target "$node" "$(short "$running")" "$( [ -n "$running" ] && [ "$running" = "$prod_sha" ] && echo ok || echo bad)")")
   done
   local prod_targets prod_state n_behind

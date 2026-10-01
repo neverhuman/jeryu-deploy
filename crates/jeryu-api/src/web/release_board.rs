@@ -48,6 +48,8 @@ const MAX_PIN_ROWS: usize = 200;
 const MAX_PIN_COLUMNS: usize = 12;
 const MAX_BOARD_COLUMNS: usize = 8;
 const MAX_FAMILIES: usize = 64;
+const MAX_TARGET_RUNNERS: usize = 64;
+const MAX_RUNNER_ID_CHARS: usize = 200;
 /// A collector clock may run a little ahead of the forge's; more than this is
 /// a wrong clock, and a board from the future would never be replaced.
 const MAX_CLOCK_SKEW_SECS: i64 = 300;
@@ -180,6 +182,11 @@ pub(crate) struct Target {
     pub name: String,
     pub running: Option<String>,
     pub state: StageState,
+    /// Runners (by `runnerId`, as `GET /api/v1/control-plane/runners` lists
+    /// them) that serve this target, so `/releases` and `/runners` can link to
+    /// each other. Absent when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runners: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -469,6 +476,9 @@ pub(crate) fn validate(
                 0,
                 MAX_TARGETS,
             )?;
+            for (t, target) in stage.targets.iter().enumerate() {
+                check_runners(&format!("{at}.targets[{t}]"), &target.runners)?;
+            }
             if let Some(ships) = &stage.ships {
                 check_count(&format!("{at}.ships"), ships.len(), 0, MAX_SHIPS)?;
             }
@@ -515,6 +525,35 @@ pub(crate) fn validate(
     let value = serde_json::to_value(board).map_err(|error| error.to_string())?;
     check_strings(&value, "board")?;
     Ok(observed)
+}
+
+fn check_runners(at: &str, runners: &[String]) -> Result<(), String> {
+    check_count(
+        &format!("{at}.runners"),
+        runners.len(),
+        0,
+        MAX_TARGET_RUNNERS,
+    )?;
+    let mut seen = BTreeSet::new();
+    for (r, runner) in runners.iter().enumerate() {
+        let chars = runner.chars().count();
+        if chars == 0 || chars > MAX_RUNNER_ID_CHARS {
+            return Err(format!(
+                "{at}.runners[{r}] is {chars} characters; allowed 1 to {MAX_RUNNER_ID_CHARS}"
+            ));
+        }
+        if runner.chars().any(char::is_control) {
+            return Err(format!(
+                "{at}.runners[{r}] {runner:?} contains a control character"
+            ));
+        }
+        if !seen.insert(runner.as_str()) {
+            return Err(format!(
+                "{at}.runners[{r}] {runner:?} is listed twice in the target"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_count(field: &str, count: usize, min: usize, max: usize) -> Result<(), String> {
