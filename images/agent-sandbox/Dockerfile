@@ -42,10 +42,10 @@ RUN cargo fetch --locked || cargo fetch || true
 # bumping it there first, then rebuilding this image.
 FROM rust:1.95-slim-bookworm AS jankurai-build
 ARG JANKURAI_REPO="https://git.neverhuman.org/git/jeryu/jankurai.git"
-ARG JANKURAI_TAG="v1.6.11-deadlang-precision-split.4"
-ARG JANKURAI_REV="2b8312215573eb225075ca0556f1208ae5265b8c"
+ARG JANKURAI_TAG="v1.6.11-deadlang-precision-split.5"
+ARG JANKURAI_REV="aaed4a0dace42a0e63c88b951eb67f5f0c24a5c8"
 ARG JANKURAI_VERSION="jankurai 1.6.11"
-ARG JANKURAI_BUILD_CONTEXT_SHA256="c8303ff86f53ccbcde8b64a1b921cbb61031a2f801ab58440b044fabf76be4a2"
+ARG JANKURAI_BUILD_CONTEXT_SHA256="78b3a85efd4192c2b0a69264a9994cdcdcd4d5db171648ca063c5b9c9a9c5da2"
 ARG JANKURAI_BUILD_COMMAND="cargo install --locked --offline --path /opt/jeryu/jankurai/crates/jankurai --root /opt/jeryu/out --bin jankurai"
 ARG JANKURAI_RUSTFLAGS="--remap-path-prefix=/opt/jeryu/jankurai=/jankurai-build/source --remap-path-prefix=/opt/jeryu/vendor=/jankurai-build/vendor --remap-path-prefix=/opt/jeryu/target=/jankurai-build/target --remap-path-prefix=/usr/local/cargo=/jankurai-build/cargo"
 ARG JANKURAI_BUILD_ENVIRONMENT="CARGO_NET_OFFLINE=true,HOME=/tmp,LANG=C,LC_ALL=C,SOURCE_DATE_EPOCH=0,TZ=UTC"
@@ -58,10 +58,10 @@ ARG JANKURAI_BUILDER_IMAGE_ID="sha256:d7482085ff5b415f84dba5647ae71606650bdef00d
 ARG JANKURAI_BUILDER_IMAGE="rust@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082"
 ARG JANKURAI_PACKAGE_PATH="crates/jankurai"
 ARG JANKURAI_SEMVER="1.6.11"
-ARG JANKURAI_SOURCE_TREE="bc15c67053db2d1e87e25e71276766d055130701"
-ARG JANKURAI_SOURCE_ARCHIVE_SHA256="2c8fbbd71a73c978b58bf038f30008b937a16969ec52a528f21ce2d7fa404cf6"
+ARG JANKURAI_SOURCE_TREE="c1f353e7c8efdcb4746732f4002fa8f505eb3c24"
+ARG JANKURAI_SOURCE_ARCHIVE_SHA256="bde45dc004bdaddd9d64f8297210b00bf0321c28e061f7837f83986f1a045b1e"
 ARG JANKURAI_CARGO_LOCK_SHA256="b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a"
-ARG JANKURAI_BINARY_SHA256="b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103"
+ARG JANKURAI_BINARY_SHA256="d94d3e21b9e91c94eddc9adca3af5025d323ba9ceb560015fc6027343217f3ab"
 ARG JANKURAI_RUST_TOOLCHAIN="1.95.0"
 ARG JANKURAI_RUSTC_VERSION="rustc 1.95.0 (59807616e 2026-04-14)"
 ARG JANKURAI_CARGO_VERSION="cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
@@ -125,14 +125,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # is given explicit API and shell-verifier paths, so no lane uses a bare PATH
 # lookup that a stale build could shadow.
 ARG JANKURAI_VERSION="jankurai 1.6.11"
-ARG JANKURAI_BINARY_SHA256="b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103"
+ARG JANKURAI_BINARY_SHA256="d94d3e21b9e91c94eddc9adca3af5025d323ba9ceb560015fc6027343217f3ab"
 COPY --from=jankurai-build /opt/rust/cargo/bin/jankurai /opt/rust/cargo/bin/jankurai
 COPY images/agent-sandbox/jankurai-installation-receipt.json \
-  /opt/jeryu/receipts/jankurai/sha256/0ccf0ac8b05e1add41356dca9fa1a8b39ccdad1b9c9fd0919c3545ad40096612.json
+  /opt/jeryu/receipts/jankurai/sha256/cd699bf6e18eaa82d1dd475426ca8d0aeee73c247ab8000f343427e52938a29d.json
 COPY ops/ci/ensure-jankurai.sh /opt/jeryu/governance/ensure-jankurai.sh
 ENV JERYU_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
     JERYU_GOVERNED_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
-    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/0ccf0ac8b05e1add41356dca9fa1a8b39ccdad1b9c9fd0919c3545ad40096612.json
+    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/cd699bf6e18eaa82d1dd475426ca8d0aeee73c247ab8000f343427e52938a29d.json
 RUN test ! -L /opt/rust/cargo/bin/jankurai \
     && test "$(stat -c '%h' /opt/rust/cargo/bin/jankurai)" = "1" \
     && test "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '{print $1}')" = "${JANKURAI_BINARY_SHA256}" \

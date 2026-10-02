@@ -1,6 +1,6 @@
 {
   "binary": {
-    "sha256": "b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103",
+    "sha256": "d94d3e21b9e91c94eddc9adca3af5025d323ba9ceb560015fc6027343217f3ab",
     "version_output": "jankurai 1.6.11"
   },
   "build": {
@@ -13,7 +13,7 @@
     "closed_vendor": true,
     "command": "cargo install --locked --offline --path /opt/jeryu/jankurai/crates/jankurai --root /opt/jeryu/out --bin jankurai",
     "container_engine_path": "/usr/bin/docker",
-    "context_sha256": "c8303ff86f53ccbcde8b64a1b921cbb61031a2f801ab58440b044fabf76be4a2",
+    "context_sha256": "78b3a85efd4192c2b0a69264a9994cdcdcd4d5db171648ca063c5b9c9a9c5da2",
     "environment": "CARGO_NET_OFFLINE=true,HOME=/tmp,LANG=C,LC_ALL=C,SOURCE_DATE_EPOCH=0,TZ=UTC",
     "git_global_config_disabled": true,
     "git_http_follow_redirects": false,
@@ -38,10 +38,10 @@
   },
   "conclusion": "success",
   "governance": {
-    "manifest_commit": "d604f1f5d67379a20cc0e877b8199f77e41aec4a",
+    "manifest_commit": "a191f7c1309dfbebd8764a1aa5999917ffb27d2c",
     "manifest_repo": "https://git.neverhuman.org/git/jeryu/jeryu-tool.git",
-    "manifest_sha256": "591667a86ca55813071f415c444c19e1d196fab7ab4639b1e62eedd08cce80d9",
-    "manifest_tree": "554722da6bd0cae9510fadbe1feda73141500b06",
+    "manifest_sha256": "5ef27c3379826b57222a8a4ff67d5c7b0ad112a79e9172db2de25ff8adc5280f",
+    "manifest_tree": "7abc48227c9c1aac1e97ea1981ff67e5a130a09f",
     "protected_main": true,
     "protection_policy": "immutable-main-v1",
     "status": "governed"
@@ -54,12 +54,12 @@
   "run_id": "agent-sandbox-jankurai-1.6.11",
   "schema": "jeryu.jankurai-installation/v2",
   "source": {
-    "archive_sha256": "2c8fbbd71a73c978b58bf038f30008b937a16969ec52a528f21ce2d7fa404cf6",
+    "archive_sha256": "bde45dc004bdaddd9d64f8297210b00bf0321c28e061f7837f83986f1a045b1e",
     "cargo_lock_sha256": "b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a",
-    "commit": "2b8312215573eb225075ca0556f1208ae5265b8c",
+    "commit": "aaed4a0dace42a0e63c88b951eb67f5f0c24a5c8",
     "remote": "https://git.neverhuman.org/git/jeryu/jankurai.git",
-    "tag": "v1.6.11-deadlang-precision-split.4",
-    "tree": "bc15c67053db2d1e87e25e71276766d055130701",
+    "tag": "v1.6.11-deadlang-precision-split.5",
+    "tree": "c1f353e7c8efdcb4746732f4002fa8f505eb3c24",
     "verification": "release-authoritative"
   },
   "test_mode": false
