@@ -9,7 +9,7 @@ use jeryu_core::CheckRunStatus;
 use serde_json::json;
 
 const GOVERNED_VERSION: &str = "jankurai 1.6.11";
-const GOVERNED_SHA256: &str = "b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103";
+const GOVERNED_SHA256: &str = crate::ci_bridge::GOVERNED_JANKURAI_SHA256;
 
 /// A repository plus one queued audit ticket for a unique head, so tests that
 /// share the process-wide queue never see each other's work.

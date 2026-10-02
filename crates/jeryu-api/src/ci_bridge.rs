@@ -370,7 +370,8 @@ fn changed_paths(git_bin: &str, bare: &Path, oid: &str) -> Vec<String> {
 }
 
 const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
-const GOVERNED_JANKURAI_SHA256: &str =
+/// The pinned governed binary; tests take it from here instead of carrying a copy.
+pub(crate) const GOVERNED_JANKURAI_SHA256: &str =
     "d94d3e21b9e91c94eddc9adca3af5025d323ba9ceb560015fc6027343217f3ab";
 const GOVERNED_JANKURAI_SOURCE_REPO: &str = "https://git.neverhuman.org/git/jeryu/jankurai.git";
 const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.6.11-deadlang-precision-split.5";
