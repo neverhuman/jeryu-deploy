@@ -25,11 +25,11 @@ already holds.
   ],
   "requiredContexts": ["jankurai/proof", "widget-www/required"],
   "actors": [
-    { "kind": "reviewer", "identity": "pragent",
+    { "kind": "reviewer", "identity": "review-bot",
       "grant": { "required": "write", "present": true, "held": "write" } },
-    { "kind": "merger", "identity": "jain-merge-bot",
+    { "kind": "merger", "identity": "merge-bot",
       "grant": { "required": "write", "present": false,
-                 "warning": "jain-merge-bot has no write grant on acme/widget-www; its merges answer 403" } },
+                 "warning": "merge-bot has no write grant on acme/widget-www; its merges answer 403" } },
     { "kind": "gate-runner", "identity": "buildhost2/slot0", "state": "online",
       "lastRun": { "conclusion": "success", "sha": "…", "pr": 31, "at": "…" } },
     { "kind": "deployer", "identity": "buildhost1/publish", "state": "online",
@@ -43,7 +43,7 @@ already holds.
   ],
   "grants": [{ "login": "dana", "access": "read", "grantedBy": "…", "grantedAt": "…" }],
   "grantsVisible": true,
-  "warnings": ["jain-merge-bot has no write grant on acme/widget-www; its merges answer 403"]
+  "warnings": ["merge-bot has no write grant on acme/widget-www; its merges answer 403"]
 }
 ```
 
@@ -52,8 +52,8 @@ run per name, required contexts first. A required context that has never
 reported gets a row of its own with `state: "missing"` — the case that used to be
 invisible until a merge sat waiting for a check nobody runs.
 
-`actors` names the reviewer (`JERYU_REVIEW_IDENTITY`, default `pragent`) and the
-merger (`JERYU_MERGE_IDENTITY`, default `jain-merge-bot`) with the grant each
+`actors` names the reviewer (`JERYU_REVIEW_IDENTITY`, a site setting) and the
+merger (`JERYU_MERGE_IDENTITY`, a site setting) with the grant each
 needs. An identity that is not an account on this forge is not listed: there is
 no actor to warn about. An identity that is listed without its grant gets a
 `warning`, repeated at the top level, because its merges answer 403 and nothing
@@ -98,7 +98,7 @@ names its target:
 the label, and refused without it, so a deploy row never shows a target for a
 pass that deployed nothing. A deploy timer holds no gate slot and emits no
 pipeline events: what it did is a deployment, not a gate. Who may report is the
-runner rule (`JERYU_RUNNER_REPORTERS`, default `gatebot,pragent`, plus any forge
+runner rule (`JERYU_RUNNER_REPORTERS`, a site setting, plus any forge
 admin).
 
 The jankurai audit runner reports the same way with the `jankurai-audit` label

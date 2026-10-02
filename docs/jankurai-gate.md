@@ -1,6 +1,6 @@
 # The jankurai gate: local before the PR, required before approval
 
-Owner decision, 2026-09-29 (it supersedes the 2026-09-19 "shadow mode until the
+Decision, 2026-09-29 (it supersedes the 2026-09-19 "shadow mode until the
 Quality gate view has a week of data" plan): the jankurai audit is a gate, not a
 report. It runs locally once **before** a pull request is opened, and
 `jankurai/proof` must pass on the exact head before that pull request can be
@@ -52,15 +52,14 @@ approval, or the reverse, is worse than either state:
 | Where | Setting |
 | --- | --- |
 | Local (`ops/ci/jankurai-gate.sh`, `ops/ci/pr-ci.sh`) | `agent/jankurai-gate.toml`, `enabled = true`; `JERYU_JANKURAI_GATE=1/0` overrides for one run |
-| Hosted (approval, merge passport) | `JERYU_AUDIT_GATE_REPOS="jeryu/jeryu-deploy jeryu/jeryu-ci-runner veox-ai/*"` on the API unit — `owner/name` entries, comma or whitespace separated, `owner/*` for a whole owner |
+| Hosted (approval, merge passport) | `JERYU_AUDIT_GATE_REPOS="jeryu/jeryu-deploy jeryu/jeryu-ci-runner acme/*"` on the API unit — `owner/name` entries, comma or whitespace separated, `owner/*` for a whole owner |
 
 `JERYU_AUDIT_ENFORCE_MERGE=1` still turns the gate on family-wide, and the
 intrinsic merge gate in jeryu-core reads that flag; the per-repo setting exists
 so the rollout does not have to be all-or-nothing.
 
-Why per repository: on 2026-09-29 `veox-ai/veox-telemetry` main (`0ada588`)
-scored 47 against a floor of 85. A family-wide flip would have blocked every
-pull request that repository has until its caps were fixed.
+Why per repository: a repository whose main scores below the floor would have
+every pull request blocked by a family-wide flip until its caps were fixed.
 
 **Report before enabling.** A repository goes under the gate only after its main
 passes. On a host with the governed auditor installed, for each repository:
@@ -80,7 +79,6 @@ Measured with the pinned auditor (`jankurai 1.6.11`) through
 | --- | --- | --- | --- | --- | --- |
 | `jeryu/jeryu-ci-runner` | 93 | 85 | none | 0 | pass — gate on |
 | `jeryu/jeryu-deploy` | 86 | 85 | none | 0 | pass — gate on |
-| `veox-ai/veox-telemetry` | 47 | 85 | see its report | — | fail — gate off (main `0ada588`, 2026-09-29) |
 
 The two repositories that pass have `enabled = true` in
 `agent/jankurai-gate.toml`. The family's other repositories have not been

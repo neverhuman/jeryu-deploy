@@ -57,7 +57,7 @@ authorizes its clean replay**. That holds only when:
 
 The queue records the pair `(pr_head_sha, queue_sha)` and **who** approved: each
 approving review's login and whether it is an automation identity (for example
-`pragent`) or a person. The landed merge is therefore traceable to what was
+`review-bot`) or a person. The landed merge is therefore traceable to what was
 reviewed, and by whom. GitHub's merge queue makes the same trade.
 
 A setting per protected branch decides who may enqueue:
@@ -88,7 +88,7 @@ A setting per protected branch decides who may enqueue:
   enqueue attempt on the PR (`result`, HTTP `status`, forge `code` and
   `message`, `actor`, `at`), a `blockedReason` line when it was refused, who
   approved the head, and a `grantGap` when the merge identity
-  (`JERYU_MERGE_IDENTITY`, default `jain-merge-bot`) has no write grant on the
+  (`JERYU_MERGE_IDENTITY`) has no write grant on the
   repository. The forge records every answer, including the auth gate's 403,
   so a refusal no longer lives only in the merger's journal. `/runners` joins
   the same record onto the reviewer's last approval (`lastActivity.mergeAttempt`)
@@ -199,7 +199,7 @@ again (`a_fast_forward_pr_reuses_its_head_result_for_the_same_commit`).
 A replay onto a moved base is a new sha and never borrows the head's result,
 even when the trees would match (`a_replay_never_borrows_the_head_result`).
 Reusing a result across different shas or gate inputs stays out of scope. The
-formal reviewer rejected it ("exact source authority", jain-deploy#55 v1).
+formal reviewer rejected it ("exact source authority").
 
 ## The direct merge may not replay past the gate (2026-09-28)
 

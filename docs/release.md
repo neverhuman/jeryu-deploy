@@ -1,8 +1,8 @@
 # Release
 
-**Run releases on xbabe0 only.** It is the release host: the release scripts
-reach xbabe2 (build) and atomicsoul (forge) from there, and the auto-stage and
-auto-pin timers run there.
+**Run releases on the release host only.** The release scripts reach the build
+host (`JERYU_BUILD_HOST`) and the forge host (`JERYU_FORGE_HOST`) from there, and
+the auto-stage and auto-pin timers run there.
 
 The release procedure is [`scripts/release/README.md`](../scripts/release/README.md):
 `stage-release.sh` builds and stages a release, `deploy-release.sh` switches to

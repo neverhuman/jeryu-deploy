@@ -11,7 +11,7 @@ is absent.
 Required inputs:
 
 - `--artifact`: artifact-support bundle to sign.
-- `--repo`: repository slug such as `neverhuman/veox-shared`.
+- `--repo`: repository slug such as `acme/widget-shared`.
 - `--sha`: commit SHA covered by the bundle.
 - `--version`: release evidence version, usually the same SHA.
 - `--rollback-target`: commit or release target used for rollback evidence.

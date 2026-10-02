@@ -45,7 +45,7 @@ Keep the env file and the token mode 600.
 
 | Method | Path | Who | Answer |
 |---|---|---|---|
-| PUT | `/api/v1/release-board/{family}` | a `JERYU_BOARD_REPORTERS` login (default `gatebot,pragent`) or any admin | `200 {family, observed_at, accepted_at}`; `ignored: "older than stored snapshot"` when a later snapshot is already held; `403 permission_denied`; `422 invalid_input` naming the field; `413` over 512 KiB |
+| PUT | `/api/v1/release-board/{family}` | a `JERYU_BOARD_REPORTERS` login (a site setting) or any admin | `200 {family, observed_at, accepted_at}`; `ignored: "older than stored snapshot"` when a later snapshot is already held; `403 permission_denied`; `422 invalid_input` naming the field; `413` over 512 KiB |
 | GET | `/api/v1/release-board` | admin | `{boards: [{family, observed_at, accepted_at, summary, collector, problem_count}]}` |
 | GET | `/api/v1/release-board/{family}` | admin | the snapshot plus `accepted_at`; `404 not_found` |
 

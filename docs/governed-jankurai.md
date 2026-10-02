@@ -97,8 +97,8 @@ The flow, per head:
    commit (`code`, when `JERYU_AUDIT_RUNNER_REPO` is set) and the digest of the
    jankurai binary it really invokes (`tools`). The same token sends it, so the
    scoring identity must also be allowed to report heartbeats (a forge admin or
-   a `JERYU_RUNNER_REPORTERS` login; the defaults of both lists share
-   `gatebot`). See docs/pipeline-events.md, "The jankurai audit runner".
+   a `JERYU_RUNNER_REPORTERS` login; configure the same
+   runner login in both lists). See docs/pipeline-events.md, "The jankurai audit runner".
 4. **One audit per head.** When `<repo>/required` (`ops/ci/pr-ci.sh`) already
    audits a head, that run submits its own report (`--audit-mode full`) against
    the same job, and the job is spent: no runner audits the head again.
@@ -106,7 +106,7 @@ The flow, per head:
    `POST /api/v1/repos/{id}/jankurai-scores` accepts a report only when
 
    * the caller is a runner identity allowed to score
-     (`JERYU_JANKURAI_SCORERS`, default `gatebot`) or a global admin,
+     (`JERYU_JANKURAI_SCORERS`) or a global admin,
    * an open audit job exists for exactly this head, and the report names that
      job's branch and base sha, and
    * the reported auditor version and sha256 are the governed ones, checked

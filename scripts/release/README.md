@@ -1,20 +1,22 @@
-# Releasing the forge: run every release command on xbabe0 only
+# Releasing the forge: run every release command on the release host
 
-**Run releases on xbabe0 only.** It is the release host: these scripts reach xbabe2 (build) and
-atomicsoul (forge) from there, and the auto-stage and auto-pin timers run there.
+**Run releases on the release host only.** These scripts reach the build host
+(`JERYU_BUILD_HOST`) and the forge host (`JERYU_FORGE_HOST`) from there, and the
+auto-stage and auto-pin timers run there. Which machines those are is site
+configuration, not part of this repository.
 
-Production is `jeryu serve` on atomicsoul (systemd user unit `jeryu.service`),
-reached through xbabe2. Releases are unsigned (owner decision) and built from a
+Production is `jeryu serve` on the forge host (systemd user unit `jeryu.service`),
+reached through the build host. Releases are unsigned and built from a
 commit of this repository.
 
 ```sh
-rel=$(scripts/release/stage-release.sh)        # build main, stage on atomicsoul
+rel=$(scripts/release/stage-release.sh)        # build main, stage on the forge host
 scripts/release/deploy-release.sh "$rel"       # switch, and record the deployment
 ```
 
 - **`stage-release.sh [COMMIT]`** builds the pinned web dist with
   `build-web-dist.sh` (below), then `jeryu-cli` in the glibc 2.35 builder
-  image on xbabe2 with no network (`cargo --locked --offline`, dependencies fetched
+  image on the build host with no network (`cargo --locked --offline`, dependencies fetched
   first through `.cargo/hosted-gitconfig`; `JERYU_BUILD_COMMIT=<COMMIT>` passed in, so
   the binary reports its own commit at `/api/v1/version` and as `forge.commit` on
   `/runners`), refuses a binary needing a newer glibc
@@ -24,10 +26,10 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
   whatever is live when it runs; a live name not in `prod-…-unsigned` form
   is refused unless `--prev <that name>` confirms it),
   `switch.sh`, `rollback.sh` and `SHA256SUMS` in `~/.jeryu/incoming/<release>/` on
-  atomicsoul. It changes nothing else there.
+  the forge host. It changes nothing else there.
 - **`deploy-release.sh RELEASE`** records a `production` deployment of
-  `jeryu/jeryu-deploy` (Deployments API; needs an admin token, default the
-  `alton2` PAT), runs the staged `switch.sh`, and appends `success` or `failure`.
+  `jeryu/jeryu-deploy` (Deployments API; needs an admin token, read from
+  `JERYU_DEPLOY_TOKEN_FILE`), runs the staged `switch.sh`, and appends `success` or `failure`.
   The previous production deployment is marked `inactive` automatically.
   It refuses an older build over a newer one: the live release's commit (from
   its `RELEASE.txt`) must be an ancestor of the staged one, or it exits 65 and
@@ -86,7 +88,7 @@ To ship a UI change, merge it to jeryu-web main. **The bump then proposes itself
 `install-auto-pin.sh`, disable with `systemctl --user disable --now jeryu-auto-pin.timer`)
 waits for jeryu-web main to be green, builds the dist with this script from jeryu-deploy main,
 changes exactly the two lock fields on `auto/pin-web-<sha12>` and opens
-`release: pin jeryu-web <sha7>` as alton2. (A head that changes no shipped file, such as a
+`release: pin jeryu-web <sha7>` as the configured bump identity (`JERYU_PIN_GIT_NAME`). (A head that changes no shipped file, such as a
 test-only commit, builds the bundle already pinned: then only `commit` moves and the pull request
 says the bundle is unchanged.) It never merges: the reviewer and the merge queue land
 it, auto-stage stages main, and a person deploys. It skips a head while any bump is open, retries
@@ -138,7 +140,7 @@ together with a new `-rN` tag.
 
 ## Auto-staging
 
-`auto-stage.sh` runs every 5 minutes on the release host (xbabe0) from
+`auto-stage.sh` runs every 5 minutes on the release host from
 `jeryu-auto-stage.timer`. It stages the forge's main once its combined status is `success`, using
 `stage-release.sh` from that same commit. It never deploys, so a "go" is only
 `deploy-release.sh <rel>`. The newest staged id is in `~/.local/state/jeryu-auto-stage/latest`, and

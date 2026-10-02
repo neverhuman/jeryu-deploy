@@ -41,7 +41,7 @@
   (`POST /api/v1/jankurai-audits/claim`, `GET /api/v1/jankurai-audits`) with
   `ops/ci/jankurai-audit-runner.sh` and submit the report through
   `POST /api/v1/repos/:id/jankurai-scores`, which accepts it only from a runner
-  identity allowed to score (`JERYU_JANKURAI_SCORERS`, default `gatebot`), only
+  identity allowed to score (`JERYU_JANKURAI_SCORERS`), only
   against an open job for exactly that branch, head and base, and only from the
   governed auditor's version and sha256 — and derives the verdict from the
   report itself. Only pull request heads and the protected `main` are audited;
@@ -240,7 +240,7 @@
 
 ## jeryu-deploy-v5.0.0-split.0 - 2026-06-11
 - MAJOR: first standalone split-family release; the legacy monorepo
-  (/home/ubuntu/jeryu) is deprecated and its drift fully reconciled.
+  is deprecated and its drift fully reconciled.
 
 ## jeryu-deploy-v4.0.0-split.0
 

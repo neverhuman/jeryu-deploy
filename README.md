@@ -21,7 +21,7 @@ authority. Durable detail is intentionally routed rather than duplicated:
 - Ownership and generated files: `agent/owner-map.json`,
   `agent/generated-zones.toml`, and `docs/generated-zones.md`.
 - Audit and release controls: `agent/audit-policy.toml`, `docs/audit-rubric.md`,
-  and `scripts/release/README.md` (the release procedure; run it on xbabe0 only).
+  and `scripts/release/README.md` (the release procedure; run it on the release host only).
 - Tool-finder scheduled scan and proposal decisions: `docs/tool-finder.md`.
 - Pipeline event log, attention inbox and their agent guide:
   `docs/pipeline-events.md`.
@@ -86,7 +86,7 @@ The commands below are narrower loops for iteration, not the gate:
 - `just artifact-support`
 
 To release, follow [`scripts/release/README.md`](scripts/release/README.md) on
-xbabe0: `stage-release.sh` stages, `deploy-release.sh` switches.
+the release host: `stage-release.sh` stages, `deploy-release.sh` switches.
 
 Rust-native split transition checks are available through
 `cargo run --locked --offline -p jeryu-split-tool --bin jeryu-split --

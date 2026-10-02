@@ -28,7 +28,7 @@ Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
 
 | Route | Who |
 |---|---|
-| `POST /api/v1/events` | a global admin, or a login in `JERYU_EVENT_REPORTERS` (comma-separated, default `gatebot,pragent`) |
+| `POST /api/v1/events` | a global admin, or a login in `JERYU_EVENT_REPORTERS` (comma-separated site setting, e.g. `ci-bot,review-bot`) |
 | `GET /api/v1/events` | global admins |
 | `GET /api/v1/attention` | global admins |
 | `GET /api/v1/pins` | global admins |
@@ -55,7 +55,7 @@ valid across pruning and restarts.
 | `source` | string | `forge`, `todoq`, `pr-gate`, `pr-redteam`, `auto-stage`, `deploy`; open set, `^[a-z][a-z0-9-]{0,31}$` |
 | `kind` | string | dotted lower-case words, `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`, at most 64 characters; the vocabulary below is open |
 | `reporter` | string | the login that posted it, `forge` for server-emitted; always set by the server |
-| `actor` | string or null | who did the thing, e.g. `alton@xbabe0/w1`, `pragent`, `xbabe2/slot0`; clipped to 128 characters |
+| `actor` | string or null | who did the thing, e.g. `dev@node-a/w1`, `review-bot`, `build-1/slot0`; clipped to 128 characters |
 | `family` | string or null | shift family |
 | `repo` | string or null | `owner/name` |
 | `pr` | integer or null | positive |
@@ -206,7 +206,7 @@ Items are sorted by severity, then oldest first.
 | `since` | RFC 3339 or null |
 | `family`, `repo`, `pr`, `todo_id`, `sha`, `shift` | nullable join keys. `repo` is `owner/name`, except on `shift_without_pr`, which uses the family repo name as the Shift API does |
 | `href` | the in-app page where the step happens |
-| `action` | `{"label", "command", "run_in"}`. `command` is a copyable shell line when the step happens off-site, else null. `run_in` says where that line is run, as a short phrase naming the machine and the directory (`"xbabe0, any directory"`, `"xbabe0, in a jeryu/jeryu-deploy checkout"`); it is a string on every item whose `command` is set and the key is absent on every other item |
+| `action` | `{"label", "command", "run_in"}`. `command` is a copyable shell line when the step happens off-site, else null. `run_in` says where that line is run, as a short phrase naming the machine and the directory (`"node-a, any directory"`, `"node-a, in a jeryu/jeryu-deploy checkout"`); it is a string on every item whose `command` is set and the key is absent on every other item |
 | `next_step` | the one next step as a sentence: `<label>: on <run_in>, run \`<command>\`` or `<label>: open <href>` |
 
 Every item names exactly one next step: run `action.command` on the machine and
@@ -216,7 +216,7 @@ and do what `action.label` says. A command item's action:
 ```json
 {"label": "Run auto-pin now",
  "command": "systemctl --user start jeryu-auto-pin.service",
- "run_in": "xbabe0, any directory"}
+ "run_in": "node-a, any directory"}
 ```
 
 The machine in `run_in` is one of three roles, each named by an environment
@@ -335,13 +335,13 @@ Implementation: `crates/jeryu-api/src/web/control_plane/gate_runners.rs`.
 
 ### `POST /api/v1/runners/heartbeat`
 
-Who may post: a login in `JERYU_RUNNER_REPORTERS` (comma-separated, default
-`gatebot,pragent`), or any global admin. The rule exists so an ordinary account
+Who may post: a login in `JERYU_RUNNER_REPORTERS` (comma-separated site
+setting, e.g. `ci-bot,review-bot`), or any global admin. The rule exists so an ordinary account
 cannot paint fake runners; admins are not ordinary accounts, and the release
-timers run as the admin `alton2`. Anyone else gets `403 permission_denied`.
+timers run as an admin account. Anyone else gets `403 permission_denied`.
 
 ```json
-{"runnerId": "xbabe0/auto-pin", "host": "xbabe0", "slot": 0,
+{"runnerId": "node-a/auto-pin", "host": "node-a", "slot": 0,
  "labels": ["automation"], "intervalSeconds": 300,
  "last": {"repo": "jeryu/jeryu-deploy", "pr": 74, "sha": "ea04cac1f0…",
           "recipe": "auto-pin", "conclusion": "opened", "seconds": 0,
@@ -353,7 +353,7 @@ Unknown fields are refused. A malformed beat is `422 invalid_input` whose
 
 | Field | Meaning |
 |---|---|
-| `runnerId`, `host`, `slot` | required. `runnerId` is the stable key, `<host>/<name>` by convention (`xbabe2/slot0`, `xbabe0/redteam`, `xbabe0/auto-stage`) |
+| `runnerId`, `host`, `slot` | required. `runnerId` is the stable key, `<host>/<name>` by convention (`build-1/slot0`, `node-a/redteam`, `node-a/auto-stage`) |
 | `labels` | optional. `redteam` marks the reviewer, `automation` a background timer, `deploy` a host deploy timer and `jankurai-audit` the jankurai audit runner (these four are exclusive); anything else is a gate slot |
 | `intervalSeconds` | optional integer, 30 to 86400: how often this runner beats. Absent means the runner is offline after 180 seconds of silence; present, after `max(180, 3 * intervalSeconds)` |
 | `current` | optional: `{repo, pr?, sha, recipe, startedAt}`, the work in hand |
@@ -477,10 +477,10 @@ the work it describes.
 
 ```sh
 curl -sS --max-time 10 -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"event_id":"todoq:20260919-121040-5e3f6e:attempt:1","source":"todoq",
-       "kind":"todo.attempt_finished","family":"jeryu","todo_id":"20260919-121040-5e3f6e",
+  -d '{"event_id":"todoq:20260101-120000-a1b2c3:attempt:1","source":"todoq",
+       "kind":"todo.attempt_finished","family":"jeryu","todo_id":"20260101-120000-a1b2c3",
        "outcome":"done","cost_usd":0.33,"seconds":212,"summary":"w3 finished: close the authz gap"}' \
-  https://git.neverhuman.org/api/v1/events
+  https://forge.example/api/v1/events
 ```
 
 **Retrying.** Give every event an `event_id` (at most 64 characters of
@@ -519,13 +519,13 @@ may be older than the client.
   which holds telemetry only. `switch.sh` does not snapshot that file, and does
   not need to: an older binary checks only the migrations it knows, so a
   rollback runs against the migrated file unchanged.
-- **Environment.** `JERYU_EVENT_REPORTERS` (default `gatebot,pragent`). todoq
+- **Environment.** `JERYU_EVENT_REPORTERS` (site setting, e.g. `ci-bot,review-bot`). todoq
   and `auto-stage.sh` post with an admin token and need no entry. The machine
   names the inbox sends an operator to, read on each inbox computation:
-  `JERYU_RELEASE_HOST` (default `xbabe0`; auto-pin, auto-stage,
-  `deploy-release.sh` and the todoq workers), `JERYU_GATE_HOST` (default
-  `xbabe2`; the `pr-gate-runner@` slots) and `JERYU_FORGE_HOST` (default
-  `atomicsoul`; the forge itself, where mirror pushes are made by the user the
+  `JERYU_RELEASE_HOST` (e.g. `node-a`; auto-pin, auto-stage,
+  `deploy-release.sh` and the todoq workers), `JERYU_GATE_HOST` (e.g.
+  `build-1`; the `pr-gate-runner@` slots) and `JERYU_FORGE_HOST` (e.g.
+  `edge-1`; the forge itself, where mirror pushes are made by the user the
   forge runs as). A blank value counts as unset. They only change the text of
   `action.run_in`; nothing connects to these hosts. `JERYU_DRAFT_IDLE_DAYS`
   (default 3) is how many days a draft may sit before `pr_draft_waiting`
@@ -538,7 +538,7 @@ may be older than the client.
 - **auto-pin.** Not enabled by a deploy. Run
   `scripts/release/install-auto-pin.sh` once on the release host (it needs
   docker for the pinned node image, a git credential that may push branches to
-  jeryu-deploy, and the alton2 token file, mode 0600). Disable with
+  jeryu-deploy, and the admin token file named by `JERYU_PIN_TOKEN_FILE`, mode 0600). Disable with
   `systemctl --user disable --now jeryu-auto-pin.timer`. State and build logs
   are under `~/.local/state/jeryu-auto-pin/`.
 - **Deployment logs.** The switch log itself lives on the release host

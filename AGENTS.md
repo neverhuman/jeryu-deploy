@@ -7,7 +7,7 @@ Before editing, read `README.md`, `agent/owner-map.json`,
 `agent/proof-lanes.toml`, `agent/audit-policy.toml`, and
 `agent/boundaries.toml`.
 
-Keep split `main` clean. The legacy monorepo (`/home/ubuntu/jeryu`) is
+Keep split `main` clean. The legacy monorepo is
 deprecated and archived as `jeryu/jeryu-monorepo`; this split family is the
 only source of truth. Land changes through PRs with green required checks.
 

@@ -6,8 +6,6 @@ unless the 268 is understood first. This note records what each headline field
 on that endpoint actually measures, so a reader can tell a regression from a
 constant.
 
-Triaged 2026-09-20 against the `nightshift/2026-09-19` shift branch.
-
 ## `failingCheckCount` is a count, not a diagnosis
 
 The summary used to carry only the total, and the `ci-failing-checks` priority

@@ -227,8 +227,8 @@ that hosted result.
   push destination, and ensures CI does not select the installed predecessor
   `~/.jeryu/bin/jeryu` binary.
 - `ops/ci/verify-jeryu-env.sh --build-local --release-guard` is wired into
-  full release validation and fails while retired-provider runners, old
-  `/home/ubuntu/jeryu` source roots, local `:2224`, or other retired
+  full release validation and fails while retired-provider runners, the old
+  monorepo source root, the retired local SSH forge listener, or other retired
   experimental listeners are still active. The accepted predecessor runtime
   may remain live during candidate validation; every test command selects the
   freshly built repository binary, and the dependency-source gate separately

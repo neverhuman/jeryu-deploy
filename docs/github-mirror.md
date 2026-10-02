@@ -1,6 +1,6 @@
 # The GitHub mirror
 
-The forge is the truth and `github.com/neverhuman/*` is an exact copy of it.
+The forge is the truth and `github.com/<org>/*` is an exact copy of it.
 This page says how a family enrols, what the mirror does on its own, and what
 it refuses to do.
 
@@ -16,7 +16,7 @@ three of:
 ```toml
 [[repo]]
 jeryu_slug = "jeryu/jeryu-core"          # owner/name on the forge
-github_slug = "neverhuman/jeryu-core"    # owner/name on GitHub
+github_slug = "acme-oss/jeryu-core"      # owner/name on GitHub
 default_branch = "main"                  # optional; defaults to main
 mirror_github_main = true
 ```

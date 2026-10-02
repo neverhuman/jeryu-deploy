@@ -77,12 +77,12 @@ qualified `name#12` looks only in the repository it names.
   "results": [
     {
       "kind": "pull_request",
-      "id": "pull_request:neverhuman/gatekeeper#2",
+      "id": "pull_request:acme/gatekeeper#2",
       "title": "#2 Write the receipt after the gate",
-      "context": "neverhuman/gatekeeper · open",
-      "path": "/repos/jeryu/neverhuman/gatekeeper/pulls/2",
+      "context": "acme/gatekeeper · open",
+      "path": "/repos/jeryu/acme/gatekeeper/pulls/2",
       "updated_at": "2026-09-29T08:58:11Z",
-      "repo": { "id": "…", "host": "jeryu", "owner": "neverhuman", "name": "gatekeeper" }
+      "repo": { "id": "…", "host": "jeryu", "owner": "acme", "name": "gatekeeper" }
     }
   ],
   "problems": []
