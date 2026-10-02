@@ -24,12 +24,13 @@ mkdir -p "$T/home"
 
 run || fail "first install failed: $(cat "$T/out")"
 dest="$T/home/.local/share/jeryu-jankurai-audit-runner"
-for f in ops/ci/jankurai-audit-runner.sh ops/ci/jankurai-audit-heartbeat.sh ops/ci/submit-jankurai-score.sh \
+for f in ops/ci/jankurai-audit-runner.sh ops/ci/jankurai-audit-heartbeat.sh ops/ci/jankurai-audit-git-auth.sh \
+  ops/ci/submit-jankurai-score.sh \
   ops/ci/lib.sh ops/ci/hosted-git-env.sh .cargo/hosted-gitconfig; do
   cmp -s "$dest/$f" <(git -C "$repo" show "HEAD:$f") || fail "$f is not HEAD's copy"
 done
 [ "$(cat "$dest/VERSION")" = "$(git -C "$repo" rev-parse HEAD)" ] || fail "VERSION does not name HEAD"
-[ "$(find "$dest" -type f | wc -l)" = 7 ] || fail "unpacked more than the runner's files: $(find "$dest" -type f)"
+[ "$(find "$dest" -type f | wc -l)" = 8 ] || fail "unpacked more than the runner's files: $(find "$dest" -type f)"
 [ ! -d "$dest/.git" ] || fail "the install is a git checkout"
 ok "unpacks exactly the runner and what it sources from HEAD, and records the commit"
 
