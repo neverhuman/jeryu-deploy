@@ -556,12 +556,16 @@ fn mock_flag_gates_workflow_check_run_seeding() {
 
 // --- the audit queue a push writes ---
 
-fn demo_core() -> ForgeCore {
+/// A forge holding one repository. Every test of the push path takes its own
+/// repository name: the audit queue is process-wide, tests run in parallel, and
+/// the fixture head they all build is the same commit, so an assertion about
+/// "the queue" is only ever about this test's `(repo, branch)` tickets.
+fn core_with_repo(repo: &str) -> ForgeCore {
     let core = ForgeCore::new();
     core.create_repository(
         "jeryu",
         CreateRepositoryRequest {
-            name: "demo".to_string(),
+            name: repo.to_string(),
             private: true,
             description: None,
             default_branch: Some("main".to_string()),
@@ -583,19 +587,7 @@ fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
     let bare = tempfile::tempdir().unwrap();
     let (base, head) = init_version_repo(work.path());
     clone_bare(work.path(), bare.path());
-    // Its own repository: the queue is process-wide, and tests running in the
-    // same second build this same fixture head and queue it in `jeryu/demo`.
-    let core = ForgeCore::new();
-    core.create_repository(
-        "jeryu",
-        CreateRepositoryRequest {
-            name: "pushed-main".to_string(),
-            private: true,
-            description: None,
-            default_branch: Some("main".to_string()),
-        },
-    )
-    .unwrap();
+    let core = core_with_repo("pushed-main");
 
     queue_head_audit(
         &core,
@@ -711,19 +703,7 @@ fn a_head_without_a_commit_base_is_audited_whole() {
     let bare = tempfile::tempdir().unwrap();
     let (_, head) = init_version_repo(work.path());
     clone_bare(work.path(), bare.path());
-    // Its own repository: the queue is process-wide, and a second ticket for
-    // the same branch supersedes the first.
-    let core = ForgeCore::new();
-    core.create_repository(
-        "jeryu",
-        CreateRepositoryRequest {
-            name: "bootstrap".to_string(),
-            private: true,
-            description: None,
-            default_branch: Some("main".to_string()),
-        },
-    )
-    .unwrap();
+    let core = core_with_repo("bootstrap");
 
     queue_head_audit(
         &core,
@@ -740,8 +720,8 @@ fn a_head_without_a_commit_base_is_audited_whole() {
         .unwrap()
         .tickets()
         .iter()
-        // The queue is process-wide and other tests queue this same fixture
-        // head in `jeryu/demo`, so look at this test's repository only.
+        // The queue is process-wide and every test builds the same fixture
+        // head, so look at this test's own repository only.
         .find(|ticket| ticket.repo == "bootstrap" && ticket.head_sha == head)
         .cloned()
         .expect("a first main is audit work, not a tool failure");
@@ -920,13 +900,13 @@ fn a_report_from_another_binary_is_refused() {
 /// forge reads the verdict out of the report rather than taking one on faith.
 #[test]
 fn a_recorded_report_completes_the_proof_from_the_report_itself() {
-    let core = demo_core();
+    let core = core_with_repo("recorded-report");
     let head = "d".repeat(40);
     let score = record_audited_head(
         &core,
         &AuditedHead {
             owner: "jeryu",
-            repo: "demo",
+            repo: "recorded-report",
             branch: "main",
             head_sha: &head,
             origin_base_url: "http://forge.test",
@@ -942,7 +922,9 @@ fn a_recorded_report_completes_the_proof_from_the_report_itself() {
     assert_eq!(score.score, Some(92));
     assert_eq!(score.decision, "scored");
 
-    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let checks = core
+        .list_check_runs("jeryu", "recorded-report", Some(&head))
+        .unwrap();
     let proof = checks
         .check_runs
         .iter()
@@ -952,7 +934,9 @@ fn a_recorded_report_completes_the_proof_from_the_report_itself() {
     assert_eq!(proof.conclusion, Some(CheckConclusion::Success));
     assert_eq!(
         proof.details_url.as_deref(),
-        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str())
+        Some(
+            format!("https://forge.test/quality-gate/heads/jeryu/recorded-report/{head}").as_str()
+        )
     );
 
     // A head that already carries a score is not queued again, whoever scored
@@ -966,7 +950,7 @@ fn a_recorded_report_completes_the_proof_from_the_report_itself() {
         "git",
         bare.path(),
         "jeryu",
-        "demo",
+        "recorded-report",
         &ref_update("refs/heads/main", &base, &head),
         "http://forge.test",
     );
@@ -976,7 +960,10 @@ fn a_recorded_report_completes_the_proof_from_the_report_itself() {
             .unwrap()
             .tickets()
             .iter()
-            .any(|ticket| ticket.head_sha == head)
+            // This test's own repository only: the queue is process-wide and a
+            // parallel test may hold a ticket for any head of its own.
+            .any(|ticket| ticket.repo == "recorded-report" && ticket.head_sha == head),
+        "an already scored head is not queued again"
     );
 }
 
@@ -990,7 +977,7 @@ fn a_bulk_push_of_two_hundred_branches_runs_no_audit_on_the_forge() {
     let bare = tempfile::tempdir().unwrap();
     let (_, head) = init_version_repo(work.path());
     clone_bare(work.path(), bare.path());
-    let core = demo_core();
+    let core = core_with_repo("bulk-import");
 
     let started = std::time::Instant::now();
     let wall_clock_start = std::time::SystemTime::now();
@@ -1000,7 +987,7 @@ fn a_bulk_push_of_two_hundred_branches_runs_no_audit_on_the_forge() {
             "git",
             bare.path(),
             "jeryu",
-            "demo",
+            "bulk-import",
             &ref_update(&format!("refs/heads/import/batch-{index}"), ZERO_OID, &head),
             "http://forge.test",
         );
@@ -1016,15 +1003,15 @@ fn a_bulk_push_of_two_hundred_branches_runs_no_audit_on_the_forge() {
             .unwrap()
             .tickets()
             .iter()
-            // The queue is process-wide and other tests queue `jeryu/demo` heads
-            // in parallel, so only this test's import branches count.
+            // The queue is process-wide and tests run in parallel, so only
+            // this test's own repository and import branches count.
             .any(|ticket| ticket.owner == "jeryu"
-                && ticket.repo == "demo"
+                && ticket.repo == "bulk-import"
                 && ticket.branch.starts_with("import/batch-")),
         "imported branches queue no audit"
     );
     assert_eq!(
-        core.list_check_runs("jeryu", "demo", Some(&head))
+        core.list_check_runs("jeryu", "bulk-import", Some(&head))
             .unwrap()
             .total_count,
         0,
@@ -1057,14 +1044,14 @@ fn a_bulk_push_of_two_hundred_branches_runs_no_audit_on_the_forge() {
 /// `jankurai/proof`.
 #[test]
 fn a_failed_report_names_its_reason_and_posts_one_proof_per_head() {
-    let core = demo_core();
+    let core = core_with_repo("failed-report");
     let head = "f".repeat(40);
     let submit = || {
         record_audited_head(
             &core,
             &AuditedHead {
                 owner: "jeryu",
-                repo: "demo",
+                repo: "failed-report",
                 branch: "main",
                 head_sha: &head,
                 origin_base_url: "http://forge.test",
@@ -1079,7 +1066,9 @@ fn a_failed_report_names_its_reason_and_posts_one_proof_per_head() {
     assert_eq!(first.decision, "tool-failed");
     assert_eq!(second.decision, "tool-failed");
 
-    let checks = core.list_check_runs("jeryu", "demo", Some(&head)).unwrap();
+    let checks = core
+        .list_check_runs("jeryu", "failed-report", Some(&head))
+        .unwrap();
     let proofs: Vec<_> = checks
         .check_runs
         .iter()
@@ -1094,7 +1083,7 @@ fn a_failed_report_names_its_reason_and_posts_one_proof_per_head() {
     assert_eq!(proof.conclusion, Some(CheckConclusion::Failure));
     assert_eq!(
         proof.details_url.as_deref(),
-        Some(format!("https://forge.test/quality-gate/heads/jeryu/demo/{head}").as_str()),
+        Some(format!("https://forge.test/quality-gate/heads/jeryu/failed-report/{head}").as_str()),
         "the proof must link the report over a public https page"
     );
     let output = proof.output.as_ref().expect("proof check carries output");
