@@ -67,13 +67,22 @@ pub struct AutonomyInitArgs {
     #[arg(long, value_enum, default_value_t = AutonomyProfile::FullAuto)]
     pub profile: AutonomyProfile,
 
-    /// Directory to write the `.jeryu/` tree under (defaults to the cwd).
+    /// Directory to write the `.jeryu/` tree's files into (defaults to the
+    /// cwd); pass the repository's `.jeryu` directory.
     #[arg(long, default_value = ".")]
     pub path: String,
 
     /// Print the bundle to stdout instead of writing it to disk.
     #[arg(long, default_value_t = false)]
     pub print: bool,
+
+    /// Command for the `required` lane in `ci.toml`: exactly what the forge
+    /// gate runs. Defaults to `just required` when the repository's justfile
+    /// has a `required` recipe, else `bash ops/ci/pr-ci.sh` when that script
+    /// exists, else `just required`. The repository is the parent of a
+    /// `--path` named `.jeryu`, otherwise `--path` itself.
+    #[arg(long, value_name = "COMMAND")]
+    pub lane_command: Option<String>,
 }
 
 /// `jeryu onboard`: rehearse onboarding an existing checkout onto a jeryu forge.

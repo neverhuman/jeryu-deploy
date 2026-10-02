@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `jeryu autonomy init` writes `.jeryu/ci.toml` in the shared schema "2":
+  `schema_version = "2"`, `provider = "jeryu"` and one `[[lane]]` named
+  `required` whose `command` is exactly what the forge gate runs — `just
+  required` when the repository's justfile has a `required` recipe, else `bash
+  ops/ci/pr-ci.sh` when that script exists, else `just required`. A new
+  `--lane-command` flag overrides the detection. The retired
+  `github_actions_required` key is no longer emitted, and the optional `runs`
+  list is omitted.
 - The jankurai audit runner shows on `/runners`, with the tools it evaluates
   with. A runner heartbeat may now carry `tools: [{name, version?, sha256?}]`
   (at most 32, names unique, `sha256` 64 lowercase hex; a refusal names the

@@ -1175,12 +1175,61 @@ fn dispatch_autonomy_init_writes_canonical_tree() {
     }
 
     // The control files encode the required keys verbatim.
+    // An empty scratch dir has no justfile or pr-ci script: `just required`.
     let ci = std::fs::read_to_string(dir.join("ci.toml")).unwrap();
-    assert!(ci.contains("github_actions_required = true"));
+    assert!(ci.contains("schema_version = \"2\""), "ci {ci:?}");
+    assert!(ci.contains("provider = \"jeryu\""));
+    assert!(ci.contains("[[lane]]\nname = \"required\"\ncommand = \"just required\"\n"));
+    assert!(!ci.contains("github_actions_required"));
     let policy = std::fs::read_to_string(dir.join("policy.toml")).unwrap();
     assert!(policy.contains("require_admission_receipt = false"));
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn dispatch_autonomy_init_lane_command_flag_and_detection() {
+    let client = InMemoryClient::new();
+    // `--lane-command` is written verbatim as the `required` lane's command.
+    let (code, out, _) = run_cli(
+        &client,
+        &[
+            "jeryu",
+            "autonomy",
+            "init",
+            "--print",
+            "--lane-command",
+            "bash ops/ci/pr-ci.sh",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("command = \"bash ops/ci/pr-ci.sh\""),
+        "stdout {out:?}"
+    );
+
+    // Without the flag, a `.jeryu` path looks at its parent repository.
+    let repo = scratch_dir("autonomy-detect");
+    std::fs::create_dir_all(repo.join("ops/ci")).unwrap();
+    std::fs::write(repo.join("ops/ci/pr-ci.sh"), "#!/bin/sh\n").unwrap();
+    let jeryu = repo.join(".jeryu");
+    let (code, _, _) = run_cli(
+        &client,
+        &[
+            "jeryu",
+            "autonomy",
+            "init",
+            "--path",
+            jeryu.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 0);
+    let ci = std::fs::read_to_string(jeryu.join("ci.toml")).unwrap();
+    assert!(
+        ci.contains("command = \"bash ops/ci/pr-ci.sh\""),
+        "ci {ci:?}"
+    );
+    std::fs::remove_dir_all(&repo).ok();
 }
 
 #[test]

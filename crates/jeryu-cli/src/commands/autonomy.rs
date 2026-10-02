@@ -9,6 +9,12 @@
 //! - `baseline`: R0-R2 auto-merge, R3-R5 human-required (the canonical bundle).
 //! - `full-auto`: R0-R4 auto-merge, R5 fail-closed; the protected-paths
 //!   hard-human floor and the R5 fail-closed tier are never relaxed.
+//!
+//! `ci.toml` uses the shared schema "2": it declares that the repository's CI
+//! is the jeryu forge gate and names the one `required` lane with exactly the
+//! command the gate runs. The gate runs `just required` when the repository's
+//! justfile has a `required` recipe, else `bash ops/ci/pr-ci.sh`; `init`
+//! detects the same thing unless `--lane-command` overrides it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,8 +42,12 @@ struct AutonomyInitReport {
 }
 
 pub(crate) fn run(json: bool, args: AutonomyInitArgs, out: &mut dyn Write) -> ClientResult<()> {
-    let files = bundle(args.profile);
     let root = PathBuf::from(&args.path);
+    let lane_command = args
+        .lane_command
+        .clone()
+        .unwrap_or_else(|| detect_lane_command(&repo_root(&root)));
+    let files = bundle(args.profile, &lane_command);
 
     let written = if args.print {
         false
@@ -90,7 +100,7 @@ fn profile_name(profile: AutonomyProfile) -> &'static str {
 /// Build the full file set for a profile. The risk policy is the only file that
 /// differs between profiles; the safety-floor files (protected-paths, R5) are
 /// shared verbatim.
-fn bundle(profile: AutonomyProfile) -> Vec<EmittedFile> {
+fn bundle(profile: AutonomyProfile, lane_command: &str) -> Vec<EmittedFile> {
     let risk = match profile {
         AutonomyProfile::Baseline => RISK_BASELINE_YML,
         AutonomyProfile::FullAuto => RISK_FULL_AUTO_YML,
@@ -118,13 +128,93 @@ fn bundle(profile: AutonomyProfile) -> Vec<EmittedFile> {
         },
         EmittedFile {
             path: "ci.toml".into(),
-            contents: CI_TOML.to_string(),
+            contents: ci_toml(lane_command),
         },
         EmittedFile {
             path: "policy.toml".into(),
             contents: POLICY_TOML.to_string(),
         },
     ]
+}
+
+/// The command the forge gate runs when the repository has a `required` recipe.
+const JUST_REQUIRED: &str = "just required";
+/// The command the forge gate falls back to without a `required` recipe.
+const PR_CI_SCRIPT: &str = "bash ops/ci/pr-ci.sh";
+
+/// The repository root for a `--path`: the parent of a `.jeryu` directory,
+/// otherwise the directory itself.
+fn repo_root(path: &Path) -> PathBuf {
+    if path.file_name().is_some_and(|name| name == ".jeryu") {
+        return path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    }
+    path.to_path_buf()
+}
+
+/// Pick the lane command the way the forge gate does: `just required` when the
+/// justfile has a `required` recipe, else `bash ops/ci/pr-ci.sh` when that
+/// script exists, else `just required`.
+fn detect_lane_command(root: &Path) -> String {
+    let has_required = ["justfile", "Justfile", ".justfile", "JUSTFILE"]
+        .iter()
+        .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
+        .any(|text| justfile_has_required(&text));
+    if !has_required && root.join("ops/ci/pr-ci.sh").is_file() {
+        return PR_CI_SCRIPT.to_string();
+    }
+    JUST_REQUIRED.to_string()
+}
+
+/// Whether a justfile defines a top-level `required` recipe (with or without
+/// parameters, dependencies or attributes).
+fn justfile_has_required(text: &str) -> bool {
+    text.lines().any(|line| {
+        let header = line.strip_prefix('@').unwrap_or(line);
+        let Some(after) = header.strip_prefix("required") else {
+            return false;
+        };
+        // `required:` / `required: deps` / `required arg:`; never an
+        // assignment (`required := ...`) or a longer name (`required-x:`).
+        let params_ok = after.is_empty() || after.starts_with([' ', '\t', ':']);
+        params_ok
+            && after
+                .find(':')
+                .is_some_and(|i| !after[i..].starts_with(":="))
+    })
+}
+
+/// Render `.jeryu/ci.toml` in the shared schema "2".
+fn ci_toml(lane_command: &str) -> String {
+    let command = toml_basic_string(lane_command);
+    format!(
+        "schema_version = \"2\"\n\
+         provider = \"jeryu\"\n\
+         \n\
+         [[lane]]\n\
+         name = \"required\"\n\
+         command = {command}\n"
+    )
+}
+
+/// Quote a value as a TOML basic string.
+fn toml_basic_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn write_file(path: &Path, contents: &str) -> ClientResult<()> {
@@ -291,8 +381,6 @@ const FREEZE_YML: &str = "schema: vibegate.freeze.v1\n\
 enabled: false\n\
 windows: []\n";
 
-const CI_TOML: &str = "github_actions_required = true\n";
-
 const POLICY_TOML: &str = "require_admission_receipt = false\n";
 
 #[cfg(test)]
@@ -301,7 +389,7 @@ mod tests {
 
     #[test]
     fn baseline_keeps_r3_r4_human_required() {
-        let risk = bundle(AutonomyProfile::Baseline)
+        let risk = bundle(AutonomyProfile::Baseline, JUST_REQUIRED)
             .into_iter()
             .find(|f| f.path.ends_with("risk.yml"))
             .unwrap()
@@ -315,7 +403,7 @@ mod tests {
 
     #[test]
     fn full_auto_lifts_r3_r4_but_keeps_r5_fail_closed_and_floor() {
-        let files = bundle(AutonomyProfile::FullAuto);
+        let files = bundle(AutonomyProfile::FullAuto, JUST_REQUIRED);
         let risk = files
             .iter()
             .find(|f| f.path.ends_with("risk.yml"))
@@ -341,9 +429,14 @@ mod tests {
 
     #[test]
     fn control_files_encode_required_keys() {
-        let files = bundle(AutonomyProfile::FullAuto);
+        let files = bundle(AutonomyProfile::FullAuto, JUST_REQUIRED);
         let ci = &files.iter().find(|f| f.path == "ci.toml").unwrap().contents;
-        assert!(ci.contains("github_actions_required = true"));
+        assert_eq!(
+            ci,
+            "schema_version = \"2\"\nprovider = \"jeryu\"\n\n[[lane]]\nname = \"required\"\ncommand = \"just required\"\n"
+        );
+        assert!(!ci.contains("github_actions_required"), "retired key");
+        assert!(!ci.contains("runs"), "runs is omitted by default");
         let policy = &files
             .iter()
             .find(|f| f.path == "policy.toml")
@@ -354,7 +447,7 @@ mod tests {
 
     #[test]
     fn bundle_emits_full_canonical_file_set() {
-        let files = bundle(AutonomyProfile::FullAuto);
+        let files = bundle(AutonomyProfile::FullAuto, JUST_REQUIRED);
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         for required in [
             "autonomy/policies/risk.yml",
@@ -367,5 +460,61 @@ mod tests {
         ] {
             assert!(paths.contains(&required), "missing {required} in {paths:?}");
         }
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jeryu-autonomy-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn justfile_required_recipe_detection() {
+        assert!(justfile_has_required("required:\n    cargo test\n"));
+        assert!(justfile_has_required(
+            "set shell := [\"bash\"]\n\nrequired: fmt lint\n"
+        ));
+        assert!(justfile_has_required("@required *args:\n    echo\n"));
+        assert!(!justfile_has_required("required := \"x\"\n"));
+        assert!(!justfile_has_required("required-fast:\n    echo\n"));
+        assert!(!justfile_has_required("    required:\n"));
+        assert!(!justfile_has_required("check:\n    just required\n"));
+    }
+
+    #[test]
+    fn lane_command_follows_the_gate_choice() {
+        let dir = scratch("detect");
+        // Nothing at all: default to `just required`.
+        assert_eq!(detect_lane_command(&dir), JUST_REQUIRED);
+        // Only the pr-ci script: the gate's fallback.
+        std::fs::create_dir_all(dir.join("ops/ci")).unwrap();
+        std::fs::write(dir.join("ops/ci/pr-ci.sh"), "#!/bin/sh\n").unwrap();
+        assert_eq!(detect_lane_command(&dir), PR_CI_SCRIPT);
+        // A justfile without `required` still falls back to the script.
+        std::fs::write(dir.join("justfile"), "test:\n    true\n").unwrap();
+        assert_eq!(detect_lane_command(&dir), PR_CI_SCRIPT);
+        // A `required` recipe wins.
+        std::fs::write(dir.join("justfile"), "required:\n    true\n").unwrap();
+        assert_eq!(detect_lane_command(&dir), JUST_REQUIRED);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn repo_root_is_parent_of_dot_jeryu() {
+        assert_eq!(repo_root(Path::new("/r/.jeryu")), PathBuf::from("/r"));
+        assert_eq!(repo_root(Path::new(".jeryu")), PathBuf::from("."));
+        assert_eq!(repo_root(Path::new("/r")), PathBuf::from("/r"));
+    }
+
+    #[test]
+    fn ci_toml_quotes_the_command() {
+        let ci = ci_toml("bash ops/ci/pr-ci.sh --lane \"a\"");
+        assert!(ci.contains("command = \"bash ops/ci/pr-ci.sh --lane \\\"a\\\"\"\n"));
     }
 }
