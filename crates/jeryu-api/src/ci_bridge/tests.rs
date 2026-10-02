@@ -626,7 +626,9 @@ fn a_pushed_main_queues_one_audit_and_leaves_the_proof_pending() {
             .is_empty(),
         "the forge records no score of its own"
     );
-    let checks = core.list_check_runs("jeryu", "pushed-main", Some(&head)).unwrap();
+    let checks = core
+        .list_check_runs("jeryu", "pushed-main", Some(&head))
+        .unwrap();
     let proof = checks
         .check_runs
         .iter()
