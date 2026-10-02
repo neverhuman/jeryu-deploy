@@ -65,6 +65,35 @@ pub struct GithubMirrorTarget {
     pub branch: String,
     /// Test seam: a local path or URL that replaces the GitHub destination.
     pub destination_override: Option<String>,
+    /// Tag patterns the mirror never pushes and never reports as drift
+    /// (`mirror_tags_exclude`; `*` matches any run of characters). A repository
+    /// whose GitHub copy publishes releases on a pushed `v*` tag lists `v*`, so a
+    /// release tag reaches GitHub only when a person pushes it there.
+    pub tag_exclude: Vec<String>,
+}
+
+/// True when `tag` matches one of `patterns` (`*` matches any run of characters).
+fn tag_excluded(patterns: &[String], tag: &str) -> bool {
+    patterns.iter().any(|pattern| glob_match(pattern, tag))
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = text.strip_prefix(first) else {
+        return false;
+    };
+    let tail: Vec<&str> = parts.collect();
+    let Some((last, middle)) = tail.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,6 +182,8 @@ struct MirrorManifestRepo {
     default_branch: Option<String>,
     #[serde(default)]
     mirror_github_main: bool,
+    #[serde(default)]
+    mirror_tags_exclude: Vec<String>,
 }
 
 impl GithubMirror {
@@ -191,6 +222,7 @@ impl GithubMirror {
                         github_slug,
                         branch: repo.default_branch.unwrap_or_else(|| "main".to_string()),
                         destination_override: None,
+                        tag_exclude: repo.mirror_tags_exclude,
                     },
                 );
             }
@@ -306,7 +338,15 @@ impl GithubMirror {
                 };
             }
         };
-        tag_pass(git_bin, bare, &dest, &forge, &remote, only)
+        tag_pass(
+            git_bin,
+            bare,
+            &dest,
+            &forge,
+            &remote,
+            only,
+            &target.tag_exclude,
+        )
     }
 
     /// Compare the forge with GitHub and fast-forward GitHub when it is behind.
@@ -351,7 +391,15 @@ impl GithubMirror {
         };
         report.github_head = remote.get(&branch_ref).cloned();
         report.tags = match local_tags(git_bin, bare) {
-            Ok(forge_tags) => tag_pass(git_bin, bare, &dest, &forge_tags, &remote, None),
+            Ok(forge_tags) => tag_pass(
+                git_bin,
+                bare,
+                &dest,
+                &forge_tags,
+                &remote,
+                None,
+                &target.tag_exclude,
+            ),
             Err(err) => MirrorTagOutcome {
                 error: Some(redact(&err)),
                 ..MirrorTagOutcome::default()
@@ -438,8 +486,11 @@ fn tag_pass(
     forge: &BTreeMap<String, String>,
     remote: &BTreeMap<String, String>,
     only: Option<&[String]>,
+    exclude: &[String],
 ) -> MirrorTagOutcome {
-    let wanted = |tag: &str| only.is_none_or(|names| names.iter().any(|name| name == tag));
+    let wanted = |tag: &str| {
+        only.is_none_or(|names| names.iter().any(|name| name == tag)) && !tag_excluded(exclude, tag)
+    };
     let mut outcome = MirrorTagOutcome::default();
     for (tag, forge_oid) in forge {
         if !wanted(tag) {
@@ -660,6 +711,7 @@ mod tests {
                 github_slug: "neverhuman/jeryu-core".to_string(),
                 branch: "main".to_string(),
                 destination_override: None,
+                tag_exclude: Vec::new(),
             },
         );
         let mirror = GithubMirror::with_targets(targets);
@@ -808,6 +860,10 @@ mirror_github_main = false
         }
 
         fn mirror(&self) -> GithubMirror {
+            self.mirror_excluding(&[])
+        }
+
+        fn mirror_excluding(&self, tag_exclude: &[&str]) -> GithubMirror {
             let mut targets = BTreeMap::new();
             targets.insert(
                 "acme/demo".to_string(),
@@ -815,6 +871,7 @@ mirror_github_main = false
                     github_slug: "neverhuman/demo".to_string(),
                     branch: "main".to_string(),
                     destination_override: Some(self.github.to_string_lossy().into_owned()),
+                    tag_exclude: tag_exclude.iter().map(|p| p.to_string()).collect(),
                 },
             );
             GithubMirror::with_targets(targets)
@@ -862,6 +919,64 @@ mirror_github_main = false
             Some(published.as_str()),
             "the GitHub tag did not move"
         );
+    }
+
+    #[test]
+    fn an_excluded_tag_is_never_pushed_or_reported() {
+        if !git_available() {
+            return;
+        }
+        let fixture = Fixture::seed("tag-exclude");
+        fixture.push(&fixture.github, &["main"]);
+        git(&fixture.work, &["tag", "v9.9.9"]);
+        git(&fixture.work, &["tag", "ci-0123abc"]);
+        fixture.push(&fixture.forge, &["v9.9.9", "ci-0123abc"]);
+        let mirror = fixture.mirror_excluding(&["v*"]);
+
+        let report = mirror
+            .reconcile("git", &fixture.forge, "acme", "demo")
+            .expect("enrolled repo reconciles");
+        assert!(
+            !report.tags.pushed.iter().any(|tag| tag.starts_with('v')),
+            "{report:?}"
+        );
+        assert!(
+            report.tags.pushed.contains(&"ci-0123abc".to_string()),
+            "{report:?}"
+        );
+        assert!(fixture.github_ref("refs/tags/v9.9.9").is_none());
+        let named = mirror.push_tags(
+            "git",
+            &fixture.forge,
+            "acme",
+            "demo",
+            Some(&["v9.9.9".into()]),
+        );
+        assert!(
+            named.pushed.is_empty() && named.drift.is_empty(),
+            "{named:?}"
+        );
+
+        // A release tag a person pushed to GitHub is not drift either.
+        fixture.push(&fixture.github, &["v9.9.9"]);
+        git(&fixture.work, &["tag", "v9.9.10"]);
+        fixture.push(&fixture.github, &["v9.9.10"]);
+        let again = mirror
+            .reconcile("git", &fixture.forge, "acme", "demo")
+            .expect("enrolled repo reconciles");
+        assert!(again.tags.drift.is_empty(), "{again:?}");
+    }
+
+    #[test]
+    fn tag_patterns_match_whole_names() {
+        let v = vec!["v*".to_string(), "release-*-final".to_string()];
+        assert!(tag_excluded(&v, "v1.7.2"));
+        assert!(tag_excluded(&v, "release-2026-final"));
+        assert!(!tag_excluded(&v, "ci-v1"));
+        assert!(!tag_excluded(&v, "release-2026"));
+        assert!(!tag_excluded(&[], "v1"));
+        assert!(tag_excluded(&["exact".to_string()], "exact"));
+        assert!(!tag_excluded(&["exact".to_string()], "exactly"));
     }
 
     #[test]

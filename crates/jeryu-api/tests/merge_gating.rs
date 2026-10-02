@@ -979,6 +979,7 @@ fn mirror_for(dest: Option<&Path>) -> Arc<jeryu_api::github_mirror::GithubMirror
             github_slug: "neverhuman/demo".to_string(),
             branch: "main".to_string(),
             destination_override: dest.map(|p| p.to_string_lossy().into_owned()),
+            tag_exclude: Vec::new(),
         },
     );
     Arc::new(GithubMirror::with_targets(targets))
@@ -1112,6 +1113,7 @@ fn unconfigured_repo_pushes_nothing() {
             github_slug: "neverhuman/other".to_string(),
             branch: "main".to_string(),
             destination_override: None,
+            tag_exclude: Vec::new(),
         },
     );
     let router = router.with_github_mirror(Arc::new(GithubMirror::with_targets(targets)));

@@ -252,6 +252,7 @@ fn a_behind_mirror_names_its_target_last_pushed_sha_and_the_gap() {
                 github_slug: "acme-oss/widget-www".to_string(),
                 branch: "main".to_string(),
                 destination_override: None,
+                tag_exclude: Vec::new(),
             },
         )]
         .into_iter()
