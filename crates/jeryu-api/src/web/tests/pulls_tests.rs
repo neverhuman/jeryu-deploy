@@ -2,7 +2,7 @@ use super::*;
 
 fn bare_ref(storage_root: &std::path::Path, owner: &str, repo: &str, ref_name: &str) -> String {
     let bare = storage_root.join(owner).join(format!("{repo}.git"));
-    let output = std::process::Command::new("git")
+    let output = crate::test_git::git_command()
         .args(["rev-parse", ref_name])
         .current_dir(&bare)
         .output()
@@ -22,15 +22,13 @@ fn build_bare_repo_with_main_and_feature(
     feature_path: &str,
     feature_contents: &str,
 ) -> (String, String) {
-    use std::process::Command;
-
     let bare = storage_root.join(owner).join(format!("{repo}.git"));
     std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
     let work = storage_root.join(format!("{owner}-{repo}-merge-work"));
     std::fs::create_dir_all(&work).expect("create work dir");
 
     let git = |args: &[&str], cwd: &std::path::Path| {
-        let output = Command::new("git")
+        let output = crate::test_git::git_command()
             .args(args)
             .current_dir(cwd)
             .env("GIT_AUTHOR_NAME", "jeryu-test")

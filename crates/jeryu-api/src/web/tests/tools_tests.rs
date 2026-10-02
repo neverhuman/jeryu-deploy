@@ -74,15 +74,13 @@ fn build_bare_repo_with_files(
     repo: &str,
     files: &[(&str, &str)],
 ) -> String {
-    use std::process::Command;
-
     let bare = storage_root.join(owner).join(format!("{repo}.git"));
     std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
     let work = storage_root.join(format!("{owner}-{repo}-source-work"));
     std::fs::create_dir_all(&work).expect("create work dir");
 
     let git = |args: &[&str], cwd: &std::path::Path| {
-        let output = Command::new("git")
+        let output = crate::test_git::git_command()
             .args(args)
             .current_dir(cwd)
             .env("GIT_AUTHOR_NAME", "jeryu-test")

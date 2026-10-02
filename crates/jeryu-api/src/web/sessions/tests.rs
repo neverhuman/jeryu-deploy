@@ -38,7 +38,7 @@ async fn response_json(response: AxumResponse) -> Value {
 }
 
 fn git(args: &[&str], cwd: &Path) -> String {
-    let output = std::process::Command::new("git")
+    let output = crate::test_git::git_command()
         .args(args)
         .current_dir(cwd)
         .env("GIT_AUTHOR_NAME", "jeryu-test")

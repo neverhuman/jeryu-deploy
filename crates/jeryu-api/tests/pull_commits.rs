@@ -8,7 +8,6 @@
 #![cfg(feature = "web")]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,8 +16,10 @@ use jeryu_core::ForgeCore;
 use jeryu_gitd::{GitdConfig, RepoId, RepoManager};
 use serde_json::Value;
 
+mod common;
+
 fn git_available() -> bool {
-    Command::new("git")
+    common::git_command()
         .arg("--version")
         .output()
         .map(|out| out.status.success())
@@ -48,7 +49,7 @@ const WHO: [(&str, &str); 4] = [
 ];
 
 fn run_git(dir: &Path, args: &[&str], label: &str) {
-    let status = Command::new("git")
+    let status = common::git_command()
         .args(args)
         .envs(WHO)
         .current_dir(dir)
@@ -58,7 +59,7 @@ fn run_git(dir: &Path, args: &[&str], label: &str) {
 }
 
 fn head_oid(work: &Path) -> String {
-    let out = Command::new("git")
+    let out = common::git_command()
         .args(["rev-parse", "HEAD"])
         .current_dir(work)
         .output()

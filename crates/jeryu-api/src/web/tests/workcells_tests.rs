@@ -13,8 +13,6 @@ fn build_bare_repo_with_diff(
     base_files: &[(&str, &str)],
     head_files: &[(&str, &str)],
 ) -> (String, String) {
-    use std::process::Command;
-
     let bare = storage_root.join(owner).join(format!("{repo}.git"));
     std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
 
@@ -23,7 +21,7 @@ fn build_bare_repo_with_diff(
     std::fs::create_dir_all(&work).expect("create work dir");
 
     let git = |args: &[&str], cwd: &std::path::Path| {
-        let output = Command::new("git")
+        let output = crate::test_git::git_command()
             .args(args)
             .current_dir(cwd)
             .env("GIT_AUTHOR_NAME", "jeryu-test")

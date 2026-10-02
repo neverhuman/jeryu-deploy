@@ -783,7 +783,7 @@ mirror_github_main = false
     // --- tags and reconcile, against a local bare repo standing in for GitHub ---
 
     fn git(cwd: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
+        let out = crate::test_git::git_command()
             .args([
                 "-c",
                 "user.name=mirror test",
@@ -805,7 +805,7 @@ mirror_github_main = false
     }
 
     fn git_available() -> bool {
-        std::process::Command::new("git")
+        crate::test_git::git_command()
             .arg("--version")
             .output()
             .is_ok()
@@ -878,7 +878,7 @@ mirror_github_main = false
         }
 
         fn github_ref(&self, name: &str) -> Option<String> {
-            let out = std::process::Command::new("git")
+            let out = crate::test_git::git_command()
                 .args(["rev-parse", name])
                 .current_dir(&self.github)
                 .output()

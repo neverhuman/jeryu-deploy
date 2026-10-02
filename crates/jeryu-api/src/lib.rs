@@ -14,6 +14,8 @@ pub mod github_mirror;
 #[cfg(feature = "web")]
 mod read_model;
 pub mod routes;
+#[cfg(all(test, feature = "web"))]
+mod test_git;
 #[cfg(feature = "web")]
 pub mod web;
 

@@ -7,7 +7,6 @@
 #![cfg(feature = "web")]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,8 +16,10 @@ use jeryu_gitd::refs::RefService;
 use jeryu_gitd::{GitdConfig, RepoId, RepoManager};
 use serde_json::Value;
 
+mod common;
+
 fn git_available() -> bool {
-    Command::new("git")
+    common::git_command()
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -39,7 +40,7 @@ fn temp_dir(prefix: &str) -> PathBuf {
 }
 
 fn run_git(dir: &Path, args: &[&str], label: &str) {
-    let status = Command::new("git")
+    let status = common::git_command()
         .args(args)
         .current_dir(dir)
         .status()
@@ -48,7 +49,7 @@ fn run_git(dir: &Path, args: &[&str], label: &str) {
 }
 
 fn rev_parse_head(work: &Path) -> String {
-    let out = Command::new("git")
+    let out = common::git_command()
         .args(["rev-parse", "HEAD"])
         .current_dir(work)
         .output()
@@ -373,7 +374,7 @@ fn seed_diverged_fixture(prefix: &str) -> GitFixture {
 fn parents_of(manager: &RepoManager, oid: &str) -> Vec<String> {
     let id = RepoId::new("acme", "demo").unwrap();
     let repo = manager.resolve(&id).unwrap();
-    let out = Command::new("git")
+    let out = common::git_command()
         .args(["rev-list", "--parents", "-n", "1", oid])
         .current_dir(&repo.path)
         .output()
@@ -624,7 +625,7 @@ fn linear_history_base_rebases_diverged_head_and_main_advances() {
         main_now, head_oid,
         "main holds the rebased commit, not the head"
     );
-    let parents = Command::new("git")
+    let parents = common::git_command()
         .arg("-C")
         .arg(&repo.path)
         .args(["rev-list", "--parents", "-n", "1", &main_now])
@@ -1049,7 +1050,7 @@ fn merged_pr_pushes_main_to_configured_github_destination() {
     assert_eq!(merged.status, 200, "merge: {}", merged.body);
 
     // The destination's main equals the live local main tip.
-    let out = Command::new("git")
+    let out = common::git_command()
         .args(["rev-parse", "refs/heads/main"])
         .current_dir(&dest)
         .output()

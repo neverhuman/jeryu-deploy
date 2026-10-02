@@ -10,7 +10,6 @@ use std::fs::File;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use flate2::Compression;
@@ -18,8 +17,10 @@ use flate2::write::GzEncoder;
 use jeryu_api::web::{WebServerConfig, serve};
 use sha2::Digest;
 
+mod common;
+
 fn git_available() -> bool {
-    Command::new("git")
+    common::git_command()
         .arg("--version")
         .output()
         .map(|out| out.status.success())
@@ -27,7 +28,7 @@ fn git_available() -> bool {
 }
 
 fn git_lfs_available() -> bool {
-    Command::new("git")
+    common::git_command()
         .args(["lfs", "version"])
         .output()
         .map(|out| out.status.success())
@@ -35,7 +36,7 @@ fn git_lfs_available() -> bool {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = common::git_command()
         .args(args)
         .current_dir(dir)
         .status()
@@ -44,7 +45,7 @@ fn run_git(dir: &Path, args: &[&str]) {
 }
 
 fn run_git_env(dir: &Path, args: &[&str], envs: &[(&str, &str)]) {
-    let mut command = Command::new("git");
+    let mut command = common::git_command();
     command.args(args).current_dir(dir);
     for (key, value) in envs {
         command.env(key, value);
@@ -56,7 +57,7 @@ fn run_git_env(dir: &Path, args: &[&str], envs: &[(&str, &str)]) {
 }
 
 fn run_git_failure(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = common::git_command()
         .args(args)
         .current_dir(dir)
         .output()
@@ -313,7 +314,7 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
     eprintln!("[s4] pushed feature");
 
     let sha = String::from_utf8(
-        Command::new("git")
+        common::git_command()
             .args(["-C", clone_dir.to_str().unwrap(), "rev-parse", "HEAD"])
             .output()
             .unwrap()
@@ -324,7 +325,7 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
     .to_string();
 
     // 4. Assert the allowed branch landed in the on-disk bare repo.
-    let feature = Command::new("git")
+    let feature = common::git_command()
         .args([
             "--git-dir",
             bare.to_str().unwrap(),
@@ -356,7 +357,7 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
             || failure.contains("The requested URL returned error: 403"),
         "main push should be rejected by the protected-ref policy: {failure}"
     );
-    let main = Command::new("git")
+    let main = common::git_command()
         .args([
             "--git-dir",
             bare.to_str().unwrap(),
@@ -779,7 +780,7 @@ async fn s4_real_git_client_negotiates_protocol_v2_over_http() {
 
     let url = format!("http://{addr}/git/jeryu/v2-demo.git");
     let trace = work.join("packet-trace");
-    let ls_remote = Command::new("git")
+    let ls_remote = common::git_command()
         .args(GIT_HTTP_GUARD)
         .args(["-c", "protocol.version=2", "ls-remote", url.as_str()])
         .env("GIT_TRACE_PACKET", &trace)

@@ -250,7 +250,7 @@ mod tests {
             .unwrap();
         let work = tempfile::tempdir().unwrap();
         let run = |author: &str, args: &[&str]| {
-            let out = Command::new("git")
+            let out = crate::test_git::git_command()
                 .args([
                     "-c",
                     &format!("user.name={author}"),

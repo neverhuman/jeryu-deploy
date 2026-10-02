@@ -8,7 +8,7 @@ use jeryu_gitd::refs::GitRef;
 use std::fs;
 
 fn git(root: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = crate::test_git::git_command()
         .args(args)
         .current_dir(root)
         .output()
@@ -22,7 +22,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn git_out(root: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = crate::test_git::git_command()
         .args(args)
         .current_dir(root)
         .output()
@@ -396,7 +396,7 @@ fn assert_reviewed_main_preserved(explicit_version: bool) {
     git(&bare, &["update-ref", "refs/heads/feature", &head]);
     git(&bare, &["update-ref", "refs/heads/main", &base, &head]);
     install_main_blocking_hook(&bare);
-    let direct = Command::new("git")
+    let direct = crate::test_git::git_command()
         .current_dir(work.path())
         .args(["push", bare.to_str().unwrap(), "HEAD:refs/heads/main"])
         .output()
@@ -673,7 +673,7 @@ fn stand_in_audit(src: &Path, mode: &str, base: &str) -> (serde_json::Value, i64
     let audited = if mode == audit_queue::AUDIT_MODE_FULL {
         git_out(src, &["ls-files"]).lines().count()
     } else {
-        let output = Command::new("git")
+        let output = crate::test_git::git_command()
             .args(["diff", "--name-only", &format!("{base}...HEAD")])
             .current_dir(src)
             .output()

@@ -191,7 +191,7 @@ mod tests {
             .unwrap();
         let work = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
+            let out = crate::test_git::git_command()
                 .args(["-c", "user.name=t", "-c", "user.email=t@t"])
                 .args(["-c", "init.defaultBranch=main"])
                 .args(args)

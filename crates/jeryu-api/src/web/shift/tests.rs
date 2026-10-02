@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 use axum::http::{Method as HttpMethod, Request, StatusCode, header};
 use chrono::{TimeZone, Utc};
@@ -142,7 +141,7 @@ fn bad_files_are_refused_and_lease_liveness_is_time_based() {
 }
 
 pub(crate) fn run_git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = crate::test_git::git_command()
         .args([
             "-c",
             "user.name=t",

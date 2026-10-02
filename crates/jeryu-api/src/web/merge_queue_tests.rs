@@ -7,7 +7,6 @@ use jeryu_core::{
     CreateCommitStatusRequest, CreatePullRequestRequest, CreateRepositoryRequest,
     CreateReviewRequest, ReviewState,
 };
-use std::process::Command;
 
 fn account(login: &str, role: UserRole) -> Extension<AccountSummary> {
     Extension(AccountSummary {
@@ -23,7 +22,7 @@ fn account(login: &str, role: UserRole) -> Extension<AccountSummary> {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = crate::test_git::git_command()
         .args(args)
         .current_dir(cwd)
         .env("GIT_AUTHOR_NAME", "jeryu-test")
@@ -182,7 +181,7 @@ impl Fixture {
     }
 
     fn has_ref(&self, name: &str) -> bool {
-        Command::new("git")
+        crate::test_git::git_command()
             .args(["rev-parse", "--verify", "--quiet", name])
             .current_dir(&self.bare)
             .status()
