@@ -20,7 +20,8 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
   `/runners`), refuses a binary needing a newer glibc
   than the forge host has, and stages `bundle/jeryu`, the web dist,
   `RELEASE.txt` (with the jeryu-web commit and dist hash), `RELEASE.env` (`REL`,
-  and `PREV` read from the live symlink; a live name not in `prod-…-unsigned` form
+  and `PREV` read from the live symlink, for the record only: `switch.sh` replaces
+  whatever is live when it runs; a live name not in `prod-…-unsigned` form
   is refused unless `--prev <that name>` confirms it),
   `switch.sh`, `rollback.sh` and `SHA256SUMS` in `~/.jeryu/incoming/<release>/` on
   atomicsoul. It changes nothing else there.
@@ -28,14 +29,22 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
   `jeryu/jeryu-deploy` (Deployments API; needs an admin token, default the
   `alton2` PAT), runs the staged `switch.sh`, and appends `success` or `failure`.
   The previous production deployment is marked `inactive` automatically.
-- **`switch.sh`** (on the forge host) refuses unless `PREV` is live, the checksums
-  hold and no snapshot exists yet; then stops, snapshots `forge`/`work`/`codegraph`
+  It refuses an older build over a newer one: the live release's commit (from
+  its `RELEASE.txt`) must be an ancestor of the staged one, or it exits 65 and
+  records nothing. `--allow-downgrade` is for a deliberate roll back by
+  redeploying. Any newer release may be live, so deploying release A and then
+  B, both staged before A went live, needs no re-staging.
+- **`switch.sh`** (on the forge host) refuses unless the live symlink names an
+  installed binary, the checksums hold and no snapshot exists yet; it records the
+  live release as the rollback target in `~/.jeryu/releases/<release>/ROLLBACK.env`
+  (whatever `PREV` staging saw); then stops, snapshots `forge`/`work`/`codegraph`
   with SQLite's backup API, installs, repoints `~/.jeryu/bin/jeryu` and
   `~/.jeryu/share/web-dist`, starts, and proves the running binary is the staged one.
   It polls `JERYU_HEALTH_URL` (default `http://172.19.0.1:8787/health`) once a
   second, `JERYU_HEALTH_TRIES` times (default 30), and fails if it never answers:
   the new release is then live but unhealthy, so run `rollback.sh`.
-- **`rollback.sh`** (in `~/.jeryu/releases/<release>/`) restores `PREV` and the
+- **`rollback.sh`** (in `~/.jeryu/releases/<release>/`) restores the release
+  `switch.sh` replaced (`ROLLBACK.env`, else `RELEASE.env`'s `PREV`) and the
   pre-switch snapshot, keeping the post-switch databases in
   `~/.jeryu/backups/post-<release>-<time>/`.
 

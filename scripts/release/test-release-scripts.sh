@@ -67,13 +67,15 @@ grep -q "integrity=ok" "$T/switch.log" || fail "no snapshot integrity line"
 [[ "$(readlink "/proc/$(cat "$T/pid")/exe")" == "$JERYU_HOME/bin/jeryu-$REL" ]] || fail "running exe is not REL"
 ok "switch installs REL, repoints both symlinks, snapshots every database and proves the running binary"
 
-# A third release staged against the release that is no longer live: PREV is stale, so refuse.
+# A live symlink that names no installed binary leaves nothing to roll back to, so refuse.
 LIVE_REL="$REL" REL=prod-20260103T000000Z-ccccccc-unsigned
 stage
-if bash "$JERYU_HOME/incoming/$REL/switch.sh" >/dev/null 2>&1; then fail "switch accepted a stale PREV"; fi
-[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$LIVE_REL" ]] || fail "a refused switch moved the live symlink"
+ln -sfn jeryu-prod-20260101T000000Z-0000000-unsigned "$JERYU_HOME/bin/jeryu"
+if bash "$JERYU_HOME/incoming/$REL/switch.sh" >/dev/null 2>&1; then fail "switch accepted a live symlink to no binary"; fi
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == jeryu-prod-20260101T000000Z-0000000-unsigned ]] || fail "a refused switch moved the live symlink"
+ln -sfn "jeryu-$LIVE_REL" "$JERYU_HOME/bin/jeryu"
 REL="$LIVE_REL"
-ok "switch refuses when PREV is no longer live"
+ok "switch refuses when the live symlink names no installed binary"
 
 # The same release again: nothing to do, and nothing done.
 stamp="$(stat -c %Y "$JERYU_HOME/bin/jeryu-$REL")"
@@ -110,6 +112,25 @@ bash "$JERYU_HOME/releases/$REL/rollback.sh" >/dev/null 2>&1 || fail "rollback a
 [[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "rollback after an unhealthy switch did not restore PREV"
 REL="$REL_OK"
 ok "switch fails when its health check never passes, and rollback recovers"
+
+# A release staged while PREV was live, deployed after a newer one went live: it replaces what is
+# live, not what it was staged against, and its rollback returns to what it replaced.
+REL_OK="$REL"; REL=prod-20260104T000000Z-ddddddd-unsigned
+stage
+bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-newer.log" 2>&1 || { cat "$T/switch-newer.log" >&2; fail "switch to the newer release failed"; }
+NEWER="$REL"; REL=prod-20260105T000000Z-eeeeeee-unsigned
+stage
+grep -qx "PREV=$PREV" "$JERYU_HOME/incoming/$REL/RELEASE.env" || fail "the late release is not staged against PREV"
+bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-late.log" 2>&1 \
+  || { cat "$T/switch-late.log" >&2; fail "switch refused a release staged before the live one went live"; }
+grep -q "replacing $NEWER (staged against $PREV)" "$T/switch-late.log" || fail "switch did not say it replaces a release other than the staged PREV"
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$REL" ]] || fail "the late release is not live"
+grep -qx "PREV=$NEWER" "$JERYU_HOME/releases/$REL/ROLLBACK.env" || fail "ROLLBACK.env does not name the release that was replaced"
+bash "$JERYU_HOME/releases/$REL/rollback.sh" >/dev/null 2>&1 || fail "rollback of the late release failed"
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$NEWER" ]] || fail "rollback did not return to the release that was replaced"
+[[ "$(readlink "$JERYU_HOME/share/web-dist")" == "web-dist-$NEWER" ]] || fail "rollback did not return web-dist to the release that was replaced"
+REL="$REL_OK"
+ok "switch replaces whatever is live, not the PREV it was staged against, and rollback returns to it"
 
 # --- auto-stage.sh: stage once, tell the forge, never let a failed event POST fail staging ---
 # Stand-ins: a local bare repo as the remote (its stage-release.sh is a stub that stages or fails
@@ -378,8 +399,8 @@ D_REL=prod-20260920T135912Z-4f7d883-unsigned
 cat >"$D/bin/ssh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
-  *RELEASE.txt*) printf 'jeryu_deploy_commit=%s x\nrollback_target=%s\nbinary_sha256=%s\nlive=jeryu-%s\n' \
-    "$(printf 4%.0s {1..40})" "$PREV" "$(printf e%.0s {1..64})" "\$(cat "$D/live")" ;;
+  *RELEASE.txt*) printf 'jeryu_deploy_commit=%s x\nrollback_target=%s\nbinary_sha256=%s\nlive=jeryu-%s\nlive_commit=%s\n' \
+    "\$(cat "$D/staged_commit")" "$PREV" "$(printf e%.0s {1..64})" "\$(cat "$D/live")" "\$(cat "$D/live_commit")" ;;
   *)
     echo "[switch] stopping jeryu.service"
     [ -e "$D/succeed" ] && { echo "[switch] rollback: bash ~/.jeryu/releases/x/rollback.sh"; exit 0; }
@@ -402,6 +423,14 @@ EOF
 chmod +x "$D/bin/ssh" "$D/bin/curl"
 echo "not-a-real-deploy-token" >"$D/token"
 echo "$PREV" >"$D/live"
+# The commits the live and the staged release are built from: an older and a newer main.
+git -C "$D" init -q -b main git
+git -C "$D/git" -c user.name=t -c user.email=t@t commit -q --allow-empty -m older
+older="$(git -C "$D/git" rev-parse HEAD)"
+git -C "$D/git" -c user.name=t -c user.email=t@t commit -q --allow-empty -m newer
+newer="$(git -C "$D/git" rev-parse HEAD)"
+echo "$older" >"$D/live_commit"; echo "$newer" >"$D/staged_commit"
+export JERYU_DEPLOY_GIT="$D/git" JERYU_DEPLOY_REMOTE="$D/git"
 deploy_release() {
   PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bash "$here/deploy-release.sh" "$D_REL"
 }
@@ -523,6 +552,26 @@ out="$(PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bas
 jq -e --arg rel "$D_REL" '.release == $rel and .deployment_id == 5 and (.log_path | endswith(".log")) and (.dry_run | not)' <<<"$out" >/dev/null \
   || fail "a successful --json deploy is not one JSON line: $out"
 ok "deploy-release --json prints one line, --dry-run changes nothing, and each refusal has its own exit code"
+
+# An older build over a newer one is refused before anything is recorded, unless asked for.
+deploy_json() { PATH="$D/bin:$PATH" HOME="$D/home" JERYU_DEPLOY_TOKEN_FILE="$D/token" bash "$here/deploy-release.sh" --json "$@" "$D_REL" 2>/dev/null; }
+echo "$newer" >"$D/live_commit"; echo "$older" >"$D/staged_commit"; : >"$D/curl-args"
+rc=0; out="$(deploy_json)" || rc=$?
+[[ $rc == 65 ]] && jq -e '.code == "state" and (.message | contains("take production back"))' <<<"$out" >/dev/null \
+  || fail "a downgrade is not a state refusal ($rc): $out"
+[[ ! -s "$D/curl-args" ]] || fail "a refused downgrade recorded a deployment"
+out="$(deploy_json --allow-downgrade)" || fail "--allow-downgrade did not deploy the older build: $out"
+jq -e '.deployment_id == 5' <<<"$out" >/dev/null || fail "--allow-downgrade did not record the deployment: $out"
+: >"$D/live_commit"
+rc=0; out="$(deploy_json)" || rc=$?
+[[ $rc == 65 ]] && jq -e '.message | contains("cannot tell which commit")' <<<"$out" >/dev/null \
+  || fail "a live release of unknown commit is not refused ($rc): $out"
+echo "$older" >"$D/live_commit"; printf 6%.0s {1..40} >"$D/staged_commit"
+rc=0; out="$(deploy_json)" || rc=$?
+[[ $rc == 69 ]] && jq -e '.code == "unreachable"' <<<"$out" >/dev/null || fail "a commit missing even after a fetch is not unreachable ($rc): $out"
+echo "$newer" >"$D/staged_commit"
+out="$(deploy_json)" || fail "a newer build over an older one was refused: $out"
+ok "deploy-release refuses an older build over a newer one, or one it cannot place, unless --allow-downgrade"
 
 # --json and --dry-run on stage-release.sh. Stand-ins: git that names main, ssh that names the live
 # release, has the builder image, and runs the remote build with the exit code in $S/remote-rc.

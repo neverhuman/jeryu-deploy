@@ -32,6 +32,17 @@
 # Deploying the release production already runs is a no-op: the script says
 # "already live" and exits 0, recording no deployment and no failure.
 #
+# It refuses to put an older build over a newer one: the live release's
+# jeryu_deploy_commit (from its RELEASE.txt on the forge host) must be an
+# ancestor of the staged commit, checked with git in the checkout holding this
+# script (JERYU_DEPLOY_GIT overrides it), fetching main from JERYU_DEPLOY_REMOTE
+# when either commit is missing. A live release with no RELEASE.txt (a
+# hand-installed build) cannot be checked and is refused the same way.
+# --allow-downgrade skips the check, for a deliberate roll back by redeploying.
+# Any other release may be live: switch.sh replaces whatever is live and
+# rolls back to it, so a newer release deployed after this one was staged no
+# longer means re-staging.
+#
 # The record never decides the deploy. If the forge that is live before the
 # switch cannot record it (for instance the release that introduces the
 # deployments API), it is recorded right after the switch instead; if it still
@@ -59,7 +70,7 @@
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
-json=0; dry_run=0; args=()
+json=0; dry_run=0; allow_downgrade=0; args=()
 [[ " $* " != *" --json "* ]] || json=1
 exec 3>&1
 envelope() { # CODE MESSAGE EXIT — the API's error envelope, on stdout under --json
@@ -76,12 +87,13 @@ for a in "$@"; do
   case "$a" in
     --json) ;;
     --dry-run) dry_run=1 ;;
+    --allow-downgrade) allow_downgrade=1 ;;
     -*) refuse usage "unknown option '$a'" ;;
     *) args+=("$a") ;;
   esac
 done
 set -- ${args[@]+"${args[@]}"}
-(($# == 1)) || refuse usage "usage: deploy-release.sh [--json] [--dry-run] RELEASE_ID"
+(($# == 1)) || refuse usage "usage: deploy-release.sh [--json] [--dry-run] [--allow-downgrade] RELEASE_ID"
 [[ $json == 0 ]] || exec 1>&2
 rel="$1"
 [[ "$rel" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+-unsigned$ ]] || refuse usage "not a release id: $rel"
@@ -101,7 +113,7 @@ api() { # METHOD PATH [JSON-FILE]
   curl "${args[@]}" "$forge$2"
 }
 
-meta="$(ssh "$build_host" "ssh -n $forge_host 'set -e; d=~/.jeryu/incoming/$rel; cat \$d/RELEASE.txt; echo binary_sha256=\$(sha256sum \$d/bundle/jeryu | cut -c1-64); echo live=\$(readlink ~/.jeryu/bin/jeryu)'")" || {
+meta="$(ssh "$build_host" "ssh -n $forge_host 'set -e; d=~/.jeryu/incoming/$rel; cat \$d/RELEASE.txt; echo binary_sha256=\$(sha256sum \$d/bundle/jeryu | cut -c1-64); l=\$(readlink ~/.jeryu/bin/jeryu); echo live=\$l; echo live_commit=\$(sed -n s/^jeryu_deploy_commit=//p ~/.jeryu/releases/\${l#jeryu-}/RELEASE.txt 2>/dev/null | cut -c1-40)'")" || {
   rc=$?
   [[ $rc != 255 ]] || refuse unreachable "cannot reach $forge_host through $build_host"
   refuse state "$rel is not staged on $forge_host"
@@ -120,10 +132,29 @@ if [[ "$(field live)" == "jeryu-$rel" ]]; then
   exit 0
 fi
 
+# Never an older build over a newer one by accident. The release staged against is not
+# checked: switch.sh replaces whatever is live, so the order of the commits is what matters.
+live="$(field live)"; live="${live#jeryu-}"
+if [[ $allow_downgrade == 0 ]]; then
+  live_commit="$(field live_commit)"
+  [[ "$live_commit" =~ ^[0-9a-f]{40}$ ]] || refuse state \
+    "cannot tell which commit the live release $live is built from (no RELEASE.txt beside it on $forge_host); pass --allow-downgrade if replacing it with ${sha:0:12} is intended"
+  git_dir="${JERYU_DEPLOY_GIT:-$(dirname "${BASH_SOURCE[0]}")}"
+  have() { git -C "$git_dir" cat-file -e "$1^{commit}" 2>/dev/null; }
+  if ! have "$live_commit" || ! have "$sha"; then
+    git -C "$git_dir" fetch -q "${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}" main 2>/dev/null || true
+  fi
+  if ! have "$live_commit" || ! have "$sha"; then
+    refuse unreachable "cannot check that $rel is newer than the live $live: commit ${live_commit:0:12} or ${sha:0:12} is not in $git_dir even after fetching main"
+  fi
+  git -C "$git_dir" merge-base --is-ancestor "$live_commit" "$sha" || refuse state \
+    "$rel (${sha:0:12}) does not contain ${live_commit:0:12}, which the live $live is built from, so it would take production back; stage a newer commit, or pass --allow-downgrade if that is intended"
+fi
+
 # Empty for a release staged before jeryu-web was pinned by commit.
 web_commit="$(field jeryu_web_commit)"; web_sha="$(field web_dist_sha256)"
 
-jq -n --arg sha "$sha" --arg rel "$rel" --arg prev "$(field rollback_target)" \
+jq -n --arg sha "$sha" --arg rel "$rel" --arg prev "$live" \
   --arg bin "$(field binary_sha256)" --arg live "$(field live)" --arg host "$forge_host" \
   --arg web "$web_commit" --arg web_sha "$web_sha" \
   '{sha:$sha, ref:"main", environment:"production", description:("release " + $rel),
@@ -131,7 +162,7 @@ jq -n --arg sha "$sha" --arg rel "$rel" --arg prev "$(field rollback_target)" \
              jeryu_web_commit:$web, web_dist_sha256:$web_sha, host:$host, signed:false}}' >"$tmp/deployment.json"
 
 if [[ $dry_run == 1 ]]; then
-  echo "[dry-run] would switch $forge_host to $rel (${sha:0:12}, rollback target $(field rollback_target)); nothing recorded or switched" >&2
+  echo "[dry-run] would switch $forge_host to $rel (${sha:0:12}, rollback target $live); nothing recorded or switched" >&2
   [[ $json == 0 ]] || jq -c --arg rel "$rel" '{release:$rel, deployment:., dry_run:true}' "$tmp/deployment.json" >&3
   exit 0
 fi

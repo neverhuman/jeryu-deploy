@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 # switch.sh — run ON the forge host from a staged release directory
-# (~/.jeryu/incoming/<release>/). Moves the live forge from PREV to REL:
-# verify, stop, snapshot every database with SQLite's backup API, install,
-# repoint the bin and web-dist symlinks, start, and prove the running binary is
-# the staged one. REL and PREV come from RELEASE.env beside this script, which
-# stage-release.sh writes; nothing is edited per release.
+# (~/.jeryu/incoming/<release>/). Moves the live forge to REL: verify, stop,
+# snapshot every database with SQLite's backup API, install, repoint the bin and
+# web-dist symlinks, start, and prove the running binary is the staged one. REL
+# comes from RELEASE.env beside this script, which stage-release.sh writes;
+# nothing is edited per release.
 #
-# Refuses unless PREV is what is live, the staged checksums hold, and no
-# snapshot for REL exists yet. rollback.sh (staged beside it) undoes it.
+# The release it replaces is whatever is live when it runs, not the PREV that
+# RELEASE.env recorded at staging: a release deployed while this one was being
+# built (or staged after it) changes what is live, and refusing then only meant
+# re-staging the same commit. That live release is written to ROLLBACK.env in
+# ~/.jeryu/releases/<REL>/, which rollback.sh restores. Refusing to put an older
+# build over a newer one is deploy-release.sh's job, which knows the commits.
+#
+# Refuses unless the live symlink names an installed binary, the staged
+# checksums hold, and no snapshot for REL exists yet. rollback.sh (staged beside
+# it) undoes it.
 #
 # Running it again for the release that is already live is a no-op: it says
 # "already live" and exits 0, without stopping the service or touching a thing.
@@ -25,7 +33,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$here/RELEASE.env"
-: "${REL:?RELEASE.env must set REL}" "${PREV:?RELEASE.env must set PREV}"
+: "${REL:?RELEASE.env must set REL}"
 
 J="${JERYU_HOME:-$HOME/.jeryu}"
 DATA="${JERYU_DATA:-$HOME/.local/share/jeryu}"
@@ -39,7 +47,11 @@ if [[ "$(readlink "$J/bin/jeryu")" == "jeryu-$REL" ]]; then
   echo "[switch] $REL is already live; nothing to do"
   exit 0
 fi
-[[ "$(readlink "$J/bin/jeryu")" == "jeryu-$PREV" ]] ||{ echo "live binary is not $PREV; refusing" >&2; exit 1; }
+live="$(readlink "$J/bin/jeryu" || true)"
+[[ "$live" == jeryu-?* && "$live" != */* && -x "$J/bin/$live" ]] \
+  || { echo "live binary '$live' is not an installed jeryu-<release>; refusing" >&2; exit 1; }
+LIVE="${live#jeryu-}"
+[[ "$LIVE" == "${PREV:-}" ]] || echo "[switch] replacing $LIVE (staged against ${PREV:-nothing}); rollback returns to $LIVE"
 (cd "$IN" && sha256sum --quiet -c SHA256SUMS) || { echo "staged checksums fail; refusing" >&2; exit 1; }
 [[ ! -e "$SNAP" ]] || { echo "snapshot $SNAP already exists; refusing" >&2; exit 1; }
 
@@ -60,6 +72,7 @@ for name in ("forge.sqlite", "work.sqlite", "codegraph.sqlite"):
 P
 
 cp -a "$IN" "$OUT"
+printf 'PREV=%s\n' "$LIVE" >"$OUT/ROLLBACK.env"
 install -m 0755 "$OUT/bundle/jeryu" "$J/bin/jeryu-$REL"
 cp -a "$OUT/web-dist" "$J/share/web-dist-$REL"
 ln -sfn "jeryu-$REL" "$J/bin/jeryu"

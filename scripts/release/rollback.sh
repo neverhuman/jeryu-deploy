@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # rollback.sh — run ON the forge host (from ~/.jeryu/releases/<release>/) to undo
 # switch.sh: stop, keep the post-switch databases aside, restore the pre-switch
-# snapshot, repoint to PREV, start. Reads REL and PREV from RELEASE.env beside it.
+# snapshot, repoint to PREV, start. Reads REL and PREV from RELEASE.env beside it,
+# then PREV from ROLLBACK.env, where switch.sh records the release it actually
+# replaced (which can be newer than the one live at staging).
 #
 # Overridable for tests: JERYU_HOME, JERYU_DATA, JERYU_SYSTEMCTL, JERYU_HEALTH_URL.
 # -h|--help prints this header and exits, before anything else runs.
@@ -10,6 +12,8 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$here/RELEASE.env"
+# shellcheck source=/dev/null
+[[ ! -e "$here/ROLLBACK.env" ]] || source "$here/ROLLBACK.env"
 : "${REL:?RELEASE.env must set REL}" "${PREV:?RELEASE.env must set PREV}"
 
 J="${JERYU_HOME:-$HOME/.jeryu}"
