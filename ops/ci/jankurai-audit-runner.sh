@@ -37,6 +37,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/ops/ci/lib.sh"
 # shellcheck source=ops/ci/jankurai-audit-heartbeat.sh
 source "${ROOT}/ops/ci/jankurai-audit-heartbeat.sh"
+# shellcheck source=ops/ci/jankurai-audit-git-auth.sh
+source "${ROOT}/ops/ci/jankurai-audit-git-auth.sh"
 
 API="${JERYU_API:-http://127.0.0.1:8787}"
 API="${API%/}"
@@ -70,6 +72,9 @@ token="$(cat "${TOKEN_FILE}")"
 [[ "${token}" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || { echo "token file must contain one nonempty bearer value" >&2; exit 2; }
 ( umask 077; printf 'header = "Authorization: Bearer %s"\n' "${token}" > "${AUTH_CONFIG}" )
 unset token
+# Private repositories are cloned with the same token; it reaches git only through this 0600 file.
+GIT_AUTH_CONFIG="${WORK_DIR}/git-auth.conf"
+audit_git_auth_config "${GIT_AUTH_CONFIG}" "${GIT_BASE}" "${TOKEN_FILE}" || exit 2
 api_curl() { curl --disable --config "${AUTH_CONFIG}" "$@"; }
 audit_beat_init
 
@@ -111,7 +116,8 @@ audit_one() {
     echo "[audit-runner] ${owner}/${repo}@${head} (${branch} vs ${base})"
   fi
   audit_beat_start "${owner}/${repo}" "${head}"
-  if ! git clone -q "${GIT_BASE}/${owner}/${repo}.git" "${src}" 2>&1; then
+  if ! GIT_TERMINAL_PROMPT=0 git -c include.path="${GIT_AUTH_CONFIG}" clone -q \
+      "${GIT_BASE}/${owner}/${repo}.git" "${src}" 2>&1; then
     echo "[audit-runner] clone failed for ${owner}/${repo}@${head}" >&2
     audit_beat_finish "${owner}/${repo}" "${head}" failed "$((SECONDS - started))" "clone failed"
     return 0

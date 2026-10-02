@@ -26,7 +26,8 @@ systemctl="${JERYU_SYSTEMCTL:-systemctl}"
 dest="$HOME/.local/share/jeryu-jankurai-audit-runner"
 env_file="$HOME/.config/jeryu/jankurai-audit-runner.env"
 units="$HOME/.config/systemd/user"
-files=(ops/ci/jankurai-audit-runner.sh ops/ci/jankurai-audit-heartbeat.sh ops/ci/submit-jankurai-score.sh
+files=(ops/ci/jankurai-audit-runner.sh ops/ci/jankurai-audit-heartbeat.sh ops/ci/jankurai-audit-git-auth.sh
+  ops/ci/submit-jankurai-score.sh
   ops/ci/lib.sh ops/ci/hosted-git-env.sh .cargo/hosted-gitconfig)
 
 commit="$(git -C "$repo" rev-parse --verify HEAD)"

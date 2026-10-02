@@ -24,6 +24,7 @@ bash "${repo_root}/scripts/release/test-release-scripts.sh"
 bash "${repo_root}/scripts/release-board/test-release-board.sh"
 # The jankurai audit runner's heartbeat against a stand-in curl.
 bash "${repo_root}/ops/ci/test-jankurai-audit-heartbeat.sh"
+bash "${repo_root}/ops/ci/test-jankurai-audit-git-auth.sh"
 
 # jankurai pin: jeryu-tool/tool-manifest.toml is the family-wide source of truth.
 # When the control-plane repo is reachable (on-host family layout), fail fast if
