@@ -17,8 +17,8 @@ fn release_procedure_leads_with_the_release_host() {
     let procedure = read(PROCEDURE);
     let first = procedure.lines().next().unwrap_or_default();
     assert!(
-        first.contains("xbabe0 only"),
-        "{PROCEDURE} must state the xbabe0-only constraint on its first line, got {first:?}"
+        first.contains("release host"),
+        "{PROCEDURE} must state the release-host constraint on its first line, got {first:?}"
     );
 }
 
