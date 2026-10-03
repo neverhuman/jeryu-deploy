@@ -128,11 +128,11 @@ ARG JANKURAI_VERSION="jankurai 1.6.11"
 ARG JANKURAI_BINARY_SHA256="d94d3e21b9e91c94eddc9adca3af5025d323ba9ceb560015fc6027343217f3ab"
 COPY --from=jankurai-build /opt/rust/cargo/bin/jankurai /opt/rust/cargo/bin/jankurai
 COPY images/agent-sandbox/jankurai-installation-receipt.json \
-  /opt/jeryu/receipts/jankurai/sha256/cd699bf6e18eaa82d1dd475426ca8d0aeee73c247ab8000f343427e52938a29d.json
+  /opt/jeryu/receipts/jankurai/sha256/77830f8d408cec281b65ee0c659dc4907f92cf13fe6d6e2c356410d811a40381.json
 COPY ops/ci/ensure-jankurai.sh /opt/jeryu/governance/ensure-jankurai.sh
 ENV JERYU_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
     JERYU_GOVERNED_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
-    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/cd699bf6e18eaa82d1dd475426ca8d0aeee73c247ab8000f343427e52938a29d.json
+    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/77830f8d408cec281b65ee0c659dc4907f92cf13fe6d6e2c356410d811a40381.json
 RUN test ! -L /opt/rust/cargo/bin/jankurai \
     && test "$(stat -c '%h' /opt/rust/cargo/bin/jankurai)" = "1" \
     && test "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '{print $1}')" = "${JANKURAI_BINARY_SHA256}" \

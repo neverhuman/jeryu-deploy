@@ -388,8 +388,8 @@ const GOVERNED_JANKURAI_BUILD_MODE: &str = "oci-vendor-locked-offline-workspace-
 const GOVERNED_JANKURAI_INSTALLATION_RECEIPT_JSON: &str =
     include_str!("../../../images/agent-sandbox/jankurai-installation-receipt.json");
 const GOVERNED_JANKURAI_MANIFEST_REPO: &str = "https://git.neverhuman.org/git/jeryu/jeryu-tool.git";
-const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "a191f7c1309dfbebd8764a1aa5999917ffb27d2c";
-const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "7abc48227c9c1aac1e97ea1981ff67e5a130a09f";
+const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "62f3de9347a09a1327b71d1a21c5b3efeae418be";
+const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "05c5d80de9415710a888f9a454f0d26c5d6d8b36";
 const GOVERNED_JANKURAI_MANIFEST_SHA256: &str =
     "5ef27c3379826b57222a8a4ff67d5c7b0ad112a79e9172db2de25ff8adc5280f";
 
