@@ -99,7 +99,13 @@ pub(crate) enum WorkKey {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ReleaseBoard {
     pub schema: String,
+    /// Canonical family key (see `crate::web::family`). A collector may post
+    /// either spelling; the stored board carries the canonical one.
     pub family: String,
+    /// What a reader is shown for `family`. Set by the forge when it accepted
+    /// the snapshot; ignored on input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_label: Option<String>,
     pub observed_at: String,
     /// Set by the forge when it accepted the snapshot; ignored on input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -253,6 +259,7 @@ pub(crate) struct Problem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Accepted {
     pub family: String,
+    pub family_label: String,
     pub observed_at: String,
     pub accepted_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,6 +270,7 @@ pub(crate) struct Accepted {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct BoardSummary {
     pub family: String,
+    pub family_label: String,
     pub observed_at: String,
     pub accepted_at: String,
     pub summary: String,
@@ -316,6 +324,10 @@ impl ReleaseBoardStore {
         mut board: ReleaseBoard,
         now: DateTime<Utc>,
     ) -> Result<Accepted, String> {
+        // Either spelling names the same family; the board is stored, and
+        // answered, under the canonical key.
+        let family = &crate::web::family::canonical(family);
+        board.family = crate::web::family::canonical(&board.family);
         let observed = validate(family, &board, now)?;
         let accepted_at = now.to_rfc3339_opts(SecondsFormat::Secs, true);
         let mut boards = self
@@ -327,6 +339,7 @@ impl ReleaseBoardStore {
         {
             return Ok(Accepted {
                 family: family.to_string(),
+                family_label: crate::web::family::label(family),
                 observed_at: board.observed_at,
                 accepted_at,
                 ignored: Some("older than stored snapshot"),
@@ -336,10 +349,12 @@ impl ReleaseBoardStore {
             return Err(format!("at most {MAX_FAMILIES} families may keep a board"));
         }
         board.accepted_at = Some(accepted_at.clone());
+        board.family_label = Some(crate::web::family::label(family));
         let observed_at = board.observed_at.clone();
         boards.insert(family.to_string(), StoredBoard { board, observed });
         Ok(Accepted {
             family: family.to_string(),
+            family_label: crate::web::family::label(family),
             observed_at,
             accepted_at,
             ignored: None,
@@ -348,7 +363,9 @@ impl ReleaseBoardStore {
 
     pub(crate) fn get(&self, family: &str) -> Option<ReleaseBoard> {
         let boards = self.boards.lock().ok()?;
-        boards.get(family).map(|stored| stored.board.clone())
+        boards
+            .get(&crate::web::family::canonical(family))
+            .map(|stored| stored.board.clone())
     }
 
     pub(crate) fn list(&self) -> Vec<BoardSummary> {
@@ -358,6 +375,7 @@ impl ReleaseBoardStore {
         boards
             .values()
             .map(|stored| BoardSummary {
+                family_label: crate::web::family::label(&stored.board.family),
                 family: stored.board.family.clone(),
                 observed_at: stored.board.observed_at.clone(),
                 accepted_at: stored.board.accepted_at.clone().unwrap_or_default(),
@@ -650,6 +668,12 @@ pub(crate) async fn get_board(
 ) -> Response {
     match state.release_boards.get(&family) {
         Some(board) => Json(board).into_response(),
+        // A family the forge knows nothing about is a typo in the request.
+        None if !crate::web::family::known(&state)
+            .contains(&crate::web::family::canonical(&family)) =>
+        {
+            crate::web::family::unknown(&state, &family)
+        }
         None => refusal(
             StatusCode::NOT_FOUND,
             "not_found",

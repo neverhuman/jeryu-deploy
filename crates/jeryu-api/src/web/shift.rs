@@ -6,7 +6,7 @@
 //! `queue.rs`. Heartbeat history is kept in `<data_dir>/shift.sqlite`.
 
 mod heartbeats;
-mod queue;
+pub(crate) mod queue;
 mod shifts;
 mod todo_file;
 mod truth;
@@ -134,15 +134,22 @@ fn parse<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, Box<AxumResp
     serde_json::from_slice(body).map_err(|err| Box::new(bad_request(&err.to_string())))
 }
 
+/// The queue of `family`, whichever spelling the caller used. A family the
+/// forge knows nothing about is a typed 400; a family it knows but hosts no
+/// queue for is a 404.
 fn find_queue(state: &WebState, family: &str) -> Result<Queue, Box<AxumResponse>> {
+    let key = super::family::canonical(family);
     discover(&state.repo_manager)
         .into_iter()
-        .find(|q| q.family.name == family)
+        .find(|q| q.family.name == key)
         .ok_or_else(|| {
+            if !super::family::known(state).contains(&key) {
+                return Box::new(super::family::unknown(state, family));
+            }
             Box::new(shift_error(
                 StatusCode::NOT_FOUND,
                 "shift_family_not_found",
-                &format!("no queue for family {family:?}"),
+                &format!("no queue for family {key:?}"),
                 "host a <family>-todo repo with a queue branch and family.toml",
             ))
         })
@@ -183,6 +190,7 @@ pub(crate) async fn families(
                         .filter(|owner| may_read(owner, &repo.name)),
                 })
                 .collect(),
+            label: crate::web::family::label(&q.family.name),
             name: q.family.name,
             shift_tz: q.family.shift_tz,
             landing: q.family.landing,
@@ -270,7 +278,7 @@ pub(crate) async fn list_todos(
     let mut todos = Vec::new();
     for queue in discover(&state.repo_manager) {
         if let Some(family) = query.family.as_deref().filter(|f| !f.is_empty())
-            && family != queue.family.name
+            && super::family::canonical(family) != queue.family.name
         {
             continue;
         }
@@ -657,7 +665,7 @@ pub(crate) async fn todo_action(
                 &state,
                 NewEvent {
                     actor: Some(format!("{}/web", account.login)),
-                    family: Some(family.clone()),
+                    family: Some(queue.family.name.clone()),
                     todo_id: Some(todo.id.clone()),
                     outcome: Some(request.action.clone()),
                     reason: request.note.clone(),
@@ -833,7 +841,7 @@ pub(crate) async fn list_shifts(
     let mut all = Vec::new();
     for queue in discover(&state.repo_manager) {
         if let Some(family) = query.family.as_deref().filter(|f| !f.is_empty())
-            && family != queue.family.name
+            && super::family::canonical(family) != queue.family.name
         {
             continue;
         }
@@ -876,7 +884,7 @@ pub(crate) async fn open_shift_pr(
                     &state,
                     NewEvent {
                         actor: Some(format!("{}/web", account.login)),
-                        family: Some(family.clone()),
+                        family: Some(queue.family.name.clone()),
                         repo: Some(format!("{}/{}", queue.owner, pr.repo)),
                         pr: i64::try_from(pr.number).ok(),
                         shift: Some(request.branch.clone()),

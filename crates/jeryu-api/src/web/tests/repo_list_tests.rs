@@ -1,5 +1,12 @@
 use super::*;
 
+/// `GET /api/v1/repos` as the handler answers it, decoded. The handler
+/// returns a response because a `?family=` nobody hosts is typed refusal.
+async fn repo_page(response: AxumResponse) -> jeryu_readmodel::contracts::RepositoryListResponse {
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    serde_json::from_value(response_json(response).await).expect("a repository page")
+}
+
 #[test]
 fn repo_list_classifies_jeryu_split_portal_and_members() {
     let core = ForgeCore::new();
@@ -26,7 +33,7 @@ fn repo_list_classifies_jeryu_split_portal_and_members() {
         .iter()
         .find(|repo| repo.id.owner == "neverhuman" && repo.id.name == "jeryu")
         .expect("portal repo");
-    assert_eq!(portal.family.as_deref(), Some("jeryu-split"));
+    assert_eq!(portal.family.as_deref(), Some("jeryu"));
     assert_eq!(portal.repo_role, Some(RepositoryRole::PublicPortal));
     // The advertised clone URL must match where the smart-HTTP transport is
     // actually mounted (/git/...), not the SPA surface (/repos/...).
@@ -40,7 +47,7 @@ fn repo_list_classifies_jeryu_split_portal_and_members() {
         .iter()
         .find(|repo| repo.id.owner == "neverhuman" && repo.id.name == "jeryu-core")
         .expect("split member repo");
-    assert_eq!(core_repo.family.as_deref(), Some("jeryu-split"));
+    assert_eq!(core_repo.family.as_deref(), Some("jeryu"));
     assert_eq!(core_repo.repo_role, Some(RepositoryRole::SplitMember));
 
     let unrelated = repos
@@ -50,7 +57,7 @@ fn repo_list_classifies_jeryu_split_portal_and_members() {
         .expect("unrelated repo");
     assert_eq!(unrelated.family, None);
     assert_eq!(unrelated.repo_role, None);
-    assert_eq!(repos.facets.families, vec!["jeryu-split".to_string()]);
+    assert_eq!(repos.facets.families, vec!["jeryu".to_string()]);
 }
 
 #[test]
@@ -288,7 +295,7 @@ profile = "split-member"
     assert_eq!(names, vec!["jekko", "jekko-core"]);
     assert_eq!(
         family_only.facets.families,
-        vec!["jekko-split".to_string(), "jeryu-split".to_string()]
+        vec!["jekko".to_string(), "jeryu".to_string()]
     );
     let portal = family_only
         .repositories
@@ -714,18 +721,18 @@ async fn repo_list_filters_apply_server_side() {
         updated_at: chrono::Utc::now(),
     });
 
-    let family_only = repos(
-        State(state.clone()),
-        account.clone(),
-        Query(crate::web::repositories::RepoListQuery {
-            family: Some("jmcp-split".to_string()),
-            ..Default::default()
-        }),
+    let family_only = repo_page(
+        repos(
+            State(state.clone()),
+            account.clone(),
+            Query(crate::web::repositories::RepoListQuery {
+                family: Some("jmcp-split".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await,
     )
-    .await
-    .unwrap()
-    .0
-    .list;
+    .await;
     let names: Vec<&str> = family_only
         .repositories
         .iter()
@@ -739,36 +746,36 @@ async fn repo_list_filters_apply_server_side() {
     // Facets keep the full picture so the filter chips stay populated.
     assert_eq!(
         family_only.facets.families,
-        vec!["jmcp-split".to_string(), "veox-split".to_string()]
+        vec!["jmcp".to_string(), "veox".to_string()]
     );
 
-    let searched = repos(
-        State(state.clone()),
-        account.clone(),
-        Query(crate::web::repositories::RepoListQuery {
-            q: Some("veox".to_string()),
-            ..Default::default()
-        }),
+    let searched = repo_page(
+        repos(
+            State(state.clone()),
+            account.clone(),
+            Query(crate::web::repositories::RepoListQuery {
+                q: Some("veox".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await,
     )
-    .await
-    .unwrap()
-    .0
-    .list;
+    .await;
     assert_eq!(searched.total, 1);
     assert_eq!(searched.repositories[0].id.name, "veox-nht");
 
-    let sorted = repos(
-        State(state.clone()),
-        account.clone(),
-        Query(crate::web::repositories::RepoListQuery {
-            sort: Some("name".to_string()),
-            ..Default::default()
-        }),
+    let sorted = repo_page(
+        repos(
+            State(state.clone()),
+            account.clone(),
+            Query(crate::web::repositories::RepoListQuery {
+                sort: Some("name".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await,
     )
-    .await
-    .unwrap()
-    .0
-    .list;
+    .await;
     let sorted_names: Vec<&str> = sorted
         .repositories
         .iter()
@@ -780,18 +787,18 @@ async fn repo_list_filters_apply_server_side() {
     );
 
     // Archived repos are excluded by default and exclusive under ?archived=1.
-    let archived = repos(
-        State(state),
-        account,
-        Query(crate::web::repositories::RepoListQuery {
-            archived: Some("1".to_string()),
-            ..Default::default()
-        }),
+    let archived = repo_page(
+        repos(
+            State(state),
+            account,
+            Query(crate::web::repositories::RepoListQuery {
+                archived: Some("1".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await,
     )
-    .await
-    .unwrap()
-    .0
-    .list;
+    .await;
     assert_eq!(archived.total, 0, "no archived repos exist in this fixture");
 }
 
@@ -833,15 +840,15 @@ async fn repo_list_reports_pushed_at_and_sorts_activity_by_it() {
         updated_at: chrono::Utc::now(),
     });
 
-    let listed = repos(
-        State(state),
-        account,
-        Query(crate::web::repositories::RepoListQuery::default()),
+    let listed = repo_page(
+        repos(
+            State(state),
+            account,
+            Query(crate::web::repositories::RepoListQuery::default()),
+        )
+        .await,
     )
-    .await
-    .unwrap()
-    .0
-    .list;
+    .await;
     let by_name = |name: &str| {
         listed
             .repositories

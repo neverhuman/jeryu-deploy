@@ -10,6 +10,7 @@ mod ecosystem;
 mod embedded_web;
 mod error_codes;
 mod error_envelope;
+pub(crate) mod family;
 mod idempotency;
 mod jankurai;
 mod markdown;

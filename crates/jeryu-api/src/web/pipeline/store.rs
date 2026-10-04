@@ -140,6 +140,7 @@ impl EventStore {
             reporter: reporter.to_string(),
             actor: event.actor.clone(),
             family: event.family.clone(),
+            family_label: crate::web::family::optional_label(event.family.as_ref()),
             repo: event.repo.clone(),
             pr: event.pr,
             sha: event.sha.clone(),
@@ -179,8 +180,14 @@ impl EventStore {
         fn text(value: &Option<String>) -> Option<&str> {
             value.as_deref().map(str::trim).filter(|v| !v.is_empty())
         }
+        // A `-split` alias filters the same family as the canonical key.
+        let family = query
+            .family
+            .as_deref()
+            .map(crate::web::family::canonical)
+            .filter(|family| !family.is_empty());
         for (column, value) in [
-            ("family", text(&query.family)),
+            ("family", family.as_deref()),
             ("repo", text(&query.repo)),
             ("todo_id", text(&query.todo_id)),
             ("source", text(&query.source)),
@@ -231,6 +238,20 @@ impl EventStore {
             .map_err(|err| err.to_string())
     }
 
+    /// Every family the log has an event for, canonical keys, sorted.
+    pub(crate) fn families(&self) -> Result<Vec<String>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner
+            .conn
+            .prepare("SELECT DISTINCT family FROM pipeline_events WHERE family IS NOT NULL ORDER BY family")
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())
+    }
+
     /// The highest sequence ever assigned (0 for an empty log).
     pub(crate) fn latest_seq(&self) -> Result<i64, String> {
         let inner = self.inner.lock().expect("pipeline event mutex poisoned");
@@ -259,6 +280,7 @@ impl EventStore {
 
 fn event_from_row(row: &Row<'_>) -> rusqlite::Result<Event> {
     let detail: Option<String> = row.get(21)?;
+    let family: Option<String> = row.get(7)?;
     Ok(Event {
         seq: row.get(0)?,
         ts: rfc3339_ms(row.get(1)?),
@@ -267,7 +289,8 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<Event> {
         kind: row.get(4)?,
         reporter: row.get(5)?,
         actor: row.get(6)?,
-        family: row.get(7)?,
+        family_label: crate::web::family::optional_label(family.as_ref()),
+        family,
         repo: row.get(8)?,
         pr: row.get(9)?,
         sha: row.get(10)?,

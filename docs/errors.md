@@ -71,6 +71,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `events_invalid_request` | 422 | the pipeline event body failed validation |
 | `events_reporter_required` | 403 | only an admin or a JERYU_EVENT_REPORTERS login may post events |
 | `events_store_failed` | 500 | the pipeline event store failed |
+| `family_unknown` | 422 | no product family of that name: the filter would have matched nothing |
 | `forbidden` | 403 | the account may not perform this request |
 | `forge_branch_protection` | 405 | branch protection blocks this operation |
 | `forge_conflict` | 409 | the forge state conflicts with this operation |

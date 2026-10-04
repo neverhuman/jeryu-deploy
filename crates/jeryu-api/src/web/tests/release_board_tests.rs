@@ -140,9 +140,11 @@ async fn a_family_without_a_board_is_not_found() {
         .oneshot(get(&board.admin, "/api/v1/release-board/initech"))
         .await
         .unwrap();
-    assert_eq!(answer.status(), StatusCode::NOT_FOUND);
+    // The forge hosts no "initech": a typo is answered as one, not as a
+    // family that merely has no board yet.
+    assert_eq!(answer.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = response_json(answer).await;
-    assert_eq!(body["code"], "not_found");
+    assert_eq!(body["code"], "family_unknown");
 }
 
 #[tokio::test]

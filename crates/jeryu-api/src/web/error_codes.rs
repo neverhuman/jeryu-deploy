@@ -170,6 +170,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         500,
         "the pipeline event store failed",
     ),
+    entry(
+        "family_unknown",
+        422,
+        "no product family of that name: the filter would have matched nothing",
+    ),
     entry("forbidden", 403, "the account may not perform this request"),
     entry(
         "forge_branch_protection",

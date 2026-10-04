@@ -105,7 +105,10 @@ pub(crate) struct Item {
     pub title: String,
     pub reason: String,
     pub since: Option<String>,
+    /// Canonical family key (see `crate::web::family`).
     pub family: Option<String>,
+    /// What a reader is shown for `family`.
+    pub family_label: Option<String>,
     pub repo: Option<String>,
     pub pr: Option<u64>,
     pub todo_id: Option<String>,
@@ -158,6 +161,7 @@ impl Draft<'_> {
             reason: clip(&self.reason),
             since: None,
             family: None,
+            family_label: None,
             repo: None,
             pr: None,
             todo_id: None,
@@ -435,6 +439,14 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         .hidden(now.timestamp_millis())
         .unwrap_or_default();
     items.retain(|item| !hidden.contains(&item.id));
+    // One spelling per family, whatever a collector's source called it.
+    for item in &mut items {
+        if let Some(family) = &item.family {
+            let key = super::super::family::canonical(family);
+            item.family_label = Some(super::super::family::label(&key));
+            item.family = Some(key);
+        }
+    }
     order(&mut items);
     let count = |severity| items.iter().filter(|i| i.severity == severity).count();
     AttentionResponse {
@@ -464,7 +476,45 @@ impl AttentionCache {
 }
 
 /// `GET /api/v1/attention` (admin-only by path, see `auth::admin_only_request`).
-pub(crate) async fn attention(State(state): State<Arc<WebState>>) -> AxumResponse {
+/// `GET /api/v1/attention?family=` — either spelling of a family key.
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct AttentionQuery {
+    pub family: Option<String>,
+}
+
+/// The items of one family, with the counts recounted for that family.
+fn only_family(response: &AttentionResponse, family: &str) -> AttentionResponse {
+    let items: Vec<Item> = response
+        .items
+        .iter()
+        .filter(|item| item.family.as_deref() == Some(family))
+        .cloned()
+        .collect();
+    let count = |severity| items.iter().filter(|i| i.severity == severity).count();
+    AttentionResponse {
+        schema_version: response.schema_version,
+        generated_at: response.generated_at.clone(),
+        counts: Counts {
+            critical: count(Severity::Critical),
+            action: count(Severity::Action),
+            watch: count(Severity::Watch),
+        },
+        items,
+    }
+}
+
+pub(crate) async fn attention(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Query(query): axum::extract::Query<AttentionQuery>,
+) -> AxumResponse {
+    let family = match super::super::family::filter(&state, query.family.as_deref()) {
+        Ok(family) => family,
+        Err(response) => return *response,
+    };
+    let answer = |response: AttentionResponse| match &family {
+        Some(family) => Json(only_family(&response, family)).into_response(),
+        None => Json(response).into_response(),
+    };
     let cached = {
         let cache = state
             .attention
@@ -477,7 +527,7 @@ pub(crate) async fn attention(State(state): State<Arc<WebState>>) -> AxumRespons
             .map(|(_, response)| response.clone())
     };
     if let Some(response) = cached {
-        return Json(response).into_response();
+        return answer(response);
     }
     // The collectors run git and read every open pull request: keep them off
     // the async workers.
@@ -491,7 +541,7 @@ pub(crate) async fn attention(State(state): State<Arc<WebState>>) -> AxumRespons
                 .lock()
                 .expect("attention cache mutex poisoned") =
                 Some((Instant::now(), response.clone()));
-            Json(response).into_response()
+            answer(response)
         }
         Err(error) => {
             use super::super::workcells_support::{TypedError, typed_error};

@@ -30,9 +30,10 @@ async fn repo_update_sets_and_clears_family() {
         .await,
     )
     .await;
-    assert_eq!(updated["family"], "veox-split");
+    // Either spelling assigns the one canonical key.
+    assert_eq!(updated["family"], "veox");
     let list = repo_list_response(&state);
-    assert_eq!(list.facets.families, vec!["veox-split".to_string()]);
+    assert_eq!(list.facets.families, vec!["veox".to_string()]);
 
     let cleared = response_json(
         repo_update(

@@ -286,6 +286,12 @@ pub(crate) async fn list_events(
         (None, since) => query.after_seq = since,
         _ => {}
     }
+    // A family the forge does not know is a typo in the request: answering
+    // it with an empty page reads as "nothing happened".
+    match super::family::filter(&state, query.family.as_deref()) {
+        Ok(family) => query.family = family,
+        Err(response) => return *response,
+    }
     let limit = query.limit.unwrap_or(store::DEFAULT_LIMIT);
     if !(1..=store::MAX_LIMIT).contains(&limit) {
         return events_error(

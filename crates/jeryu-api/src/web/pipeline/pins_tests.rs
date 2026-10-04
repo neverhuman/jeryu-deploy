@@ -318,6 +318,7 @@ fn gave_up(seq: i64, sha: &str) -> Event {
         kind: "pin.bump_failed".to_string(),
         reporter: "alton".to_string(),
         actor: Some("jeryu-auto-pin".to_string()),
+        family_label: None,
         family: None,
         repo: Some("jeryu/jeryu-deploy".to_string()),
         pr: None,

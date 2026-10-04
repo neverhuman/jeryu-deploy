@@ -85,7 +85,10 @@ pub(crate) struct Event {
     pub kind: String,
     pub reporter: String,
     pub actor: Option<String>,
+    /// Canonical family key (see `crate::web::family`).
     pub family: Option<String>,
+    /// What a reader is shown for `family`.
+    pub family_label: Option<String>,
     pub repo: Option<String>,
     pub pr: Option<i64>,
     pub sha: Option<String>,
@@ -109,6 +112,7 @@ pub(crate) struct EventsQuery {
     pub since: Option<i64>,
     pub before_seq: Option<i64>,
     pub limit: Option<i64>,
+    /// Either spelling of a family key; the server canonicalises it.
     pub family: Option<String>,
     pub repo: Option<String>,
     pub pr: Option<i64>,
@@ -298,7 +302,7 @@ pub(crate) fn normalize(event: NewEvent) -> Result<NewEvent, String> {
         source: event.source,
         kind: event.kind,
         actor: blank(event.actor).map(|a| clip_chars(&a, MAX_ACTOR_CHARS)),
-        family: key("family", event.family)?,
+        family: key("family", event.family)?.map(|family| crate::web::family::canonical(&family)),
         repo,
         pr: event.pr,
         sha,

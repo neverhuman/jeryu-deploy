@@ -72,7 +72,11 @@ pub(crate) fn parse_family_toml(text: &str, fallback_name: &str) -> Result<Famil
     let mut repos = parsed.repo;
     repos.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.name.cmp(&b.name)));
     Ok(FamilyConfig {
-        name: section.name.unwrap_or_else(|| fallback_name.to_string()),
+        // The queue's own key, canonical: a family.toml that spells the
+        // family `<x>-split` names the same family as `<x>`.
+        name: crate::web::family::canonical(
+            &section.name.unwrap_or_else(|| fallback_name.to_string()),
+        ),
         base_branch: section.base_branch.unwrap_or_else(|| "main".to_string()),
         landing: section.landing.unwrap_or_else(|| "batch".to_string()),
         shift_tz: section

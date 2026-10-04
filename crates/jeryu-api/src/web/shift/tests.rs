@@ -767,8 +767,8 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
         "/api/v1/shift/shifts?family=jeryo",
     ] {
         let unknown = call(HttpMethod::GET, uri, &user, None).await.unwrap();
-        assert_eq!(unknown.status(), StatusCode::NOT_FOUND, "{uri}");
-        assert_eq!(body_json(unknown).await["code"], "shift_family_not_found");
+        assert_eq!(unknown.status(), StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
+        assert_eq!(body_json(unknown).await["code"], "family_unknown");
     }
 
     // Shifts and the review PR (authored by the configured shift author).

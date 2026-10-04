@@ -277,9 +277,11 @@ impl TodoFile {
     }
 
     pub(crate) fn to_api(&self, now: DateTime<Utc>) -> ShiftTodo {
+        let family = crate::web::family::canonical(&self.family);
         ShiftTodo {
             id: self.id.clone(),
-            family: self.family.clone(),
+            family_label: crate::web::family::label(&family),
+            family,
             title: self.title.clone(),
             body: self.body.clone(),
             repos: self.repos.clone(),

@@ -29,7 +29,7 @@ use serde_json::json;
 
 use super::jankurai::audits::{RunnerAuditSubmission, authorize_runner_submission};
 use super::markdown::render_markdown;
-use super::paging::{PageInfo, PageParams, PageRejection};
+use super::paging::{PageInfo, PageParams};
 use super::{WebState, api_error};
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +65,8 @@ pub(super) struct RepoListQuery {
     pub(super) q: Option<String>,
     pub(super) host: Option<String>,
     pub(super) visibility: Option<String>,
+    /// Either spelling of a family key (see `crate::web::family`); the
+    /// listing filters and answers with the canonical one.
     pub(super) family: Option<String>,
     pub(super) archived: Option<String>,
     pub(super) sort: Option<String>,
@@ -85,13 +87,22 @@ pub(super) struct RepositoryPage {
 pub(super) async fn repos(
     State(state): State<std::sync::Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
-    Query(query): Query<RepoListQuery>,
-) -> Result<Json<RepositoryPage>, PageRejection> {
-    let page = query.paging.page()?;
+    Query(mut query): Query<RepoListQuery>,
+) -> AxumResponse {
+    let page = match query.paging.page() {
+        Ok(page) => page,
+        Err(rejection) => return rejection.into_response(),
+    };
+    // A family nobody hosts is a typo, not an empty registry: answer the
+    // typed error rather than a 200 that reads as "no such repositories".
+    match super::family::filter(&state, query.family.as_deref()) {
+        Ok(family) => query.family = family,
+        Err(response) => return *response,
+    }
     let mut list = filtered_repo_list_response_for_user(&state, &query, Some(&account));
     let (repositories, page) = page.apply(std::mem::take(&mut list.repositories));
     list.repositories = repositories;
-    Ok(Json(RepositoryPage { list, page }))
+    Json(RepositoryPage { list, page }).into_response()
 }
 
 pub(super) async fn repo_detail(
@@ -193,7 +204,9 @@ pub(super) async fn repo_update(
     if let Some(family_value) = fields.get("family") {
         let family = match family_value {
             serde_json::Value::Null => None,
-            serde_json::Value::String(name) => Some(name.clone()),
+            // Stored canonical, so the listing filter and the facet agree
+            // whichever spelling the caller assigned.
+            serde_json::Value::String(name) => Some(super::family::canonical(name)),
             _ => return repo_update_invalid("family must be a string or null"),
         };
         updated = match state
@@ -736,6 +749,12 @@ pub(super) fn filtered_repo_list_response_for_user(
         }
     }
 
+    let wanted_family = query
+        .family
+        .as_deref()
+        .map(super::family::canonical)
+        .filter(|family| !family.is_empty());
+
     let archived_only = matches!(
         query.archived.as_deref(),
         Some("1") | Some("true") | Some("yes")
@@ -763,9 +782,8 @@ pub(super) fn filtered_repo_list_response_for_user(
         .filter(|repo| {
             // Match on the same effective family the summaries expose, so the
             // split-catalog drill-down lists its members even when the DB
-            // family column is unset.
-            query
-                .family
+            // family column is unset. Either spelling of the key matches.
+            wanted_family
                 .as_deref()
                 .is_none_or(|family| effective_family(state, repo).as_deref() == Some(family))
         })
@@ -895,7 +913,8 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
         family: split
             .as_ref()
             .map(|(family, _)| family.clone())
-            .or_else(|| repo.family.clone()),
+            .or_else(|| repo.family.clone())
+            .map(|family| super::family::canonical(&family)),
         archived: repo.archived,
         repo_role: split.map(|(_, role)| role),
         topics: Vec::new(),
@@ -955,13 +974,16 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
 /// classification wins, falling back to the persisted repository family when
 /// the catalog has no entry. This is the same precedence `repo_summary` uses
 /// for its `family` field, so the `?family=` filter and the families facet
-/// stay consistent with what the summaries expose.
-fn effective_family(state: &WebState, repo: &Repository) -> Option<String> {
+/// stay consistent with what the summaries expose. The answer is the
+/// canonical family key: a manifest that names its family `<x>-split` and a
+/// repository row that says `<x>` are the same family.
+pub(super) fn effective_family(state: &WebState, repo: &Repository) -> Option<String> {
     state
         .split_catalog
         .classify(&repo.owner, &repo.name)
         .map(|(family, _)| family)
         .or_else(|| repo.family.clone())
+        .map(|family| super::family::canonical(&family))
 }
 
 /// Push-mirror bookkeeping check. A mirror hiccup is surfaced through the

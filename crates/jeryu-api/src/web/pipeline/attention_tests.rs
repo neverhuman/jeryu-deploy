@@ -32,6 +32,7 @@ fn todo(id: &str, status: &str) -> ShiftTodo {
     ShiftTodo {
         id: id.to_string(),
         family: "jeryu".to_string(),
+        family_label: "jeryu".to_string(),
         title: format!("Title of {id}"),
         body: String::new(),
         repos: vec!["jeryu-deploy".to_string()],
@@ -272,6 +273,8 @@ fn a_shift_branch_with_work_and_no_pull_request() {
         ..repo(name, ahead, pr)
     };
     let shifts = [ShiftBranch {
+        family: "jeryu".to_string(),
+        family_label: "jeryu".to_string(),
         branch: "bulletshift/2026-09-19".to_string(),
         kind: "bulletshift".to_string(),
         date: "2026-09-19".to_string(),
@@ -344,6 +347,8 @@ fn a_shift_whose_todos_ride_a_replacement_pull_request() {
         reviewed_todos: reviewed.iter().map(|id| (*id).to_string()).collect(),
     };
     let shift = |repos: Vec<ShiftRepo>| ShiftBranch {
+        family: "jeryu".to_string(),
+        family_label: "jeryu".to_string(),
         branch: "nightshift/2026-09-28".to_string(),
         kind: "nightshift".to_string(),
         date: "2026-09-28".to_string(),
@@ -913,6 +918,7 @@ fn release_event(seq: i64, kind: &str, sha: &str, ts: &str, needs_human: bool) -
         kind: kind.to_string(),
         reporter: "alton".to_string(),
         actor: None,
+        family_label: None,
         family: None,
         repo: Some("jeryu/jeryu-deploy".to_string()),
         pr: None,
@@ -1841,6 +1847,8 @@ fn one_of_every_kind() -> Vec<Item> {
     items.extend(shift_items(
         family,
         &[ShiftBranch {
+            family: "jeryu".to_string(),
+            family_label: "jeryu".to_string(),
             branch: "nightshift/2026-09-19".to_string(),
             kind: "nightshift".to_string(),
             date: "2026-09-19".to_string(),

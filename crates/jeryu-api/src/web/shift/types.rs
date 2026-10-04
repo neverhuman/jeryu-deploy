@@ -14,7 +14,11 @@ pub(crate) struct FamiliesResponse {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FamilySummary {
+    /// Canonical family key: the same string every family-taking endpoint
+    /// returns and accepts (see `crate::web::family`).
     pub name: String,
+    /// What a reader is shown for `name`.
+    pub label: String,
     pub queue_repo: String,
     pub repos: Vec<FamilyRepoSummary>,
     pub shift_tz: String,
@@ -50,7 +54,10 @@ pub(crate) struct TodosResponse {
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub(crate) struct ShiftTodo {
     pub id: String,
+    /// Canonical family key (see `crate::web::family`).
     pub family: String,
+    /// What a reader is shown for `family`.
+    pub family_label: String,
     pub title: String,
     pub body: String,
     pub repos: Vec<String>,
@@ -204,6 +211,7 @@ pub(crate) struct Attempt {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct TodosQuery {
+    /// Either spelling of a family key; the server canonicalises it.
     pub family: Option<String>,
     pub status: Option<String>,
     pub mode: Option<String>,
@@ -369,6 +377,10 @@ pub(crate) struct ShiftsResponse {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ShiftBranch {
+    /// Canonical key of the family whose repos carry this branch.
+    pub family: String,
+    /// What a reader is shown for `family`.
+    pub family_label: String,
     pub branch: String,
     pub kind: String,
     pub date: String,

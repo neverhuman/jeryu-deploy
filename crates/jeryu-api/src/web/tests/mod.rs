@@ -29,6 +29,7 @@ use tempfile::tempdir;
 
 mod auth_tests;
 mod control_plane_tests;
+mod family_key_tests;
 mod git_authorization;
 mod github_rest_tests;
 mod jankurai_audit_tests;

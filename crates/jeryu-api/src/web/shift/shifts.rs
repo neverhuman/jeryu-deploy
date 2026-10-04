@@ -220,6 +220,8 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
             let entry = branches
                 .entry(branch.to_string())
                 .or_insert_with(|| ShiftBranch {
+                    family: queue.family.name.clone(),
+                    family_label: crate::web::family::label(&queue.family.name),
                     branch: branch.to_string(),
                     kind: kind.to_string(),
                     date,
