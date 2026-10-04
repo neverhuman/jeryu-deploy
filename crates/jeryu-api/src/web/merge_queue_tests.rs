@@ -345,6 +345,23 @@ async fn a_conflicting_replay_is_refused_and_main_is_untouched() {
         [("queue.refused".to_string(), true)],
         "a PR that cannot be replayed needs somebody to rebase it"
     );
+
+    // The refusal is stored, not only answered: `queue_items` walks stored
+    // entries, so without this the attention inbox never mentions it and goes
+    // on offering a merge nothing can perform.
+    let entry = fx.entry();
+    assert_eq!(entry.state, merge_queue::QueueState::Dequeued, "{entry:?}");
+    assert_eq!(entry.refusal_code.as_deref(), Some("queue_conflict"));
+    assert!(fx.has_ref("refs/queue-meta/main/1"));
+    let open = [("alice/jeryu".to_string(), fx.number)].into();
+    let items = crate::web::pipeline::attention::queue_items(&[entry], &open, chrono::Utc::now());
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].kind, "queue_refused");
+    assert_eq!(
+        items[0].action.label,
+        "Open a replacement PR from main with this PR's commits cherry-picked (main requires \
+         linear history)"
+    );
 }
 
 #[tokio::test]

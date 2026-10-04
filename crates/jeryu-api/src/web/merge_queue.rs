@@ -84,6 +84,12 @@ pub(crate) struct QueueEntry {
     pub(crate) approvers: Vec<Approver>,
     pub(crate) attempts: Vec<Attempt>,
     pub(crate) reason: Option<String>,
+    /// The forge code of an enqueue the queue refused (`queue_conflict`,
+    /// `queue_mismatch`, `queue_merge_commits`, `queue_git_error`). Set only on
+    /// a `Dequeued` entry that never built, and it is what tells the inbox the
+    /// refusal apart from an entry that was queued and then dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) refusal_code: Option<String>,
     pub(crate) landed_sha: Option<String>,
 }
 
@@ -386,6 +392,7 @@ pub(super) async fn enqueue(
         approvers: approvers(&state, &pr),
         attempts: Vec::new(),
         reason: None,
+        refusal_code: None,
         landed_sha: None,
     };
     if !is_sha(&entry.pr_head_sha) {
@@ -403,8 +410,14 @@ pub(super) async fn enqueue(
             ReplayFailure::Git(_) => "queue_git_error",
         };
         // The PR cannot be replayed onto the base: somebody has to rebase it.
+        // The refusal is persisted as a dequeued entry carrying the code, so
+        // the attention inbox can name the one step that fixes it instead of
+        // the refusal living only in this response and a `queue.refused` event.
         entry.state = QueueState::Dequeued;
         entry.reason = Some(failure.to_string());
+        entry.refusal_code = Some(code.to_string());
+        persist(&state, &repo.owner, &repo.name, &entry);
+        index.entries.insert(key, entry.clone());
         emit_queue(
             &state,
             &entry,

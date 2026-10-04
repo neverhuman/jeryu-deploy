@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Utc};
 
 use super::{
-    Draft, Hosts, Item, QUEUE_LOOKBACK_HOURS, READY_TO_MERGE_MINUTES, Severity, Shell, parse_time,
-    pull_href,
+    Draft, Hosts, Item, QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES,
+    Severity, Shell, parse_time, pull_href,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -83,11 +83,54 @@ pub(crate) fn draft_items(drafts: &[DraftFacts], idle_days: i64, now: DateTime<U
 
 /// Open pull requests waiting on a person: changes requested, red checks,
 /// missing approvals, or mergeable and simply not merged.
-pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {
+/// `entries` is the merge queue: a pull request the queue is holding is not
+/// waiting on anybody to merge it, however long its gate has been green.
+pub(crate) fn pull_items(
+    pulls: &[PullFacts],
+    entries: &[QueueEntry],
+    now: DateTime<Utc>,
+) -> Vec<Item> {
     let mut items = Vec::new();
     for pull in pulls {
         let posture = &pull.posture;
         let label = format!("{}#{}", pull.repo, pull.number);
+        let building = entries.iter().find(|entry| {
+            entry.state == QueueState::Building
+                && entry.repo == pull.repo
+                && entry.number == pull.number
+        });
+        if let Some(entry) = building {
+            // A queue commit normally gates in a few minutes. Past that the
+            // queue is not making progress, which is worth a look even though
+            // the step is not a merge.
+            let waited = parse_time(&entry.enqueued_at).map_or(0, |at| (now - at).num_minutes());
+            if waited >= QUEUE_STUCK_MINUTES {
+                let mut item = Draft {
+                    id: format!("queue-stuck:{}:{}", pull.repo, pull.number),
+                    kind: "queue_stuck",
+                    severity: Severity::Watch,
+                    title: format!(
+                        "{label} has been building in the merge queue for {waited} minutes"
+                    ),
+                    reason: format!(
+                        "The merge queue has been waiting {waited} minutes for the gate on \
+                         the queue commit it built for \"{}\" by {} onto {}. That normally \
+                         takes a few minutes, so either no runner picked the commit up or \
+                         its gate never reported.",
+                        pull.title, pull.author, entry.base
+                    ),
+                    href: pull_href(&pull.repo, pull.number),
+                    label: "Check the gate runners, then dequeue and queue the pull request again",
+                    command: None,
+                }
+                .build();
+                item.since = Some(entry.enqueued_at.clone());
+                item.repo = Some(pull.repo.clone());
+                item.pr = Some(pull.number);
+                item.sha = Some(pull.head_sha.clone());
+                items.push(item);
+            }
+        }
         let verdict: Option<(&'static str, String, String, &str)> = if posture.changes_requested > 0
         {
             Some((
@@ -126,6 +169,7 @@ pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {
                 "Review and approve the pull request",
             ))
         } else if posture.can_merge
+            && building.is_none()
             && (now - pull.updated_at).num_minutes() >= READY_TO_MERGE_MINUTES
         {
             Some((
@@ -193,8 +237,9 @@ pub(crate) fn pull_items(pulls: &[PullFacts], now: DateTime<Utc>) -> Vec<Item> {
     items
 }
 
-/// Merge-queue entries that failed or were dropped in the last day while
-/// their pull request is still open: an approved PR that will not land alone.
+/// Merge-queue entries that failed, were dropped, or were never admitted in
+/// the last day while their pull request is still open: an approved PR that
+/// will not land alone.
 pub(crate) fn queue_items(
     entries: &[QueueEntry],
     open_pulls: &BTreeSet<(String, u64)>,
@@ -215,29 +260,62 @@ pub(crate) fn queue_items(
         if !recent {
             continue;
         }
-        let mut item = Draft {
-            id: format!("queue-failed:{}:{}", entry.repo, entry.number),
-            kind: "queue_failed",
-            severity: Severity::Action,
-            title: format!(
-                "{}#{} fell out of the merge queue",
-                entry.repo, entry.number
-            ),
-            reason: format!(
-                "{}. The merge queue gave up landing this approved pull request onto {}; it \
-                 is not retried until somebody queues it again, usually after a rebase or a \
-                 fix.",
-                capitalized(
-                    entry
-                        .reason
-                        .as_deref()
-                        .unwrap_or("no reason was recorded")
-                        .trim_end_matches('.')
+        let reason = capitalized(
+            entry
+                .reason
+                .as_deref()
+                .unwrap_or("no reason was recorded")
+                .trim_end_matches('.'),
+        );
+        // A refused enqueue never built a queue commit, so queueing it again
+        // is refused again: the step is whatever makes the PR replayable.
+        let (kind, title, body, step) = match entry.refusal_code.as_deref() {
+            Some(code) => (
+                "queue_refused",
+                format!(
+                    "{}#{} was refused by the merge queue",
+                    entry.repo, entry.number
                 ),
-                entry.base
+                format!(
+                    "{reason}. The merge queue could not build a commit for this approved \
+                     pull request on top of {} ({code}), so it never joined the queue and \
+                     queueing it again changes nothing.",
+                    entry.base
+                ),
+                match code {
+                    "queue_conflict" | "queue_merge_commits" => format!(
+                        "Open a replacement PR from {base} with this PR's commits \
+                         cherry-picked ({base} requires linear history)",
+                        base = entry.base
+                    ),
+                    "queue_mismatch" => "Push a new head".to_string(),
+                    _ => "Read what the queue reported, then queue the pull request again"
+                        .to_string(),
+                },
             ),
+            None => (
+                "queue_failed",
+                format!(
+                    "{}#{} fell out of the merge queue",
+                    entry.repo, entry.number
+                ),
+                format!(
+                    "{reason}. The merge queue gave up landing this approved pull request \
+                     onto {}; it is not retried until somebody queues it again, usually \
+                     after a rebase or a fix.",
+                    entry.base
+                ),
+                "Fix what the reason names, then queue the pull request again".to_string(),
+            ),
+        };
+        let mut item = Draft {
+            id: format!("{}:{}:{}", kind.replace('_', "-"), entry.repo, entry.number),
+            kind,
+            severity: Severity::Action,
+            title,
+            reason: body,
             href: pull_href(&entry.repo, entry.number),
-            label: "Fix what the reason names, then queue the pull request again",
+            label: &step,
             command: None,
         }
         .build();

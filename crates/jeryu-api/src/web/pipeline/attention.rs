@@ -56,6 +56,9 @@ pub(super) const UNTRIAGED_MINUTES: i64 = 30;
 /// A mergeable PR left open this long is waiting on somebody to merge it.
 pub(super) const READY_TO_MERGE_MINUTES: i64 = 10;
 pub(super) const QUEUE_LOOKBACK_HOURS: i64 = 24;
+/// A queue entry still building after this long is no longer waiting for a
+/// gate that is about to report.
+pub(super) const QUEUE_STUCK_MINUTES: i64 = 30;
 /// A draft with no push for this many days is waiting on somebody to mark it
 /// ready for review; `JERYU_DRAFT_IDLE_DAYS` overrides it per deployment.
 pub(super) const DRAFT_IDLE_DAYS: i64 = 3;
@@ -371,10 +374,10 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     ));
     let pulls = open_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
-    items.extend(pull_items(&pulls, now));
-    items.extend(draft_items(&draft_facts(state), draft_idle_days(), now));
     let entries = state.merge_queue.entries(state, |_| true);
     let building = entries.iter().any(|e| e.state == QueueState::Building);
+    items.extend(pull_items(&pulls, &entries, now));
+    items.extend(draft_items(&draft_facts(state), draft_idle_days(), now));
     items.extend(queue_items(&entries, &open, now));
     items.extend(runner_items(
         &state.gate_runners.snapshot(),

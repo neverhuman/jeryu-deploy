@@ -469,7 +469,7 @@ fn pull_requests_waiting_on_a_person() {
             },
         ),
     ];
-    let items = pull_items(&pulls, now());
+    let items = pull_items(&pulls, &[], now());
     assert_eq!(
         kinds(&items),
         [
@@ -571,6 +571,7 @@ fn queue_entry(number: u64, state: QueueState, hours_old: i64) -> QueueEntry {
         approvers: Vec::new(),
         attempts: Vec::new(),
         reason: Some("the gate failed on abc and def".to_string()),
+        refusal_code: None,
         landed_sha: None,
     }
 }
@@ -600,6 +601,118 @@ fn a_failed_merge_queue_entry_whose_pull_request_is_still_open() {
             .starts_with("The gate failed on abc and def. "),
         "the queue's own reason leads: {}",
         items[0].reason
+    );
+}
+
+/// A refusal is not a dropped entry: it never built a queue commit, so
+/// queueing it again is refused again and the step has to be something else.
+#[test]
+fn a_refused_enqueue_names_the_step_that_makes_the_pull_request_replayable() {
+    let open: BTreeSet<(String, u64)> = [("acme/widgets".to_string(), 7)].into();
+    let refused = |code: &str| {
+        let mut entry = queue_entry(7, QueueState::Dequeued, 0);
+        entry.repo = "acme/widgets".to_string();
+        entry.reason = Some(format!("replay refused: {code}"));
+        entry.refusal_code = Some(code.to_string());
+        entry
+    };
+
+    let items = queue_items(&[refused("queue_conflict")], &open, now());
+    assert_eq!(kinds(&items), ["queue_refused"]);
+    assert_eq!(items[0].pr, Some(7));
+    assert_eq!(items[0].severity, Severity::Action);
+    assert_eq!(
+        items[0].action.label,
+        "Open a replacement PR from main with this PR's commits cherry-picked (main requires \
+         linear history)"
+    );
+    assert!(
+        !items[0].action.label.to_lowercase().contains("merge"),
+        "queueing or merging it again is refused again: {}",
+        items[0].action.label
+    );
+    assert!(
+        items[0]
+            .reason
+            .starts_with("Replay refused: queue_conflict."),
+        "{}",
+        items[0].reason
+    );
+    assert!(items[0].reason.contains("never joined the queue"));
+
+    // Merge commits are the same question: the base wants linear history.
+    let items = queue_items(&[refused("queue_merge_commits")], &open, now());
+    assert_eq!(kinds(&items), ["queue_refused"]);
+    assert!(items[0].action.label.starts_with("Open a replacement PR"));
+
+    // A diff the replay did not reproduce is fixed by a new head.
+    let items = queue_items(&[refused("queue_mismatch")], &open, now());
+    assert_eq!(kinds(&items), ["queue_refused"]);
+    assert_eq!(items[0].action.label, "Push a new head");
+}
+
+fn queued(number: u64, minutes_old: i64) -> QueueEntry {
+    let mut entry = queue_entry(number, QueueState::Building, 0);
+    entry.repo = "jeryu/jeryu-web".to_string();
+    entry.enqueued_at = (now() - Duration::minutes(minutes_old)).to_rfc3339();
+    entry.reason = None;
+    entry
+}
+
+#[test]
+fn a_pull_request_the_merge_queue_is_holding_is_not_ready_to_merge() {
+    let pulls = [pull(
+        7,
+        45,
+        PullPosture {
+            can_merge: true,
+            checks_green: true,
+            approvals: 1,
+            required_approvals: 1,
+            ..PullPosture::default()
+        },
+    )];
+    // Nothing queued: the PR has been mergeable for 45 minutes and waits on a
+    // person, which is the rule this one qualifies.
+    assert_eq!(
+        kinds(&pull_items(&pulls, &[], now())),
+        ["pr_ready_to_merge"]
+    );
+
+    // Building, and still inside the window a queue gate normally takes.
+    assert!(pull_items(&pulls, &[queued(7, 15)], now()).is_empty());
+
+    // Another pull request's entry says nothing about this one.
+    assert_eq!(
+        kinds(&pull_items(&pulls, &[queued(8, 15)], now())),
+        ["pr_ready_to_merge"]
+    );
+
+    // Building far longer than a gate takes: worth a look, waiting on nobody.
+    let items = pull_items(&pulls, &[queued(7, 95)], now());
+    assert_eq!(kinds(&items), ["queue_stuck"]);
+    assert_eq!(items[0].severity, Severity::Watch);
+    assert_eq!(items[0].pr, Some(7));
+    assert!(
+        items[0].title.contains("for 95 minutes"),
+        "{}",
+        items[0].title
+    );
+    assert!(items[0].reason.contains("onto main"));
+    assert!(items[0].action.label.starts_with("Check the gate runners"));
+
+    // A queued pull request a reviewer has since blocked is still blocked.
+    let blocked = [pull(
+        7,
+        45,
+        PullPosture {
+            changes_requested: 1,
+            ..PullPosture::default()
+        },
+    )];
+    assert_eq!(
+        kinds(&pull_items(&blocked, &[queued(7, 15)], now())),
+        ["pr_changes_requested"]
     );
 }
 

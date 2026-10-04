@@ -94,6 +94,21 @@ A setting per protected branch decides who may enqueue:
   the same record onto the reviewer's last approval (`lastActivity.mergeAttempt`)
   and lists `mergeGrantGaps` for the repositories it is reviewing.
 
+### A refused enqueue is stored, not only answered
+
+A refusal (`queue_conflict`, `queue_merge_commits`, `queue_mismatch`,
+`queue_git_error`) builds no queue commit, so the entry is written as
+`dequeued` with `refusal_code` set to the forge code before the `409` goes out.
+The attention inbox walks stored entries, and without the record the refusal
+lived only in the response and the `queue.refused` event: ten minutes later the
+inbox called the pull request "ready to merge" and offered a merge the forge
+refuses for the same reason. It now raises `queue_refused` naming the one step
+per code — a replacement pull request from the base with the commits
+cherry-picked for a conflict or merge commits, a new head for a diff the replay
+did not reproduce. An entry still `building` after 30 minutes raises
+`queue_stuck`, and while an entry is building no `pr_ready_to_merge` is raised
+for that pull request: the queue is what merges it.
+
 ## Scope of the first cut
 
 - One entry building per base at a time (no batching or speculation yet).
