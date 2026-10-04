@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 
-use super::{Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, parse_time, todo_href};
+use super::{
+    Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, UNTRIAGED_MINUTES, parse_time,
+    todo_href,
+};
 use crate::web::shift::{BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 
 /// When the todo last changed hands: its newest attempt's end, else filing.
@@ -58,7 +61,15 @@ fn blocked_step(family: &str, kind: BlockKind) -> (String, &'static str) {
 
 /// Queue todos that wait on a person: blocked, handed off, untriaged, a dead
 /// claim, or open behind a blocker that itself cannot move.
-pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) -> Vec<Item> {
+/// `has_worker` says whether the family has a healthy worker slot: a worker
+/// triages an untriaged todo on its next pass, so one only waits on a person
+/// once no worker has got to it for a long time.
+pub(crate) fn todo_items(
+    family: &str,
+    todos: &[ShiftTodo],
+    has_worker: bool,
+    now: DateTime<Utc>,
+) -> Vec<Item> {
     let by_id: BTreeMap<&str, &ShiftTodo> = todos.iter().map(|t| (t.id.as_str(), t)).collect();
     let mut items = Vec::new();
     for todo in todos {
@@ -171,16 +182,28 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                         )
                     })
             }
-            TodoStatus::Open if !todo.triaged => Some(draft(
-                "todo_untriaged",
-                Severity::Action,
-                format!("Needs triage: {}", todo.title),
-                format!(
-                    "It was filed without a title and repos of its own, so {family} workers \
-                     skip it until it has both."
-                ),
-                "Set the todo's title and repos so a worker can claim it",
-            )),
+            // A {family} worker triages a one-line todo itself on its next
+            // pass, so a fresh one is nobody's to look at. Only when a healthy
+            // worker has had it for far longer than a pass does the triage look
+            // like it is not coming.
+            TodoStatus::Open if !todo.triaged => todo_since(todo)
+                .as_deref()
+                .and_then(parse_time)
+                .map(|since| (now - since).num_minutes())
+                .filter(|waited| has_worker && *waited > UNTRIAGED_MINUTES)
+                .map(|waited| {
+                    draft(
+                        "todo_untriaged",
+                        Severity::Watch,
+                        format!("Still untriaged: {}", todo.title),
+                        format!(
+                            "It was filed without a title and repos of its own. {family} \
+                             workers triage on their next pass; not triaged after {waited} \
+                             minutes.",
+                        ),
+                        "Set the todo's title and repos yourself if no worker does",
+                    )
+                }),
             TodoStatus::Open => todo
                 .blocked_by
                 .iter()

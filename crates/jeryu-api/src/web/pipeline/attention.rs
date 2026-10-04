@@ -50,6 +50,9 @@ pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
+/// An untriaged todo a healthy worker has not picked up in this long is no
+/// longer waiting on the next pass.
+pub(super) const UNTRIAGED_MINUTES: i64 = 30;
 /// A mergeable PR left open this long is waiting on somebody to merge it.
 pub(super) const READY_TO_MERGE_MINUTES: i64 = 10;
 pub(super) const QUEUE_LOOKBACK_HOURS: i64 = 24;
@@ -324,9 +327,15 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     let mut items = Vec::new();
     let hosts = Hosts::from_env();
     let families: Vec<FamilySnapshot> = super::super::shift::attention_snapshot(state, now);
+    let workers = super::super::shift::worker_rows(state, now);
     let mut waiting = Vec::new();
     for family in &families {
-        items.extend(todo_items(&family.name, &family.todos, now));
+        // A healthy worker slot is what makes an untriaged todo somebody
+        // else's job: it triages the todo on its next pass.
+        let has_worker = workers.iter().any(|w| {
+            w.healthy && w.heartbeat.family == family.name && w.heartbeat.slot != "supervisor"
+        });
+        items.extend(todo_items(&family.name, &family.todos, has_worker, now));
         items.extend(shift_items(&family.name, &family.shifts));
         waiting.push((
             family.name.clone(),
@@ -337,11 +346,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
                 .count(),
         ));
     }
-    items.extend(worker_items(
-        &waiting,
-        &super::super::shift::worker_rows(state, now),
-        &hosts,
-    ));
+    items.extend(worker_items(&waiting, &workers, &hosts));
     let gave_up = state
         .events
         .query(&super::types::EventsQuery {

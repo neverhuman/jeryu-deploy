@@ -163,6 +163,7 @@ fn todos_blocked_handed_off_untriaged_stuck_or_behind_a_blocker() {
             merged,
             free,
         ],
+        true,
         now(),
     );
     assert_eq!(
@@ -189,11 +190,47 @@ fn todos_blocked_handed_off_untriaged_stuck_or_behind_a_blocker() {
     assert_eq!(items[0].action.label, "Release the todo");
     assert_eq!(items[0].href, "/work/shift?family=jeryu&todo=t-blocked");
     assert_eq!(items[0].todo_id.as_deref(), Some("t-blocked"));
+    assert_eq!(items[2].severity, Severity::Watch);
     assert_eq!(items[3].severity, Severity::Watch);
     assert!(items[3].reason.contains("alton@xbabe0/w1"));
     assert!(items[3].reason.contains("30 minutes ago"));
     assert!(items[4].reason.contains("which is blocked"));
     assert!(items[5].reason.contains("done but not merged"));
+}
+
+/// A one-line todo from the web is the worker's to triage, not a person's:
+/// it only reaches the operator once a healthy worker has left it untriaged
+/// for far longer than a pass takes.
+#[test]
+fn an_untriaged_todo_waits_for_the_workers_next_pass() {
+    let untriaged = |id: &str, filed: &str| ShiftTodo {
+        triaged: false,
+        filed_at: filed.to_string(),
+        ..todo(id, "open")
+    };
+    // Filed 5 minutes ago: the next pass has not even come round yet.
+    let fresh = [untriaged("t-fresh", "2026-09-19T12:55:00Z")];
+    assert!(
+        todo_items("acme", &fresh, true, now()).is_empty(),
+        "a worker triages it on its next pass"
+    );
+    // 31 minutes, and the worker that should have triaged it is healthy.
+    let stale = [untriaged("t-stale", "2026-09-19T12:29:00Z")];
+    let items = todo_items("acme", &stale, true, now());
+    assert_eq!(kinds(&items), ["todo_untriaged"]);
+    assert_eq!(items[0].severity, Severity::Watch);
+    assert_eq!(items[0].id, "todo-untriaged:acme:t-stale");
+    assert!(
+        items[0]
+            .reason
+            .contains("acme workers triage on their next pass; not triaged after 31 minutes"),
+        "{}",
+        items[0].reason
+    );
+    assert_eq!(items[0].since.as_deref(), Some("2026-09-19T12:29:00Z"));
+    // With no healthy worker the family already has a `workers_down` item;
+    // naming the same outage once per untriaged todo says nothing new.
+    assert!(todo_items("acme", &stale, false, now()).is_empty());
 }
 
 #[test]
@@ -1305,6 +1342,7 @@ fn a_blocked_todos_kind_picks_its_label() {
                 "The gate fails on main too.",
             ),
         ],
+        true,
         now(),
     );
     assert_eq!(kinds(&items), ["todo_blocked"; 4]);
@@ -1358,6 +1396,7 @@ fn a_parked_todo_waits_quietly_until_its_date() {
             todo("t-done", "done"),
             todo("t-closed", "closed"),
         ],
+        true,
         now(),
     );
     assert_eq!(
@@ -1554,15 +1593,24 @@ async fn finishing_a_todo_removes_its_item() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{filed}");
     let id = filed["id"].as_str().unwrap().to_string();
-    let untriaged = |body: &Value| {
+    // Blocking it puts it in the inbox: a fresh untriaged todo is still the
+    // workers' own to triage, so it asks for nobody yet.
+    let (status, blocked) = call(
+        HttpMethod::POST,
+        format!("/api/v1/shift/todos/jeryu/{id}/action"),
+        Some(json!({"action": "block", "note": "the tag does not exist"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{blocked}");
+    let waiting = |body: &Value| {
         body["items"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["kind"] == "todo_untriaged" && item["todo_id"] == id.as_str())
+            .any(|item| item["kind"] == "todo_blocked" && item["todo_id"] == id.as_str())
     };
     let (_, body) = call(HttpMethod::GET, "/api/v1/attention".to_string(), None).await;
-    assert!(untriaged(&body), "{body}");
+    assert!(waiting(&body), "{body}");
 
     let (status, done) = call(
         HttpMethod::POST,
@@ -1573,5 +1621,5 @@ async fn finishing_a_todo_removes_its_item() {
     assert_eq!(status, StatusCode::OK, "{done}");
     // The inbox is computed from current state, so the item is gone at once.
     let (_, body) = call(HttpMethod::GET, "/api/v1/attention".to_string(), None).await;
-    assert!(!untriaged(&body), "{body}");
+    assert!(!waiting(&body), "{body}");
 }
