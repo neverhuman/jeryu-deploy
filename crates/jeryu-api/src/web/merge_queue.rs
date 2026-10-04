@@ -183,6 +183,25 @@ impl MergeQueue {
         }
     }
 
+    /// Seeds the in-memory index, marking it loaded so no git read replaces
+    /// what was seeded. A paging assertion needs a queue of a known length and
+    /// nothing else the queue does.
+    #[cfg(test)]
+    pub(in crate::web) fn seed(&self, entries: Vec<QueueEntry>) {
+        let mut index = self.lock();
+        index.loaded = true;
+        for entry in entries {
+            let (owner, name) = entry
+                .repo
+                .split_once('/')
+                .expect("a seeded entry names owner/name");
+            index.entries.insert(
+                (owner.to_string(), name.to_string(), entry.number),
+                entry.clone(),
+            );
+        }
+    }
+
     pub(crate) fn entries(
         &self,
         state: &WebState,
@@ -512,13 +531,27 @@ pub(super) async fn dequeue(
 #[derive(Debug, Deserialize)]
 pub(super) struct QueueListQuery {
     state: Option<String>,
+    #[serde(flatten)]
+    paging: super::paging::PageParams,
+}
+
+/// `GET /api/v1/repos/:id/merge-queue` lists one repository's whole queue, so
+/// it takes the paging keys and no filter of its own.
+#[derive(Debug, Deserialize)]
+pub(super) struct QueuePageQuery {
+    #[serde(flatten)]
+    paging: super::paging::PageParams,
+}
+
+impl strict_query::StrictFields for QueuePageQuery {
+    const KEYS: &'static [&'static str] = &["limit", "per_page", "page"];
 }
 
 /// `state=all` asks for every state at once; it is not a state of its own.
 const EVERY_STATE: &str = "all";
 
 impl strict_query::StrictFields for QueueListQuery {
-    const KEYS: &'static [&'static str] = &["state"];
+    const KEYS: &'static [&'static str] = &["state", "limit", "per_page", "page"];
 
     fn check_values(&self) -> Result<(), String> {
         let mut allowed = QueueState::names();
@@ -527,13 +560,19 @@ impl strict_query::StrictFields for QueueListQuery {
     }
 }
 
-/// `GET /api/v1/merge-queue?state=building` — every repository the caller can
-/// read. The runner polls this on each tick, so it reads the index only.
+/// `GET /api/v1/merge-queue?state=building&per_page=&page=` — every repository
+/// the caller can read. The runner polls this on each tick, so it reads the
+/// index only. A busy family's queue outgrows one response, so the listing is
+/// paged like every other `/api/v1` collection (`docs/pagination.md`).
 pub(super) async fn list_all(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
     strict_query::StrictQuery(query): strict_query::StrictQuery<QueueListQuery>,
 ) -> AxumResponse {
+    let page = match query.paging.page() {
+        Ok(page) => page,
+        Err(rejection) => return rejection.into_response(),
+    };
     let wanted = query
         .state
         .map(|state| state.trim().to_string())
@@ -546,14 +585,19 @@ pub(super) async fn list_all(
                     || state.core.user_can_read_repo(&account.login, owner, name)
             })
     });
-    Json(json!({ "entries": entries })).into_response()
+    queue_page(page, entries)
 }
 
-/// `GET /api/v1/repos/:id/merge-queue`
+/// `GET /api/v1/repos/:id/merge-queue?per_page=&page=`
 pub(super) async fn list_repo(
     State(state): State<Arc<WebState>>,
     AxumPath(id): AxumPath<String>,
+    strict_query::StrictQuery(query): strict_query::StrictQuery<QueuePageQuery>,
 ) -> AxumResponse {
+    let page = match query.paging.page() {
+        Ok(page) => page,
+        Err(rejection) => return rejection.into_response(),
+    };
     let Some(repo) = super::repositories::find_repo(&state, &id) else {
         return api_error(StatusCode::NOT_FOUND, "not_found", "repository not found");
     };
@@ -561,7 +605,14 @@ pub(super) async fn list_repo(
     let entries = state
         .merge_queue
         .entries(&state, |entry| entry.repo == full);
-    Json(json!({ "entries": entries })).into_response()
+    queue_page(page, entries)
+}
+
+/// One page of queue entries, carrying the `total` and `page` object every
+/// paged `/api/v1` listing answers with.
+fn queue_page(page: super::paging::Page, entries: Vec<QueueEntry>) -> AxumResponse {
+    let (entries, info) = page.apply(entries);
+    Json(json!({ "entries": entries, "total": info.total, "page": info })).into_response()
 }
 
 /// Gate verdict on the queue commit, reading commit statuses and check runs

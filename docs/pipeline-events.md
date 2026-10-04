@@ -127,7 +127,9 @@ event is stored, and a refusal names the entry (`events[1]: kind: ...`).
 ### `GET /api/v1/events`
 
 Query: `after_seq` (`since` is the same cursor under another name; sending
-both with different values is `422 events_invalid_query`), `before_seq`, `limit` (1 to 500, default 100), `family`,
+both with different values is `422 events_invalid_query`), `before_seq`,
+`limit` (alias `per_page`; 1 to 500, default 100, and out of range is a
+`422 events_invalid_query`, never clamped — see `docs/pagination.md`), `family`,
 `repo`, `pr`, `todo_id`, `source`, `kind`, `needs_human`. `kind` matches exactly,
 or as a prefix when it ends with a dot (`kind=todo.`). Anything else (`kind=todo`,
 `kind=Not A Kind`) answers `422 events_invalid_query`: it could only ever match nothing, and an
@@ -141,8 +143,15 @@ filtered page. See `docs/errors.md`, "Invalid Query".
   tail to follow).
 
 ```json
-{"schema_version": "jeryu.pipeline_events/v1", "events": [...], "latest_seq": 42}
+{"schema_version": "jeryu.pipeline_events/v1", "events": [...], "latest_seq": 42,
+ "limit": 100, "has_more": true, "next_cursor": 42}
 ```
+
+`has_more` is read one row past the page, so a page exactly `limit` long is not
+mistaken for "more behind it". `next_cursor` is the `seq` of the last event on
+the page (absent for an empty one): send it as `after_seq` to keep walking
+forward, or as `before_seq` on the default newest-first read. One paging rule
+for both edges is written once in `docs/pagination.md`.
 
 ### WebSocket
 
@@ -198,18 +207,22 @@ is fixed.
 
 ```json
 {"schema_version": "jeryu.attention/v1.2", "generated_at": "...",
- "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1}}
+ "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1},
+ "total": 4, "page": {"limit": 100, "page": 1, "total": 4, "has_more": false}}
 ```
 
 Items are sorted by severity, then oldest first. An item somebody
 acknowledged (see [Acknowledgements](#acknowledgements)) is left out, and out
 of `counts`, until the date it was acknowledged until.
 
-Query: `family` (either spelling of a family key), `severity` and `kind`. Each
-comes from a closed set, so a filter that could never match answers
+Query: `family` (either spelling of a family key), `severity` and `kind`, plus
+the paging keys `limit` (alias `per_page`) and `page` (`docs/pagination.md`).
+Each filter comes from a closed set, so one that could never match answers
 `422 invalid_query` naming what it accepts rather than an empty inbox (see
 `docs/errors.md`, "Invalid Query"); `counts` is recounted for the rows a filter
-kept, and an item of no family is not any family's.
+kept, and an item of no family is not any family's. `counts` and `total` stay
+over every item the filter kept, not over the page in hand, so a reader of page
+2 still sees how much is waiting.
 
 | Field | Notes |
 |---|---|

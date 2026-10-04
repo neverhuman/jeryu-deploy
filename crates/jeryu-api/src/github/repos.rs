@@ -25,8 +25,14 @@ impl GithubRouter {
     #[cfg(feature = "web")]
     pub(crate) fn list_repos_for_account(&self, path: &str, account: &AccountSummary) -> Response {
         let path = super::normalize_github_path(path);
-        let (_route_path, query) = path.split_once('?').unwrap_or((path, ""));
-        let page = Pagination::from_query(query);
+        let (route_path, query) = path.split_once('?').unwrap_or((path, ""));
+        let page = match Pagination::from_query(query) {
+            Ok(page) => page,
+            Err(refused) => return refused,
+        };
+        // The same `Link` base the router builds: the edge URL plus the
+        // caller's surviving filters, never the raw `?per_page=` they sent.
+        let link_base = super::support::link_base(route_path, query);
         let repos = self.core.list_repositories(None);
         let body: Vec<Value> = repos
             .iter()
@@ -38,7 +44,7 @@ impl GithubRouter {
             })
             .map(repository_json)
             .collect();
-        paginate(path, page, &body, |slice, _total| {
+        paginate(&link_base, page, &body, |slice, _total| {
             Value::Array(slice.to_vec())
         })
     }

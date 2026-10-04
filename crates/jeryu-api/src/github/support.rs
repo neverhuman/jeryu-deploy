@@ -16,6 +16,11 @@ use crate::routes::Response;
 /// production unit sets it.
 const PUBLIC_ORIGIN_ENV: &str = "JERYU_PRODUCTION_ORIGIN";
 
+/// Path prefix the GitHub-compatible edge is served under. It is stripped
+/// before segment matching, so anything rendering a URL back to a caller
+/// (`Link` headers) has to put it back.
+pub(crate) const V3_PREFIX: &str = "/api/v3";
+
 /// `html_url` for a web UI path. GitHub clients expect an absolute URL, so a
 /// rooted path is prefixed with the configured public origin; without one
 /// (local dev, tests) the path is returned unchanged.
@@ -141,6 +146,11 @@ pub(super) fn v3_index_response() -> Response {
 /// RFC 5988 list pagination parsed off the request query string. GitHub's
 /// defaults (`per_page=30`, `page=1`) and ceiling (`per_page<=100`) are
 /// mirrored so `gh ... --paginate` and naive `?page=N` walks behave.
+///
+/// A value outside that range is refused with a 422 rather than clamped, the
+/// one paging rule both edges follow (`docs/pagination.md`): `/api/v1` already
+/// answered `invalid_page_parameter`, and a caller that asked for 500 rows and
+/// silently got 100 cannot tell a short page from the end of the collection.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Pagination {
     pub(super) per_page: usize,
@@ -152,31 +162,59 @@ impl Pagination {
     pub(super) const MAX_PER_PAGE: usize = 100;
 
     /// Parses `?per_page=&page=` from a raw query string (the part after `?`).
-    /// Out-of-range or unparseable values fall back to the GitHub defaults so a
-    /// malformed page hint never errors a list route.
-    pub(super) fn from_query(query: &str) -> Self {
+    pub(super) fn from_query(query: &str) -> std::result::Result<Self, Response> {
         let mut per_page = Self::DEFAULT_PER_PAGE;
         let mut page = 1usize;
         for pair in query.split('&').filter(|pair| !pair.is_empty()) {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
             match key {
-                "per_page" => {
-                    if let Ok(parsed) = value.parse::<usize>() {
-                        per_page = parsed.clamp(1, Self::MAX_PER_PAGE);
-                    }
-                }
-                "page" => {
-                    if let Ok(parsed) = value.parse::<usize>()
-                        && parsed >= 1
-                    {
-                        page = parsed;
-                    }
-                }
+                "per_page" => per_page = bounded(key, value, Self::MAX_PER_PAGE)?,
+                "page" => page = bounded(key, value, usize::MAX)?,
                 _ => {}
             }
         }
-        Self { per_page, page }
+        Ok(Self { per_page, page })
     }
+}
+
+/// A paging parameter read as a whole number from 1 to `max`, or the 422.
+fn bounded(field: &str, value: &str, max: usize) -> std::result::Result<usize, Response> {
+    match value.trim().parse::<usize>() {
+        Ok(parsed) if (1..=max).contains(&parsed) => Ok(parsed),
+        _ => Err(invalid_pagination(field, value, max)),
+    }
+}
+
+/// GitHub's 422 for an out-of-range `?per_page=`/`?page=`. Shaped like the
+/// list-query 422 in `listing.rs` so one reader handles every refused list
+/// parameter, and it says the value is not clamped so a caller does not retry
+/// the same number expecting a short page.
+fn invalid_pagination(field: &str, value: &str, max: usize) -> Response {
+    let ceiling = if max == usize::MAX {
+        "1 and up".to_owned()
+    } else {
+        format!("1 to {max}")
+    };
+    json_response(
+        422,
+        &json!({
+            "message": "Validation Failed",
+            "errors": [{
+                "resource": "Pagination",
+                "field": field,
+                "code": "invalid",
+                "value": value,
+                "message": format!(
+                    "{field} must be a whole number from {ceiling}, got {value:?}; it is not clamped"
+                ),
+            }],
+            "documentation_url": docs_url(),
+            "jeryu_steering": steering(
+                "jeryu.get_system_snapshot",
+                &format!("?{field}= takes a whole number from {ceiling}; retry with one of those or drop the parameter"),
+            ),
+        }),
+    )
 }
 
 /// Slices `items` to the requested page and renders a GitHub-shaped 200 list
@@ -215,11 +253,28 @@ where
     }
 }
 
-/// Builds the base URL that pagination links hang off: the route path plus the
-/// caller's own query with `per_page`/`page` dropped. The surviving pairs keep
-/// their original order and encoding, so a `next` hop still carries filters
-/// such as `?state=closed` instead of silently falling back to the defaults.
+/// Builds the base URL that pagination links hang off: the `/api/v3` edge URL
+/// of the route plus the caller's own query with `per_page`/`page` dropped. The
+/// surviving pairs keep their original order and encoding, so a `next` hop
+/// still carries filters such as `?state=closed` instead of silently falling
+/// back to the defaults.
+///
+/// `route_path` is the path with the `/api/v3` prefix already stripped for
+/// segment matching, so the prefix goes back on here and the public origin in
+/// front of it: a `Link` URL a client can follow verbatim, like `html_url`.
 pub(super) fn link_base(route_path: &str, query: &str) -> String {
+    link_base_with_origin(
+        std::env::var(PUBLIC_ORIGIN_ENV).ok().as_deref(),
+        route_path,
+        query,
+    )
+}
+
+fn link_base_with_origin(origin: Option<&str>, route_path: &str, query: &str) -> String {
+    let edge = web_url_with_origin(
+        origin,
+        &format!("{V3_PREFIX}{}", route_path.trim_end_matches('/')),
+    );
     let kept: Vec<&str> = query
         .split('&')
         .filter(|pair| !pair.is_empty())
@@ -229,9 +284,9 @@ pub(super) fn link_base(route_path: &str, query: &str) -> String {
         })
         .collect();
     if kept.is_empty() {
-        route_path.to_owned()
+        edge
     } else {
-        format!("{route_path}?{}", kept.join("&"))
+        format!("{edge}?{}", kept.join("&"))
     }
 }
 
@@ -256,7 +311,12 @@ pub(super) fn link_header(
         parts.push(format!("<{}>; rel=\"last\"", url(last_page)));
     }
     if page > 1 {
-        parts.push(format!("<{}>; rel=\"prev\"", url(page - 1)));
+        // A `?page=` past the end still answers (an empty page), and its `prev`
+        // must land on a page that holds rows rather than another empty one.
+        parts.push(format!(
+            "<{}>; rel=\"prev\"",
+            url((page - 1).min(last_page))
+        ));
         parts.push(format!("<{}>; rel=\"first\"", url(1)));
     }
     if parts.is_empty() {
@@ -558,7 +618,7 @@ pub(super) fn first_contact_response() -> Response {
 
 #[cfg(test)]
 mod web_url_tests {
-    use super::web_url_with_origin;
+    use super::{link_base_with_origin, web_url_with_origin};
 
     #[test]
     fn prefixes_rooted_paths_with_the_public_origin() {
@@ -584,6 +644,34 @@ mod web_url_tests {
         assert_eq!(
             web_url_with_origin(Some("https://x.example"), "https://y.example/p"),
             "https://y.example/p"
+        );
+    }
+
+    /// A `Link` base is the edge URL a client can follow as it stands: the
+    /// `/api/v3` prefix on, the public origin in front of it where one is
+    /// configured, and the caller's own filters kept with `per_page`/`page`
+    /// dropped so the relation can put its own back.
+    #[test]
+    fn a_link_base_is_the_prefixed_edge_url_with_the_callers_filters() {
+        assert_eq!(
+            link_base_with_origin(
+                None,
+                "/repos/acme/widgets/pulls",
+                "state=all&per_page=1&page=2"
+            ),
+            "/api/v3/repos/acme/widgets/pulls?state=all"
+        );
+        assert_eq!(
+            link_base_with_origin(
+                Some("https://forge.example/"),
+                "/repos/acme/widgets/pulls",
+                ""
+            ),
+            "https://forge.example/api/v3/repos/acme/widgets/pulls"
+        );
+        assert_eq!(
+            link_base_with_origin(Some("https://forge.example"), "/repos", "page=3"),
+            "https://forge.example/api/v3/repos"
         );
     }
 }

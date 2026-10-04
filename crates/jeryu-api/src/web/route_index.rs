@@ -238,13 +238,17 @@ fn query_params(path: &str) -> &'static [&'static str] {
     match path {
         "/api/v1/attention" => keys::<super::pipeline::attention::AttentionQuery>(),
         "/api/v1/events" => keys::<super::pipeline::EventsQuery>(),
-        "/api/v1/merge-queue" | "/api/v1/repos/:id/merge-queue" => {
-            keys::<super::merge_queue::QueueListQuery>()
-        }
+        "/api/v1/merge-queue" => keys::<super::merge_queue::QueueListQuery>(),
+        "/api/v1/repos/:id/merge-queue" => keys::<super::merge_queue::QueuePageQuery>(),
         "/api/v1/shift/todos" => keys::<super::shift::TodosQuery>(),
         "/api/v1/shift/workers" => keys::<super::shift::WorkersQuery>(),
         "/api/v1/search" => &["q"],
-        "/api/v1/audit" | "/api/v1/agent-runs" => PAGE_KEYS,
+        "/api/v1/audit"
+        | "/api/v1/agent-runs"
+        | "/api/v1/repos/:id/agent-runs"
+        | "/api/v1/releases"
+        | "/api/v1/mirrors"
+        | "/api/v1/settings" => PAGE_KEYS,
         _ => &[],
     }
 }

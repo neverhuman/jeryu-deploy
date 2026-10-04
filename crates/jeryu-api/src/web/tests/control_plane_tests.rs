@@ -123,8 +123,17 @@ async fn control_plane_status_priorities_and_absence_states_are_live() {
 #[tokio::test]
 async fn control_plane_agent_runs_list_route_starts_empty() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
-    let runs = crate::web::agent_runs::list(State(state)).await.0;
-    assert!(runs.is_empty());
+    let listed = crate::web::agent_runs::list(
+        State(state),
+        axum::extract::Query(crate::web::paging::PageParams::default()),
+    )
+    .await;
+    let body = axum::body::to_bytes(listed.into_body(), usize::MAX)
+        .await
+        .expect("list body");
+    let listed: serde_json::Value = serde_json::from_slice(&body).expect("list json");
+    assert_eq!(listed["total"], 0);
+    assert!(listed["items"].as_array().expect("items").is_empty());
 }
 
 /// The live `/api/v1/ci/runs/{id}/evidence` route returns derived evidence

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use jeryu_agent_stream::{CONTROL_TOPIC, TTY_TOPIC};
@@ -159,6 +159,9 @@ struct CreateSessionResponse {
 #[derive(Debug, Clone, Serialize)]
 struct RepoAgentRunsResponse {
     items: Vec<RepoAgentRunRow>,
+    /// Runs for the repository before paging.
+    total: usize,
+    page: crate::web::paging::PageInfo,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -522,12 +525,22 @@ fn session_response(run_id: &str, branch: &str, base_oid: &str) -> CreateSession
 pub(super) async fn list(
     State(state): State<Arc<WebState>>,
     AxumPath(id): AxumPath<String>,
+    Query(paging): Query<crate::web::paging::PageParams>,
 ) -> AxumResponse {
+    let page = match paging.page() {
+        Ok(page) => page,
+        Err(rejection) => return rejection.into_response(),
+    };
     let Some(repo) = find_repo(&state, &id) else {
         return repo_not_found(&id);
     };
-    let items = state.agent_runs.rows_for_repo(&repo.full_name);
-    Json(RepoAgentRunsResponse { items }).into_response()
+    let (items, info) = page.apply(state.agent_runs.rows_for_repo(&repo.full_name));
+    Json(RepoAgentRunsResponse {
+        items,
+        total: info.total,
+        page: info,
+    })
+    .into_response()
 }
 
 /// `POST /api/v1/agent-runs/{id}/publish` — host-mediated publish of a session.

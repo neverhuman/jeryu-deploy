@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response as AxumResponse;
 use jeryu_core::{CreateRepositoryRequest, ForgeCore};
@@ -19,6 +19,12 @@ use jeryu_runner_oci::{FakeContainerRuntime, LifecycleOp};
 use serde_json::{Value, json};
 
 use super::super::WebState;
+
+/// The paging a list assertion that is about the rows, not the paging, sends:
+/// the default page, which holds every row these fixtures make.
+fn every_row() -> Query<crate::web::paging::PageParams> {
+    Query(crate::web::paging::PageParams::default())
+}
 
 /// Pre-warmed pool depth used across the session route tests. Each test gets a
 /// fresh pool warmed to this many cells; a claim reuses one and refills back.
@@ -318,9 +324,15 @@ async fn create_session_companion_shell_is_registered_and_terminates() {
     let shell_run_id = created["shell_run_id"]
         .as_str()
         .expect("production-enabled session returns a companion shell id");
-    let runs =
-        response_json(super::list(State(state.clone()), AxumPath("alice/jeryu".to_string())).await)
-            .await;
+    let runs = response_json(
+        super::list(
+            State(state.clone()),
+            AxumPath("alice/jeryu".to_string()),
+            every_row(),
+        )
+        .await,
+    )
+    .await;
     let agent_row = runs["items"]
         .as_array()
         .expect("repo agent runs")
@@ -551,7 +563,12 @@ async fn agent_runs_are_isolated_per_repo() {
     assert_ne!(run_a, run_b);
 
     let list_a = response_json(
-        super::list(State(state.clone()), AxumPath("alice/repo-a".to_string())).await,
+        super::list(
+            State(state.clone()),
+            AxumPath("alice/repo-a".to_string()),
+            every_row(),
+        )
+        .await,
     )
     .await;
     let items_a = list_a["items"].as_array().expect("items a");
@@ -568,8 +585,15 @@ async fn agent_runs_are_isolated_per_repo() {
         "A's list must NOT leak B's run (data-isolation): {ids_a:?}"
     );
 
-    let list_b =
-        response_json(super::list(State(state), AxumPath("bob/repo-b".to_string())).await).await;
+    let list_b = response_json(
+        super::list(
+            State(state),
+            AxumPath("bob/repo-b".to_string()),
+            every_row(),
+        )
+        .await,
+    )
+    .await;
     let ids_b: Vec<&str> = list_b["items"]
         .as_array()
         .expect("items b")
@@ -610,8 +634,15 @@ async fn agent_runs_row_shape_matches_web_contract() {
     )
     .await;
 
-    let list =
-        response_json(super::list(State(state), AxumPath("alice/jeryu".to_string())).await).await;
+    let list = response_json(
+        super::list(
+            State(state),
+            AxumPath("alice/jeryu".to_string()),
+            every_row(),
+        )
+        .await,
+    )
+    .await;
     let items = list["items"].as_array().expect("items");
     assert_eq!(items.len(), 1, "exactly one run for this repo");
     let row = &items[0];

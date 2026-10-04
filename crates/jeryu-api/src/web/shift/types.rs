@@ -49,6 +49,9 @@ pub(crate) struct FamilyRepo {
 pub(crate) struct TodosResponse {
     pub generated_at: String,
     pub todos: Vec<ShiftTodo>,
+    /// Todos matching the filter before paging, the top-level `total` every
+    /// paged `/api/v1` listing answers with (`docs/pagination.md`).
+    pub total: usize,
     pub page: PageInfo,
 }
 

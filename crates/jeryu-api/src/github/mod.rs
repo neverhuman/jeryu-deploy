@@ -230,7 +230,12 @@ impl GithubRouter {
         // RFC5988 list pagination as `?per_page=&page=` without the query
         // leaking into segment matching.
         let (route_path, query) = path.split_once('?').unwrap_or((path, ""));
-        let page = Pagination::from_query(query);
+        // One paging rule for both edges (`docs/pagination.md`): an
+        // out-of-range `?per_page=`/`?page=` is a 422, never a clamp.
+        let page = match Pagination::from_query(query) {
+            Ok(page) => page,
+            Err(refused) => return refused,
+        };
         let segments: Vec<&str> = route_path.trim_matches('/').split('/').collect();
         // Pagination links hang off the path plus the caller's own filters, so
         // following `next` keeps `?state=` and friends instead of resetting them.

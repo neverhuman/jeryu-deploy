@@ -2076,3 +2076,133 @@ fn the_v3_index_answers_200_and_lists_opening_a_pull_request() {
         );
     }
 }
+
+/// Every list route of the GitHub-compatible edge, by the path a caller types
+/// it against the `acme/widgets` fixture. `GET /repos/{owner}/{repo}/commits`
+/// is left out: it reads a git history, and its paging is proved against a real
+/// one in `crates/jeryu-api/src/web/repositories/commits.rs`.
+const V3_LIST_ROUTES: &[&str] = &[
+    "/api/v3/repos",
+    "/api/v3/repos/acme/widgets/pulls?state=all",
+    "/api/v3/repos/acme/widgets/pulls/1/commits",
+    "/api/v3/repos/acme/widgets/issues?state=all",
+    "/api/v3/repos/acme/widgets/check-runs",
+    "/api/v3/repos/acme/widgets/deployments",
+    "/api/v3/repos/acme/widgets/releases",
+    "/api/v3/repos/acme/widgets/actions/runs",
+    "/api/v3/repos/acme/widgets/actions/workflows",
+];
+
+/// `uri` with a paging parameter appended, honouring a route that already
+/// carries a filter of its own.
+fn with_paging(uri: &str, query: &str) -> String {
+    let separator = if uri.contains('?') { '&' } else { '?' };
+    format!("{uri}{separator}{query}")
+}
+
+fn link_header(response: &jeryu_api::Response) -> Option<&str> {
+    response
+        .headers
+        .iter()
+        .find(|(name, _)| name == "Link")
+        .map(|(_, value)| value.as_str())
+}
+
+/// The one paging rule, on every v3 list route: a `per_page` above GitHub's
+/// ceiling, or any paging parameter below 1, is a 422 naming the field — never
+/// a clamp. A clamped page cannot be told apart from the end of a collection,
+/// and `/api/v1` has always answered the same way.
+#[test]
+fn every_v3_list_route_refuses_an_out_of_range_paging_parameter() {
+    let router = router_with_seeded_pulls(3);
+    for route in V3_LIST_ROUTES {
+        for (query, field) in [
+            ("per_page=0", "per_page"),
+            ("per_page=101", "per_page"),
+            ("per_page=all", "per_page"),
+            ("page=0", "page"),
+        ] {
+            let uri = with_paging(route, query);
+            let response = router.get(&uri);
+            assert_eq!(response.status, 422, "{uri}: {}", response.body);
+            let body = body(&response);
+            assert_eq!(body["message"], "Validation Failed", "{uri}");
+            assert_eq!(body["errors"][0]["resource"], "Pagination", "{uri}");
+            assert_eq!(body["errors"][0]["field"], field, "{uri}");
+            assert_eq!(body["errors"][0]["code"], "invalid", "{uri}");
+            assert!(
+                body["errors"][0]["message"]
+                    .as_str()
+                    .expect("a message")
+                    .contains("not clamped"),
+                "{uri} says the value was not clamped: {}",
+                response.body
+            );
+            assert!(body["jeryu_steering"]["hint"].is_string(), "{uri}");
+        }
+        // GitHub's ceiling itself is accepted: the bound is inclusive.
+        let uri = with_paging(route, "per_page=100");
+        assert_eq!(router.get(&uri).status, 200, "{uri}");
+    }
+}
+
+/// The `Link` header of every v3 list route: the relation set GitHub emits, and
+/// URLs a client can follow as they stand — the `/api/v3` prefix on, the
+/// caller's own filters kept, and no `rel="prev"` pointing past the last page.
+#[test]
+fn v3_link_relations_are_followable_urls_with_the_right_relation_set() {
+    let router = router_with_seeded_pulls(3);
+    let pulls = "/api/v3/repos/acme/widgets/pulls?state=all";
+
+    // Page 1 of 3: more is left, so `next` and `last` and nothing behind.
+    let first = router.get(&with_paging(pulls, "per_page=1"));
+    assert_eq!(first.status, 200, "{}", first.body);
+    let link = link_header(&first).expect("a Link header past page 1");
+    for relation in ["next", "last"] {
+        assert!(link.contains(&format!("rel=\"{relation}\"")), "{link}");
+    }
+    for relation in ["prev", "first"] {
+        assert!(!link.contains(&format!("rel=\"{relation}\"")), "{link}");
+    }
+    assert!(
+        link.contains("</api/v3/repos/acme/widgets/pulls?state=all&per_page=1&page=2>"),
+        "the next URL keeps the /api/v3 prefix and the caller's filter: {link}"
+    );
+    assert!(
+        link.contains("per_page=1&page=3>; rel=\"last\""),
+        "last is the final page: {link}"
+    );
+
+    // The middle page carries every relation.
+    let middle = router.get(&with_paging(pulls, "per_page=1&page=2"));
+    let link = link_header(&middle).expect("a Link header");
+    for relation in ["next", "last", "prev", "first"] {
+        assert!(link.contains(&format!("rel=\"{relation}\"")), "{link}");
+    }
+
+    // The last page has nothing ahead of it.
+    let last = router.get(&with_paging(pulls, "per_page=1&page=3"));
+    let link = link_header(&last).expect("a Link header");
+    for relation in ["prev", "first"] {
+        assert!(link.contains(&format!("rel=\"{relation}\"")), "{link}");
+    }
+    for relation in ["next", "last"] {
+        assert!(!link.contains(&format!("rel=\"{relation}\"")), "{link}");
+    }
+
+    // A single-page result carries no Link at all, as on GitHub.
+    let whole = router.get(&with_paging(pulls, "per_page=100"));
+    assert!(link_header(&whole).is_none(), "{:?}", whole.headers);
+
+    // A `?page=` past the end still answers an empty page, and its `prev`
+    // lands on the last page that holds rows rather than another empty one.
+    let past = router.get(&with_paging(pulls, "per_page=1&page=9"));
+    assert_eq!(past.status, 200, "{}", past.body);
+    assert!(body(&past).as_array().expect("an array").is_empty());
+    let link = link_header(&past).expect("a Link header");
+    assert!(
+        link.contains("per_page=1&page=3>; rel=\"prev\""),
+        "prev points at the last page with rows: {link}"
+    );
+    assert!(link.contains("per_page=1&page=1>; rel=\"first\""), "{link}");
+}

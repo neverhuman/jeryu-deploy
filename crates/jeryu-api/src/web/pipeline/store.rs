@@ -42,6 +42,13 @@ struct Inner {
     last_prune_ms: i64,
 }
 
+/// The row limit a query reads with: its own `limit`, or [`DEFAULT_LIMIT`].
+/// The route refuses an out-of-range value before the store is reached, so the
+/// clamp here only guards a caller inside the server.
+fn page_limit(query: &EventsQuery) -> i64 {
+    query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
+}
+
 impl EventStore {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|err| err.to_string())?;
@@ -165,6 +172,22 @@ impl EventStore {
     /// Events matching `query`. With `after_seq` the page is a cursor tail,
     /// oldest first; otherwise it is the newest events, newest first.
     pub(crate) fn query(&self, query: &EventsQuery) -> Result<Vec<Event>, String> {
+        self.read(query, page_limit(query))
+    }
+
+    /// One page of [`Self::query`] plus whether the log holds another row
+    /// behind it. The page is read one row longer than asked for; the extra
+    /// row, if it came back, is the whole answer, and it is dropped before the
+    /// page is returned.
+    pub(crate) fn query_page(&self, query: &EventsQuery) -> Result<(Vec<Event>, bool), String> {
+        let limit = page_limit(query);
+        let mut events = self.read(query, limit + 1)?;
+        let has_more = i64::try_from(events.len()).unwrap_or(i64::MAX) > limit;
+        events.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        Ok((events, has_more))
+    }
+
+    fn read(&self, query: &EventsQuery, limit: i64) -> Result<Vec<Event>, String> {
         let mut clauses: Vec<String> = Vec::new();
         let mut values: Vec<SqlValue> = Vec::new();
         let mut push = |clause: &str, value: SqlValue| {
@@ -215,7 +238,6 @@ impl EventStore {
         if let Some(needs_human) = query.needs_human {
             push("needs_human = ?", SqlValue::Integer(i64::from(needs_human)));
         }
-        let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let order = if query.after_seq.is_some() {
             "ASC"
         } else {

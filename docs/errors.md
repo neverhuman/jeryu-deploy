@@ -389,19 +389,25 @@ naming the field and listing the accepted values, never ignored:
 }
 ```
 
-Pagination `Link` relations carry the caller's own query, so following `next`
-stays in the order and filter the first page was read with.
+Pagination `Link` relations are absolute `/api/v3` URLs and carry the caller's
+own query, so following `next` stays in the order and filter the first page was
+read with. See `docs/pagination.md`.
 
 ## Invalid Page Parameter
 
-`GET /api/v1/repos`, `/api/v1/repos/:id/pulls`, `/api/v1/shift/todos` and
-`/api/v1/control-plane/status` page their collections. `limit` (alias
-`per_page`) must be 1 to 500 and defaults to 100; `page` is 1-based. Each
+Both edges follow one paging rule, written once in `docs/pagination.md`: an
+out-of-range paging parameter is a 422, never a clamp.
+
+On `/api/v1`, `limit` (alias `per_page`) must be 1 to 500 and defaults to 100
+and `page` is 1-based; a value out of range answers `invalid_page_parameter`
+(422), and `GET /api/v1/events` answers its own `events_invalid_query`. Each
 response carries a `page` object with the applied `limit`, `page`, the
-pre-paging `total` and `has_more`. A value out of range is refused with
-`invalid_page_parameter` (422), never clamped. `GET /api/v1/events` refuses a
-`limit` outside 1 to 500 with `events_invalid_query` and echoes the applied
-`limit`.
+pre-paging `total` and `has_more` (`/api/v1/events`, a cursor walk, answers
+`limit`, `has_more` and `next_cursor`).
+
+On `/api/v3`, `per_page` must be 1 to 100 (GitHub's ceiling) and defaults to
+30; out of range answers GitHub's 422 `Validation Failed` with a `Pagination`
+error entry, and the page relations ride in the `Link` header.
 
 ## Invalid Query
 

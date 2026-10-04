@@ -33,6 +33,7 @@ use serde_json::{Value, json};
 
 use super::super::WebState;
 use super::super::merge_queue::QueueState;
+use super::super::paging::{Page, PageInfo, PageParams};
 use super::super::shift::FamilySnapshot;
 
 pub(crate) mod acks;
@@ -725,10 +726,13 @@ pub(crate) struct AttentionQuery {
     pub family: Option<String>,
     pub severity: Option<String>,
     pub kind: Option<String>,
+    #[serde(flatten)]
+    pub paging: PageParams,
 }
 
 impl super::super::strict_query::StrictFields for AttentionQuery {
-    const KEYS: &'static [&'static str] = &["family", "severity", "kind"];
+    const KEYS: &'static [&'static str] =
+        &["family", "severity", "kind", "limit", "per_page", "page"];
 
     fn check_values(&self) -> Result<(), String> {
         use super::super::strict_query::filter_one_of;
@@ -761,6 +765,34 @@ impl Filter {
     }
 }
 
+/// One page of the inbox. `counts` and `total` stay over every item the filter
+/// kept, so a page 2 reader still sees how much is waiting; `page` echoes what
+/// was applied, the way every paged `/api/v1` listing does
+/// (`docs/pagination.md`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct AttentionPage {
+    pub schema_version: &'static str,
+    pub generated_at: String,
+    pub items: Vec<Item>,
+    pub counts: Counts,
+    /// Items the filter kept before paging.
+    pub total: usize,
+    pub page: PageInfo,
+}
+
+/// Cuts a collected inbox down to one page.
+pub(super) fn one_page(response: AttentionResponse, page: Page) -> AttentionPage {
+    let (items, info) = page.apply(response.items);
+    AttentionPage {
+        schema_version: response.schema_version,
+        generated_at: response.generated_at,
+        items,
+        counts: response.counts,
+        total: info.total,
+        page: info,
+    }
+}
+
 /// The items a filter keeps, with the counts recounted for them.
 pub(super) fn only_matching(response: &AttentionResponse, filter: &Filter) -> AttentionResponse {
     let items: Vec<Item> = response
@@ -788,6 +820,10 @@ pub(crate) async fn attention(
         AttentionQuery,
     >,
 ) -> AxumResponse {
+    let paging = match query.paging.page() {
+        Ok(page) => page,
+        Err(rejection) => return rejection.into_response(),
+    };
     let family = match super::super::family::filter(&state, query.family.as_deref()) {
         Ok(family) => family,
         Err(response) => return *response,
@@ -805,12 +841,13 @@ pub(crate) async fn attention(
         severity: trimmed(&query.severity).and_then(|name| Severity::parse(&name)),
         kind: trimmed(&query.kind),
     };
-    let answer = |response: AttentionResponse| {
-        if filter.any() {
-            Json(only_matching(&response, &filter)).into_response()
+    let answer = move |response: AttentionResponse| {
+        let kept = if filter.any() {
+            only_matching(&response, &filter)
         } else {
-            Json(response).into_response()
-        }
+            response
+        };
+        Json(one_page(kept, paging)).into_response()
     };
     // The collectors run git and read every open pull request: keep them off
     // the async workers.

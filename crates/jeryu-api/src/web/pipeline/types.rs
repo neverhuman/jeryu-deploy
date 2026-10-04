@@ -112,6 +112,9 @@ pub(crate) struct EventsQuery {
     pub since: Option<i64>,
     pub before_seq: Option<i64>,
     pub limit: Option<i64>,
+    /// Another name for `limit`, the spelling the paged `/api/v1` collections
+    /// take; the route refuses the two with different values.
+    pub per_page: Option<i64>,
     /// Either spelling of a family key; the server canonicalises it.
     pub family: Option<String>,
     pub repo: Option<String>,
@@ -128,6 +131,7 @@ impl crate::web::strict_query::StrictFields for EventsQuery {
         "since",
         "before_seq",
         "limit",
+        "per_page",
         "family",
         "repo",
         "pr",
@@ -142,7 +146,7 @@ impl crate::web::strict_query::StrictFields for EventsQuery {
     const CODE: &'static str = "events_invalid_query";
 
     const REPAIR_HINT: &'static str =
-        "after_seq, before_seq, limit and pr are integers; needs_human is true or false";
+        "after_seq, before_seq, limit, per_page and pr are integers; needs_human is true or false";
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -152,6 +156,14 @@ pub(crate) struct EventsResponse {
     pub latest_seq: i64,
     /// The row limit this page was read with.
     pub limit: i64,
+    /// Whether the log holds another row behind this page. A page as long as
+    /// `limit` is not the same thing as a page with more behind it, so the
+    /// walk reads this rather than counting rows (`docs/pagination.md`).
+    pub has_more: bool,
+    /// The cursor the next page starts from: the `seq` of the last event on
+    /// this one, or `None` for an empty page. Send it as `after_seq` to keep
+    /// walking forward, or as `before_seq` on the default newest-first read.
+    pub next_cursor: Option<i64>,
 }
 
 fn is_lower(c: char) -> bool {

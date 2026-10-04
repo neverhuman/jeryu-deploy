@@ -312,6 +312,7 @@ pub(crate) async fn list_todos(
     Json(TodosResponse {
         generated_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         todos,
+        total: page.total,
         page,
     })
     .into_response()

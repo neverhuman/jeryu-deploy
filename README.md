@@ -27,6 +27,8 @@ authority. Durable detail is intentionally routed rather than duplicated:
   `docs/pipeline-events.md`.
 - Product-wide search (`GET /api/v1/search`), what it looks in and what it
   deliberately does not: `docs/search.md`.
+- Paging every list route, on both the `/api/v1` and `/api/v3` edges:
+  `docs/pagination.md`.
 
 Governed Jankurai rotations run the closed projection integration test, the
 hostile-identity shell verifier, full score, and protected-base diff audit

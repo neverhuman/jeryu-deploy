@@ -2,7 +2,8 @@
 
 Owns:
 - Architecture (`docs/architecture.md`), testing (`docs/testing.md`), error
-  repair (`docs/errors.md`), boundary (`docs/boundaries.md`), generated-zone
+  repair (`docs/errors.md`), paging (`docs/pagination.md`, the one rule both
+  the `/api/v1` and `/api/v3` edges follow), boundary (`docs/boundaries.md`), generated-zone
   (`docs/generated-zones.md`), audit (`docs/audit-rubric.md`), and
   release-control (`docs/release.md`, a pointer to `scripts/release/README.md`) documentation,
   all routed from root `AGENTS.md`.

@@ -335,6 +335,20 @@ pub(crate) async fn list_events(
         Ok(family) => query.family = family,
         Err(response) => return *response,
     }
+    // `per_page` is the spelling the offset-paged collections take; the log
+    // reads it as the same thing, and refuses the two disagreeing.
+    match (query.limit, query.per_page) {
+        (Some(limit), Some(per_page)) if limit != per_page => {
+            return events_read_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "events_invalid_query",
+                &format!("limit ({limit}) and per_page ({per_page}) name the same thing; send one"),
+                "send one row limit: limit=<1 to 500>",
+            );
+        }
+        (None, per_page) => query.limit = per_page,
+        _ => {}
+    }
     let limit = query.limit.unwrap_or(store::DEFAULT_LIMIT);
     if !(1..=store::MAX_LIMIT).contains(&limit) {
         return events_read_error(
@@ -359,14 +373,16 @@ pub(crate) async fn list_events(
     }
     let page = state
         .events
-        .query(&query)
-        .and_then(|events| Ok((events, state.events.latest_seq()?)));
+        .query_page(&query)
+        .and_then(|page| Ok((page, state.events.latest_seq()?)));
     match page {
-        Ok((events, latest_seq)) => Json(EventsResponse {
+        Ok(((events, has_more), latest_seq)) => Json(EventsResponse {
             schema_version: EVENTS_SCHEMA,
+            next_cursor: events.last().map(|event| event.seq),
             events,
             latest_seq,
             limit,
+            has_more,
         })
         .into_response(),
         Err(reason) => events_store_error(&reason),

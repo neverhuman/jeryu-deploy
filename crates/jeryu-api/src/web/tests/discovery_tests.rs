@@ -229,7 +229,10 @@ async fn the_route_index_describes_params_and_who_may_call_each_route() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert_eq!(params, ["family", "severity", "kind"]);
+    assert_eq!(
+        params,
+        ["family", "severity", "kind", "limit", "per_page", "page"]
+    );
     assert_eq!(attention["auth"]["GET"], "admin");
 
     let pulls = routes
@@ -260,7 +263,10 @@ async fn the_openapi_document_is_generated_from_the_mounted_routes() {
         .iter()
         .filter_map(|parameter| parameter["name"].as_str())
         .collect();
-    assert_eq!(names, ["family", "severity", "kind"]);
+    assert_eq!(
+        names,
+        ["family", "severity", "kind", "limit", "per_page", "page"]
+    );
     assert_eq!(attention["x-jeryu-credential"], "admin");
     // Every described path is a path the router mounts.
     let mounted: BTreeSet<String> = api_v1_routes()

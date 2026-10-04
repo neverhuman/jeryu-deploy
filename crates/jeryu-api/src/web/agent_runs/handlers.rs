@@ -276,10 +276,31 @@ pub(in crate::web) fn spawn_session_agent(store: &AgentRunStore, spawn: SessionA
     });
 }
 
+/// `GET /api/v1/agent-runs?per_page=&page=`: every live agent run, paged like
+/// every other `/api/v1` collection (`docs/pagination.md`).
+#[derive(Debug, Serialize)]
+pub(in crate::web) struct AgentRunListResponse {
+    pub(in crate::web) items: Vec<AgentRunStatusResponse>,
+    /// Runs before paging.
+    pub(in crate::web) total: usize,
+    pub(in crate::web) page: crate::web::paging::PageInfo,
+}
+
 pub(in crate::web) async fn list(
     State(state): State<Arc<WebState>>,
-) -> Json<Vec<AgentRunStatusResponse>> {
-    Json(state.agent_runs.list())
+    Query(paging): Query<crate::web::paging::PageParams>,
+) -> AxumResponse {
+    let page = match paging.page() {
+        Ok(page) => page,
+        Err(rejection) => return rejection.into_response(),
+    };
+    let (items, info) = page.apply(state.agent_runs.list());
+    Json(AgentRunListResponse {
+        items,
+        total: info.total,
+        page: info,
+    })
+    .into_response()
 }
 
 pub(in crate::web) async fn status(

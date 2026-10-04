@@ -75,6 +75,10 @@ A setting per protected branch decides who may enqueue:
   `state` is `building` (the default), `landed`, `failed`, `dequeued` or `all`;
   anything else answers `422 invalid_query` naming those, because a runner
   polling a misspelled state would read an empty queue as nothing to gate.
+  The listing is paged like every other `/api/v1` collection
+  (`docs/pagination.md`): `limit` (alias `per_page`) and `page`, with `total`
+  and a `page` object carrying `has_more`. A runner that gets `has_more` walks
+  the rest of the pages before it decides the queue is drained.
 - The runner gates `queue_sha` from `queue_ref` exactly as it gates a PR head,
   with the same recipe and tree layout. It posts `<repo>/required` on `queue_sha`.
 - Queue entries rank ahead of ordinary PR heads: they are one step from landing.
@@ -84,7 +88,8 @@ A setting per protected branch decides who may enqueue:
 - `POST /api/v1/repos/:id/pulls/:number/queue` enqueues, and is idempotent. It
   requires the PR to be approved with no changes requested; `pr-redteam` or a
   human calls it instead of merging.
-- `DELETE …/queue` dequeues. `GET /api/v1/repos/:id/merge-queue` shows the queue.
+- `DELETE …/queue` dequeues. `GET /api/v1/repos/:id/merge-queue` shows the
+  queue, paged the same way (`limit`/`per_page`, `page`).
 - Merging a PR that already fast-forwards still merges directly. The queue is
   only needed when the base has moved.
 - `GET /api/v1/repos/:id/pulls/:number/merge-attempt` answers the last merge or
