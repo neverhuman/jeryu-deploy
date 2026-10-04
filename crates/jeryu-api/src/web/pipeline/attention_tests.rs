@@ -10,9 +10,10 @@ use tower::ServiceExt;
 
 use super::attention::{
     Draft, DraftFacts, Hosts, Item, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts,
-    PullFacts, Severity, divergence_items, draft_items, mirror_items, order, pull_items,
-    queue_items, release_items, runner_items, shift_items, todo_items, worker_items,
+    PullFacts, Severity, divergence_items, draft_items, mirror_items, order, pin_items, pull_items,
+    queue_items, release_items, runner_items, shift_items, todo_items, web_routes, worker_items,
 };
+use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
 use super::types::Event;
 use crate::web::control_plane::{GateRunnerHeartbeat, GateRunnerRecord, GateRunnerResult};
@@ -72,12 +73,25 @@ fn assert_actionable(item: &Item) {
         "{item:?}"
     );
     assert!(item.href.starts_with('/'), "{item:?}");
+    // The href is the whole next step for an item with no command: it has to
+    // be a route of the web app, not a path the app only redirects from.
+    assert_web_route(item);
     assert!(!item.action.label.is_empty(), "{item:?}");
     match &item.action.command {
         Some(command) => assert!(item.next_step.contains(command.as_str()), "{item:?}"),
         None => assert!(item.next_step.contains(item.href.as_str()), "{item:?}"),
     }
     assert_says_where(item);
+}
+
+/// The href opens a page of the web app directly. `assert_actionable` runs
+/// this over every rule's output in this file; the pins tests call it for
+/// theirs.
+pub(super) fn assert_web_route(item: &Item) -> &'static str {
+    match web_routes::route_of(&item.href) {
+        Ok(route) => route,
+        Err(why) => panic!("{} emitted an href that opens nothing: {why}", item.kind),
+    }
 }
 
 /// A command always says where it is run, and nothing else carries a place.
@@ -188,7 +202,7 @@ fn todos_blocked_handed_off_untriaged_stuck_or_behind_a_blocker() {
         items[0].reason
     );
     assert_eq!(items[0].action.label, "Release the todo");
-    assert_eq!(items[0].href, "/work/shift?family=jeryu&todo=t-blocked");
+    assert_eq!(items[0].href, "/work/t-blocked?family=jeryu");
     assert_eq!(items[0].todo_id.as_deref(), Some("t-blocked"));
     assert_eq!(items[2].severity, Severity::Watch);
     assert_eq!(items[3].severity, Severity::Watch);
@@ -1410,7 +1424,8 @@ fn a_mirror_with_github_only_work_alarms_per_repository_and_names_the_commits() 
         "{}",
         branch.reason
     );
-    assert_eq!(branch.href, "/repos/jeryu/jeryu-web");
+    // The repository page names the provider first, so the row is a live link.
+    assert_eq!(branch.href, "/repos/jeryu/jeryu/jeryu-web");
 
     let tags = &items[1];
     assert!(
@@ -1735,4 +1750,299 @@ async fn finishing_a_todo_removes_its_item() {
     // The inbox is computed from current state, so the item is gone at once.
     let (_, body) = call(HttpMethod::GET, "/api/v1/attention".to_string(), None).await;
     assert!(!waiting(&body), "{body}");
+}
+
+/// The route of the web app each kind's href opens. `web_routes::WEB_ROUTES`
+/// is the app's own list of patterns; this says which of them the inbox hands
+/// people, so a rule that emits a path the app does not answer — or only
+/// answers by sending the reader somewhere else — fails here.
+const KIND_ROUTES: &[(&str, &str)] = &[
+    ("deploy_failed", "/releases"),
+    ("gate_runner_down", "/runners"),
+    ("mirror_diverged", "/repos/:provider/:owner/*"),
+    ("mirror_failing", "/repos"),
+    // The pin's own item points at Releases; once a bump pull request is open,
+    // that pull request is the next step.
+    ("pin_behind", "/releases"),
+    ("pin_behind", "/repos/:provider/:owner/*"),
+    ("pr_awaiting_approval", "/repos/:provider/:owner/*"),
+    ("pr_changes_requested", "/repos/:provider/:owner/*"),
+    ("pr_checks_failing", "/repos/:provider/:owner/*"),
+    ("pr_draft_waiting", "/repos/:provider/:owner/*"),
+    ("pr_ready_to_merge", "/repos/:provider/:owner/*"),
+    ("queue_failed", "/repos/:provider/:owner/*"),
+    ("queue_refused", "/repos/:provider/:owner/*"),
+    ("queue_stuck", "/repos/:provider/:owner/*"),
+    ("release_stage_failed", "/activity"),
+    ("release_staged", "/releases"),
+    ("reviewer_stuck", "/repos/:provider/:owner/*"),
+    ("shift_stranded_work", "/work"),
+    ("shift_without_pr", "/repos/:provider/:owner/*"),
+    ("shift_without_pr", "/work"),
+    ("todo_blocked", "/work/:key"),
+    ("todo_handoff", "/work/:key"),
+    ("todo_parked", "/work/:key"),
+    ("todo_stuck_claim", "/work/:key"),
+    ("todo_untriaged", "/work/:key"),
+    ("todo_waiting_on_blocker", "/work/:key"),
+    ("workers_down", "/work"),
+];
+
+/// One item of every kind the inbox can emit, from the rules themselves.
+fn one_of_every_kind() -> Vec<Item> {
+    let family = "acme";
+    let repo = "acme/widget-shop";
+    let mut items = Vec::new();
+
+    let mut blocked = todo("t-blocked", "blocked");
+    blocked.note = "The widget-shop tag does not exist; a person must cut it.".to_string();
+    let mut parked = todo("t-parked", "parked");
+    parked.park_until = "2026-09-26T09:00:00Z".to_string();
+    let mut untriaged = todo("t-untriaged", "open");
+    untriaged.triaged = false;
+    let mut stuck = todo("t-stuck", "claimed");
+    stuck.claim_by = "dana@w1".to_string();
+    stuck.lease_until = "2026-09-19T12:30:00Z".to_string();
+    let mut waiting = todo("t-waiting", "open");
+    waiting.blocked_by = vec!["t-blocked".to_string()];
+    items.extend(todo_items(
+        family,
+        &[
+            blocked,
+            todo("t-handoff", "handoff"),
+            parked,
+            untriaged,
+            stuck,
+            waiting,
+        ],
+        true,
+        now(),
+    ));
+
+    let shift_repo =
+        |name: &str, pr: Option<&str>, todos: &[&str], review: Option<u64>| ShiftRepo {
+            repo: name.to_string(),
+            head: "9f8214948f1a8508fb95b1d3b941c162bf76a73a".to_string(),
+            ahead: 2,
+            behind: 0,
+            pr: pr.map(|state| ShiftPr {
+                number: 7,
+                state: state.to_string(),
+                url: format!("/repos/jeryu/{name}/pulls/7"),
+            }),
+            unmerged_todos: todos.iter().map(|id| (*id).to_string()).collect(),
+            review_pr: review.map(|number| ShiftPr {
+                number,
+                state: "mergeable".to_string(),
+                url: format!("/repos/jeryu/{name}/pulls/{number}"),
+            }),
+            reviewed_todos: Vec::new(),
+        };
+    items.extend(shift_items(
+        family,
+        &[ShiftBranch {
+            branch: "nightshift/2026-09-19".to_string(),
+            kind: "nightshift".to_string(),
+            date: "2026-09-19".to_string(),
+            repos: vec![
+                // No pull request at all, and one replaced by another repo's.
+                shift_repo("acme/widget-shop", None, &["t1"], None),
+                shift_repo("acme/widget-api", Some("closed"), &["t2"], Some(78)),
+                // Work that landed after the pull request merged.
+                shift_repo("acme/widget-web", Some("merged"), &["t3"], None),
+            ],
+            todo_ids: vec!["t1".to_string()],
+        }],
+    ));
+    items.extend(worker_items(
+        &[(family.to_string(), 3)],
+        &[worker(family, "w1", false)],
+        &hosts(),
+    ));
+
+    let pin = |bump: Option<u64>| Pin {
+        dependency: "acme/widget-core".to_string(),
+        kind: "commit",
+        source: "acme-split.lock.toml".to_string(),
+        pinned_ref: "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567".to_string(),
+        pinned_sha: Some("0a1b2c3d4e5f60718293a4b5c6d7e8f901234567".to_string()),
+        latest_sha: Some("89abcdef0123456789abcdef0123456789abcdef".to_string()),
+        latest_at: Some("2026-09-19T10:00:00Z".to_string()),
+        behind: 4,
+        latest_green: Some(true),
+        state: "behind",
+        bump_pr: bump.map(|number| BumpPr {
+            number,
+            state: "open".to_string(),
+            url: format!("/repos/jeryu/{repo}/pulls/{number}"),
+        }),
+        unreleased: vec![Unreleased {
+            sha: "89abcdef0123456789abcdef0123456789abcdef".to_string(),
+            subject: "feat: price the basket once".to_string(),
+        }],
+    };
+    items.extend(pin_items(
+        &[Consumer {
+            repo: repo.to_string(),
+            family: Some(family.to_string()),
+            branch: "main".to_string(),
+            pins: vec![pin(None), pin(Some(53))],
+        }],
+        &[],
+        &hosts(),
+        now(),
+    ));
+
+    items.extend(mirror_items(
+        &[MirrorFailure {
+            repo: repo.to_string(),
+            failed_at: now() - Duration::hours(2),
+            last_success_at: None,
+            reason: "push failed: remote: Invalid username or token".to_string(),
+        }],
+        &hosts(),
+    ));
+    items.extend(divergence_items(&[MirrorDrift {
+        repo: repo.to_string(),
+        github_slug: "acme/widget-shop".to_string(),
+        branch_state: Some("diverged".to_string()),
+        github_head: Some("89abcdef".to_string()),
+        github_only_commits: vec!["89abcdef".to_string()],
+        tag_drift: Vec::new(),
+        since: Some(now() - Duration::hours(3)),
+    }]));
+
+    // One pull request per posture, plus one the queue has been building for
+    // longer than a gate takes.
+    let posture = |posture: PullPosture, number: u64| PullFacts {
+        repo: repo.to_string(),
+        posture,
+        ..pull(number, 45, PullPosture::default())
+    };
+    let building = {
+        let mut entry = queue_entry(15, QueueState::Building, 2);
+        entry.repo = repo.to_string();
+        entry
+    };
+    items.extend(pull_items(
+        &[
+            posture(
+                PullPosture {
+                    changes_requested: 1,
+                    ..PullPosture::default()
+                },
+                8,
+            ),
+            posture(
+                PullPosture {
+                    failing: vec!["acme/required".to_string()],
+                    ..PullPosture::default()
+                },
+                9,
+            ),
+            posture(
+                PullPosture {
+                    checks_green: true,
+                    required_approvals: 1,
+                    ..PullPosture::default()
+                },
+                10,
+            ),
+            posture(
+                PullPosture {
+                    checks_green: true,
+                    can_merge: true,
+                    ..PullPosture::default()
+                },
+                11,
+            ),
+            // The same, while the queue builds it: the queue is the next step.
+            posture(
+                PullPosture {
+                    checks_green: true,
+                    can_merge: true,
+                    ..PullPosture::default()
+                },
+                15,
+            ),
+        ],
+        std::slice::from_ref(&building),
+        now(),
+    ));
+    items.extend(draft_items(&[draft(12, 9, "main")], 3, now()));
+
+    let open: BTreeSet<(String, u64)> = [
+        (repo.to_string(), 13),
+        (repo.to_string(), 14),
+        ("jeryu/jeryu-web".to_string(), 35),
+    ]
+    .into();
+    let failed = {
+        let mut entry = queue_entry(13, QueueState::Failed, 2);
+        entry.repo = repo.to_string();
+        entry
+    };
+    let refused = {
+        let mut entry = queue_entry(14, QueueState::Dequeued, 2);
+        entry.repo = repo.to_string();
+        entry.refusal_code = Some("queue_conflict".to_string());
+        entry
+    };
+    items.extend(queue_items(&[failed, refused], &open, now()));
+    // A reviewer that gave up on an open pull request, and no gate runner at
+    // all: one item each.
+    items.extend(runner_items(
+        &[
+            runner("review-1", &["redteam"], 30, Some(("hold", 35))),
+            // A gate slot silent for ten minutes is a gate with no runner.
+            runner("gate-1", &["pr-gate"], 600, None),
+        ],
+        &open,
+        true,
+        now(),
+        &hosts(),
+    ));
+
+    let staged = release_event(
+        7,
+        "release.staged",
+        "01dfe680a6de5e02da4e9aa7821534742aa46d7e",
+        "2026-09-19T12:40:00Z",
+        false,
+    );
+    let gave_up = release_event(
+        9,
+        "release.stage_failed",
+        "283416e0a6de5e02da4e9aa7821534742aa46d7e",
+        "2026-09-19T12:50:00Z",
+        true,
+    );
+    items.extend(release_items(
+        Some(&staged),
+        Some(&gave_up),
+        &[production(
+            "5fbe0ef2824d526ce03996cfa0cccca4ac3611d8",
+            "2026-09-19T12:27:00Z",
+            "failure",
+        )],
+        &hosts(),
+    ));
+    items
+}
+
+/// Every kind's href opens a page of the web app, and the whole inbox is
+/// covered: no kind is missing from [`KIND_ROUTES`] and none is listed there
+/// that no rule emits.
+#[test]
+fn every_kind_opens_a_route_of_the_web_app() {
+    let items = one_of_every_kind();
+    let walked: BTreeSet<(&str, &str)> = items
+        .iter()
+        .map(|item| (item.kind, assert_web_route(item)))
+        .collect();
+    assert_eq!(
+        walked,
+        KIND_ROUTES.iter().copied().collect::<BTreeSet<_>>(),
+        "the kinds the rules emit and the routes they open"
+    );
 }

@@ -9,7 +9,7 @@ use tower::ServiceExt;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 
 use super::attention::{Hosts, Item, Severity, pin_items as pin_rule};
-use super::attention_tests::assert_says_where;
+use super::attention_tests::{assert_says_where, assert_web_route};
 use super::pins::{BumpPr, Consumer, Pin, RawPin, Unreleased, classify, lock_pins, manifest_pins};
 use super::tests::{body_json, request};
 use super::types::Event;
@@ -152,10 +152,14 @@ fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 9, 19, 15, 30, 0).unwrap()
 }
 
-/// The rule, with every item it returns checked for "a command says where".
+/// The rule, with every item it returns checked for "a command says where"
+/// and for an href that opens a page of the web app.
 fn pin_items_at(consumers: &[Consumer], now: DateTime<Utc>) -> Vec<Item> {
     let items = pin_rule(consumers, &[], &Hosts::default(), now);
     items.iter().for_each(assert_says_where);
+    items.iter().for_each(|item| {
+        assert_web_route(item);
+    });
     items
 }
 
@@ -197,7 +201,7 @@ fn commit_pin_behind_with_no_bump_long_after_the_commit_asks_to_run_auto_pin() {
     );
     assert!(item.reason.contains("would not include them"), "{item:?}");
     assert!(item.reason.contains("the dock test brings its own Storage"));
-    assert_eq!(item.href, "/unreleased");
+    assert_eq!(item.href, "/releases?repo=jeryu/jeryu-deploy");
     assert_eq!(item.action.label, "Run auto-pin now");
     assert_eq!(
         item.action.command.as_deref(),
@@ -242,7 +246,10 @@ fn commit_pin_behind_is_only_watched_while_auto_pin_may_still_be_working() {
         (&inside.action.command, &inside.action.run_in),
         (&None, &None)
     );
-    assert_eq!(inside.next_step, "See what is waiting: open /unreleased");
+    assert_eq!(
+        inside.next_step,
+        "See what is waiting: open /releases?repo=jeryu/jeryu-deploy"
+    );
     assert_eq!(at(0, 0).severity, Severity::Watch);
 
     // Exactly twenty minutes is no longer "younger than twenty minutes".
@@ -336,6 +343,9 @@ fn gave_up(seq: i64, sha: &str) -> Event {
 fn pin_items_given_up(pins: Vec<Pin>, events: &[Event], now: DateTime<Utc>) -> Vec<Item> {
     let items = pin_rule(&consumer(pins), events, &Hosts::default(), now);
     items.iter().for_each(assert_says_where);
+    items.iter().for_each(|item| {
+        assert_web_route(item);
+    });
     items
 }
 
@@ -429,7 +439,7 @@ fn tag_pin_behind_is_watched_because_nothing_cuts_tags() {
     assert!(item.reason.contains("crates/jeryu-api/Cargo.toml"));
     assert_eq!(
         (item.href.as_str(), &item.action.command),
-        ("/unreleased", &None)
+        ("/releases?repo=jeryu/jeryu-deploy", &None)
     );
 }
 

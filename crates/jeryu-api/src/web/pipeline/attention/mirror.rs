@@ -4,7 +4,7 @@
 
 use chrono::{DateTime, Utc};
 
-use super::{Draft, Hosts, Item, Severity, Shell};
+use super::{Draft, Hosts, Item, Severity, Shell, repo_href};
 
 /// A configured GitHub mirror whose newest push failed.
 #[derive(Clone, Debug, PartialEq)]
@@ -145,7 +145,7 @@ pub(crate) fn divergence_items(drifts: &[MirrorDrift]) -> Vec<Item> {
                 severity: Severity::Critical,
                 title: format!("GitHub has work the forge does not for {}", drift.repo),
                 reason,
-                href: format!("/repos/{}", drift.repo),
+                href: repo_href(&drift.repo),
                 label: "Decide what happens to the GitHub-only work",
                 command: None,
             }

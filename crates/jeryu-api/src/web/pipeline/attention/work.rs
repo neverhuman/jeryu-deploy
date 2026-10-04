@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::{
-    Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, UNTRIAGED_MINUTES, parse_time,
-    todo_href,
+    Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, UNTRIAGED_MINUTES, WORKERS_HREF,
+    parse_time, todo_href, work_href,
 };
 use crate::web::shift::{BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 
@@ -319,10 +319,10 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
                         repo.repo
                     ),
                 },
-                href: repo.review_pr.as_ref().map_or_else(
-                    || format!("/work/shift?family={family}"),
-                    |pr| pr.url.clone(),
-                ),
+                href: repo
+                    .review_pr
+                    .as_ref()
+                    .map_or_else(|| work_href(family), |pr| pr.url.clone()),
                 label: match repo.review_pr {
                     Some(_) => "Add the missing todo(s) to the open review PR",
                     None => "Open the shift's review PR",
@@ -377,7 +377,7 @@ pub(crate) fn worker_items(
                     .map(|seen| format!(" (last seen {seen})"))
                     .unwrap_or_default()
             ),
-            href: "/work/shift/workers".to_string(),
+            href: WORKERS_HREF.to_string(),
             label: "Check the todoq supervisor on the worker host",
             command: Some(Shell {
                 line: format!("systemctl --user status todoq-supervisor@{family}"),
@@ -410,7 +410,7 @@ fn stranded_item(family: &str, shift: &ShiftBranch, repo: &ShiftRepo) -> Item {
             shift.branch,
             repo.repo
         ),
-        href: format!("/work/shift?family={family}"),
+        href: work_href(family),
         label: "Open a new review PR for the branch",
         command: None,
     }

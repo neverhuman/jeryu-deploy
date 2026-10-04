@@ -4,10 +4,9 @@
 use chrono::{DateTime, Duration, Utc};
 
 use super::super::pins::{Consumer, Pin};
-use super::{Draft, Hosts, Item, Severity, Shell, parse_time};
+use super::{Draft, Hosts, Item, Severity, Shell, parse_time, releases_href};
 use crate::web::pipeline::Event;
 
-const UNRELEASED_HREF: &str = "/unreleased";
 /// How long auto-pin gets before a missing bump is somebody's problem: its
 /// timer fires every 5 minutes and a build takes about 3, so by now it has
 /// had several whole turns.
@@ -119,7 +118,7 @@ fn pin_item(
                  {dependency} tag and pointing {deploy} at it.",
                 pin.source
             ),
-            href: UNRELEASED_HREF.to_string(),
+            href: releases_href(&consumer.repo),
             label: "See what is waiting for a tag",
             command: None,
         },
@@ -154,7 +153,7 @@ fn pin_item(
                      request comes until its give-up marker is cleared; its log is \
                      `journalctl --user -u {AUTO_PIN_UNIT} -n 30`. {waiting}"
                 ),
-                href: UNRELEASED_HREF.to_string(),
+                href: releases_href(&consumer.repo),
                 label: "Clear the give-up and retry auto-pin",
                 command: Some(Shell {
                     line: format!(
@@ -176,7 +175,7 @@ fn pin_item(
                 "{waiting} The auto-pin timer opens the bump pull request within a few minutes \
                  of {dependency} going green, so there is nothing to do yet."
             ),
-            href: UNRELEASED_HREF.to_string(),
+            href: releases_href(&consumer.repo),
             label: "See what is waiting",
             command: None,
         },
@@ -195,7 +194,7 @@ fn pin_item(
                  is `journalctl --user -u {AUTO_PIN_UNIT} -n 30`. {waiting}",
                 pin.source
             ),
-            href: UNRELEASED_HREF.to_string(),
+            href: releases_href(&consumer.repo),
             label: "Run auto-pin now",
             command: Some(Shell {
                 line: format!("systemctl --user start {AUTO_PIN_UNIT}"),

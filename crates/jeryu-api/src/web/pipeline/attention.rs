@@ -34,6 +34,8 @@ mod flow;
 mod hosts;
 mod mirror;
 mod pins;
+#[cfg(test)]
+pub(super) mod web_routes;
 mod work;
 
 pub(crate) use acks::AckStore;
@@ -195,12 +197,40 @@ pub(super) fn parse_time(text: &str) -> Option<DateTime<Utc>> {
         .map(|time| time.with_timezone(&Utc))
 }
 
-pub(super) fn todo_href(family: &str, id: &str) -> String {
-    format!("/work/shift?family={family}&todo={id}")
+// Every href below is a route of the web app itself, so that opening an item
+// never depends on a redirect; `web_routes` holds the route patterns and the
+// tests walk every kind's href against them.
+
+/// The repository page. Repository URLs name the provider first
+/// (`/repos/<provider>/<owner>/<name>`), and the forge's own provider segment
+/// is `jeryu`.
+pub(super) fn repo_href(repo: &str) -> String {
+    format!("/repos/jeryu/{repo}")
 }
 
 pub(super) fn pull_href(repo: &str, number: u64) -> String {
-    format!("/repos/jeryu/{repo}/pulls/{number}")
+    format!("{}/pulls/{number}", repo_href(repo))
+}
+
+/// One todo's own page. Ids are unique across families, so `family` only
+/// narrows the lookup; todo ids are slugs and need no escaping.
+pub(super) fn todo_href(family: &str, id: &str) -> String {
+    format!("/work/{id}?family={family}")
+}
+
+/// Work, filtered to one family: the queue of every family is one page, and
+/// `#workers` and `#add` are places on it.
+pub(super) fn work_href(family: &str) -> String {
+    format!("/work?family={family}")
+}
+
+/// The workers strip on Work.
+pub(super) const WORKERS_HREF: &str = "/work#workers";
+
+/// Releases, scoped to one deploy repository: what each environment runs and,
+/// last, what is merged in a dependency and not yet pinned.
+pub(super) fn releases_href(repo: &str) -> String {
+    format!("/releases?repo={repo}")
 }
 
 fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
