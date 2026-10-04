@@ -768,7 +768,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/auth/tokens/:id",
             axum::routing::delete(auth::delete_token),
         ),
-        ("/api/v1/admin/users", get(auth::admin_users)),
+        (
+            "/api/v1/admin/users",
+            get(auth::admin_users).post(auth::admin_create_user),
+        ),
         (
             "/api/v1/admin/site-settings",
             get(site_settings::admin_get_site_settings).put(site_settings::admin_put_site_settings),
@@ -1355,6 +1358,8 @@ mod paging_tests;
 #[cfg(test)]
 mod operator_resources_tests;
 
+#[cfg(test)]
+mod admin_users_tests;
 #[cfg(test)]
 mod anonymous_read_tests;
 #[cfg(test)]

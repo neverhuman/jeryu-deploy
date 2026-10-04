@@ -62,6 +62,12 @@ pub(super) struct GrantRequest {
     access: RepoAccessLevel,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct CreateUserRequest {
+    login: String,
+    role: UserRole,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AuthUserResponse {
@@ -92,6 +98,13 @@ pub(super) struct TokenSummaryResponse {
 #[derive(Debug, Serialize)]
 pub(super) struct PasswordResetResponse {
     login: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct CreatedUserResponse {
+    login: String,
+    role: UserRole,
     password: String,
 }
 
@@ -392,6 +405,89 @@ pub(super) async fn admin_users(
         return forbidden("admin role required");
     }
     Json(state.core.list_accounts()).into_response()
+}
+
+/// `POST /api/v1/admin/users` — add a forge identity with its role and hand
+/// back a one-time password, so an operator never edits the account store by
+/// hand with the service stopped.
+pub(super) async fn admin_create_user(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Json(request): Json<CreateUserRequest>,
+) -> AxumResponse {
+    if account.role != UserRole::Admin {
+        return forbidden("admin role required");
+    }
+    if auth_rate_limit_exceeded(&state, peer.as_ref(), &headers, "create", &request.login) {
+        return rate_limited();
+    }
+    let CreateUserRequest { login, role } = request;
+    let password = match state.core.generate_one_time_password() {
+        Ok(password) => password,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_failed",
+                &format!("could not generate password: {error}"),
+            );
+        }
+    };
+    let _ = state.core.append_audit_as(
+        &account.login,
+        "account.create",
+        &login,
+        "requested",
+        json!({ "role": &role }),
+    );
+    // The temporary flavour forces a password change, so the one-time password
+    // in this reply cannot outlive the first login.
+    match state
+        .core
+        .create_temporary_account(&login, &password, role.clone())
+    {
+        Ok(created) => {
+            let _ = state.core.append_audit_as(
+                &account.login,
+                "account.create",
+                &created.login,
+                "completed",
+                json!({ "role": created.role }),
+            );
+            (
+                StatusCode::CREATED,
+                Json(CreatedUserResponse {
+                    login: created.login,
+                    role: created.role,
+                    password,
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            let _ = state.core.append_audit_as(
+                &account.login,
+                "account.create",
+                &login,
+                "failed",
+                json!({ "role": &role, "error": error.to_string() }),
+            );
+            match error {
+                ForgeError::Conflict(_) => {
+                    api_error(StatusCode::CONFLICT, "conflict", "user already exists")
+                }
+                ForgeError::Validation(reason) => {
+                    api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_input", &reason)
+                }
+                error => api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage_failed",
+                    &format!("could not create user: {error}"),
+                ),
+            }
+        }
+    }
 }
 
 pub(super) async fn admin_reset_password(
