@@ -65,25 +65,25 @@ struct PullRequestDiff {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PullRequestDiffFile {
-    path: String,
-    old_path: Option<String>,
-    status: &'static str,
-    additions: u32,
-    deletions: u32,
-    risk: Option<&'static str>,
-    is_binary: bool,
-    hunks: Vec<PullRequestDiffHunk>,
+pub(in crate::web) struct PullRequestDiffFile {
+    pub(in crate::web) path: String,
+    pub(in crate::web) old_path: Option<String>,
+    pub(in crate::web) status: &'static str,
+    pub(in crate::web) additions: u32,
+    pub(in crate::web) deletions: u32,
+    pub(in crate::web) risk: Option<&'static str>,
+    pub(in crate::web) is_binary: bool,
+    pub(in crate::web) hunks: Vec<PullRequestDiffHunk>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PullRequestDiffHunk {
-    header: String,
-    old_start: u32,
-    old_lines: u32,
-    new_start: u32,
-    new_lines: u32,
-    lines: Vec<String>,
+pub(in crate::web) struct PullRequestDiffHunk {
+    pub(in crate::web) header: String,
+    pub(in crate::web) old_start: u32,
+    pub(in crate::web) old_lines: u32,
+    pub(in crate::web) new_start: u32,
+    pub(in crate::web) new_lines: u32,
+    pub(in crate::web) lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1075,7 +1075,7 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
     })
 }
 
-mod diff;
+pub(in crate::web) mod diff;
 mod posture;
 
 #[cfg(test)]

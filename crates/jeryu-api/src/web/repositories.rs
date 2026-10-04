@@ -683,6 +683,7 @@ fn score_ingest_invalid(reason: &str) -> AxumResponse {
 }
 
 mod blame;
+mod commit;
 mod commits;
 mod compare;
 mod deployed;
@@ -691,6 +692,7 @@ mod release_tag;
 mod source;
 
 pub(super) use blame::repo_blame;
+pub(super) use commit::repo_commit;
 pub(super) use commits::repo_commits;
 pub(super) use compare::repo_compare;
 pub(super) use deployed::deployed_repositories;

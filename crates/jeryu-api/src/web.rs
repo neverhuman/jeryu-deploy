@@ -82,9 +82,10 @@ use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
 use jeryu_runnerd::{WarmPool, WorkcellManager};
 use repositories::{
-    deployed_repositories, fleet_tool_adoption, repo_blame, repo_blob, repo_commits, repo_compare,
-    repo_detail, repo_jankurai_scores_ingest, repo_jankurai_scores_list, repo_pages, repo_raw,
-    repo_readme, repo_readme_update, repo_refs, repo_release_tag, repo_tree, repo_update, repos,
+    deployed_repositories, fleet_tool_adoption, repo_blame, repo_blob, repo_commit, repo_commits,
+    repo_compare, repo_detail, repo_jankurai_scores_ingest, repo_jankurai_scores_list, repo_pages,
+    repo_raw, repo_readme, repo_readme_update, repo_refs, repo_release_tag, repo_tree, repo_update,
+    repos,
 };
 use surface::{bootstrap_payload_for_user, github_forward, graphql, markdown_render, repo_entry};
 
@@ -954,6 +955,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         ("/api/v1/repos/:id/refs", get(repo_refs)),
         ("/api/v1/repos/:id/commits", get(repo_commits)),
+        ("/api/v1/repos/:id/commit/:sha", get(repo_commit)),
         ("/api/v1/repos/:id/compare", get(repo_compare)),
         ("/api/v1/repos/:id/release-tag", get(repo_release_tag)),
         ("/api/v1/deployments", get(deployed_repositories)),

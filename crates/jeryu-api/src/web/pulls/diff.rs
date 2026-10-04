@@ -69,7 +69,7 @@ fn empty_file(path: String, old_path: Option<String>, status: &'static str) -> P
 }
 
 /// Parses `git diff` output into per-file entries with hunks and line counts.
-pub(super) fn parse_unified_diff(text: &str) -> Vec<PullRequestDiffFile> {
+pub(in crate::web) fn parse_unified_diff(text: &str) -> Vec<PullRequestDiffFile> {
     let mut files: Vec<PullRequestDiffFile> = Vec::new();
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
@@ -157,7 +157,11 @@ fn parse_range(range: &str) -> Option<(u32, u32)> {
 }
 
 /// Drops hunk bodies past the line budget; file entries and counts are kept.
-fn cap_lines(mut files: Vec<PullRequestDiffFile>) -> (Vec<PullRequestDiffFile>, bool) {
+///
+/// Shared with the single-commit route, which serves the same diff shape.
+pub(in crate::web) fn cap_lines(
+    mut files: Vec<PullRequestDiffFile>,
+) -> (Vec<PullRequestDiffFile>, bool) {
     let mut budget = MAX_DIFF_LINES;
     let mut truncated = false;
     for file in &mut files {
