@@ -10,9 +10,9 @@ use tower::ServiceExt;
 
 use super::attention::{
     ApiCall, Draft, DraftFacts, Hosts, Item, LatestDeployment, MirrorDrift, MirrorFailure,
-    ProductionFacts, PullFacts, Severity, divergence_items, draft_items, mirror_items, order,
-    pin_items, pull_items, queue_items, release_items, runner_items, shift_items, todo_items,
-    web_routes, worker_items,
+    ProductionFacts, PullFacts, Severity, budget_items, divergence_items, draft_items,
+    mirror_items, order, pin_items, pull_items, queue_items, release_items, runner_items,
+    shift_items, todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -1035,6 +1035,189 @@ fn a_family_with_queued_work_and_no_healthy_worker() {
     );
 }
 
+/// A `shift.exhausted` event as the todoq workers post it: what the operator
+/// spent, the cap, and how many claimable todos were left waiting.
+fn exhausted(seq: i64, family: &str, shift: &str, ts: &str, waiting: i64) -> Event {
+    Event {
+        seq,
+        ts: ts.to_string(),
+        event_id: None,
+        source: "todoq".to_string(),
+        kind: "shift.exhausted".to_string(),
+        reporter: "alton".to_string(),
+        actor: None,
+        family_label: Some(family.to_string()),
+        family: Some(family.to_string()),
+        repo: None,
+        pr: None,
+        sha: None,
+        todo_id: None,
+        shift: Some(shift.to_string()),
+        outcome: None,
+        needs_human: true,
+        summary: format!("{family}: shift budget spent"),
+        reason: None,
+        cost_usd: None,
+        seconds: None,
+        log_tail: None,
+        log_url: None,
+        detail: Some(json!({"spent_usd": 42.0, "budget_usd": 40.0, "waiting": waiting})),
+    }
+}
+
+fn claimed(seq: i64, family: &str, shift: &str, ts: &str) -> Event {
+    Event {
+        kind: "todo.claimed".to_string(),
+        needs_human: false,
+        summary: format!("{family} w1 claimed a todo"),
+        detail: None,
+        todo_id: Some("20261003-020938-c66a5a".to_string()),
+        ..exhausted(seq, family, shift, ts, 0)
+    }
+}
+
+#[test]
+fn a_spent_shift_budget_with_todos_waiting_needs_a_person() {
+    let items = budget_items(
+        &[exhausted(
+            11,
+            "acme",
+            "nightshift/2026-10-03",
+            "2026-10-03T06:00:00Z",
+            3,
+        )],
+        &[],
+    );
+    assert_eq!(kinds(&items), ["shift_budget_spent"]);
+    let item = &items[0];
+    assert_eq!(item.severity, Severity::Action);
+    assert_eq!(item.id, "shift-budget-spent:acme:nightshift/2026-10-03");
+    assert_eq!(item.family.as_deref(), Some("acme"));
+    assert_eq!(item.shift.as_deref(), Some("nightshift/2026-10-03"));
+    assert_eq!(item.since.as_deref(), Some("2026-10-03T06:00:00Z"));
+    assert!(item.title.contains("3 todo(s) wait"), "{}", item.title);
+    assert!(
+        item.reason.contains("$42.00 of the $40.00 shift budget"),
+        "{}",
+        item.reason
+    );
+    let spend = item.budget.as_ref().expect("the spend in numbers");
+    assert_eq!(spend.spent_usd, Some(42.0));
+    assert_eq!(spend.budget_usd, Some(40.0));
+    assert_eq!(spend.waiting, Some(3));
+    assert_actionable(item);
+}
+
+#[test]
+fn a_shift_budget_item_clears_on_a_later_claim_or_a_newer_shift() {
+    let spent = exhausted(
+        11,
+        "acme",
+        "nightshift/2026-10-03",
+        "2026-10-03T06:00:00Z",
+        3,
+    );
+
+    // A claim after the event: the budget was raised, or the next shift took
+    // the work up, and nothing waits on a person any more.
+    assert!(
+        budget_items(
+            std::slice::from_ref(&spent),
+            &[claimed(
+                12,
+                "acme",
+                "nightshift/2026-10-04",
+                "2026-10-04T01:00:00Z"
+            )]
+        )
+        .is_empty()
+    );
+    // A claim from before it, or one of another family, says nothing.
+    assert_eq!(
+        kinds(&budget_items(
+            std::slice::from_ref(&spent),
+            &[
+                claimed(9, "acme", "nightshift/2026-10-03", "2026-10-03T02:00:00Z"),
+                claimed(
+                    13,
+                    "globex",
+                    "nightshift/2026-10-03",
+                    "2026-10-03T07:00:00Z"
+                ),
+            ]
+        )),
+        ["shift_budget_spent"]
+    );
+
+    // A newer shift's event replaces the one before it: one item per family.
+    let newer = exhausted(
+        20,
+        "acme",
+        "nightshift/2026-10-04",
+        "2026-10-04T06:00:00Z",
+        1,
+    );
+    let items = budget_items(&[newer, spent], &[]);
+    assert_eq!(kinds(&items), ["shift_budget_spent"]);
+    assert_eq!(items[0].shift.as_deref(), Some("nightshift/2026-10-04"));
+
+    // Nothing waiting is a shift that ended tidily.
+    assert!(
+        budget_items(
+            &[exhausted(
+                11,
+                "acme",
+                "nightshift/2026-10-03",
+                "2026-10-03T06:00:00Z",
+                0
+            )],
+            &[]
+        )
+        .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn the_attention_route_reads_a_spent_shift_budget_from_the_event_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = shift_forge(dir.path());
+    let call = |method, uri: &str, token: &str, body: Option<Value>| {
+        router.clone().oneshot(request(method, uri, token, body))
+    };
+    let posted = call(
+        HttpMethod::POST,
+        "/api/v1/events",
+        &admin,
+        Some(json!({
+            "source": "todoq", "kind": "shift.exhausted", "family": "jeryu",
+            "shift": "nightshift/2026-10-03", "needs_human": true,
+            "summary": "jeryu: shift budget spent with 3 todos waiting",
+            "detail": {"spent_usd": 42.0, "budget_usd": 40.0, "waiting": 3},
+        })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(posted.status(), StatusCode::CREATED);
+
+    let body = body_json(
+        call(HttpMethod::GET, "/api/v1/attention", &admin, None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "shift_budget_spent")
+        .unwrap_or_else(|| panic!("{body}"));
+    assert_eq!(item["severity"], "action");
+    assert_eq!(item["budget"]["spent_usd"], 42.0);
+    assert_eq!(item["budget"]["budget_usd"], 40.0);
+    assert_eq!(item["budget"]["waiting"], 3);
+    assert_eq!(item["href"], "/work?family=jeryu");
+}
+
 fn release_event(seq: i64, kind: &str, sha: &str, ts: &str, needs_human: bool) -> Event {
     Event {
         seq,
@@ -1304,7 +1487,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["schema_version"], "jeryu.attention/v1.1");
+    assert_eq!(body["schema_version"], "jeryu.attention/v1.2");
     let items = body["items"].as_array().unwrap();
     let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
     // Critical first (open todos and no worker has ever reported), then the
@@ -1998,6 +2181,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("release_stage_failed", "/activity"),
     ("release_staged", "/releases"),
     ("reviewer_stuck", "/repos/:provider/:owner/*"),
+    ("shift_budget_spent", "/work"),
     ("shift_stranded_work", "/work"),
     ("shift_without_pr", "/repos/:provider/:owner/*"),
     ("shift_without_pr", "/work"),
@@ -2241,6 +2425,16 @@ fn one_of_every_kind() -> Vec<Item> {
         "2026-09-19T12:50:00Z",
         true,
     );
+    items.extend(budget_items(
+        &[exhausted(
+            21,
+            family,
+            "nightshift/2026-09-19",
+            "2026-09-19T06:00:00Z",
+            3,
+        )],
+        &[],
+    ));
     items.extend(release_items(
         Some(&staged),
         Some(&gave_up),

@@ -52,11 +52,12 @@ pub(crate) use flow::{
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
 pub(crate) use pins::pin_items;
-pub(crate) use work::{shift_items, todo_items, worker_items};
+pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
-/// `v1.1` added `action.api`: every earlier field is unchanged, so a client
-/// written against `v1` reads a `v1.1` answer as it always did.
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.1";
+/// `v1.1` added `action.api` and `v1.2` the optional `budget`: every earlier
+/// field is unchanged, so a client written against `v1` reads a `v1.2` answer
+/// as it always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.2";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -120,6 +121,20 @@ pub(super) struct Shell {
     pub(super) run_in: String,
 }
 
+/// The money behind a `shift_budget_spent` item, as numbers rather than
+/// prose, so a surface showing the spend never parses `reason` back apart.
+/// A number the event did not carry is left out of the JSON.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct BudgetSpend {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spent_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+    /// Claimable todos still waiting when the budget ran out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct Item {
     pub id: String,
@@ -137,6 +152,9 @@ pub(crate) struct Item {
     pub todo_id: Option<String>,
     pub sha: Option<String>,
     pub shift: Option<String>,
+    /// Set on `shift_budget_spent` only; the key is absent on every other item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget: Option<BudgetSpend>,
     pub href: String,
     pub action: Action,
     pub next_step: String,
@@ -192,6 +210,7 @@ impl Draft<'_> {
             todo_id: None,
             sha: None,
             shift: None,
+            budget: None,
             href: self.href,
             action: match self.command {
                 Some(shell) => Action {
@@ -451,6 +470,24 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         ));
     }
     items.extend(worker_items(&waiting, &workers, &hosts));
+    // A spent shift budget is only visible in the event log: the operator's
+    // cap is not state the forge holds, so this one rule reads events.
+    let page = |kind: &str, needs_human| super::types::EventsQuery {
+        kind: Some(kind.to_string()),
+        needs_human,
+        limit: Some(50),
+        ..Default::default()
+    };
+    items.extend(budget_items(
+        &state
+            .events
+            .query(&page("shift.exhausted", Some(true)))
+            .unwrap_or_default(),
+        &state
+            .events
+            .query(&page("todo.claimed", None))
+            .unwrap_or_default(),
+    ));
     let gave_up = state
         .events
         .query(&super::types::EventsQuery {

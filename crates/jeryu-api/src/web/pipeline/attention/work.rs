@@ -4,9 +4,11 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 
+use super::super::types::Event;
 use super::{
-    ApiCall, Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, UNTRIAGED_MINUTES,
-    WORKERS_HREF, open_shift_pr_call, parse_time, todo_action_call, todo_href, work_href,
+    ApiCall, BudgetSpend, Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell,
+    UNTRIAGED_MINUTES, WORKERS_HREF, open_shift_pr_call, parse_time, todo_action_call, todo_href,
+    work_href,
 };
 use crate::web::shift::{BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 
@@ -372,6 +374,132 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
             item.shift = Some(shift.branch.clone());
             items.push(item);
         }
+    }
+    items
+}
+
+/// A number a producer put in an event's `detail`, whichever JSON number
+/// spelling it used.
+fn detail_number(event: &Event, key: &str) -> Option<f64> {
+    event
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get(key))
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+}
+
+/// `$12.40`, with no trailing cents noise.
+fn money(amount: f64) -> String {
+    format!("${amount:.2}")
+}
+
+/// What the spend reads as in a sentence, from whichever of the two numbers
+/// the event carried.
+fn spend_phrase(spend: &BudgetSpend) -> String {
+    match (spend.spent_usd, spend.budget_usd) {
+        (Some(spent), Some(budget)) => format!(
+            "{} of the {} shift budget is spent",
+            money(spent),
+            money(budget)
+        ),
+        (Some(spent), None) => format!("{} is spent", money(spent)),
+        (None, Some(budget)) => format!("the {} shift budget is spent", money(budget)),
+        (None, None) => "the shift budget is spent".to_string(),
+    }
+}
+
+/// How many claimable todos the event said were still waiting, as a phrase.
+fn waiting_phrase(waiting: Option<u64>) -> String {
+    match waiting {
+        Some(waiting) => format!("{waiting} todo(s) wait"),
+        None => "todos wait".to_string(),
+    }
+}
+
+/// Families whose operator spent the shift budget with claimable todos still
+/// waiting: the newest `shift.exhausted` per family, which is also the newest
+/// per shift, since a new shift's event replaces the one before it.
+///
+/// `exhausted` and `claims` are pages of `shift.exhausted` and `todo.claimed`,
+/// newest first. A claim after the event is a worker claiming again — the
+/// budget was raised, or the next shift started — so the item clears: nothing
+/// is waiting on a person any more.
+pub(crate) fn budget_items(exhausted: &[Event], claims: &[Event]) -> Vec<Item> {
+    let family_of = |event: &Event| {
+        event
+            .family
+            .as_deref()
+            .map(str::trim)
+            .filter(|family| !family.is_empty())
+            .map(str::to_string)
+    };
+    let mut newest: BTreeMap<String, &Event> = BTreeMap::new();
+    for event in exhausted {
+        let Some(family) = family_of(event) else {
+            continue;
+        };
+        newest
+            .entry(family)
+            .and_modify(|kept| {
+                if kept.seq < event.seq {
+                    *kept = event;
+                }
+            })
+            .or_insert(event);
+    }
+    let mut items = Vec::new();
+    for (family, event) in newest {
+        let claimed_again = claims.iter().any(|claim| {
+            family_of(claim).as_deref() == Some(family.as_str()) && claim.seq > event.seq
+        });
+        if claimed_again {
+            continue;
+        }
+        let waiting = detail_number(event, "waiting").map(|waiting| waiting.max(0.0) as u64);
+        // An event that says nothing waits is a shift that ended tidily.
+        if waiting == Some(0) {
+            continue;
+        }
+        let spend = BudgetSpend {
+            spent_usd: detail_number(event, "spent_usd").or(event.cost_usd),
+            budget_usd: detail_number(event, "budget_usd"),
+            waiting,
+        };
+        let shift = event
+            .shift
+            .as_deref()
+            .map(str::trim)
+            .filter(|shift| !shift.is_empty());
+        let mut item = Draft {
+            id: format!("shift-budget-spent:{family}:{}", shift.unwrap_or("-")),
+            kind: "shift_budget_spent",
+            severity: Severity::Action,
+            title: format!(
+                "{family}'s shift budget is spent and {}",
+                waiting_phrase(waiting)
+            ),
+            reason: format!(
+                "{}, so no {family} worker claims another todo{} and {} that could be \
+                 claimed. The work waits until the budget is raised or the next shift \
+                 starts.",
+                spend_phrase(&spend),
+                shift
+                    .map(|shift| format!(" on {shift}"))
+                    .unwrap_or_default(),
+                waiting_phrase(waiting)
+            ),
+            href: work_href(&family),
+            label: "Raise the shift budget or let the next shift pick the work up",
+            api: None,
+            command: None,
+        }
+        .build();
+        item.since = Some(event.ts.clone());
+        item.family = Some(family.clone());
+        item.shift = shift.map(str::to_string);
+        item.budget = Some(spend);
+        items.push(item);
     }
     items
 }

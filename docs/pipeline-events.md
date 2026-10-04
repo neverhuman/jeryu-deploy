@@ -104,7 +104,7 @@ Posted by producers:
 
 | Source | Kinds |
 |---|---|
-| `todoq` | `todo.claimed`, `todo.attempt_finished` (`outcome` `done`, `retry`, `blocked` or `ratelimit`; `cost_usd`, `seconds`, `log_tail`), `todo.merged`, `todo.waiting_on_unmerged`, `shift.exhausted`, `worker.error` |
+| `todoq` | `todo.claimed`, `todo.attempt_finished` (`outcome` `done`, `retry`, `blocked` or `ratelimit`; `cost_usd`, `seconds`, `log_tail`), `todo.merged`, `todo.waiting_on_unmerged`, `shift.exhausted` (`shift` is the shift branch, `needs_human` when claimable todos are left waiting; `detail` has `spent_usd`, `budget_usd` and `waiting`), `worker.error` |
 | `auto-stage` | `release.staged` (`sha` is the staged commit; `detail` has `release`, `previous_release`, `deploy_command`), `release.stage_failed` (`log_tail`; `needs_human` on the final attempt) |
 | `auto-pin` | `pin.bump_opened` (`repo` is the consumer, `pr` the bump, `sha` the dependency commit; `detail` has `dependency`, `from`, `to`, `web_dist_sha256`), `pin.bump_failed` (`log_tail`; `needs_human` on the second failure for the same commit) |
 | `pr-gate` | `gate.log` (`outcome` including `timed_out` and `inputs_changed`, `seconds`, `log_tail`, a receipt subset in `detail`) |
@@ -191,7 +191,7 @@ for 10 seconds), never from old events, so an item disappears when its cause
 is fixed.
 
 ```json
-{"schema_version": "jeryu.attention/v1.1", "generated_at": "...",
+{"schema_version": "jeryu.attention/v1.2", "generated_at": "...",
  "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1}}
 ```
 
@@ -210,6 +210,7 @@ of `counts`, until the date it was acknowledged until.
 | `family`, `repo`, `pr`, `todo_id`, `sha`, `shift` | nullable join keys. `repo` is `owner/name`, except on `shift_without_pr`, which uses the family repo name as the Shift API does |
 | `href` | the in-app page where the step happens |
 | `action` | `{"label", "command", "run_in", "api"}`. `command` is a copyable shell line when the step happens off-site, else null. `run_in` says where that line is run, as a short phrase naming the machine and the directory (`"node-a, any directory"`, `"node-a, in a jeryu/jeryu-deploy checkout"`); it is a string on every item whose `command` is set and the key is absent on every other item. `api` is the call that performs the step, and the key is absent when no route of this API does it (see [Replaying a step](#replaying-a-step)) |
+| `budget` | `{"spent_usd", "budget_usd", "waiting"}` on `shift_budget_spent` only, from the `shift.exhausted` event's `detail`: the spend, the operator's cap and how many claimable todos were left waiting. A number the event did not carry is absent, and so is the whole key on every other kind |
 | `next_step` | the one next step as a sentence: `<label>: on <run_in>, run \`<command>\`` or `<label>: open <href>` |
 
 Every item names exactly one next step: run `action.command` on the machine and
@@ -254,9 +255,9 @@ that wants linear history, deciding a title.
 | `queue_failed` | the same: the entry is retried by queueing it again once the reason is fixed |
 | `queue_refused` (a code with no step of its own) | the same |
 
-The schema version says `v1.1` because `action.api` is additive: every field
-of `v1` is unchanged, so a client written against `v1` reads a `v1.1` answer
-as it always did.
+The schema version says `v1.2` because `action.api` (`v1.1`) and `budget`
+(`v1.2`) are additive: every field of `v1` is unchanged, so a client written
+against `v1` reads a `v1.2` answer as it always did.
 
 The machine in `run_in` is one of three roles, each named by an environment
 variable of the server (see [Operations](#operations)): the release host
@@ -281,6 +282,7 @@ pushes leave from there).
 | `todo_stuck_claim` | watch | claimed, lease dead for 10 minutes or more |
 | `todo_waiting_on_blocker` | watch | open, and a `blocked_by` todo is blocked, handed off, or done but not merged |
 | `shift_without_pr` | action | a shift branch holds todos that are on no base commit (`unmerged_todos`), with no pull request or only a closed one. Being ahead by sha is not enough: a branch closed and replaced by a rebased one stays ahead for ever |
+| `shift_budget_spent` | action | the newest `shift.exhausted` of a family (which is also the newest of its shift: a new shift's event replaces the one before it) said the operator's shift budget ran out with claimable todos still waiting, and no `todo.claimed` has been posted for the family since. Nothing else says so: the cap is the operator's, not state the forge holds, so this one rule reads the event log. An event whose `detail.waiting` is 0 is a shift that ended tidily and asks for nobody |
 | `shift_stranded_work` | action | a shift's pull request already merged, and todos landed on the branch afterwards: their `Todo:` trailer is on no base commit, so the work is finished and on no open pull request |
 | `mirror_diverged` | critical | the newest reconcile found GitHub holding commits the forge does not, or a tag GitHub published at another commit; ONE item PER repository, naming the commits, because each one is its own history question. Nothing was forced and nothing was deleted (`docs/github-mirror.md`) |
 | `mirror_failing` | action | the newest `jeryu/github-mirror` push failed for one or more repositories; ONE item for the whole forge, naming up to four of them and what git said; the step is on the forge host (SSH rewrite and deploy key) |
