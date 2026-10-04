@@ -318,6 +318,41 @@ return `invalid_ref`; checkout or index failures return codegraph-specific
 repair messages. Use `docs/codegraph-oracle.md` for the route contract and
 `docs/testing.md#codegraph-oracle` for rerun commands.
 
+## v3 List Ordering And Filtering
+
+The GitHub-compatible lists order and filter themselves from the query string:
+
+| Route | Query |
+| --- | --- |
+| `GET /api/v3/repos/{owner}/{repo}/pulls` | `state=open\|closed\|all`, `sort=created\|updated\|popularity\|long-running`, `direction=asc\|desc`, `head=owner:branch`, `base=branch` |
+| `GET /api/v3/repos/{owner}/{repo}/issues` | `state=open\|closed\|all`, `sort=created\|updated\|comments`, `direction=asc\|desc` |
+| `GET /api/v3/repos/{owner}/{repo}/commits` | `sha=`, `direction=asc\|desc` (and `sort=created`, its only orderable field) |
+
+The default order is `created`/`desc` — newest first — so the pull request
+opened last leads the first page however many there are. `sort=updated` and
+`sort=popularity` (comment count) default to `asc`, as on GitHub;
+`sort=long-running` orders by how long a pull request has been open and
+defaults to `desc`, longest-open first. `state` defaults to `open`. `head`
+accepts GitHub's `owner:branch` form and a bare branch name, which is how an
+agent asks "does my pull request already exist?" and gets that one pull
+request rather than the first page of everything.
+
+A value none of these accept is refused with GitHub's `422 Validation Failed`
+naming the field and listing the accepted values, never ignored:
+
+```json
+{
+  "message": "Validation Failed",
+  "errors": [
+    {"resource": "PullRequest", "field": "sort", "code": "invalid", "value": "bogus",
+     "accepted": ["created", "updated", "popularity", "long-running"]}
+  ]
+}
+```
+
+Pagination `Link` relations carry the caller's own query, so following `next`
+stays in the order and filter the first page was read with.
+
 ## Invalid Page Parameter
 
 `GET /api/v1/repos`, `/api/v1/repos/:id/pulls`, `/api/v1/shift/todos` and

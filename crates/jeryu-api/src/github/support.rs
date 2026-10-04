@@ -100,48 +100,6 @@ impl Pagination {
     }
 }
 
-/// GitHub's `?state=` selector for the pulls list endpoint. GitHub renders a PR
-/// as either `open` or `closed` (a merged PR is a `closed` sub-state with
-/// `merged_at` set), so the three selectors map onto that rendered state:
-/// `open` keeps open PRs, `closed` keeps closed/merged PRs, and `all` keeps
-/// everything. Absent or unrecognized values fall back to GitHub's documented
-/// default (`open`) rather than erroring the route.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PullStateSelector {
-    Open,
-    Closed,
-    All,
-}
-
-impl PullStateSelector {
-    /// Parses `?state=` off a raw query string. The first `state` pair wins; an
-    /// absent param or any value other than `closed`/`all` yields `Open` so a
-    /// stray hint matches GitHub's default instead of 500-ing.
-    pub(super) fn from_query(query: &str) -> Self {
-        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            if key == "state" {
-                return match value {
-                    "all" => Self::All,
-                    "closed" => Self::Closed,
-                    _ => Self::Open,
-                };
-            }
-        }
-        Self::Open
-    }
-
-    /// Whether a PR whose GitHub-rendered `state` field is `github_state`
-    /// (`open` or `closed`) belongs in the response for this selector.
-    pub(super) fn keeps(self, github_state: &str) -> bool {
-        match self {
-            Self::All => true,
-            Self::Open => github_state == "open",
-            Self::Closed => github_state == "closed",
-        }
-    }
-}
-
 /// Slices `items` to the requested page and renders a GitHub-shaped 200 list
 /// response carrying an RFC 5988 `Link` header (`next`/`last`/`prev`/`first`)
 /// when more than one page exists. `render` shapes the JSON body from the page
@@ -485,10 +443,10 @@ pub(super) fn not_found(status: u16) -> Response {
                 "GET /repos/{owner}/{repo}",
                 "PATCH /repos/{owner}/{repo} (archived: bool or name: string; admin only)",
                 "POST /repos/{owner}/{repo}/transfer (new_owner, optional new_name; admin only)",
-                "GET /repos/{owner}/{repo}/pulls",
+                "GET /repos/{owner}/{repo}/pulls?state=open|closed|all&sort=created|updated|popularity|long-running&direction=asc|desc&head=owner:branch&base=branch (default created/desc; an unaccepted value is a 422)",
                 "PATCH /repos/{owner}/{repo}/pulls/{number} (draft: bool, title, body, state; author or admin. The named Jeryu routes are POST /api/v1/repos/{id}/pulls/{number}/ready and /draft)",
-                "GET /repos/{owner}/{repo}/issues",
-                "GET /repos/{owner}/{repo}/commits",
+                "GET /repos/{owner}/{repo}/issues?state=open|closed|all&sort=created|updated|comments&direction=asc|desc (default created/desc; an unaccepted value is a 422)",
+                "GET /repos/{owner}/{repo}/commits?sha=&direction=asc|desc (newest first by default; an unaccepted value is a 422)",
                 "GET /repos/{owner}/{repo}/commits/{ref}/status",
                 "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
                 "GET /repos/{owner}/{repo}/actions/runs",

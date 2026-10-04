@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use crate::routes::Response;
 
+use super::listing::{IssueListQuery, IssueSort};
 use super::support::{
     Pagination, actor, error_response, json_response, owner_json, paginate, parse_body,
     parse_number,
@@ -20,16 +21,34 @@ use super::support::{
 use super::{GithubRouter, WorkBridgeRepair};
 
 impl GithubRouter {
+    /// `GET /repos/{owner}/{repo}/issues`, filtered by `?state=` and ordered
+    /// by `?sort=`/`?direction=` (GitHub's `created`/`desc` by default), with
+    /// the issue number as the last sort key so equal timestamps still come out
+    /// in a stable order.
     pub(super) fn list_issues(
         &self,
         owner: &str,
         repo: &str,
         path: &str,
         page: Pagination,
+        list: IssueListQuery,
     ) -> Response {
         match self.core.list_issues(owner, repo, None) {
             Ok(issues) => {
-                let body: Vec<Value> = issues.iter().map(issue_json).collect();
+                let mut kept: Vec<&Issue> = issues
+                    .iter()
+                    .filter(|issue| list.state.keeps(issue_state(&issue.state)))
+                    .collect();
+                kept.sort_by(|left, right| {
+                    let ascending = match list.sort {
+                        IssueSort::Created => left.created_at.cmp(&right.created_at),
+                        IssueSort::Updated => left.updated_at.cmp(&right.updated_at),
+                        IssueSort::Comments => left.comments.cmp(&right.comments),
+                    }
+                    .then(left.number.cmp(&right.number));
+                    list.direction.apply(ascending)
+                });
+                let body: Vec<Value> = kept.into_iter().map(issue_json).collect();
                 paginate(path, page, &body, |slice, _total| {
                     Value::Array(slice.to_vec())
                 })

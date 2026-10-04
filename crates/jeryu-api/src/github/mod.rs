@@ -14,7 +14,9 @@
 //! GitHub-shaped JSON renderers are grouped by resource into sibling
 //! submodules ([`repos`], [`pulls`], [`issues`], [`commit_status`],
 //! [`check_runs`], [`branch_protection`], [`releases`], [`hooks`]). Shared
-//! request parsing and response helpers live in [`support`].
+//! request parsing and response helpers live in [`support`]; the `?state=`,
+//! `?sort=`, `?direction=`, `?head=` and `?base=` query of the list routes is
+//! parsed (and validated) in [`listing`].
 
 mod actions;
 mod branch_protection;
@@ -25,6 +27,7 @@ mod deployments;
 mod graphql;
 mod hooks;
 mod issues;
+mod listing;
 pub(crate) mod pulls;
 mod releases;
 mod repos;
@@ -39,14 +42,15 @@ use serde_json::json;
 
 use crate::routes::Response;
 
+use listing::{CommitListQuery, IssueListQuery, PullListQuery};
 pub(crate) use support::{
     GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE,
 };
 #[allow(unused_imports)]
 pub(crate) use support::{MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL};
 use support::{
-    Pagination, PullStateSelector, first_contact_response, gh_auth_workaround_response,
-    json_response, link_base, not_found,
+    Pagination, first_contact_response, gh_auth_workaround_response, json_response, link_base,
+    not_found,
 };
 use work_bridge_repairs::WorkBridgeRepairQueue;
 
@@ -320,13 +324,10 @@ impl GithubRouter {
             (Post, ["repos", owner, repo, "transfer"]) => Ok(self.transfer_repo(owner, repo, body)),
 
             // Pull requests --------------------------------------------------
-            (Get, ["repos", owner, repo, "pulls"]) => Ok(self.list_pulls(
-                owner,
-                repo,
-                path,
-                page,
-                PullStateSelector::from_query(query),
-            )),
+            (Get, ["repos", owner, repo, "pulls"]) => Ok(match PullListQuery::from_query(query) {
+                Ok(list) => self.list_pulls(owner, repo, path, page, &list),
+                Err(invalid) => invalid,
+            }),
             (Post, ["repos", owner, repo, "pulls"]) => Ok(self.create_pull(owner, repo, body)),
             (Get, ["repos", owner, repo, "pulls", number]) => {
                 Ok(self.get_pull(owner, repo, number))
@@ -343,7 +344,10 @@ impl GithubRouter {
 
             // Issues ---------------------------------------------------------
             (Get, ["repos", owner, repo, "issues"]) => {
-                Ok(self.list_issues(owner, repo, path, page))
+                Ok(match IssueListQuery::from_query(query) {
+                    Ok(list) => self.list_issues(owner, repo, path, page, list),
+                    Err(invalid) => invalid,
+                })
             }
             (Post, ["repos", owner, repo, "issues"]) => Ok(self.create_issue(owner, repo, body)),
             (Get, ["repos", owner, repo, "issues", number]) => {
@@ -361,7 +365,10 @@ impl GithubRouter {
 
             // Commit history -------------------------------------------------
             (Get, ["repos", owner, repo, "commits"]) => {
-                Ok(self.list_commits(owner, repo, path, page, query))
+                Ok(match CommitListQuery::from_query(query) {
+                    Ok(list) => self.list_commits(owner, repo, path, page, query, list),
+                    Err(invalid) => invalid,
+                })
             }
 
             // Commit status --------------------------------------------------

@@ -8,12 +8,18 @@
 //! `sha` names a branch, tag or commit and defaults to the repository's default
 //! branch, as on GitHub. Pages are cut by git itself (`--skip`/`--max-count`),
 //! so a long history is never read whole; `Link` carries the page relations.
+//!
+//! A commit list has one orderable field — the commit date the history is
+//! walked by — so `?sort=` accepts only `created` and `?direction=` flips the
+//! walk between newest-first (the default) and oldest-first. Any other value
+//! of either is a 422 (see [`super::listing`]) instead of being ignored.
 
 use serde_json::{Value, json};
 
 use crate::routes::Response;
 
 use super::GithubRouter;
+use super::listing::{CommitListQuery, Direction};
 use super::support::{Pagination, docs_url, error_response, json_response};
 
 impl GithubRouter {
@@ -24,15 +30,14 @@ impl GithubRouter {
         path: &str,
         page: Pagination,
         query: &str,
+        list: CommitListQuery,
     ) -> Response {
         let repository = match self.core.get_repository(owner, repo) {
             Ok(repository) => repository,
             Err(err) => return error_response(err),
         };
         let requested = query_value(query, "sha").filter(|value| !value.is_empty());
-        let reference = requested
-            .clone()
-            .unwrap_or_else(|| repository.default_branch.clone());
+        let reference = requested.unwrap_or_else(|| repository.default_branch.clone());
         if !is_revision(&reference) {
             return json_response(
                 422,
@@ -42,11 +47,10 @@ impl GithubRouter {
                 }),
             );
         }
-        let base = match &requested {
-            Some(sha) => format!("{path}?sha={sha}"),
-            None => path.to_owned(),
-        };
-        self.git_commits_page(owner, repo, &reference, &base, page)
+        // `path` is already the route plus the caller's own query (`?sha=`,
+        // `?direction=`) with the page hints dropped, so every pagination link
+        // keeps the filters without re-appending them.
+        self.git_commits_page(owner, repo, &reference, path, page, list.direction)
     }
 
     /// The commits of one pull request, oldest first like GitHub: the range
@@ -82,6 +86,7 @@ impl GithubRouter {
         reference: &str,
         base: &str,
         page: Pagination,
+        direction: Direction,
     ) -> Response {
         let Some(git) = self.git_repo(owner, repo) else {
             return no_history();
@@ -90,17 +95,25 @@ impl GithubRouter {
             return unknown_revision(reference);
         };
         let total = git.count(&[&head]);
-        let skip = page.page.saturating_sub(1).saturating_mul(page.per_page);
-        let commits = git.log(
-            owner,
-            repo,
-            &[
-                &format!("--max-count={}", page.per_page),
-                &format!("--skip={skip}"),
-            ],
-            &[&head],
-        );
-        commits_response(base, page, total, commits)
+        match direction {
+            Direction::Desc => {
+                let skip = page.page.saturating_sub(1).saturating_mul(page.per_page);
+                let commits = git.log(
+                    owner,
+                    repo,
+                    &[
+                        &format!("--max-count={}", page.per_page),
+                        &format!("--skip={skip}"),
+                    ],
+                    &[&head],
+                );
+                commits_response(base, page, total, commits)
+            }
+            // `?direction=asc` is the same history read oldest first, so the
+            // page is cut from the newest end and only then reversed — the way
+            // a pull request's own commit list is paged.
+            Direction::Asc => self.oldest_first_page(owner, repo, &[&head], base, page, total),
+        }
     }
 
     /// One page of `merge-base(base_sha, head_sha)..head_sha`, oldest first.
@@ -139,6 +152,26 @@ impl GithubRouter {
         };
         let range: Vec<&str> = range.iter().map(String::as_str).collect();
         let total = git.count(&range);
+        self.oldest_first_page(owner, repo, &range, link_base, page, total)
+    }
+
+    /// One oldest-first page of `range`, whose `total` commits were already
+    /// counted. `git log` applies its limits newest-first and only reverses for
+    /// output, so the window is measured from the newest end: page 1 is the
+    /// LAST `per_page` commits of the newest-first walk.
+    #[cfg(feature = "web")]
+    fn oldest_first_page(
+        &self,
+        owner: &str,
+        repo: &str,
+        range: &[&str],
+        link_base: &str,
+        page: Pagination,
+        total: usize,
+    ) -> Response {
+        let Some(git) = self.git_repo(owner, repo) else {
+            return commits_response(link_base, page, total, Vec::new());
+        };
         let start = page.page.saturating_sub(1).saturating_mul(page.per_page);
         if start >= total {
             return commits_response(link_base, page, total, Vec::new());
@@ -153,7 +186,7 @@ impl GithubRouter {
                 &format!("--max-count={max_count}"),
                 &format!("--skip={skip}"),
             ],
-            &range,
+            range,
         );
         commits_response(link_base, page, total, commits)
     }
@@ -205,6 +238,7 @@ impl GithubRouter {
         _reference: &str,
         _base: &str,
         _page: Pagination,
+        _direction: Direction,
     ) -> Response {
         no_history()
     }

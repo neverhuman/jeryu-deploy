@@ -1,6 +1,10 @@
 //! `GET /repos/{owner}/{repo}/pulls/{number}/commits`: the commits of a pull
 //! request, oldest first, read from the real bare repository.
 //!
+//! The branch-history list `GET /repos/{owner}/{repo}/commits` reads the same
+//! git plumbing, so its `?direction=` order and its `Link` header are pinned
+//! here too.
+//!
 //! A shift PR carries one commit per todo, so this list (and each commit's full
 //! message with its `Todo:`/`Worked-by:`/`Shift:` trailers) is how a reviewer
 //! reads what landed. The specs below pin the order, the messages, the page
@@ -293,6 +297,92 @@ fn commits_of_a_pull_request_the_caller_cannot_read_are_a_404() {
         fixture.number + 7
     ));
     assert_eq!(missing_pr.status, 404, "unknown pr: {}", missing_pr.body);
+
+    fixture.cleanup();
+}
+
+#[test]
+fn branch_history_reads_newest_first_and_turns_around_for_direction_asc() {
+    if !git_available() {
+        return;
+    }
+    let fixture = seed("jeryu-commits-direction");
+
+    let newest_first = fixture.router.get("/repos/acme/demo/commits?sha=feature");
+    assert_eq!(newest_first.status, 200, "list: {}", newest_first.body);
+    let commits = body(&newest_first);
+    let commits = commits.as_array().expect("array body");
+    assert_eq!(commits.len(), 4, "the seed plus three todos: {commits:?}");
+    assert_eq!(commits[0]["sha"], fixture.head.as_str(), "newest first");
+    assert!(
+        commits[3]["commit"]["message"]
+            .as_str()
+            .expect("message")
+            .starts_with("seed"),
+        "the seed commit is last: {commits:?}"
+    );
+
+    let oldest_first = fixture
+        .router
+        .get("/repos/acme/demo/commits?sha=feature&direction=asc");
+    assert_eq!(oldest_first.status, 200, "list asc: {}", oldest_first.body);
+    let reversed = body(&oldest_first);
+    let reversed = reversed.as_array().expect("array body");
+    assert!(
+        reversed[0]["commit"]["message"]
+            .as_str()
+            .expect("message")
+            .starts_with("seed"),
+        "the seed commit leads: {reversed:?}"
+    );
+    assert_eq!(reversed[3]["sha"], fixture.head.as_str(), "head is last");
+
+    // Paging oldest-first cuts the window from the newest end, and the `Link`
+    // keeps the caller's own filters exactly once.
+    let first = fixture
+        .router
+        .get("/repos/acme/demo/commits?sha=feature&direction=asc&per_page=2");
+    assert_eq!(first.status, 200, "page 1: {}", first.body);
+    let page = body(&first);
+    let page = page.as_array().expect("array body");
+    assert_eq!(page.len(), 2);
+    assert!(
+        page[0]["commit"]["message"]
+            .as_str()
+            .expect("message")
+            .starts_with("seed"),
+        "page 1 starts at the oldest commit: {page:?}"
+    );
+    let link = link(&first);
+    assert!(
+        link.contains("/repos/acme/demo/commits?sha=feature&direction=asc&per_page=2&page=2"),
+        "next keeps the query once: {link}"
+    );
+    assert_eq!(
+        link.matches("sha=feature").count(),
+        2,
+        "one sha per link: {link}"
+    );
+
+    let second = fixture
+        .router
+        .get("/repos/acme/demo/commits?sha=feature&direction=asc&per_page=2&page=2");
+    let page_two = body(&second);
+    let page_two = page_two.as_array().expect("array body");
+    assert_eq!(page_two.len(), 2);
+    assert_eq!(
+        page_two[1]["sha"],
+        fixture.head.as_str(),
+        "head ends page 2"
+    );
+
+    // An order the list cannot serve is a validation failure, never a silently
+    // unordered page.
+    let bogus = fixture
+        .router
+        .get("/repos/acme/demo/commits?sort=popularity");
+    assert_eq!(bogus.status, 422, "bogus sort: {}", bogus.body);
+    assert_eq!(body(&bogus)["message"], "Validation Failed");
 
     fixture.cleanup();
 }

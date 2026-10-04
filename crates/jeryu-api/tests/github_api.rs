@@ -351,12 +351,12 @@ fn pulls_list_honors_state_query_filter() {
         "state=closed returns only the merged/closed PR"
     );
 
-    // `?state=all` returns both, sorted by number.
+    // `?state=all` returns both, newest first (GitHub's created/desc default).
     let all = pull_numbers(&router.get("/repos/alice/jeryu/pulls?state=all"));
     assert_eq!(
         all,
-        vec![open_number, merged_number],
-        "state=all returns both"
+        vec![merged_number, open_number],
+        "state=all returns both, newest first"
     );
 
     // Absent `state` defaults to GitHub's `open`, matching `?state=open`.
@@ -367,13 +367,13 @@ fn pulls_list_honors_state_query_filter() {
         "absent state defaults to open (GitHub's documented default)"
     );
 
-    // An unrecognized value is treated as the default rather than erroring.
-    let bogus = pull_numbers(&router.get("/repos/alice/jeryu/pulls?state=bogus"));
-    assert_eq!(
-        bogus,
-        vec![open_number],
-        "unknown state falls back to the open default"
-    );
+    // An unrecognized value is GitHub's 422, never a silent fallback that would
+    // hand back an unfiltered list the caller believes is filtered.
+    let bogus = router.get("/repos/alice/jeryu/pulls?state=bogus");
+    assert_eq!(bogus.status, 422, "unknown state: {}", bogus.body);
+    let bogus_body = body(&bogus);
+    assert_eq!(bogus_body["message"], "Validation Failed");
+    assert_eq!(bogus_body["errors"][0]["field"], "state");
 }
 
 #[test]
@@ -1778,4 +1778,230 @@ fn blocked_work_store(root: &std::path::Path) -> WorkStore {
     std::fs::remove_dir(&db_dir).expect("remove sqlite dir");
     std::fs::write(&db_dir, "not a directory").expect("block sqlite parent path");
     work
+}
+
+/// A `acme/widgets` repository holding `count` open pull requests, numbered 1
+/// to `count`, each opened from its own `feature-<n>` branch onto `main`. The
+/// list acceptance below is about what an agent sees past the first page, so
+/// the fixture is deliberately larger than the `per_page` ceiling.
+fn router_with_seeded_pulls(count: u64) -> GithubRouter {
+    let router = in_memory_router();
+    let repo = router.post(
+        "/repos",
+        r#"{"owner":"acme","name":"widgets","private":false,"default_branch":"main"}"#,
+    );
+    assert_eq!(repo.status, 201, "create repo: {}", repo.body);
+    for index in 1..=count {
+        let created = router.post(
+            "/repos/acme/widgets/pulls",
+            &format!(
+                r#"{{"title":"pr {index}","head":"feature-{index}","base":"main","head_sha":"sha-{index}"}}"#
+            ),
+        );
+        assert_eq!(created.status, 201, "open pr {index}: {}", created.body);
+        assert_eq!(body(&created)["number"], index);
+    }
+    router
+}
+
+#[test]
+fn pulls_list_sorts_newest_first_and_filters_by_head_and_base() {
+    let router = router_with_seeded_pulls(120);
+
+    // The default order is GitHub's created/desc, so the newest PR leads the
+    // first page instead of being stranded past #100.
+    let first_page = router.get("/repos/acme/widgets/pulls?state=all&per_page=100");
+    assert_eq!(first_page.status, 200, "list: {}", first_page.body);
+    let numbers = pull_numbers(&first_page);
+    assert_eq!(numbers.len(), 100, "a full first page");
+    assert_eq!(numbers[0], 120, "newest first: {numbers:?}");
+    assert_eq!(numbers[99], 21);
+
+    // `?direction=asc` turns the same list around.
+    let oldest_first =
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?state=all&direction=asc&per_page=100"));
+    assert_eq!(oldest_first[0], 1, "oldest first: {:?}", &oldest_first[..3]);
+
+    // `?head=owner:branch` is the "does my PR already exist?" check, and it
+    // answers with that one PR however deep in the list it sits.
+    let head = pull_numbers(&router.get("/repos/acme/widgets/pulls?head=acme:feature-117"));
+    assert_eq!(
+        head,
+        vec![117],
+        "head=acme:feature-117 returns only that PR"
+    );
+    // Percent-encoded and bare-branch forms of the same filter agree.
+    assert_eq!(
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?head=acme%3Afeature-117")),
+        vec![117]
+    );
+    assert_eq!(
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?head=feature-117")),
+        vec![117]
+    );
+    // A head nobody opened is an empty list, not the first page of everything.
+    assert!(
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?head=acme:feature-x")).is_empty(),
+        "an unopened head returns nothing"
+    );
+    // Another owner's `feature-117` is not this repository's PR.
+    assert!(
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?head=globex:feature-117")).is_empty(),
+        "the owner part of head= is honored"
+    );
+
+    // Every PR targets `main`, so `?base=` keeps all of them and drops them all
+    // for any other branch.
+    assert_eq!(
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?base=main&per_page=100")).len(),
+        100
+    );
+    assert!(
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?base=release-5")).is_empty(),
+        "base= filters on the target branch"
+    );
+
+    // The pagination link keeps the ordering query, so a `next` hop stays in
+    // the same order the caller asked for.
+    let link = header(
+        &router.get("/repos/acme/widgets/pulls?state=all&direction=asc&per_page=100"),
+        "Link",
+    )
+    .expect("Link header")
+    .to_owned();
+    assert!(
+        link.contains("state=all&direction=asc"),
+        "next link keeps the order: {link}"
+    );
+}
+
+#[test]
+fn pulls_list_sorts_by_update_popularity_and_age() {
+    let router = router_with_seeded_pulls(3);
+
+    // Touching #1 makes it the most recently updated.
+    let patched = router.handle(
+        Method::Patch,
+        "/repos/acme/widgets/pulls/1",
+        r#"{"title":"pr 1 revisited"}"#,
+    );
+    assert_eq!(patched.status, 200, "patch pr 1: {}", patched.body);
+    let updated =
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?sort=updated&direction=desc"));
+    assert_eq!(updated[0], 1, "most recently updated first: {updated:?}");
+
+    // A PR is an issue, so a comment on #2 makes it the most commented-on.
+    let comment = router.post(
+        "/repos/acme/widgets/issues/2/comments",
+        r#"{"body":"needs a test","actor":"alice"}"#,
+    );
+    assert_eq!(comment.status, 201, "comment: {}", comment.body);
+    let popular =
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?sort=popularity&direction=desc"));
+    assert_eq!(popular[0], 2, "most comments first: {popular:?}");
+
+    // `long-running` leads with the pull request open the longest, and its
+    // default direction (`desc`) is that longest-open-first order.
+    let long_running = pull_numbers(&router.get("/repos/acme/widgets/pulls?sort=long-running"));
+    assert_eq!(long_running[0], 1, "oldest open first: {long_running:?}");
+    let short_running =
+        pull_numbers(&router.get("/repos/acme/widgets/pulls?sort=long-running&direction=asc"));
+    assert_eq!(short_running[0], 3, "youngest first: {short_running:?}");
+}
+
+#[test]
+fn an_unsupported_list_order_is_a_validation_failure() {
+    let router = router_with_seeded_pulls(2);
+
+    for (query, field) in [
+        ("sort=bogus", "sort"),
+        ("direction=sideways", "direction"),
+        ("state=bogus", "state"),
+    ] {
+        let response = router.get(&format!("/repos/acme/widgets/pulls?{query}"));
+        assert_eq!(response.status, 422, "{query}: {}", response.body);
+        let failure = body(&response);
+        assert_eq!(failure["message"], "Validation Failed");
+        assert_eq!(failure["errors"][0]["resource"], "PullRequest");
+        assert_eq!(failure["errors"][0]["field"], field);
+        assert_eq!(failure["errors"][0]["code"], "invalid");
+        assert!(
+            failure["jeryu_steering"]["hint"].is_string(),
+            "the 422 names the accepted values: {}",
+            response.body
+        );
+    }
+
+    // The issues list refuses its own unsupported values the same way.
+    let issues = router.get("/repos/acme/widgets/issues?sort=long-running");
+    assert_eq!(issues.status, 422, "issues sort: {}", issues.body);
+    assert_eq!(body(&issues)["errors"][0]["resource"], "Issue");
+    let commits = router.get("/repos/acme/widgets/commits?direction=sideways");
+    assert_eq!(commits.status, 422, "commits direction: {}", commits.body);
+    assert_eq!(body(&commits)["errors"][0]["resource"], "Commit");
+}
+
+#[test]
+fn issues_list_honors_state_sort_and_direction() {
+    let router = router_with_repo();
+
+    for title in ["first", "second", "third"] {
+        let created = router.post(
+            "/repos/alice/jeryu/issues",
+            &format!(r#"{{"title":"{title}","actor":"alice"}}"#),
+        );
+        assert_eq!(created.status, 201, "create {title}: {}", created.body);
+    }
+    let commented = router.post(
+        "/repos/alice/jeryu/issues/3/comments",
+        r#"{"body":"me too","actor":"bob"}"#,
+    );
+    assert_eq!(commented.status, 201, "comment: {}", commented.body);
+    // Closed last, so #1 is also the most recently updated issue.
+    let closed = router.handle(
+        Method::Patch,
+        "/repos/alice/jeryu/issues/1",
+        r#"{"state":"closed"}"#,
+    );
+    assert_eq!(closed.status, 200, "close issue 1: {}", closed.body);
+
+    // Newest first by default, and only the open issues.
+    assert_eq!(
+        issue_numbers(&router.get("/repos/alice/jeryu/issues")),
+        vec![3, 2],
+        "open issues, newest first"
+    );
+    assert_eq!(
+        issue_numbers(&router.get("/repos/alice/jeryu/issues?state=closed")),
+        vec![1]
+    );
+    assert_eq!(
+        issue_numbers(&router.get("/repos/alice/jeryu/issues?state=all&direction=asc")),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        issue_numbers(
+            &router.get("/repos/alice/jeryu/issues?state=all&sort=comments&direction=desc")
+        )[0],
+        3,
+        "most commented first"
+    );
+    assert_eq!(
+        issue_numbers(
+            &router.get("/repos/alice/jeryu/issues?state=all&sort=updated&direction=desc")
+        )[0],
+        1,
+        "most recently updated first"
+    );
+}
+
+/// The issue numbers of a list response, in the order the route returned them.
+fn issue_numbers(response: &jeryu_api::Response) -> Vec<u64> {
+    assert_eq!(response.status, 200, "list issues: {}", response.body);
+    body(response)
+        .as_array()
+        .expect("issues array")
+        .iter()
+        .map(|issue| issue["number"].as_u64().expect("issue number"))
+        .collect()
 }

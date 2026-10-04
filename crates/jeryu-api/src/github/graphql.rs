@@ -181,10 +181,10 @@ fn unsupported_response(query: &str, operation_name: Option<&str>) -> Response {
                 "GET /repos/{owner}/{repo}",
                 "PATCH /repos/{owner}/{repo} (archived: bool or name: string; admin only)",
                 "POST /repos/{owner}/{repo}/transfer (new_owner, optional new_name; admin only)",
-                "GET /repos/{owner}/{repo}/pulls",
+                "GET /repos/{owner}/{repo}/pulls?state=open|closed|all&sort=created|updated|popularity|long-running&direction=asc|desc&head=owner:branch&base=branch (default created/desc; an unaccepted value is a 422)",
                 "PATCH /repos/{owner}/{repo}/pulls/{number} (draft: bool, title, body, state; author or admin. The named Jeryu routes are POST /api/v1/repos/{id}/pulls/{number}/ready and /draft)",
-                "GET /repos/{owner}/{repo}/issues",
-                "GET /repos/{owner}/{repo}/commits",
+                "GET /repos/{owner}/{repo}/issues?state=open|closed|all&sort=created|updated|comments&direction=asc|desc (default created/desc; an unaccepted value is a 422)",
+                "GET /repos/{owner}/{repo}/commits?sha=&direction=asc|desc (newest first by default; an unaccepted value is a 422)",
                 "GET /repos/{owner}/{repo}/commits/{ref}/status",
                 "GET /repos/{owner}/{repo}/commits/{ref}/check-runs"
             ],

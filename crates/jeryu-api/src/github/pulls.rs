@@ -11,9 +11,10 @@ use serde_json::{Value, json};
 use crate::routes::Response;
 
 use super::GithubRouter;
+use super::listing::{PullListQuery, PullSort};
 use super::support::{
-    Pagination, PullStateSelector, actor, docs_url, error_response, json_response, owner_json,
-    paginate, parse_body, parse_number, steering,
+    Pagination, actor, docs_url, error_response, json_response, owner_json, paginate, parse_body,
+    parse_number, steering,
 };
 
 /// The base SHA the forge assigns when a create request omits `base_sha`.
@@ -28,7 +29,7 @@ impl GithubRouter {
         repo: &str,
         path: &str,
         page: Pagination,
-        pull_state: PullStateSelector,
+        list: &PullListQuery,
     ) -> Response {
         // The engine's `state_filter` is an exact match on one of its many
         // internal lifecycle states (Mergeable, BlockedByChecks, ...), so it
@@ -36,22 +37,67 @@ impl GithubRouter {
         // healthy PR re-evaluates to a richer state on read and would slip past
         // an exact-`Open` filter. So list everything and keep the PRs whose
         // GitHub-rendered `state` field matches the selector, which guarantees
-        // the filter agrees with the `state` value each PR reports. Absent or
-        // unrecognized `?state=` defaults to `open` (GitHub's documented
-        // default), so a bare list now returns only open PRs.
+        // the filter agrees with the `state` value each PR reports. An absent
+        // `?state=` defaults to `open` (GitHub's documented default), so a bare
+        // list returns only open PRs.
         match self.core.list_pull_requests(owner, repo, None) {
             Ok(pulls) => {
-                let body: Vec<Value> = pulls
+                let mut kept: Vec<&PullRequest> = pulls
                     .iter()
-                    .filter(|pr| pull_state.keeps(pr_open_or_closed(&pr.state)))
-                    .map(pull_request_json)
+                    .filter(|pr| list.state.keeps(pr_open_or_closed(&pr.state)))
+                    .filter(|pr| {
+                        list.head
+                            .as_deref()
+                            .is_none_or(|head| head_matches(pr, head))
+                    })
+                    .filter(|pr| {
+                        list.base
+                            .as_deref()
+                            .is_none_or(|base| base_matches(pr, base))
+                    })
                     .collect();
+                self.sort_pulls(&mut kept, list);
+                let body: Vec<Value> = kept.into_iter().map(pull_request_json).collect();
                 paginate(path, page, &body, |slice, _total| {
                     Value::Array(slice.to_vec())
                 })
             }
             Err(err) => error_response(err),
         }
+    }
+
+    /// Orders a list of pull requests by `?sort=`/`?direction=`. Every
+    /// comparison is written ascending and then turned by the direction, with
+    /// the PR number as the last key so equal timestamps (a seeded fixture, two
+    /// PRs opened in the same instant) still come out in a stable, documented
+    /// order instead of the store's insertion order.
+    fn sort_pulls(&self, pulls: &mut [&PullRequest], list: &PullListQuery) {
+        // Comment counts live on each PR's companion issue, so they are read
+        // only for the sort that needs them.
+        let comments = |pr: &PullRequest| match list.sort {
+            PullSort::Popularity => self
+                .core
+                .get_issue(&pr.owner, &pr.repo, pr.issue_number)
+                .map(|issue| issue.comments)
+                .unwrap_or(0),
+            _ => 0,
+        };
+        // `long-running` orders by age, so it reads the creation order with the
+        // direction turned around: its default `desc` is the longest-open PR
+        // first.
+        let direction = match list.sort {
+            PullSort::LongRunning => list.direction.flipped(),
+            _ => list.direction,
+        };
+        pulls.sort_by(|left, right| {
+            let ascending = match list.sort {
+                PullSort::Created | PullSort::LongRunning => left.created_at.cmp(&right.created_at),
+                PullSort::Updated => left.updated_at.cmp(&right.updated_at),
+                PullSort::Popularity => comments(left).cmp(&comments(right)),
+            }
+            .then(left.number.cmp(&right.number));
+            direction.apply(ascending)
+        });
     }
 
     pub(super) fn create_pull(&self, owner: &str, repo: &str, body: &str) -> Response {
@@ -1210,6 +1256,35 @@ pub(super) fn pull_request_json(pr: &PullRequest) -> Value {
         "created_at": pr.created_at,
         "updated_at": pr.updated_at,
     })
+}
+
+/// Whether a pull request's head answers GitHub's `?head=` filter, which
+/// names the head as `owner:branch` (the `head.label` of a fork PR) but is
+/// also honored as a bare branch name. The owner of a same-repo PR's head is
+/// the repository's own owner, so `?head=acme:feature-x` finds a PR opened
+/// from `feature-x` of `acme/widgets`.
+fn head_matches(pr: &PullRequest, wanted: &str) -> bool {
+    if pr.head.label == wanted {
+        return true;
+    }
+    match wanted.split_once(':') {
+        Some((owner, branch)) => pr.head.ref_name == branch && head_owner(pr) == owner,
+        None => pr.head.ref_name == wanted,
+    }
+}
+
+/// The owner of the repository the head branch lives in: the source
+/// repository's owner for a fork PR, this repository's owner otherwise.
+fn head_owner(pr: &PullRequest) -> &str {
+    pr.source_repository
+        .split_once('/')
+        .map_or(pr.owner.as_str(), |(owner, _)| owner)
+}
+
+/// Whether a pull request targets the branch GitHub's `?base=` names. A base
+/// is a branch of this repository, so both the label and the ref name answer.
+fn base_matches(pr: &PullRequest, wanted: &str) -> bool {
+    pr.base.label == wanted || pr.base.ref_name == wanted
 }
 
 fn git_ref_json(pr: &PullRequest, git_ref: &jeryu_core::GitBranchRef) -> Value {
