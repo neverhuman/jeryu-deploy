@@ -349,3 +349,119 @@ async fn the_route_answers_for_a_repository_and_404s_for_the_rest() {
     .await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
+
+/// The mirror row names the provider holding the copy, says the repository is
+/// enrolled with it, and carries what the reconcile found drifting: the tags
+/// the two sides disagree about and the commits only GitHub holds. Those are
+/// the facts the reconcile has always had and no payload ever showed.
+#[test]
+fn an_enrolled_mirror_names_its_provider_and_the_drift_the_reconcile_found() {
+    let mirror = GithubMirror::with_targets(
+        [(
+            format!("{OWNER}/{NAME}"),
+            GithubMirrorTarget {
+                github_slug: "acme-oss/widget-www".to_string(),
+                branch: "main".to_string(),
+                destination_override: None,
+                tag_exclude: Vec::new(),
+            },
+        )]
+        .into_iter()
+        .collect(),
+    );
+    let state = WebState::new(forge()).with_github_mirror(Arc::new(mirror));
+    let github_only = "7".repeat(40);
+    state.mirror_state.record(MirrorRepoState {
+        repo: format!("{OWNER}/{NAME}"),
+        github_slug: "acme-oss/widget-www".to_string(),
+        branch: "main".to_string(),
+        state: MirrorSync::Diverged,
+        forge_head: Some(HEAD.to_string()),
+        github_head: Some(github_only.clone()),
+        checked_at: "2026-09-30T12:00:00+00:00".to_string(),
+        last_push_at: Some("2026-09-29T09:30:00+00:00".to_string()),
+        github_only_commits: vec![github_only.clone()],
+        tags_pushed: vec!["v1.2.0".to_string()],
+        tag_drift: vec![crate::web::mirror_reconcile::TagDriftRow {
+            tag: "v1.1.0".to_string(),
+            forge_oid: Some("a".repeat(40)),
+            github_oid: Some("b".repeat(40)),
+            detail: "GitHub holds v1.1.0 at another commit than the forge".to_string(),
+        }],
+        error: None,
+    });
+
+    let view = automation_of(&state, "acme-admin", true);
+    let mirror = &view["mirrors"].as_array().expect("mirrors")[0];
+    assert_eq!(mirror["provider"], "github");
+    assert_eq!(mirror["enrolled"], true);
+    assert_eq!(mirror["state"], "diverged");
+    assert_eq!(mirror["githubOnlyCommits"], json!([github_only]));
+    assert_eq!(mirror["tagDrift"].as_array().expect("tagDrift").len(), 1);
+    assert_eq!(mirror["tagDrift"][0]["tag"], "v1.1.0");
+    assert_eq!(mirror["tagDrift"][0]["forgeOid"], "a".repeat(40));
+    assert_eq!(mirror["tagDrift"][0]["githubOid"], "b".repeat(40));
+    assert_eq!(
+        mirror["tagDrift"][0]["detail"],
+        "GitHub holds v1.1.0 at another commit than the forge"
+    );
+    // The reconcile found no error, so the newest attempt worked even though
+    // the two sides are not level.
+    assert_eq!(mirror["lastAttemptOk"], true, "{mirror}");
+    assert_eq!(mirror["lastSuccessAt"], "2026-09-29T09:30:00+00:00");
+
+    // Both kinds of drift reach the page banner, one sentence each.
+    let warnings = view["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.as_str().is_some_and(|w| w.contains("v1.1.0"))),
+        "{view}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.as_str().is_some_and(|w| w.contains(&github_only))),
+        "{view}"
+    );
+}
+
+/// A repository nobody enrolled has no mirror row: the payload must not claim
+/// a provider, an enrolment or a drift for a copy that does not exist.
+#[test]
+fn an_unenrolled_repository_has_no_mirror_row_at_all() {
+    let view = automation_of(&WebState::new(forge()), "acme-admin", true);
+    assert_eq!(view["mirrors"], json!([]), "{view}");
+    assert_eq!(view["warnings"], json!([]), "{view}");
+}
+
+/// A mirror whose newest bookkeeping run failed and that the reconcile has not
+/// looked at yet still answers whether the last attempt worked.
+#[test]
+fn a_failed_push_attempt_with_no_reconcile_yet_reports_last_attempt_ok_false() {
+    let core = forge();
+    check(&core, "jeryu/github-mirror", CheckConclusion::Failure);
+    let mirror = GithubMirror::with_targets(
+        [(
+            format!("{OWNER}/{NAME}"),
+            GithubMirrorTarget {
+                github_slug: "acme-oss/widget-www".to_string(),
+                branch: "main".to_string(),
+                destination_override: None,
+                tag_exclude: Vec::new(),
+            },
+        )]
+        .into_iter()
+        .collect(),
+    );
+    let state = WebState::new(core).with_github_mirror(Arc::new(mirror));
+
+    let view = automation_of(&state, "acme-admin", true);
+    let mirror = &view["mirrors"].as_array().expect("mirrors")[0];
+    assert_eq!(mirror["provider"], "github");
+    assert_eq!(mirror["enrolled"], true);
+    assert_eq!(mirror["lastAttemptOk"], false, "{mirror}");
+    assert!(mirror["lastSuccessAt"].is_null(), "{mirror}");
+    assert_eq!(mirror["tagDrift"], json!([]));
+    assert_eq!(mirror["githubOnlyCommits"], json!([]));
+}

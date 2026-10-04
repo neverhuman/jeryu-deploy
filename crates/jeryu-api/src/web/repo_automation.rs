@@ -18,8 +18,11 @@
 //!   each with the grant it needs and whether it holds it. A merger with no
 //!   write grant is the whole point: its merges answer 403, and the page can
 //!   finally say so before someone waits a day for a merge that cannot happen.
-//! * `mirrors` — where the repository is copied to, which refs, the sha the
-//!   mirror holds, when it was last level with the forge, and the last error.
+//! * `mirrors` — which provider holds the copy and whether the repository is
+//!   enrolled with it, where it is copied to, which refs, the sha the mirror
+//!   holds, when it was last level with the forge, the last error, and what
+//!   the reconcile found drifting: tags the two sides disagree about and
+//!   commits only the mirror holds.
 //! * `grants` — who may read, write and administer the repository, for a
 //!   caller who may administer it (core's own rule for listing grants).
 //!
@@ -115,10 +118,30 @@ pub(crate) struct AutomationActor {
     pub last_run: Option<ActorRun>,
 }
 
+/// One tag the forge and the mirror disagree about, as the page lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MirrorTagDrift {
+    pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge_oid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_oid: Option<String>,
+    /// One sentence a reader can act on, in the reconcile's own words.
+    pub detail: String,
+}
+
 /// One place this repository is copied to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MirrorSummary {
+    /// Who holds the copy. Only `github` today, named so a reader (and the
+    /// page) never has to infer it from the target URL.
+    pub provider: &'static str,
+    /// True while the mirror manifest names this repository: an unenrolled
+    /// repository has no mirror row at all, so this is always true on a row,
+    /// and says which fact the row is reporting.
+    pub enrolled: bool,
     /// Where the copy lives, as a reader would open it.
     pub target: String,
     /// `push` (the forge writes the target) or `pull`.
@@ -140,6 +163,18 @@ pub(crate) struct MirrorSummary {
     pub last_checked_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Whether the newest push attempt worked. Absent until one has been
+    /// attempted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attempt_ok: Option<bool>,
+    /// When a push last put the target level with the forge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success_at: Option<String>,
+    /// Tags the forge and the target hold at different commits. The mirror
+    /// never moves or deletes a target tag, so these wait for a person.
+    pub tag_drift: Vec<MirrorTagDrift>,
+    /// Commits the target holds that the forge does not, newest first.
+    pub github_only_commits: Vec<String>,
 }
 
 /// One grant on the repository, as the page lists it.
@@ -498,6 +533,8 @@ fn mirrors(state: &WebState, repo: &Repository) -> Vec<MirrorSummary> {
         .map(|state| mirror_word(state.state).to_string())
         .unwrap_or_else(|| "unknown".to_string());
     let summary = MirrorSummary {
+        provider: "github",
+        enrolled: true,
         target: format!("https://github.com/{}", target.github_slug),
         direction: "push",
         refs: vec![
@@ -526,6 +563,35 @@ fn mirrors(state: &WebState, repo: &Repository) -> Vec<MirrorSummary> {
                     .and_then(|p| p.last_attempt_conclusion.clone())
                     .map(|conclusion| format!("last push attempt: {conclusion}"))
             }),
+        last_attempt_ok: match live.as_ref() {
+            // The reconcile looked more recently than any bookkeeping run did,
+            // so its own error (or the lack of one) is the newer answer.
+            Some(state) => Some(state.error.is_none()),
+            None => posture.as_ref().map(|p| p.last_attempt_ok),
+        },
+        last_success_at: live
+            .as_ref()
+            .and_then(|state| state.last_push_at.clone())
+            .or_else(|| posture.as_ref().and_then(|p| p.last_success_at.clone())),
+        tag_drift: live
+            .as_ref()
+            .map(|state| {
+                state
+                    .tag_drift
+                    .iter()
+                    .map(|row| MirrorTagDrift {
+                        tag: row.tag.clone(),
+                        forge_oid: row.forge_oid.clone(),
+                        github_oid: row.github_oid.clone(),
+                        detail: row.detail.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        github_only_commits: live
+            .as_ref()
+            .map(|state| state.github_only_commits.clone())
+            .unwrap_or_default(),
     };
     vec![summary]
 }
@@ -556,6 +622,21 @@ fn warnings(actors: &[AutomationActor], mirrors: &[MirrorSummary]) -> Vec<String
         }
         if let Some(error) = &mirror.last_error {
             warnings.push(format!("{}: {error}", mirror.target));
+        }
+        for drift in &mirror.tag_drift {
+            warnings.push(format!("{}: {}", mirror.target, drift.detail));
+        }
+        if !mirror.github_only_commits.is_empty() {
+            warnings.push(format!(
+                "{} holds {} the forge does not: {}",
+                mirror.target,
+                if mirror.github_only_commits.len() == 1 {
+                    "a commit".to_string()
+                } else {
+                    format!("{} commits", mirror.github_only_commits.len())
+                },
+                mirror.github_only_commits.join(", ")
+            ));
         }
     }
     warnings
