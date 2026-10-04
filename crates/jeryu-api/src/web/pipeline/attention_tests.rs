@@ -19,7 +19,7 @@ use crate::web::control_plane::{GateRunnerHeartbeat, GateRunnerRecord, GateRunne
 use crate::web::merge_queue::{QueueEntry, QueueState};
 use crate::web::pulls::PullPosture;
 use crate::web::shift::{
-    Heartbeat, ShiftBranch, ShiftPr, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow,
+    BlockKind, Heartbeat, ShiftBranch, ShiftPr, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow,
 };
 use crate::web::{WebState, app};
 
@@ -53,6 +53,13 @@ fn todo(id: &str, status: &str) -> ShiftTodo {
         prs: Vec::new(),
         cost_usd: None,
         note: String::new(),
+        park_until: String::new(),
+        block_kind: BlockKind::derive(
+            TodoStatus::parse(status).expect("known status"),
+            &format!("Title of {id}"),
+            "",
+            "",
+        ),
         triaged: true,
         worked_by: Vec::new(),
     }
@@ -1262,4 +1269,309 @@ fn a_mirror_with_github_only_work_alarms_per_repository_and_names_the_commits() 
         "{}",
         tags.reason
     );
+}
+
+/// What a worker could not get past decides the step a person is offered:
+/// releasing an over-budget todo stops it again, and an owner's task is not a
+/// worker's to pick up at all, so neither item offers a release.
+#[test]
+fn a_blocked_todos_kind_picks_its_label() {
+    let blocked = |id: &str, kind: BlockKind, note: &str| ShiftTodo {
+        note: note.to_string(),
+        block_kind: Some(kind),
+        ..todo(id, "blocked")
+    };
+    let items = todo_items(
+        "acme",
+        &[
+            blocked(
+                "t-owner",
+                BlockKind::OwnerTask,
+                "OWNER: only alton can pick the name.",
+            ),
+            blocked(
+                "t-budget",
+                BlockKind::OverBudget,
+                "Spent $12 of the $5 cap over 3 attempts.",
+            ),
+            blocked(
+                "t-repo",
+                BlockKind::UnknownRepo,
+                "It asks for acme-ops, which the family config does not list.",
+            ),
+            blocked(
+                "t-agent",
+                BlockKind::AgentBlocked,
+                "The gate fails on main too.",
+            ),
+        ],
+        now(),
+    );
+    assert_eq!(kinds(&items), ["todo_blocked"; 4]);
+    let label = |at: usize| items[at].action.label.as_str();
+    assert_eq!(label(0), "Do it, then mark done");
+    assert_eq!(label(1), "Close and refile smaller, or raise the cap");
+    assert_eq!(label(2), "Add the repo to the family config, then release");
+    assert_eq!(label(3), "Release the todo");
+    // An over-budget todo never offers a release, in the label or the step.
+    assert!(!items[1].action.label.contains("Release"), "{:?}", items[1]);
+    assert!(!items[1].next_step.contains("Release"), "{:?}", items[1]);
+    assert!(
+        items[1]
+            .reason
+            .contains("Spent $12 of the $5 cap over 3 attempts.")
+            && items[1].reason.contains("summed over every attempt"),
+        "{}",
+        items[1].reason
+    );
+    assert!(
+        items[0].reason.contains("Only the owner can do this"),
+        "{}",
+        items[0].reason
+    );
+    assert!(
+        items[2].reason.contains("the family config does not list"),
+        "{}",
+        items[2].reason
+    );
+    for item in &items {
+        assert_eq!(item.severity, Severity::Action);
+        assert_actionable(item);
+    }
+}
+
+/// A parked todo is only worth watching until its date; once it passes, it
+/// waits on a person again. Done and closed work asks for nobody.
+#[test]
+fn a_parked_todo_waits_quietly_until_its_date() {
+    let parked = |id: &str, until: &str| ShiftTodo {
+        park_until: until.to_string(),
+        note: "Waits on the split.8 tag.".to_string(),
+        ..todo(id, "parked")
+    };
+    let items = todo_items(
+        "acme",
+        &[
+            parked("t-later", "2026-09-26T09:00:00Z"),
+            parked("t-due", "2026-09-18T09:00:00Z"),
+            parked("t-forever", ""),
+            todo("t-done", "done"),
+            todo("t-closed", "closed"),
+        ],
+        now(),
+    );
+    assert_eq!(
+        kinds(&items),
+        ["todo_parked", "todo_parked", "todo_parked"],
+        "done and closed work asks for nobody"
+    );
+    assert_eq!(items[0].id, "todo-parked:acme:t-later");
+    assert_eq!(items[0].severity, Severity::Watch);
+    assert_eq!(
+        items[0].action.label,
+        "Nothing to do until the park runs out"
+    );
+    assert!(
+        items[0]
+            .reason
+            .contains("parked until 2026-09-26T09:00:00Z"),
+        "{}",
+        items[0].reason
+    );
+    assert_eq!(items[1].severity, Severity::Action);
+    assert_eq!(items[1].action.label, "Release the todo or park it again");
+    assert!(
+        items[1].reason.contains("ran out at"),
+        "{}",
+        items[1].reason
+    );
+    // A park with no date comes back only when a person decides.
+    assert_eq!(items[2].severity, Severity::Action);
+    assert!(
+        items[2].reason.contains("no date it comes back on"),
+        "{}",
+        items[2].reason
+    );
+    for item in &items {
+        assert_actionable(item);
+        assert!(item.reason.starts_with("Waits on the split.8 tag. "));
+    }
+}
+
+/// Parking is not only for todos: any attention item can be acknowledged
+/// until a date, and until then the inbox leaves it out. Finishing a todo
+/// removes its item outright, with no acknowledgement needed.
+#[tokio::test]
+async fn an_acknowledged_item_is_hidden_until_its_date() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = shift_forge(dir.path());
+    let call = |method, uri: String, body: Option<Value>| {
+        let router = router.clone();
+        let admin = admin.clone();
+        async move {
+            let response = router
+                .oneshot(request(method, &uri, &admin, body))
+                .await
+                .unwrap();
+            (response.status(), body_json(response).await)
+        }
+    };
+    let inbox = || {
+        let call = &call;
+        async move {
+            let (status, body) = call(HttpMethod::GET, "/api/v1/attention".to_string(), None).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body
+        }
+    };
+
+    // The fixture's shift branch holds a finished todo with no pull request:
+    // an item that is nobody's todo, so only an acknowledgement can defer it.
+    let body = inbox().await;
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "shift_without_pr")
+        .expect("the fixture branch has work and no pull request")
+        .clone();
+    let id = item["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        id,
+        "shift-without-pr:jeryu:jeryu-deploy:nightshift/2026-09-18"
+    );
+    let action_count = body["counts"]["action"].as_u64().unwrap();
+
+    let (status, ack) = call(
+        HttpMethod::POST,
+        "/api/v1/attention/acks".to_string(),
+        Some(json!({"item_id": id, "until": "2026-12-01T00:00:00Z",
+                    "note": "the shift PR waits on the release"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{ack}");
+    assert_eq!(ack["item_id"], id.as_str());
+    assert_eq!(ack["until"], "2026-12-01T00:00:00Z");
+    assert_eq!(ack["acked_by"], "alice");
+
+    // Gone from the list and from the counts, with no wait for the cache.
+    let body = inbox().await;
+    assert!(
+        !body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == id.as_str()),
+        "{body}"
+    );
+    assert_eq!(body["counts"]["action"], action_count - 1);
+    let (_, acks) = call(HttpMethod::GET, "/api/v1/attention/acks".to_string(), None).await;
+    assert_eq!(acks["acks"][0]["item_id"], id.as_str());
+    assert_eq!(acks["acks"][0]["note"], "the shift PR waits on the release");
+
+    // An acknowledgement says "not now", not "never": once its date has
+    // passed the item is listed again.
+    let (status, _) = call(
+        HttpMethod::POST,
+        "/api/v1/attention/acks".to_string(),
+        Some(json!({"item_id": id, "until": "2026-09-20T00:00:00Z"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let body = inbox().await;
+    assert!(
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == id.as_str()),
+        "an acknowledgement that ran out hides nothing: {body}"
+    );
+
+    // Dropping the acknowledgement lists it again at once, and the record of
+    // what was deferred goes with it.
+    let (status, _) = call(
+        HttpMethod::POST,
+        "/api/v1/attention/acks".to_string(),
+        Some(json!({"item_id": id, "until": "2026-12-01T00:00:00Z"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = call(
+        HttpMethod::POST,
+        "/api/v1/attention/acks".to_string(),
+        Some(json!({"item_id": id, "until": Value::Null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(
+        inbox().await["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == id.as_str())
+    );
+    let (_, acks) = call(HttpMethod::GET, "/api/v1/attention/acks".to_string(), None).await;
+    assert_eq!(acks["acks"], json!([]));
+
+    for bad in [
+        json!({"item_id": "", "until": "2026-12-01T00:00:00Z"}),
+        json!({"item_id": id, "until": "december"}),
+        json!({"until": "2026-12-01T00:00:00Z"}),
+    ] {
+        let (status, body) = call(
+            HttpMethod::POST,
+            "/api/v1/attention/acks".to_string(),
+            Some(bad.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+        assert_eq!(body["code"], "invalid_input", "{bad}");
+    }
+}
+
+/// A todo marked done leaves the inbox: nothing waits on a person any more.
+#[tokio::test]
+async fn finishing_a_todo_removes_its_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = shift_forge(dir.path());
+    let call = |method, uri: String, body: Option<Value>| {
+        let router = router.clone();
+        let admin = admin.clone();
+        async move {
+            let response = router
+                .oneshot(request(method, &uri, &admin, body))
+                .await
+                .unwrap();
+            (response.status(), body_json(response).await)
+        }
+    };
+    let (status, filed) = call(
+        HttpMethod::POST,
+        "/api/v1/shift/todos".to_string(),
+        Some(json!({"family": "jeryu", "text": "Cut the tag", "mode": "now"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{filed}");
+    let id = filed["id"].as_str().unwrap().to_string();
+    let untriaged = |body: &Value| {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "todo_untriaged" && item["todo_id"] == id.as_str())
+    };
+    let (_, body) = call(HttpMethod::GET, "/api/v1/attention".to_string(), None).await;
+    assert!(untriaged(&body), "{body}");
+
+    let (status, done) = call(
+        HttpMethod::POST,
+        format!("/api/v1/shift/todos/jeryu/{id}/action"),
+        Some(json!({"action": "done", "note": "did it by hand"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    // The inbox is computed from current state, so the item is gone at once.
+    let (_, body) = call(HttpMethod::GET, "/api/v1/attention".to_string(), None).await;
+    assert!(!untriaged(&body), "{body}");
 }

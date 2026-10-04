@@ -830,9 +830,11 @@ fn release_board_path(path: &str) -> bool {
 }
 
 /// The attention inbox names todos, notes and pull requests across every
-/// repository, so like the event log it is for global admins only.
+/// repository, so like the event log it is for global admins only. Its
+/// acknowledgements (`/api/v1/attention/acks`) decide what the inbox hides,
+/// which is an administrator's call as much as reading it is.
 fn attention_path(path: &str) -> bool {
-    path == "/api/v1/attention" || path == "/api/v1/attention/"
+    path == "/api/v1/attention" || path.starts_with("/api/v1/attention/")
 }
 
 /// Pins name the unreleased commits of every dependency, private ones

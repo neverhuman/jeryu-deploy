@@ -26,7 +26,7 @@ use axum::body::Bytes;
 use axum::extract::{Extension, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use jeryu_core::AccountSummary;
 use serde_json::{Value, json};
 
@@ -39,9 +39,9 @@ use queue::{Queue, WriteError, commit_change, discover};
 pub(crate) use queue::{git as run_git, resolve as resolve_commit};
 use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;
+pub(crate) use types::{BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 #[cfg(test)]
 pub(crate) use types::{Heartbeat, ShiftPr};
-pub(crate) use types::{ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 use visibility::stage_event;
 pub(crate) use visibility::{FamilySnapshot, attention_snapshot, shift_context, worker_rows};
 
@@ -457,8 +457,14 @@ pub(crate) async fn file_todos(
     }
 }
 
-/// Apply an admin action to a todo in place.
-pub(crate) fn apply_action(todo: &mut TodoFile, request: &TodoActionRequest) -> Result<(), String> {
+/// Apply an admin action to a todo in place. `family_repos` is the family
+/// config's repo list, which `edit` validates new repos against: a todo may
+/// only name a repo its family hosts, or no worker could ever clone it.
+pub(crate) fn apply_action(
+    todo: &mut TodoFile,
+    request: &TodoActionRequest,
+    family_repos: &[String],
+) -> Result<(), String> {
     let note = request
         .note
         .as_deref()
@@ -467,6 +473,9 @@ pub(crate) fn apply_action(todo: &mut TodoFile, request: &TodoActionRequest) -> 
     let target = match request.action.as_str() {
         "release" => Some(TodoStatus::Open),
         "block" => Some(TodoStatus::Blocked),
+        "done" => Some(TodoStatus::Done),
+        "close" => Some(TodoStatus::Closed),
+        "park" => Some(TodoStatus::Parked),
         _ => None,
     };
     if let Some(target) = target
@@ -482,6 +491,7 @@ pub(crate) fn apply_action(todo: &mut TodoFile, request: &TodoActionRequest) -> 
         "release" => {
             todo.status = TodoStatus::Open;
             todo.lease_until.clear();
+            todo.park_until.clear();
             todo.attempts = 0;
             if let Some(note) = note {
                 todo.note = note.to_string();
@@ -493,6 +503,78 @@ pub(crate) fn apply_action(todo: &mut TodoFile, request: &TodoActionRequest) -> 
             let reason = note.or_else(|| request.value.as_ref().and_then(Value::as_str));
             if let Some(reason) = reason {
                 todo.note = reason.to_string();
+            }
+        }
+        "done" => {
+            todo.status = TodoStatus::Done;
+            todo.lease_until.clear();
+            todo.park_until.clear();
+            if let Some(note) = note {
+                todo.note = note.to_string();
+            }
+        }
+        "close" => {
+            todo.status = TodoStatus::Closed;
+            todo.lease_until.clear();
+            todo.park_until.clear();
+            if let Some(note) = note {
+                todo.note = note.to_string();
+            }
+        }
+        "park" => {
+            // A park with no date waits for a person; one with a date comes
+            // back by itself, so the date must be a date the server can read.
+            let until = request
+                .until
+                .as_deref()
+                .map(str::trim)
+                .filter(|until| !until.is_empty());
+            let until = match until {
+                Some(until) => Some(
+                    DateTime::parse_from_rfc3339(until)
+                        .map_err(|err| format!("until must be an RFC 3339 time: {err}"))?,
+                ),
+                None => None,
+            };
+            todo.status = TodoStatus::Parked;
+            todo.lease_until.clear();
+            todo.park_until = until
+                .map(|until| iso(until.with_timezone(&Utc)))
+                .unwrap_or_default();
+            if let Some(note) = note {
+                todo.note = note.to_string();
+            }
+        }
+        "edit" => {
+            if request.title.is_none() && request.body.is_none() && request.repos.is_none() {
+                return Err("edit needs one of title, body or repos".to_string());
+            }
+            if let Some(title) = &request.title {
+                let title = title.trim();
+                if title.is_empty() {
+                    return Err("title must not be empty".to_string());
+                }
+                todo.title = title.to_string();
+            }
+            if let Some(body) = &request.body {
+                todo.body = body.trim_matches('\n').to_string();
+            }
+            if let Some(repos) = &request.repos {
+                validate_list(repos, "repos")?;
+                for repo in repos {
+                    if !family_repos.iter().any(|known| known == repo) {
+                        return Err(format!("repo {repo:?} is not in family {:?}", todo.family));
+                    }
+                }
+                todo.repos = repos.clone();
+            }
+            // A todo filed without a title and repos is untriaged; giving it
+            // both is exactly what triage is.
+            if !todo.title.is_empty() && !todo.repos.is_empty() {
+                todo.triaged = true;
+            }
+            if let Some(note) = note {
+                todo.note = note.to_string();
             }
         }
         "priority" => {
@@ -517,7 +599,8 @@ pub(crate) fn apply_action(todo: &mut TodoFile, request: &TodoActionRequest) -> 
         }
         other => {
             return Err(format!(
-                "unknown action {other:?}; use release, block, priority or mode"
+                "unknown action {other:?}; use release, block, done, close, park, edit, \
+                 priority or mode"
             ));
         }
     }
@@ -539,6 +622,12 @@ pub(crate) async fn todo_action(
         Ok(q) => q,
         Err(resp) => return *resp,
     };
+    let family_repos: Vec<String> = queue
+        .family
+        .repos
+        .iter()
+        .map(|repo| repo.name.clone())
+        .collect();
     let message = format!("{} {id} by {}/web", request.action, account.login);
     enum Refused {
         NotFound,
@@ -555,12 +644,15 @@ pub(crate) async fn todo_action(
                 .find(|q| q.todo.id == id)
                 .ok_or(Refused::NotFound)?;
             let mut todo = found.todo.clone();
-            apply_action(&mut todo, &request).map_err(Refused::Invalid)?;
+            apply_action(&mut todo, &request, &family_repos).map_err(Refused::Invalid)?;
             Ok((vec![(found.path.clone(), Some(todo.dump()))], todo))
         },
     );
     match result {
         Ok(todo) => {
+            // The inbox keeps its answer for a few seconds; an action a person
+            // just took must show in the next read, not after that runs out.
+            state.attention.invalidate();
             pipeline::emit(
                 &state,
                 NewEvent {

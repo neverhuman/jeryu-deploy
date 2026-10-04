@@ -80,8 +80,101 @@ pub(crate) struct ShiftTodo {
     /// Total spend over every attempt, when any attempt recorded a cost.
     pub cost_usd: Option<f64>,
     pub note: String,
+    /// When a parked todo comes back by itself, as the file spells it; empty
+    /// when it is parked with no date or not parked at all.
+    pub park_until: String,
+    /// What kind of help a `blocked` or `handoff` todo needs, read off its
+    /// note and its newest attempt's outcome (see [`BlockKind::derive`]).
+    /// `null` on every other status.
+    pub block_kind: Option<BlockKind>,
     pub triaged: bool,
     pub worked_by: Vec<Attempt>,
+}
+
+/// Why a todo stopped, which decides what the attention inbox asks of a
+/// person: a worker cannot finish an owner's task, cannot pay for a todo past
+/// its budget, and cannot add a repo to the family config.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BlockKind {
+    /// Only the owner can do it ("OWNER: ...", "needs the owner first").
+    OwnerTask,
+    /// The attempts spent the todo's budget, so another attempt stops again.
+    OverBudget,
+    /// It names a repo the family config does not list.
+    UnknownRepo,
+    /// A worker did what it could and handed the rest to a person.
+    Handoff,
+    /// Anything else a worker could not get past.
+    AgentBlocked,
+}
+
+impl BlockKind {
+    /// The kinds, for the test that checks each one's wire spelling. Product
+    /// code reads a kind, never the list.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 5] = [
+        Self::OwnerTask,
+        Self::OverBudget,
+        Self::UnknownRepo,
+        Self::Handoff,
+        Self::AgentBlocked,
+    ];
+
+    /// The wire spelling, which the serde rename above must agree with.
+    #[cfg(test)]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::OwnerTask => "owner_task",
+            Self::OverBudget => "over_budget",
+            Self::UnknownRepo => "unknown_repo",
+            Self::Handoff => "handoff",
+            Self::AgentBlocked => "agent_blocked",
+        }
+    }
+
+    /// The kind a stopped todo's own words name. Both the note an admin or a
+    /// worker left and the newest attempt's outcome are read, because a worker
+    /// that ran out of budget records it as the outcome and may leave no note.
+    /// The order is the order of how little a worker can do about it.
+    pub(crate) fn derive(
+        status: TodoStatus,
+        title: &str,
+        note: &str,
+        outcome: &str,
+    ) -> Option<Self> {
+        if !matches!(status, TodoStatus::Blocked | TodoStatus::Handoff) {
+            return None;
+        }
+        let said = format!("{title}\n{note}\n{outcome}").to_lowercase();
+        let says = |needles: &[&str]| needles.iter().any(|needle| said.contains(needle));
+        Some(
+            if says(&["owner:", "owner_task", "needs the owner", "only the owner"]) {
+                Self::OwnerTask
+            } else if says(&[
+                "over_budget",
+                "over budget",
+                "budget cap",
+                "cost cap",
+                "out of budget",
+            ]) {
+                Self::OverBudget
+            } else if says(&[
+                "unknown_repo",
+                "unknown repo",
+                "is not in family",
+                "not in the family config",
+            ]) {
+                Self::UnknownRepo
+            } else if status == TodoStatus::Handoff
+                || says(&["handoff", "finish by hand", "by hand"])
+            {
+                Self::Handoff
+            } else {
+                Self::AgentBlocked
+            },
+        )
+    }
 }
 
 /// A shift pull request as a todo links to it. `repo` is the family repo name,
@@ -153,6 +246,17 @@ pub(crate) struct TodoActionRequest {
     pub value: Option<Value>,
     #[serde(default)]
     pub note: Option<String>,
+    /// `park`: when the todo comes back by itself, RFC 3339. Left out, the
+    /// todo stays parked until somebody acts on it.
+    #[serde(default)]
+    pub until: Option<String>,
+    /// `edit`: the fields to overwrite. A field left out is left alone.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub repos: Option<Vec<String>>,
 }
 
 /// A slot's report. `slot` is a string (todoq names slots `w1`, `w2`, ...);
@@ -325,8 +429,11 @@ pub(crate) struct CreatedPr {
 /// Where a todo is in its lifecycle, spelled as todoq writes it.
 ///
 /// `open -> claimed -> done | blocked | handoff`; an admin `release` returns
-/// unfinished work to `open` and `block` parks it. `done` is final: the server
-/// never moves a todo out of it (see [`TodoStatus::allows`]).
+/// unfinished work to `open`, `block` holds it for a person, `park` sets it
+/// aside (with a date it comes back by itself, see `park_until`) and `close`
+/// says it will not be done. `done` is final: the server never moves a todo
+/// out of it (see [`TodoStatus::allows`]). A closed todo is not: an admin
+/// releases it to pick the work up again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum TodoStatus {
@@ -336,15 +443,19 @@ pub(crate) enum TodoStatus {
     Done,
     Blocked,
     Handoff,
+    Parked,
+    Closed,
 }
 
 impl TodoStatus {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Open,
         Self::Claimed,
         Self::Done,
         Self::Blocked,
         Self::Handoff,
+        Self::Parked,
+        Self::Closed,
     ];
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -354,6 +465,8 @@ impl TodoStatus {
             Self::Done => "done",
             Self::Blocked => "blocked",
             Self::Handoff => "handoff",
+            Self::Parked => "parked",
+            Self::Closed => "closed",
         }
     }
 
@@ -368,7 +481,15 @@ impl TodoStatus {
         match (self, next) {
             (from, to) if from == to => true,
             (Self::Done, _) => false,
-            (Self::Open | Self::Claimed | Self::Blocked | Self::Handoff, _) => true,
+            (
+                Self::Open
+                | Self::Claimed
+                | Self::Blocked
+                | Self::Handoff
+                | Self::Parked
+                | Self::Closed,
+                _,
+            ) => true,
         }
     }
 }

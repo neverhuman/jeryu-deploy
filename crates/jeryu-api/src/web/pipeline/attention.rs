@@ -6,6 +6,9 @@
 //! per source gathers plain facts; one pure rule per source turns facts into
 //! items, which is what the tests drive.
 //!
+//! An item somebody deliberately deferred is left out until its date passes;
+//! `acks.rs` holds those acknowledgements, keyed by item id whatever the kind.
+//!
 //! Each item names exactly one next step. `action.command` is set when the
 //! step is a shell command to run off-site, and then `action.run_in` says on
 //! which machine and in which directory; otherwise the step is to open `href`
@@ -26,12 +29,14 @@ use super::super::WebState;
 use super::super::merge_queue::QueueState;
 use super::super::shift::FamilySnapshot;
 
+pub(crate) mod acks;
 mod flow;
 mod hosts;
 mod mirror;
 mod pins;
 mod work;
 
+pub(crate) use acks::AckStore;
 pub(crate) use flow::{
     DraftFacts, LatestDeployment, ProductionFacts, PullFacts, draft_items, pull_items, queue_items,
     release_items, runner_items,
@@ -385,6 +390,13 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         &production_facts(state),
         &hosts,
     ));
+    // An acknowledged item is one somebody deliberately deferred: leave it
+    // out, and out of the counts, until its date passes (see `acks.rs`).
+    let hidden = state
+        .attention_acks
+        .hidden(now.timestamp_millis())
+        .unwrap_or_default();
+    items.retain(|item| !hidden.contains(&item.id));
     order(&mut items);
     let count = |severity| items.iter().filter(|i| i.severity == severity).count();
     AttentionResponse {
@@ -403,6 +415,14 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
 #[derive(Clone, Default)]
 pub(crate) struct AttentionCache {
     inner: Arc<Mutex<Option<(Instant, AttentionResponse)>>>,
+}
+
+impl AttentionCache {
+    /// Drop the kept answer, so the next read recomputes. Called when
+    /// something that changes what the inbox hides is written.
+    pub(crate) fn invalidate(&self) {
+        *self.inner.lock().expect("attention cache mutex poisoned") = None;
+    }
 }
 
 /// `GET /api/v1/attention` (admin-only by path, see `auth::admin_only_request`).

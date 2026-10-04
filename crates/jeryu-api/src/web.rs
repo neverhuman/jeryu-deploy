@@ -158,6 +158,9 @@ pub(crate) struct WebState {
     pub(crate) mirror_state: mirror_reconcile::MirrorStateStore,
     /// The attention inbox's last answer (`GET /api/v1/attention`).
     pub(crate) attention: pipeline::attention::AttentionCache,
+    /// Deliberately deferred attention items (`<data_dir>/shift.sqlite`,
+    /// `attention_acks`), which the inbox leaves out until their date.
+    pub(crate) attention_acks: pipeline::attention::AckStore,
     /// What every deploy repo pins (`GET /api/v1/pins`), cached for a minute.
     pub(crate) pins: pipeline::pins::PinsCache,
     /// The repo graph's `depends_on` edges, read from every repository's Cargo
@@ -283,6 +286,8 @@ impl WebState {
             jankurai::DisputeStore::open(&shift_path).expect("open jankurai dispute store");
         let site_settings =
             site_settings::SiteSettingsStore::open(&shift_path).expect("open site settings store");
+        let attention_acks = pipeline::attention::AckStore::open(&shift_path)
+            .expect("open attention acknowledgement store");
         // Pre-warm the agent pool over the real CLI lifecycle. With the OCI gate
         // closed this only records planned cells (no daemon), so construction is
         // infallible in every environment the web edge boots in.
@@ -312,6 +317,7 @@ impl WebState {
             site_settings,
             mirror_state: mirror_reconcile::MirrorStateStore::default(),
             attention: pipeline::attention::AttentionCache::default(),
+            attention_acks,
             pins: pipeline::pins::PinsCache::default(),
             repo_depends: control_plane::DependsCache::default(),
             codegraph_store,
@@ -988,6 +994,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             get(pipeline::list_events).post(pipeline::post_events),
         ),
         ("/api/v1/attention", get(pipeline::attention::attention)),
+        (
+            "/api/v1/attention/acks",
+            get(pipeline::attention::acks::list_acks).post(pipeline::attention::acks::ack),
+        ),
         ("/api/v1/pins", get(pipeline::pins::pins)),
         ("/api/v1/release-board", get(release_board::list_boards)),
         (

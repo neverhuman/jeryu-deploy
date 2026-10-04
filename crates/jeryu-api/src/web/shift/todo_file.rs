@@ -8,7 +8,7 @@
 use chrono::{DateTime, Utc};
 use toml_edit::{DocumentMut, Value};
 
-use super::types::{Attempt, ShiftTodo, TodoStatus};
+use super::types::{Attempt, BlockKind, ShiftTodo, TodoStatus};
 
 pub(crate) const FENCE: &str = "+++";
 pub(crate) const MODES: &[&str] = &["now", "night"];
@@ -33,6 +33,7 @@ const ORDER: &[&str] = &[
     "commits",
     "merged",
     "note",
+    "park_until",
     "triaged",
     "worked_by",
 ];
@@ -59,6 +60,10 @@ pub(crate) struct TodoFile {
     pub commits: Vec<(String, String)>,
     pub merged: bool,
     pub note: String,
+    /// When a parked todo comes back by itself, RFC 3339; empty for a park
+    /// with no date. Written only when it is set, so a file todoq wrote
+    /// without the key round-trips byte-for-byte.
+    pub park_until: String,
     pub triaged: bool,
     /// Attempt records kept as raw TOML so their key order round-trips.
     pub worked_by: Vec<Value>,
@@ -88,6 +93,7 @@ impl TodoFile {
             commits: Vec::new(),
             merged: false,
             note: String::new(),
+            park_until: String::new(),
             triaged: true,
             worked_by: Vec::new(),
             extra: Vec::new(),
@@ -171,6 +177,7 @@ impl TodoFile {
             .unwrap_or_default();
         todo.merged = take("merged").and_then(Value::as_bool).unwrap_or(false);
         todo.note = text_of("note");
+        todo.park_until = text_of("park_until");
         todo.triaged = take("triaged").and_then(Value::as_bool).unwrap_or(true);
         todo.worked_by = take("worked_by")
             .and_then(Value::as_array)
@@ -242,6 +249,9 @@ impl TodoFile {
         for (key, value) in known {
             out.push_str(&format!("{key} = {value}\n"));
         }
+        if !self.park_until.is_empty() {
+            out.push_str(&format!("park_until = {}\n", quote(&self.park_until)));
+        }
         for (key, value) in &self.extra {
             out.push_str(&format!("{key} = {}\n", render(value)));
         }
@@ -299,6 +309,17 @@ impl TodoFile {
                 (!costs.is_empty()).then(|| costs.iter().sum())
             },
             note: self.note.clone(),
+            park_until: self.park_until.clone(),
+            block_kind: BlockKind::derive(
+                self.status,
+                &self.title,
+                &self.note,
+                &self
+                    .attempts_list()
+                    .last()
+                    .map(|attempt| attempt.outcome.clone())
+                    .unwrap_or_default(),
+            ),
             triaged: self.triaged,
             worked_by: self.attempts_list(),
         }

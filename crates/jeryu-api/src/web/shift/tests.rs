@@ -1267,3 +1267,127 @@ fn a_replacement_pull_request_is_found_by_the_trailers_it_carries() {
         "only an open pull request is a review"
     );
 }
+
+/// done, close, park and edit over the route: the queue is rewritten, the
+/// answer is the stored todo, and an edit may only name a family repo.
+#[tokio::test]
+async fn todo_actions_finish_park_and_edit_a_todo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = crate::web::pipeline::tests::shift_forge(dir.path());
+    let call = |method, uri: String, body| {
+        let router = router.clone();
+        let admin = admin.clone();
+        async move {
+            let response = router
+                .oneshot(request(method, &uri, &admin, body))
+                .await
+                .unwrap();
+            (response.status(), body_json(response).await)
+        }
+    };
+    let file = |text: &str| {
+        let call = &call;
+        let text = text.to_string();
+        async move {
+            let (status, filed) = call(
+                HttpMethod::POST,
+                "/api/v1/shift/todos".to_string(),
+                Some(json!({"family": "jeryu", "text": text, "mode": "now"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{filed}");
+            filed["id"].as_str().unwrap().to_string()
+        }
+    };
+    let act = |id: &str, body: Value| {
+        let call = &call;
+        let uri = format!("/api/v1/shift/todos/jeryu/{id}/action");
+        async move { call(HttpMethod::POST, uri, Some(body)).await }
+    };
+
+    let id = file("Cut the tag").await;
+    let (status, done) = act(&id, json!({"action": "done", "note": "did it by hand"})).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "done");
+    assert_eq!(done["note"], "did it by hand");
+    assert_eq!(done["block_kind"], Value::Null);
+
+    let id = file("Rename the thing").await;
+    let (status, closed) = act(&id, json!({"action": "close", "note": "not worth it"})).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert_eq!(closed["status"], "closed");
+
+    let id = file("Wait for split.8").await;
+    let (status, parked) = act(
+        &id,
+        json!({"action": "park", "until": "2026-10-20T09:00:00Z"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{parked}");
+    assert_eq!(parked["status"], "parked");
+    assert_eq!(parked["park_until"], "2026-10-20T09:00:00Z");
+    let (status, refused) = act(&id, json!({"action": "park", "until": "soon"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "shift_invalid_request");
+
+    // A todo filed from one line of text is untriaged; the edit is triage.
+    let id = file("vague ask").await;
+    let (_, before) = call(
+        HttpMethod::GET,
+        "/api/v1/shift/todos?family=jeryu&status=open".to_string(),
+        None,
+    )
+    .await;
+    assert!(
+        before["todos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == id.as_str() && t["triaged"] == false),
+        "{before}"
+    );
+    let (status, edited) = act(
+        &id,
+        json!({"action": "edit", "title": "Pin jeryu-web", "body": "bump the lock",
+               "repos": ["jeryu-web"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert_eq!(edited["title"], "Pin jeryu-web");
+    assert_eq!(edited["body"], "bump the lock");
+    assert_eq!(edited["repos"], json!(["jeryu-web"]));
+    assert_eq!(edited["triaged"], true);
+    assert_eq!(edited["status"], "open");
+
+    // A repo the family config does not list is refused, and nothing changes.
+    let (status, refused) = act(&id, json!({"action": "edit", "repos": ["acme-ops"]})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "shift_invalid_request");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("\"acme-ops\" is not in family"),
+        "{refused}"
+    );
+    let (_, after) = act(&id, json!({"action": "priority", "value": 2})).await;
+    assert_eq!(after["repos"], json!(["jeryu-web"]), "{after}");
+
+    // The queue holds every change: a fresh read sees the stored statuses.
+    let (_, listed) = call(
+        HttpMethod::GET,
+        "/api/v1/shift/todos?family=jeryu".to_string(),
+        None,
+    )
+    .await;
+    let status_of = |id: &str| {
+        listed["todos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .map(|t| t["status"].as_str().unwrap().to_string())
+    };
+    assert_eq!(status_of(&id).as_deref(), Some("open"));
+    assert_eq!(listed["todos"].as_array().unwrap().len(), 6, "{listed}");
+}

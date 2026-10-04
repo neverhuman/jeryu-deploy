@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::{Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, parse_time, todo_href};
-use crate::web::shift::{ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
+use crate::web::shift::{BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 
 /// When the todo last changed hands: its newest attempt's end, else filing.
 fn todo_since(todo: &ShiftTodo) -> Option<String> {
@@ -27,6 +27,35 @@ fn sentence(note: &str) -> String {
     }
 }
 
+/// What a blocked todo's kind means for a person: the sentence that closes
+/// its reason, and the one step its action offers. Releasing is offered only
+/// where releasing can help: an over-budget todo sums its spend over every
+/// attempt, so the next attempt stops where the last one did.
+fn blocked_step(family: &str, kind: BlockKind) -> (String, &'static str) {
+    match kind {
+        BlockKind::OwnerTask => (
+            format!(
+                "Only the owner can do this, so handing it back to a {family} worker would \
+                 block it again."
+            ),
+            "Do it, then mark done",
+        ),
+        BlockKind::OverBudget => (
+            "Spend is summed over every attempt, so releasing it stops it again at once."
+                .to_string(),
+            "Close and refile smaller, or raise the cap",
+        ),
+        BlockKind::UnknownRepo => (
+            format!("No {family} worker can clone a repo the family config does not list."),
+            "Add the repo to the family config, then release",
+        ),
+        BlockKind::Handoff | BlockKind::AgentBlocked => (
+            format!("No {family} worker picks it up until it is released."),
+            "Release the todo",
+        ),
+    }
+}
+
 /// Queue todos that wait on a person: blocked, handed off, untriaged, a dead
 /// claim, or open behind a blocker that itself cannot move.
 pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) -> Vec<Item> {
@@ -44,26 +73,70 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
             command: None,
         };
         let drafted = match todo.status {
-            TodoStatus::Blocked => Some(draft(
-                "todo_blocked",
-                Severity::Action,
-                format!("Blocked: {}", todo.title),
-                // The note is the information: it leads, verbatim. What being
-                // blocked means comes last and stays short.
-                if todo.note.trim().is_empty() {
-                    format!(
-                        "No note says why: it was blocked after {} attempt(s). No {family} \
-                         worker picks it up until it is released.",
-                        todo.attempts
-                    )
+            TodoStatus::Blocked => {
+                // What a worker cannot get past decides what is asked of a
+                // person: releasing an over-budget todo only re-blocks it, and
+                // an owner's task is not a worker's to pick up at all.
+                let kind = todo.block_kind.unwrap_or(BlockKind::AgentBlocked);
+                let (consequence, label) = blocked_step(family, kind);
+                Some(draft(
+                    "todo_blocked",
+                    Severity::Action,
+                    format!("Blocked: {}", todo.title),
+                    // The note is the information: it leads, verbatim. What
+                    // being blocked means comes last and stays short.
+                    if todo.note.trim().is_empty() {
+                        format!(
+                            "No note says why: it was blocked after {} attempt(s). \
+                             {consequence}",
+                            todo.attempts
+                        )
+                    } else {
+                        format!("{} {consequence}", sentence(&todo.note))
+                    },
+                    label,
+                ))
+            }
+            TodoStatus::Parked => {
+                // A park with a date comes back by itself, so until then it is
+                // only worth watching; without one, or once the date has
+                // passed, it waits on a person again.
+                let due = parse_time(&todo.park_until).is_none_or(|until| until <= now);
+                let why = if todo.note.trim().is_empty() {
+                    "Somebody set this todo aside.".to_string()
                 } else {
-                    format!(
-                        "{} No {family} worker picks it up until it is released.",
-                        sentence(&todo.note)
-                    )
-                },
-                "Release the todo",
-            )),
+                    sentence(&todo.note)
+                };
+                let consequence = match (todo.park_until.as_str(), due) {
+                    (until, false) => format!(
+                        "It is parked until {until}, so no {family} worker picks it up before \
+                         then."
+                    ),
+                    ("", true) => format!(
+                        "It is parked with no date it comes back on, so no {family} worker \
+                         picks it up until a person decides."
+                    ),
+                    (until, true) => format!(
+                        "The park ran out at {until} and it is still parked, so no {family} \
+                         worker picks it up."
+                    ),
+                };
+                Some(draft(
+                    "todo_parked",
+                    if due {
+                        Severity::Action
+                    } else {
+                        Severity::Watch
+                    },
+                    format!("Parked: {}", todo.title),
+                    format!("{why} {consequence}"),
+                    if due {
+                        "Release the todo or park it again"
+                    } else {
+                        "Nothing to do until the park runs out"
+                    },
+                ))
+            }
             TodoStatus::Handoff => Some(draft(
                 "todo_handoff",
                 Severity::Action,
@@ -125,7 +198,11 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                          branch yet. Merging that shift's pull request unblocks it.",
                         blocker.title, blocker.id
                     )),
-                    TodoStatus::Done | TodoStatus::Open | TodoStatus::Claimed => None,
+                    TodoStatus::Done
+                    | TodoStatus::Open
+                    | TodoStatus::Claimed
+                    | TodoStatus::Parked
+                    | TodoStatus::Closed => None,
                 })
                 .map(|why| {
                     draft(
@@ -136,7 +213,7 @@ pub(crate) fn todo_items(family: &str, todos: &[ShiftTodo], now: DateTime<Utc>) 
                         "Clear the blocker it names",
                     )
                 }),
-            TodoStatus::Done => None,
+            TodoStatus::Done | TodoStatus::Closed => None,
         };
         if let Some(draft) = drafted {
             let mut item = draft.build();

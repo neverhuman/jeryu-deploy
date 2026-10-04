@@ -31,6 +31,7 @@ Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
 | `POST /api/v1/events` | a global admin, or a login in `JERYU_EVENT_REPORTERS` (comma-separated site setting, e.g. `ci-bot,review-bot`) |
 | `GET /api/v1/events` | global admins |
 | `GET /api/v1/attention` | global admins |
+| `GET`, `POST /api/v1/attention/acks` | global admins |
 | `GET /api/v1/pins` | global admins |
 | WebSocket scope `pipeline` | global admins |
 
@@ -85,7 +86,7 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 
 | Kind | When |
 |---|---|
-| `todo.filed`, `todo.action` | a todo is filed or released/blocked/re-prioritised from the web |
+| `todo.filed`, `todo.action` | a todo is filed, or released/blocked/finished/closed/parked/edited/re-prioritised from the web |
 | `worker.stage` | a worker slot's state, stage or todo differs from its previous heartbeat; summary like `w1 jeryu: agent -> gate on <todo>`. An unchanged beat, or an idle slot appearing, emits nothing |
 | `shift.pr_opened` | the Shift page opened a shift's review PR |
 | `pr.opened`, `pr.review`, `pr.approved`, `pr.merged` | pull request steps on the v1 routes and the GitHub-compatible edge; `pr.review` has `outcome` `approve`, `request_changes` or `comment`, and `needs_human` for `request_changes`. Tagged with `family` and `shift` when the head is a shift branch |
@@ -194,7 +195,9 @@ is fixed.
  "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1}}
 ```
 
-Items are sorted by severity, then oldest first.
+Items are sorted by severity, then oldest first. An item somebody
+acknowledged (see [Acknowledgements](#acknowledgements)) is left out, and out
+of `counts`, until the date it was acknowledged until.
 
 | Field | Notes |
 |---|---|
@@ -235,7 +238,8 @@ pushes leave from there).
 
 | Kind | Severity | Meaning |
 |---|---|---|
-| `todo_blocked` | action | status `blocked`; the reason opens with the note, and the one step is to release the todo |
+| `todo_blocked` | action | status `blocked`; the reason opens with the note, and the step is the one the todo's `block_kind` names (see [Block kinds](#block-kinds)) |
+| `todo_parked` | watch or action | status `parked`. `watch` while `park_until` is in the future, and the label says there is nothing to do until then; `action` once it has passed, or when the park carries no date, because then only a person moves it |
 | `todo_handoff` | action | status `handoff` |
 | `todo_untriaged` | action | open and `triaged = false`; workers skip it |
 | `todo_stuck_claim` | watch | claimed, lease dead for 10 minutes or more |
@@ -254,6 +258,67 @@ pushes leave from there).
 | `release_stage_failed` | critical | the newest `release.stage_failed` with `needs_human` is newer than the newest `release.staged` |
 | `deploy_failed` | critical or watch | a repository's newest production deployment ended in `failure` or `error`. `watch` when the attempt left production as it was, because the live deployment is a successful one of the very release the attempt tried to deploy (release names decide it when both payloads name one, else the commits): production runs that release and needs no deploy |
 | `pin_behind` | action or watch | a deploy repo's pin misses green, merged work of a dependency (see [Pins](#pins)). A `commit` pin with no bump open is `watch` with no command while the dependency's newest commit (`latest_at`) is younger than 20 minutes, because auto-pin is about to open the bump; after that, or when `latest_at` is missing or unreadable, it is `action` and the command starts auto-pin (`systemctl --user start jeryu-auto-pin.service`), which builds the web bundle, changes the two lock fields and opens the pull request. The id is the same on both sides of the line. When auto-pin has given up on the dependency's current head (the newest `pin.bump_failed` with `needs_human` whose `sha` is `latest_sha`) it is `action` at once, grace or not: the title says auto-pin gave up on `<sha7>`, the reason leads with the event's `reason` (else a `reason` in `detail`, else the last line of `log_tail`) on one trimmed line, and the command clears the give-up marker and retries (`rm -f ~/.local/state/jeryu-auto-pin/failures/<sha> && systemctl --user start jeryu-auto-pin.service`); a give-up for an older head is ignored. With a bump pull request open it is `watch` and `href` is that pull request; a `tag` pin is `watch`, because nothing cuts tags. Gone when the pin is current |
+
+### Block kinds
+
+A blocked todo's `block_kind` says what a worker could not get past, which
+decides what the inbox asks of a person. It is read off the todo's title, its
+note and its newest attempt's `outcome`, in this order, and is reported on
+`GET /api/v1/shift/todos` too. Releasing is offered only where releasing can
+help.
+
+| `block_kind` | Read from | `action.label` |
+|---|---|---|
+| `owner_task` | `OWNER:`, `needs the owner`, `only the owner` | `Do it, then mark done` |
+| `over_budget` | `over_budget`, `over budget`, `budget cap`, `cost cap`, `out of budget` | `Close and refile smaller, or raise the cap` |
+| `unknown_repo` | `unknown repo`, `is not in family`, `not in the family config` | `Add the repo to the family config, then release` |
+| `handoff` | status `handoff`, or `handoff`/`by hand` in the words | `Release the todo` |
+| `agent_blocked` | anything else | `Release the todo` |
+
+An over-budget todo is never offered a release: spend is summed over every
+attempt, so the next attempt stops where the last one did. An owner's task is
+not a worker's to pick up at all.
+
+### Acknowledgements
+
+Not every item is a todo, and not every item can be fixed today: a mirror
+everybody knows is failing, or a draft kept open on purpose, otherwise asks
+for a person every ten seconds. An acknowledgement defers one item by its own
+`id`, whatever kind it is, until a date; after that date the item is listed
+again, because the acknowledgement said "not now", not "never".
+
+```json
+POST /api/v1/attention/acks
+{"item_id": "mirror-failing:forge", "until": "2026-12-01T00:00:00Z", "note": "waits on the new deploy key"}
+```
+
+`201` with the stored acknowledgement, or `204` when `until` is `null`, which
+drops it and lists the item again. `GET /api/v1/attention/acks` lists every
+acknowledgement, expired ones too: they are the record of what somebody
+decided to live with. An `item_id` whose cause is already gone is stored and
+simply never matches. Kept in `<data_dir>/shift.sqlite`
+(`db/migrations/0006_attention_acks.sql`).
+
+A todo is deferred the other way round, as queue state rather than as an
+inbox row: `POST /api/v1/shift/todos/:family/:id/action` with
+`{"action": "park", "until": ...}` (see [Todo actions](#todo-actions)).
+
+### Todo actions
+
+`POST /api/v1/shift/todos/:family/:id/action` takes `{"action", ...}` and
+answers with the stored todo. Every action is admin-only, and none of them
+moves a `done` todo.
+
+| Action | Body | What it does |
+|---|---|---|
+| `release` | `note?` | back to `open`, lease and park cleared, attempts reset to 0 |
+| `block` | `note` | `blocked`, attempts kept; the note is what the inbox reads the `block_kind` from |
+| `done` | `note?` | `done`: the work is finished, by hand or otherwise, and the item leaves the inbox |
+| `close` | `note?` | `closed`: it will not be done. Like `done` it asks nobody for anything, and unlike `done` an admin may still release it |
+| `park` | `until?` (RFC 3339), `note?` | `parked` with `park_until`, a state the inbox only watches until that time. No date parks it until a person acts |
+| `edit` | `title?`, `body?`, `repos?` | overwrites the fields given. A repo the family config does not list is `422`; a title and repos together triage the todo |
+| `priority` | `value` 1..4 | |
+| `mode` | `value` `now` or `night` | |
 
 ## Pins
 
@@ -317,6 +382,9 @@ person that work is waiting for a tag.
   family repo name, as in `commits`. `state` is the core pull request state
   (`mergeable`, `merged`, `closed`, ...), as on the shift cards.
 - `cost_usd`: the sum over `worked_by`, or null.
+- `park_until`: when a `parked` todo comes back by itself, or `""`.
+- `block_kind`: on `blocked` and `handoff` todos, what kind of help it needs
+  (see [Block kinds](#block-kinds)); null on every other status.
 
 The route is polled every 30 seconds, so the work is bounded: one `rev-parse`
 per family repo per request, per-todo git only when its base branch or
