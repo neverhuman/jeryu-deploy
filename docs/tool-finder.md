@@ -29,9 +29,11 @@ source. Neither needs the other, and a host with no checkouts needs no
 ### How hosted discovery finds a family
 
 A repository names a split family when its default branch has, at the repo
-root, either `repos.manifest.toml` or a `*-split.lock.toml`. That file's
-`[[repo]]` entries (`name`, `jeryu_slug` or `github_slug`) name the family's
-members, which are resolved back to hosted repositories the same way
+root, either `repos.manifest.toml` or a `*-split.lock.toml`. The authority
+manifest names its members in `required_repos`, with the control plane under
+`[control_plane]` and every other member one `[[repo]]` row; a lock names them
+in its `[[repo]]` rows (`name` or `jeryu_slug`). Either way the names are
+resolved back to hosted repositories the same way
 `GET /api/v1/pins` resolves consumers: a repository under the naming
 repository's owner first, else the one hosted repository with that name. The
 naming repository is itself a member. Archived and disabled repositories are

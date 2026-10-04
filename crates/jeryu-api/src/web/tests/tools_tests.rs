@@ -23,10 +23,7 @@ fn hosted_family_state(private: bool) -> (Arc<WebState>, tempfile::TempDir) {
         "jeryu",
         "jeryu-deploy",
         &[
-            (
-                "repos.manifest.toml",
-                "repo_family = \"jeryu-split\"\n\n[[repo]]\nname = \"jeryu-deploy\"\n\n[[repo]]\njeryu_slug = \"jeryu/jeryu-cache\"\n",
-            ),
+            ("repos.manifest.toml", HOSTED_FAMILY_AUTHORITY),
             ("src/lib.rs", SHARED_TOOL_FIXTURE),
         ],
     );
@@ -47,6 +44,27 @@ fn hosted_family_state(private: bool) -> (Arc<WebState>, tempfile::TempDir) {
     ));
     (state, storage)
 }
+
+/// The authority manifest the first fixture repo carries, in the shape the
+/// family control plane publishes: `required_repos` names every member, the
+/// control plane sits under `[control_plane]`, and every other member is one
+/// `[[repo]]` row.
+const HOSTED_FAMILY_AUTHORITY: &str = r#"
+schema_version = "1"
+repo_family = "jeryu-split"
+required_repos = ["jeryu-cache", "jeryu-deploy"]
+
+[control_plane]
+name = "jeryu-deploy"
+default_branch = "main"
+identity_status = "bound"
+
+[[repo]]
+name = "jeryu-cache"
+jeryu_slug = "jeryu/jeryu-cache"
+default_branch = "main"
+identity_status = "pending"
+"#;
 
 /// The duplicated body both fixture repos carry, so a cross-repo cluster is
 /// there to be found once the bare repos are materialized.
@@ -459,6 +477,31 @@ async fn tool_finder_scan_status_idle_busy_guard_and_snapshot_arm() {
     assert_eq!(event.entity, "system/host");
     assert_eq!(event.payload["running"], true);
     assert_eq!(event.payload["phase"], "discover");
+}
+
+/// The authority manifest names its members in `required_repos` and its
+/// control plane in `[control_plane]`, never in a `[[repo]]` row of its own; a
+/// release lock names them in `[[repo]]` rows only. Both are read.
+#[test]
+fn family_member_names_come_from_the_authority_or_the_lock() {
+    assert_eq!(
+        crate::web::tool_finder::hosted::member_names(HOSTED_FAMILY_AUTHORITY),
+        BTreeSet::from(["jeryu-cache".to_string(), "jeryu-deploy".to_string()])
+    );
+    assert_eq!(
+        crate::web::tool_finder::hosted::member_names(
+            r#"
+[[repo]]
+name = "pelago"
+github_slug = "pelago-oss/pelago"
+
+[[repo]]
+jeryu_slug = "pelago/pelago-core"
+"#
+        ),
+        BTreeSet::from(["pelago".to_string(), "pelago-core".to_string()])
+    );
+    assert!(crate::web::tool_finder::hosted::member_names("not = [toml").is_empty());
 }
 
 /// Discovery reads the family out of the bare repos themselves, materializes

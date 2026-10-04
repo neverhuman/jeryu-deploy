@@ -9,10 +9,10 @@
 //! directory the scanner can walk.
 //!
 //! A repository names a family when its default branch has a root
-//! `repos.manifest.toml` (which lists the family's members) or a root
-//! `*-split.lock.toml` (whose `[[repo]]` entries name them). The named members
-//! are resolved back to hosted repositories, so only repositories this forge
-//! actually serves are ever read.
+//! `repos.manifest.toml` — the family authority, whose `required_repos` lists
+//! every member — or a root `*-split.lock.toml`, whose `[[repo]]` entries name
+//! them. The named members are resolved back to hosted repositories, so only
+//! repositories this forge actually serves are ever read.
 //!
 //! Everything here is bounded: a repository cap, a per-file, per-repo and
 //! whole-scan byte cap, a file-count cap, and a wall-clock deadline. Whatever a
@@ -37,7 +37,7 @@ use super::super::WebState;
 use super::super::pipeline::pins::hosted_repository;
 use super::super::shift::run_git as git;
 
-/// Root file whose `[[repo]]` entries name a family's members.
+/// Root file whose `required_repos` names a family's members.
 const FAMILY_MANIFEST: &str = "repos.manifest.toml";
 /// Root file suffix whose `[[repo]]` entries name a family's members.
 const LOCK_SUFFIX: &str = "-split.lock.toml";
@@ -162,13 +162,41 @@ fn blob(git_bin: &str, dir: &Path, branch: &str, path: &str) -> Option<String> {
         .map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
-/// The member names a family file lists: a manifest's `jeryu_slug` /
-/// `github_slug` / `name`, or a lock's `[[repo]] name`.
-fn member_names(text: &str) -> BTreeSet<String> {
+/// The member names a family file lists.
+///
+/// The authority manifest names them in `required_repos`, with the control
+/// plane also under `[control_plane]` and every other member a `[[repo]]` row.
+/// A release lock names them in its `[[repo]]` rows only. Reading all three
+/// covers both files, and a name no repository here answers to is reported as
+/// a skip rather than dropped.
+pub(crate) fn member_names(text: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let Ok(table) = text.parse::<toml::Table>() else {
         return names;
     };
+    let mut insert = |name: &str| {
+        let name = name.trim();
+        if !name.is_empty() {
+            names.insert(name.rsplit('/').next().unwrap_or(name).to_string());
+        }
+    };
+    for required in table
+        .get("required_repos")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_str)
+    {
+        insert(required);
+    }
+    if let Some(control) = table
+        .get("control_plane")
+        .and_then(toml::Value::as_table)
+        .and_then(|control| control.get("name"))
+        .and_then(toml::Value::as_str)
+    {
+        insert(control);
+    }
     for entry in table
         .get("repo")
         .and_then(toml::Value::as_array)
@@ -176,17 +204,8 @@ fn member_names(text: &str) -> BTreeSet<String> {
         .flatten()
     {
         let field = |key: &str| entry.get(key).and_then(toml::Value::as_str);
-        let name = field("name")
-            .map(str::to_string)
-            .or_else(|| {
-                field("jeryu_slug")
-                    .or_else(|| field("github_slug"))
-                    .and_then(|slug| slug.rsplit('/').next())
-                    .map(str::to_string)
-            })
-            .filter(|name| !name.trim().is_empty());
-        if let Some(name) = name {
-            names.insert(name);
+        if let Some(name) = field("name").or_else(|| field("jeryu_slug")) {
+            insert(name);
         }
     }
     names

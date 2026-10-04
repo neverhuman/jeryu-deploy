@@ -19,9 +19,12 @@ if [[ -f package.json ]]; then
   fi
 fi
 
-if [[ -f repos.manifest.toml ]]; then
+# The family authority lives in the release control plane, not here. Validate
+# it when this host has it (JERYU_FAMILY_MANIFEST, or a sibling checkout).
+if manifest="$(cargo run --locked --offline --quiet -p jeryu-split-tool \
+  --bin jeryu-split -- manifest-path 2>/dev/null)"; then
   cargo run --locked --offline --quiet -p jeryu-split-tool --bin jeryu-split -- \
-    manifest --manifest repos.manifest.toml >/dev/null
+    manifest --manifest "${manifest}" >/dev/null
 fi
 for script in scripts/*.sh ops/ci/*.sh; do
   [[ -e "$script" ]] || continue

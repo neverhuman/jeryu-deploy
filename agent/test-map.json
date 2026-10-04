@@ -200,11 +200,6 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
-    "repos.manifest.toml": {
-      "command": "just check && just score",
-      "lane": "check",
-      "purpose": "verify split manifest remains parseable and routed"
-    },
     "rust-toolchain.toml": {
       "command": "just check",
       "lane": "check",

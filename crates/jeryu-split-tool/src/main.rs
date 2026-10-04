@@ -1,6 +1,11 @@
-//! Rust-native transition tooling for the Jeryu split-family manifest.
+//! Rust-native split-family tooling over the authority manifest.
+//!
+//! The family's membership and release identity live in one file owned by
+//! `jeryu-release-ops`; [`family`] locates and parses it. This binary never
+//! carries a copy of it.
 
-use std::collections::BTreeSet;
+mod family;
+
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -10,8 +15,9 @@ use std::process::{Command as ProcessCommand, ExitCode};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use serde::Serialize;
 use toml::Value;
+
+use family::Family;
 
 #[derive(Debug, Parser)]
 #[command(name = "jeryu-split")]
@@ -22,26 +28,23 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Validate and render the split-family manifest.
+    /// Validate and render the family authority manifest.
     Manifest {
-        #[arg(long, default_value = "repos.manifest.toml")]
-        manifest: PathBuf,
+        /// Authority manifest; defaults to the located one.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
         #[arg(long)]
         json: bool,
         #[arg(long)]
         check_paths: bool,
     },
-    /// Prove that every source-tree path is assigned to a split repository.
-    SourceCoverage {
-        #[arg(long, default_value = "repos.manifest.toml")]
-        manifest: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Run the governed score or full check lane for every manifest repository.
+    /// Print where the family authority manifest was found.
+    ManifestPath,
+    /// Run the governed score or full check lane for every family member.
     FleetCi {
-        #[arg(long, default_value = "repos.manifest.toml")]
-        manifest: PathBuf,
+        /// Authority manifest; defaults to the located one.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
         #[arg(long)]
         full: bool,
     },
@@ -50,10 +53,11 @@ enum Command {
         #[arg(long, default_value = "jeryu-split.lock.toml")]
         lock: PathBuf,
     },
-    /// Run manifest, source-coverage, and lock checks without Python.
+    /// Run the authority-manifest and lock checks without Python.
     ProductPipeline {
-        #[arg(long, default_value = "repos.manifest.toml")]
-        manifest: PathBuf,
+        /// Authority manifest; defaults to the located one.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
         #[arg(long, default_value = "jeryu-split.lock.toml")]
         lock: PathBuf,
     },
@@ -82,20 +86,6 @@ enum Command {
     },
 }
 
-#[derive(Debug, Serialize)]
-struct SourceCoverageReport {
-    missing: Vec<String>,
-    missing_count: usize,
-    patterns: usize,
-    schema_version: &'static str,
-    source_git_dir: Option<String>,
-    source_reader: String,
-    source_root: String,
-    source_sha: String,
-    status: &'static str,
-    tracked_files: usize,
-}
-
 fn main() -> ExitCode {
     let args: Vec<OsString> = env::args_os().collect();
     let cli = if args.get(1).and_then(|arg| arg.to_str()) == Some("manifest") {
@@ -109,7 +99,10 @@ fn main() -> ExitCode {
     } else {
         Cli::parse_from(args)
     };
-    if let Command::Manifest { manifest, .. } = &cli.command
+    if let Command::Manifest {
+        manifest: Some(manifest),
+        ..
+    } = &cli.command
         && fs::File::open(manifest).is_err()
     {
         eprintln!(
@@ -145,7 +138,7 @@ fn parse_manifest_compat(args: &[OsString]) -> std::result::Result<Cli, Manifest
         } else {
             &program
         };
-    let mut manifest = PathBuf::from("repos.manifest.toml");
+    let mut manifest: Option<PathBuf> = None;
     let mut json = false;
     let mut check_paths = false;
     let mut index = 2;
@@ -159,7 +152,7 @@ fn parse_manifest_compat(args: &[OsString]) -> std::result::Result<Cli, Manifest
                         stderr: String::new(),
                     });
                 };
-                manifest = PathBuf::from(path);
+                manifest = Some(PathBuf::from(path));
             }
             Some("--json") => json = true,
             Some("--check-paths") => check_paths = true,
@@ -174,7 +167,10 @@ fn parse_manifest_compat(args: &[OsString]) -> std::result::Result<Cli, Manifest
         }
         index += 1;
     }
-    if manifest.as_os_str().is_empty() {
+    if manifest
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
         return Err(ManifestCliError {
             exit_code: 1,
             stderr: "manifest error: --manifest requires a path\n".to_owned(),
@@ -195,11 +191,11 @@ fn run(cli: Cli) -> Result<()> {
             manifest,
             json,
             check_paths,
-        } => manifest_command(&manifest, json, check_paths),
-        Command::SourceCoverage { manifest, json } => source_coverage(&manifest, json),
-        Command::FleetCi { manifest, full } => fleet_ci(&manifest, full),
+        } => manifest_command(manifest.as_deref(), json, check_paths),
+        Command::ManifestPath => manifest_path(),
+        Command::FleetCi { manifest, full } => fleet_ci(manifest.as_deref(), full),
         Command::VerifyLock { lock } => verify_lock(&lock),
-        Command::ProductPipeline { manifest, lock } => product_pipeline(&manifest, &lock),
+        Command::ProductPipeline { manifest, lock } => product_pipeline(manifest.as_deref(), &lock),
         Command::CiLanesCheck => {
             emit_repo_gate(jeryu_repogate::run_ci_lanes_check(Path::new("."))?)
         }
@@ -236,326 +232,53 @@ fn table<'a>(value: &'a Value, context: &str) -> Result<&'a toml::Table> {
         .with_context(|| format!("{context} must be a TOML table"))
 }
 
-fn required_string<'a>(table: &'a toml::Table, field: &str, context: &str) -> Result<&'a str> {
-    let value = table
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or_default();
-    if value.is_empty() {
-        bail!("{context} missing {field}");
-    }
-    Ok(value)
-}
-
-fn string_array(table: &toml::Table, field: &str, context: &str) -> Result<Vec<String>> {
-    let Some(value) = table.get(field) else {
-        return Ok(Vec::new());
-    };
-    let values = value
-        .as_array()
-        .with_context(|| format!("{context}.{field} must be an array"))?;
-    values
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .with_context(|| format!("{context}.{field} entries must be strings"))
-        })
-        .collect()
-}
-
+/// The `[[repo]]` entries of a release lock.
 fn repositories(value: &Value) -> Result<&Vec<Value>> {
-    table(value, "manifest")?
+    table(value, "lock")?
         .get("repo")
         .and_then(Value::as_array)
         .filter(|repos| !repos.is_empty())
-        .context("manifest must contain [[repo]] entries")
+        .context("lock must contain [[repo]] entries")
 }
 
-fn validate_manifest_value(value: &Value, check_paths: bool) -> Result<()> {
-    let root = table(value, "manifest")?;
-    let repos = repositories(value)?;
-    let mut seen = BTreeSet::new();
-
-    for repo in repos {
-        let repo = table(repo, "repo entry")?;
-        let name = required_string(repo, "name", "repo entry")?;
-        if !seen.insert(name.to_owned()) {
-            bail!("duplicate repo name: {name}");
-        }
-        let path = required_string(repo, "path", name)?;
-        for field in [
-            "github_slug",
-            "jeryu_slug",
-            "profile",
-            "default_branch",
-            "current_tag",
-            "required_check",
-        ] {
-            required_string(repo, field, name)?;
-        }
-        if required_string(repo, "default_branch", name)? != "main" {
-            bail!("{name} default_branch must be main");
-        }
-        if repo.get("has_jeryu_std").and_then(Value::as_bool) != Some(true) {
-            bail!("{name} must set has_jeryu_std=true");
-        }
-        if check_paths {
-            let repo_path = Path::new(path);
-            if !repo_path.is_dir() {
-                bail!("{name} path missing: {path}");
-            }
-            for required in ["AGENTS.md", "agent/owner-map.json", "agent/test-map.json"] {
-                if !repo_path.join(required).is_file() {
-                    bail!("{name} missing {required}");
-                }
-            }
-        }
+/// The authority manifest an explicit `--manifest` names, else the located one.
+fn load_family(manifest: Option<&Path>) -> Result<Family> {
+    match manifest {
+        Some(path) => family::read(path),
+        None => family::read(&family::locate(Path::new("."))?),
     }
+}
 
-    let required = string_array(root, "required_repos", "manifest")?;
-    let missing: Vec<_> = required
-        .into_iter()
-        .filter(|name| !seen.contains(name))
-        .collect();
-    if !missing.is_empty() {
-        bail!("manifest missing required repos: {}", missing.join(" "));
-    }
+fn manifest_path() -> Result<()> {
+    println!("{}", family::locate(Path::new("."))?.display());
     Ok(())
 }
 
-fn manifest_command(path: &Path, json: bool, check_paths: bool) -> Result<()> {
-    let value = read_toml(path)?;
-    validate_manifest_value(&value, check_paths)?;
-    let repos = repositories(&value)?;
+fn manifest_command(manifest: Option<&Path>, json: bool, check_paths: bool) -> Result<()> {
+    let family = load_family(manifest)?;
+    if check_paths {
+        family.check_paths()?;
+    }
     if json {
-        let output = serde_json::json!({ "repo": repos });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!("{}", serde_json::to_string_pretty(&family)?);
         return Ok(());
     }
-    for repo in repos {
-        let repo = table(repo, "repo entry")?;
+    for member in &family.members {
         println!(
-            "{}|{}|{}|{}",
-            required_string(repo, "name", "repo entry")?,
-            required_string(repo, "path", "repo entry")?,
-            required_string(repo, "github_slug", "repo entry")?,
-            required_string(repo, "jeryu_slug", "repo entry")?,
+            "{}|{}|{}|{}|{}",
+            member.name,
+            member.path.display(),
+            member.jeryu_slug,
+            member.required_check,
+            member.tag.as_deref().unwrap_or("pending"),
         );
     }
     Ok(())
 }
 
-fn source_coverage(path: &Path, json: bool) -> Result<()> {
-    let value = read_toml(path)?;
-    let root = table(&value, "manifest")?;
-    let source_root = PathBuf::from(required_string(root, "source_root", "manifest")?);
-    let source_sha = required_string(root, "source_sha", "manifest")?.to_owned();
-    let source_git_dir = root
-        .get("source_git_dir")
-        .and_then(Value::as_str)
-        .map(PathBuf::from);
-    let mut patterns = string_array(root, "shared_source_paths", "manifest")?;
-    for repo in repositories(&value)? {
-        patterns.extend(string_array(
-            table(repo, "repo entry")?,
-            "source_paths",
-            "repo entry",
-        )?);
-    }
-    let (files, source_reader) = git_tree(&source_root, source_git_dir.as_deref(), &source_sha)?;
-    let missing: Vec<_> = files
-        .iter()
-        .filter(|path| !is_covered(path, &patterns))
-        .cloned()
-        .collect();
-    let status = if missing.is_empty() { "pass" } else { "fail" };
-    let report = SourceCoverageReport {
-        missing_count: missing.len(),
-        missing,
-        patterns: patterns.len(),
-        schema_version: "jeryu.split.source-coverage/v1",
-        source_git_dir: source_git_dir
-            .as_ref()
-            .map(|path| path.display().to_string()),
-        source_reader,
-        source_root: source_root.display().to_string(),
-        source_sha,
-        status,
-        tracked_files: files.len(),
-    };
-    if json {
-        println!("{}", source_coverage_json(&report)?);
-    } else if report.missing.is_empty() {
-        println!(
-            "source coverage pass: {} tracked files covered by {} patterns",
-            report.tracked_files, report.patterns
-        );
-    } else {
-        println!(
-            "source coverage failed: {} tracked files are not assigned",
-            report.missing_count
-        );
-        for path in report.missing.iter().take(100) {
-            println!("{path}");
-        }
-    }
-    if report.missing.is_empty() {
-        Ok(())
-    } else {
-        bail!("source coverage failed")
-    }
-}
-
-fn source_coverage_json(report: &SourceCoverageReport) -> Result<String> {
-    Ok(serde_json::to_string_pretty(report)?)
-}
-
-fn git_tree(
-    source_root: &Path,
-    source_git_dir: Option<&Path>,
-    source_sha: &str,
-) -> Result<(Vec<String>, String)> {
-    let (mut command, reader) = if source_root.exists() {
-        let mut command = ProcessCommand::new("git");
-        command.args(["-C", &source_root.display().to_string()]);
-        (command, source_root.display().to_string())
-    } else if let Some(git_dir) = source_git_dir {
-        let mut command = ProcessCommand::new("git");
-        command.arg(format!("--git-dir={}", git_dir.display()));
-        (command, git_dir.display().to_string())
-    } else {
-        let mut command = ProcessCommand::new("git");
-        command.args(["-C", &source_root.display().to_string()]);
-        (command, format!("{} (missing)", source_root.display()))
-    };
-    let output = command
-        .args(["ls-tree", "-r", "--name-only", source_sha])
-        .output()
-        .with_context(|| format!("read source tree from {reader}"))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(if output.stderr.is_empty() {
-            &output.stdout
-        } else {
-            &output.stderr
-        });
-        bail!(
-            "failed to read source tree from {reader}: {}",
-            detail.trim()
-        );
-    }
-    let stdout = String::from_utf8(output.stdout).context("source tree paths must be UTF-8")?;
-    Ok((
-        stdout
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(str::to_owned)
-            .collect(),
-        reader,
-    ))
-}
-
-fn is_covered(path: &str, patterns: &[String]) -> bool {
-    patterns.iter().any(|pattern| {
-        path == pattern
-            || pattern
-                .strip_suffix("/**")
-                .is_some_and(|prefix| path.starts_with(&format!("{prefix}/")))
-            || wildcard_matches(pattern, path)
-    })
-}
-
-fn wildcard_matches(pattern: &str, value: &str) -> bool {
-    let pattern: Vec<_> = pattern.chars().collect();
-    let value: Vec<_> = value.chars().collect();
-    let mut memo = vec![vec![None; value.len() + 1]; pattern.len() + 1];
-    wildcard_matches_at(&pattern, &value, 0, 0, &mut memo)
-}
-
-fn wildcard_matches_at(
-    pattern: &[char],
-    value: &[char],
-    pattern_index: usize,
-    value_index: usize,
-    memo: &mut [Vec<Option<bool>>],
-) -> bool {
-    if let Some(result) = memo[pattern_index][value_index] {
-        return result;
-    }
-    let result = if pattern_index == pattern.len() {
-        value_index == value.len()
-    } else {
-        match pattern[pattern_index] {
-            '*' => {
-                wildcard_matches_at(pattern, value, pattern_index + 1, value_index, memo)
-                    || (value_index < value.len()
-                        && wildcard_matches_at(
-                            pattern,
-                            value,
-                            pattern_index,
-                            value_index + 1,
-                            memo,
-                        ))
-            }
-            '?' if value_index < value.len() => {
-                wildcard_matches_at(pattern, value, pattern_index + 1, value_index + 1, memo)
-            }
-            '[' if value_index < value.len() => {
-                if let Some((next_index, class_matches)) =
-                    character_class(pattern, pattern_index, value[value_index])
-                {
-                    class_matches
-                        && wildcard_matches_at(pattern, value, next_index, value_index + 1, memo)
-                } else {
-                    value[value_index] == '['
-                        && wildcard_matches_at(
-                            pattern,
-                            value,
-                            pattern_index + 1,
-                            value_index + 1,
-                            memo,
-                        )
-                }
-            }
-            token if value_index < value.len() && token == value[value_index] => {
-                wildcard_matches_at(pattern, value, pattern_index + 1, value_index + 1, memo)
-            }
-            _ => false,
-        }
-    };
-    memo[pattern_index][value_index] = Some(result);
-    result
-}
-
-fn character_class(pattern: &[char], open_index: usize, value: char) -> Option<(usize, bool)> {
-    let mut index = open_index + 1;
-    let negated = pattern.get(index) == Some(&'!');
-    if negated {
-        index += 1;
-    }
-    let start = index;
-    let mut matched = false;
-    while index < pattern.len() && (pattern[index] != ']' || index == start) {
-        let first = pattern[index];
-        if pattern.get(index + 1) == Some(&'-')
-            && pattern.get(index + 2).is_some_and(|token| *token != ']')
-        {
-            let last = pattern[index + 2];
-            matched |= first <= value && value <= last;
-            index += 3;
-        } else {
-            matched |= first == value;
-            index += 1;
-        }
-    }
-    (index < pattern.len() && pattern[index] == ']').then_some((index + 1, matched != negated))
-}
-
-fn fleet_ci(path: &Path, full: bool) -> Result<()> {
-    let value = read_toml(path)?;
-    for (name, path, lane) in fleet_entries(&value, full)? {
+fn fleet_ci(manifest: Option<&Path>, full: bool) -> Result<()> {
+    let family = load_family(manifest)?;
+    for (name, path, lane) in fleet_entries(&family, full) {
         println!("{name}: just {lane}");
         io::stdout().flush()?;
         run_process(
@@ -566,17 +289,12 @@ fn fleet_ci(path: &Path, full: bool) -> Result<()> {
     Ok(())
 }
 
-fn fleet_entries(value: &Value, full: bool) -> Result<Vec<(String, PathBuf, String)>> {
-    validate_manifest_value(value, false)?;
+fn fleet_entries(family: &Family, full: bool) -> Vec<(String, PathBuf, String)> {
     let lane = if full { "check" } else { "score" };
-    repositories(value)?
+    family
+        .members
         .iter()
-        .map(|repo| {
-            let repo = table(repo, "repo entry")?;
-            let name = required_string(repo, "name", "repo entry")?.to_owned();
-            let path = PathBuf::from(required_string(repo, "path", &name)?);
-            Ok((name, path, lane.to_owned()))
-        })
+        .map(|member| (member.name.clone(), member.path.clone(), lane.to_owned()))
         .collect()
 }
 
@@ -668,11 +386,9 @@ fn verify_lock_value(value: &Value) -> Result<()> {
     }
 }
 
-fn product_pipeline(manifest: &Path, lock: &Path) -> Result<()> {
+fn product_pipeline(manifest: Option<&Path>, lock: &Path) -> Result<()> {
     println!("+ jeryu-split manifest --check-paths");
     manifest_command(manifest, false, true)?;
-    println!("+ jeryu-split source-coverage");
-    source_coverage(manifest, false)?;
     println!("+ jeryu-split verify-lock");
     verify_lock(lock)?;
     println!("product pipeline bootstrap ok");

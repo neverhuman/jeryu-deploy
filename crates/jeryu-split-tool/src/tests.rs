@@ -1,46 +1,5 @@
 use super::*;
 
-fn git(path: &Path, arguments: &[&str]) -> String {
-    let output = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(arguments)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
-
-#[test]
-fn coverage_patterns_match_legacy_assignment_shapes() {
-    let patterns = vec![
-        "crates/core/**".to_owned(),
-        "README.md".to_owned(),
-        "docs/*.md".to_owned(),
-        "tests/fixture?.json".to_owned(),
-    ];
-    assert!(is_covered("crates/core/src/lib.rs", &patterns));
-    assert!(is_covered("README.md", &patterns));
-    assert!(is_covered("docs/release.md", &patterns));
-    assert!(is_covered("tests/fixture1.json", &patterns));
-    assert!(!is_covered("crates/other/src/lib.rs", &patterns));
-    assert!(!is_covered("README.md.bak", &patterns));
-}
-
-#[test]
-fn coverage_patterns_match_python_fnmatch_classes_and_unicode_characters() {
-    assert!(wildcard_matches("docs/[a-c].md", "docs/b.md"));
-    assert!(!wildcard_matches("docs/[a-c].md", "docs/z.md"));
-    assert!(wildcard_matches("docs/[!0-9].md", "docs/x.md"));
-    assert!(!wildcard_matches("docs/[!0-9].md", "docs/7.md"));
-    assert!(wildcard_matches("docs/?.md", "docs/é.md"));
-    assert!(wildcard_matches("docs/[.md", "docs/[.md"));
-}
-
 #[test]
 fn lock_rejects_missing_and_noncanonical_commits() {
     let valid: Value = toml::from_str(
@@ -119,280 +78,263 @@ fn the_repository_lock_pins_jeryu_web() {
     assert_eq!(lock["web_artifact"].as_str(), Some("pinned"));
 }
 
-#[test]
-fn manifest_rejects_duplicate_repositories() {
-    let duplicate: Value = toml::from_str(
+/// An authority manifest for an invented family, in the shape
+/// `jeryu-release-ops` publishes: the control plane under `[control_plane]`
+/// with no `[[repo]]` row, every other member one `[[repo]]` row.
+fn authority(control_path: &str, member_path: &str) -> String {
+    format!(
         r#"
-                required_repos = ["jeryu", "missing"]
-                [[repo]]
-                name = "jeryu"
-                path = "/tmp/jeryu"
-                github_slug = "neverhuman/jeryu"
-                jeryu_slug = "jeryu/jeryu"
-                profile = "portal"
-                default_branch = "main"
-                current_tag = "jeryu-v5.0.0-split.0"
-                required_check = "jeryu/required"
-                has_jeryu_std = true
-                [[repo]]
-                name = "jeryu"
-                path = "/tmp/jeryu-duplicate"
-                github_slug = "neverhuman/jeryu"
-                jeryu_slug = "jeryu/jeryu"
-                profile = "portal"
-                default_branch = "main"
-                current_tag = "jeryu-v5.0.0-split.0"
-                required_check = "jeryu/required"
-                has_jeryu_std = true
-            "#,
+schema_version = "1"
+repo_family = "pelago-split"
+split_root = "/srv/pelago-split"
+required_repos = ["pelago", "pelago-release-ops", "pelago-tool"]
+
+[control_plane]
+name = "pelago-release-ops"
+path = "{control_path}"
+jeryu_slug = "pelago/pelago-release-ops"
+remote = "https://forge.invalid/git/pelago/pelago-release-ops.git"
+required_check = "pelago-release-ops/required"
+default_branch = "main"
+identity_status = "bound"
+predecessor_tag = "pelago-release-ops-v5.0.0-split.1"
+inventory_status = "active"
+runtime_authority = "control-plane"
+lfs_required = false
+
+[[repo]]
+name = "pelago"
+path = "{member_path}"
+jeryu_slug = "pelago/pelago"
+remote = "https://forge.invalid/git/pelago/pelago.git"
+required_check = "pelago/required"
+default_branch = "main"
+identity_status = "bound"
+current_tag = "pelago-v5.0.0-split.4"
+inventory_status = "active"
+runtime_authority = "library"
+lfs_required = false
+
+[[repo]]
+name = "pelago-tool"
+path = "/srv/pelago-split/pelago-tool"
+jeryu_slug = "pelago/pelago-tool"
+remote = "https://forge.invalid/git/pelago/pelago-tool.git"
+required_check = "pelago-tool/required"
+default_branch = "main"
+identity_status = "pending"
+inventory_status = "active"
+runtime_authority = "library"
+lfs_required = false
+
+[[repo]]
+name = "pelago-attic"
+path = "/srv/pelago-split/pelago-attic"
+jeryu_slug = "pelago/pelago-attic"
+remote = "https://forge.invalid/git/pelago/pelago-attic.git"
+required_check = "pelago-attic/required"
+default_branch = "main"
+identity_status = "bound"
+current_tag = "pelago-attic-v5.0.0-split.0"
+inventory_status = "withdrawn"
+runtime_authority = "library"
+lfs_required = false
+"#
     )
-    .unwrap();
-    assert!(
-        validate_manifest_value(&duplicate, false)
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate repo name")
-    );
 }
 
 #[test]
-fn manifest_path_validation_is_physical_and_required_inventory_is_closed() {
-    let temporary = tempfile::tempdir().unwrap();
-    let repo = temporary.path().join("jeryu");
-    fs::create_dir_all(repo.join("agent")).unwrap();
-    for path in ["AGENTS.md", "agent/owner-map.json", "agent/test-map.json"] {
-        fs::write(repo.join(path), b"{}\n").unwrap();
-    }
-    let source = format!(
-        r#"
-                required_repos = ["jeryu"]
-                [[repo]]
-                name = "jeryu"
-                path = "{}"
-                github_slug = "neverhuman/jeryu"
-                jeryu_slug = "jeryu/jeryu"
-                profile = "portal"
-                default_branch = "main"
-                current_tag = "jeryu-v5.0.0-split.0"
-                required_check = "jeryu/required"
-                has_jeryu_std = true
-            "#,
-        repo.display()
-    );
-    let manifest: Value = toml::from_str(&source).unwrap();
-    validate_manifest_value(&manifest, true).unwrap();
-
-    fs::remove_file(repo.join("agent/test-map.json")).unwrap();
-    assert!(
-        validate_manifest_value(&manifest, true)
-            .unwrap_err()
-            .to_string()
-            .contains("jeryu missing agent/test-map.json")
-    );
-
-    let missing_required: Value = toml::from_str(&source.replace(
-        "required_repos = [\"jeryu\"]",
-        "required_repos = [\"jeryu\", \"jeryu-core\"]",
+fn the_control_plane_is_a_member_and_inactive_rows_are_not() {
+    let parsed = family::parse(&authority(
+        "/srv/pelago-split/pelago-release-ops",
+        "/srv/pelago-split/pelago",
     ))
     .unwrap();
+
+    assert_eq!(parsed.repo_family, "pelago-split");
+    assert_eq!(parsed.split_root, PathBuf::from("/srv/pelago-split"));
+    let names: Vec<&str> = parsed
+        .members
+        .iter()
+        .map(|member| member.name.as_str())
+        .collect();
+    assert_eq!(names, ["pelago-release-ops", "pelago", "pelago-tool"]);
+    assert_eq!(
+        parsed.members[0].tag.as_deref(),
+        Some("pelago-release-ops-v5.0.0-split.1")
+    );
+    assert_eq!(
+        parsed.members[1].tag.as_deref(),
+        Some("pelago-v5.0.0-split.4")
+    );
+    assert_eq!(parsed.members[2].tag, None);
+}
+
+#[test]
+fn required_repos_must_name_exactly_the_active_members() {
+    let source = authority(
+        "/srv/pelago-split/pelago-release-ops",
+        "/srv/pelago-split/pelago",
+    );
+
+    let missing = source.replace(
+        r#"required_repos = ["pelago", "pelago-release-ops", "pelago-tool"]"#,
+        r#"required_repos = ["pelago", "pelago-cache", "pelago-release-ops", "pelago-tool"]"#,
+    );
     assert!(
-        validate_manifest_value(&missing_required, false)
+        family::parse(&missing)
             .unwrap_err()
             .to_string()
-            .contains("manifest missing required repos: jeryu-core")
+            .contains("required_repos names no active member: pelago-cache")
+    );
+
+    let unlisted = source.replace(
+        r#"required_repos = ["pelago", "pelago-release-ops", "pelago-tool"]"#,
+        r#"required_repos = ["pelago", "pelago-release-ops"]"#,
+    );
+    assert!(
+        family::parse(&unlisted)
+            .unwrap_err()
+            .to_string()
+            .contains("active members are missing from required_repos: pelago-tool")
     );
 }
 
 #[test]
-fn source_tree_reader_uses_the_declared_bare_fallback() {
-    let temporary = tempfile::tempdir().unwrap();
-    let working = temporary.path().join("working");
-    let bare = temporary.path().join("source.git");
-    fs::create_dir(&working).unwrap();
-    git(&working, &["init", "--quiet"]);
-    fs::write(working.join("README.md"), b"source\n").unwrap();
-    git(&working, &["add", "README.md"]);
-    git(
-        &working,
-        &[
-            "-c",
-            "user.name=Jeryu Test",
-            "-c",
-            "user.email=test@jeryu.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "fixture",
-        ],
-    );
-    let head = git(&working, &["rev-parse", "HEAD"]);
-    let output = ProcessCommand::new("git")
-        .args(["clone", "--bare", "--no-local"])
-        .arg(&working)
-        .arg(&bare)
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-
-    let (files, reader) =
-        git_tree(&temporary.path().join("missing-source"), Some(&bare), &head).unwrap();
-    assert_eq!(files, ["README.md"]);
-    assert_eq!(reader, bare.display().to_string());
-}
-
-#[test]
-fn source_coverage_fails_when_a_tracked_path_is_unassigned() {
-    let temporary = tempfile::tempdir().unwrap();
-    let source = temporary.path().join("source");
-    fs::create_dir(&source).unwrap();
-    git(&source, &["init", "--quiet"]);
-    fs::write(source.join("unassigned.txt"), b"unassigned\n").unwrap();
-    git(&source, &["add", "unassigned.txt"]);
-    git(
-        &source,
-        &[
-            "-c",
-            "user.name=Jeryu Test",
-            "-c",
-            "user.email=test@jeryu.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "fixture",
-        ],
-    );
-    let head = git(&source, &["rev-parse", "HEAD"]);
-    let manifest = temporary.path().join("manifest.toml");
-    fs::write(
-            &manifest,
-            format!(
-                "source_root = {:?}\nsource_sha = {:?}\nshared_source_paths = [\"README.md\"]\n\n[[repo]]\nname = \"jeryu\"\npath = {:?}\ngithub_slug = \"neverhuman/jeryu\"\njeryu_slug = \"jeryu/jeryu\"\nprofile = \"portal\"\ndefault_branch = \"main\"\ncurrent_tag = \"jeryu-v5.0.0-split.0\"\nrequired_check = \"jeryu/required\"\nhas_jeryu_std = true\n",
-                source.display().to_string(),
-                head,
-                source.display().to_string(),
-            ),
-        )
-        .unwrap();
-
-    let error = source_coverage(&manifest, true).unwrap_err().to_string();
-    assert_eq!(error, "source coverage failed");
-}
-
-#[test]
-fn source_coverage_json_preserves_sorted_pass_report_bytes() {
-    let report = SourceCoverageReport {
-        missing: Vec::new(),
-        missing_count: 0,
-        patterns: 3,
-        schema_version: "jeryu.split.source-coverage/v1",
-        source_git_dir: None,
-        source_reader: "/source".to_owned(),
-        source_root: "/source".to_owned(),
-        source_sha: "0123456789abcdef0123456789abcdef01234567".to_owned(),
-        status: "pass",
-        tracked_files: 7,
-    };
-
-    assert_eq!(
-        source_coverage_json(&report).unwrap(),
-        r#"{
-  "missing": [],
-  "missing_count": 0,
-  "patterns": 3,
-  "schema_version": "jeryu.split.source-coverage/v1",
-  "source_git_dir": null,
-  "source_reader": "/source",
-  "source_root": "/source",
-  "source_sha": "0123456789abcdef0123456789abcdef01234567",
-  "status": "pass",
-  "tracked_files": 7
-}"#
-    );
-}
-
-#[test]
-fn source_coverage_json_preserves_sorted_fail_report_bytes() {
-    let report = SourceCoverageReport {
-        missing: vec!["src/unassigned.rs".to_owned()],
-        missing_count: 1,
-        patterns: 2,
-        schema_version: "jeryu.split.source-coverage/v1",
-        source_git_dir: Some("/source.git".to_owned()),
-        source_reader: "/source.git".to_owned(),
-        source_root: "/missing-source".to_owned(),
-        source_sha: "89abcdef0123456789abcdef0123456789abcdef".to_owned(),
-        status: "fail",
-        tracked_files: 5,
-    };
-
-    assert_eq!(
-        source_coverage_json(&report).unwrap(),
-        r#"{
-  "missing": [
-    "src/unassigned.rs"
-  ],
-  "missing_count": 1,
-  "patterns": 2,
-  "schema_version": "jeryu.split.source-coverage/v1",
-  "source_git_dir": "/source.git",
-  "source_reader": "/source.git",
-  "source_root": "/missing-source",
-  "source_sha": "89abcdef0123456789abcdef0123456789abcdef",
-  "status": "fail",
-  "tracked_files": 5
-}"#
-    );
-}
-
-#[test]
-fn fleet_plan_preserves_manifest_order_and_selects_one_lane() {
-    let manifest: Value = toml::from_str(
-        r#"
-                required_repos = ["first", "second"]
-                [[repo]]
-                name = "first"
-                path = "/tmp/first"
-                github_slug = "neverhuman/first"
-                jeryu_slug = "jeryu/first"
-                profile = "portal"
-                default_branch = "main"
-                current_tag = "first-v5.0.0-split.0"
-                required_check = "first/required"
-                has_jeryu_std = true
-                [[repo]]
-                name = "second"
-                path = "/tmp/second"
-                github_slug = "neverhuman/second"
-                jeryu_slug = "jeryu/second"
-                profile = "core"
-                default_branch = "main"
-                current_tag = "second-v5.0.0-split.0"
-                required_check = "second/required"
-                has_jeryu_std = true
-            "#,
+fn a_bound_member_without_a_tag_is_rejected() {
+    let source = authority(
+        "/srv/pelago-split/pelago-release-ops",
+        "/srv/pelago-split/pelago",
     )
+    .replace("current_tag = \"pelago-v5.0.0-split.4\"\n", "");
+
+    assert!(
+        family::parse(&source)
+            .unwrap_err()
+            .to_string()
+            .contains("pelago is bound without a current_tag")
+    );
+}
+
+#[test]
+fn a_duplicate_member_identity_is_rejected() {
+    let source = authority(
+        "/srv/pelago-split/pelago-release-ops",
+        "/srv/pelago-split/pelago-release-ops",
+    );
+
+    assert!(
+        family::parse(&source)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate member name, path, or slug: pelago")
+    );
+}
+
+#[test]
+fn the_authority_is_located_from_the_environment_or_a_sibling_control_plane() {
+    let temporary = tempfile::tempdir().unwrap();
+    let split_root = temporary.path().join("split");
+    let control = split_root.join(family::CONTROL_PLANE_DIR);
+    fs::create_dir_all(&control).unwrap();
+    let manifest = control.join(family::MANIFEST_FILE);
+    fs::write(&manifest, "schema_version = \"1\"\n").unwrap();
+    let member = split_root.join("consumer");
+    fs::create_dir_all(&member).unwrap();
+
+    assert_eq!(
+        family::locate(&member).unwrap().canonicalize().unwrap(),
+        manifest.canonicalize().unwrap()
+    );
+    let error = family::locate(temporary.path()).unwrap_err().to_string();
+    assert!(error.contains(family::MANIFEST_ENV), "{error}");
+    assert!(error.contains(family::CONTROL_PLANE_DIR), "{error}");
+}
+
+#[test]
+fn path_validation_is_physical_over_the_members_the_authority_names() {
+    let temporary = tempfile::tempdir().unwrap();
+    let control = temporary.path().join("pelago-release-ops");
+    let member = temporary.path().join("pelago");
+    for root in [&control, &member] {
+        fs::create_dir_all(root.join("agent")).unwrap();
+        for path in ["AGENTS.md", "agent/owner-map.json", "agent/test-map.json"] {
+            fs::write(root.join(path), b"{}\n").unwrap();
+        }
+    }
+    let source = authority(
+        &control.display().to_string(),
+        &member.display().to_string(),
+    );
+    let parsed = family::parse(&source).unwrap();
+    assert!(
+        parsed
+            .check_paths()
+            .unwrap_err()
+            .to_string()
+            .contains("pelago-tool path missing: /srv/pelago-split/pelago-tool")
+    );
+
+    let two_members = source.replace(
+        r#"
+[[repo]]
+name = "pelago-tool"
+path = "/srv/pelago-split/pelago-tool"
+jeryu_slug = "pelago/pelago-tool"
+remote = "https://forge.invalid/git/pelago/pelago-tool.git"
+required_check = "pelago-tool/required"
+default_branch = "main"
+identity_status = "pending"
+inventory_status = "active"
+runtime_authority = "library"
+lfs_required = false
+"#,
+        "\n",
+    );
+    let two_members = two_members.replace(
+        r#"required_repos = ["pelago", "pelago-release-ops", "pelago-tool"]"#,
+        r#"required_repos = ["pelago", "pelago-release-ops"]"#,
+    );
+    family::parse(&two_members).unwrap().check_paths().unwrap();
+
+    fs::remove_file(member.join("agent/test-map.json")).unwrap();
+    assert!(
+        family::parse(&two_members)
+            .unwrap()
+            .check_paths()
+            .unwrap_err()
+            .to_string()
+            .contains("pelago missing agent/test-map.json")
+    );
+}
+
+#[test]
+fn fleet_plan_preserves_authority_order_and_selects_one_lane() {
+    let parsed = family::parse(&authority(
+        "/srv/pelago-split/pelago-release-ops",
+        "/srv/pelago-split/pelago",
+    ))
     .unwrap();
 
-    let score = fleet_entries(&manifest, false).unwrap();
+    let score = fleet_entries(&parsed, false);
     assert_eq!(
         score[0],
         (
-            "first".to_owned(),
-            PathBuf::from("/tmp/first"),
+            "pelago-release-ops".to_owned(),
+            PathBuf::from("/srv/pelago-split/pelago-release-ops"),
             "score".to_owned()
         )
     );
     assert_eq!(
         score[1],
         (
-            "second".to_owned(),
-            PathBuf::from("/tmp/second"),
+            "pelago".to_owned(),
+            PathBuf::from("/srv/pelago-split/pelago"),
             "score".to_owned()
         )
     );
     assert!(
-        fleet_entries(&manifest, true)
-            .unwrap()
+        fleet_entries(&parsed, true)
             .iter()
             .all(|(_, _, lane)| lane == "check")
     );

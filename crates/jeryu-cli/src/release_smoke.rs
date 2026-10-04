@@ -687,7 +687,8 @@ fn spawn_server(
 ) -> Result<Server> {
     let log = fs::File::create(log_path).context("create server log")?;
     let stderr = log.try_clone().context("clone server log handle")?;
-    let child = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .current_dir(root)
         .env_remove("JERYU_WEB_TRUST_LOCAL")
         .env(BOOTSTRAP_ADMIN_PASSWORD_ENV, admin_password)
@@ -699,13 +700,33 @@ fn spawn_server(
         ])
         .arg(data_dir)
         .arg("--spa-dir")
-        .arg(spa_dir)
-        .args(["--split-manifest", "repos.manifest.toml"])
+        .arg(spa_dir);
+    // The family authority is published by the release control plane, so the
+    // smoke wires it only on a host that has it; without it the server falls
+    // back to its built-in family classification.
+    if let Some(manifest) = family_authority_manifest(root) {
+        command.arg("--split-manifest").arg(manifest);
+    }
+    let child = command
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))
         .spawn()
         .context("start release binary")?;
     Ok(Server { child })
+}
+
+/// The family authority manifest, from `JERYU_FAMILY_MANIFEST` or a control
+/// plane checked out beside this repository.
+fn family_authority_manifest(root: &Path) -> Option<PathBuf> {
+    let path = std::env::var_os("JERYU_FAMILY_MANIFEST")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            root.join("..")
+                .join("jeryu-release-ops")
+                .join("repos.manifest.toml")
+        });
+    path.is_file().then_some(path)
 }
 
 fn reserve_loopback_port() -> Result<u16> {

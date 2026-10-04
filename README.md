@@ -88,9 +88,13 @@ The commands below are narrower loops for iteration, not the gate:
 To release, follow [`scripts/release/README.md`](scripts/release/README.md) on
 the release host: `stage-release.sh` stages, `deploy-release.sh` switches.
 
-Rust-native split transition checks are available through
+Rust-native split-family checks are available through
 `cargo run --locked --offline -p jeryu-split-tool --bin jeryu-split --
-<manifest|source-coverage|fleet-ci|verify-lock|product-pipeline>`. The
+<manifest|manifest-path|fleet-ci|verify-lock|product-pipeline>`. The family's
+membership and release identity live in one authority manifest published by
+`jeryu-release-ops`; this repository keeps no copy of it. The commands read it
+from `JERYU_FAMILY_MANIFEST`, else from a `jeryu-release-ops` checkout beside
+this one, and `manifest-path` prints where it was found. The
 `ops/split/manifest.sh` compatibility entrypoint delegates to that binary and
 does not invoke a Python runtime.
 

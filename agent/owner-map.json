@@ -32,7 +32,6 @@
     "ops/ci/": "ops",
     "ops/git-hooks/": "ops",
     "policies/": "jeryu-deploy",
-    "repos.manifest.toml": "split",
     "rust-toolchain.toml": "workspace",
     "scripts/": "jeryu-deploy",
     "tests/": "jeryu-deploy",

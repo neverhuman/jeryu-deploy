@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The split family's membership and release identity are read from the one
+  authority manifest `jeryu-release-ops` publishes; this repository no longer
+  ships a `repos.manifest.toml` of its own. `jeryu-split` finds that file
+  through `JERYU_FAMILY_MANIFEST` or a `jeryu-release-ops` checkout beside this
+  one (`jeryu-split manifest-path` prints which), and reads its shape:
+  `required_repos` names every member, the control plane sits under
+  `[control_plane]`, and every other member is one `[[repo]]` row. The
+  `source-coverage` command is gone with the monorepo assignment fields it
+  read, and `product-pipeline` now runs the manifest and lock checks. Hosted
+  tool-finder discovery reads the same member list, so the family's control
+  plane is no longer left out of a scan.
+
 - `jeryu autonomy init` writes `.jeryu/ci.toml` in the shared schema "2":
   `schema_version = "2"`, `provider = "jeryu"` and one `[[lane]]` named
   `required` whose `command` is exactly what the forge gate runs — `just

@@ -48,7 +48,10 @@ TREE="$(git rev-parse 'HEAD^{tree}')"
 REPO="${GITHUB_REPOSITORY:-neverhuman/jeryu-deploy}"
 VERSION="${JERYU_RELEASE_TAG:-${GITHUB_REF_NAME:-${COMMIT}}}"
 ROLLBACK_TARGET="${SIGNRAIL_ROLLBACK_TARGET:-${JERYU_RELEASE_ROLLBACK_TAG:-}}"
-MANIFEST_SHA="$(sha_file repos.manifest.toml)"
+# The family authority is published by the release control plane; evidence
+# records the sha of the file that governed the release when it is reachable.
+FAMILY_MANIFEST="${JERYU_FAMILY_MANIFEST:-${ROOT}/../jeryu-release-ops/repos.manifest.toml}"
+MANIFEST_SHA="$(sha_file "${FAMILY_MANIFEST}")"
 LOCK_SHA="$(sha_file jeryu-split.lock.toml)"
 CARGO_LOCK_SHA="$(sha_file Cargo.lock)"
 TOOLCHAIN_TEXT="$(rustc -Vv 2>/dev/null || printf 'rustc not found')"
@@ -71,7 +74,9 @@ cargo run --locked -q -p jeryu-cli --bin jeryu-artifact-support -- \
   --toolchain-sha "${TOOLCHAIN_SHA}" \
   --runner-policy-sha "${RUNNER_POLICY_SHA}"
 
-cp repos.manifest.toml "${EVIDENCE_DIR}/repos.manifest.toml"
+if [ -f "${FAMILY_MANIFEST}" ]; then
+  cp "${FAMILY_MANIFEST}" "${EVIDENCE_DIR}/repos.manifest.toml"
+fi
 cp jeryu-split.lock.toml "${EVIDENCE_DIR}/jeryu-split.lock.toml"
 
 rm -f "${BUNDLE}"
