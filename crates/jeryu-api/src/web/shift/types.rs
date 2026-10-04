@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::web::paging::{PageInfo, PageParams};
+use crate::web::strict_query::{StrictFields, filter_one_of};
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FamiliesResponse {
@@ -221,6 +222,37 @@ pub(crate) struct TodosQuery {
     pub shift: Option<String>,
     #[serde(flatten)]
     pub paging: PageParams,
+}
+
+impl StrictFields for TodosQuery {
+    const KEYS: &'static [&'static str] = &[
+        "family",
+        "status",
+        "mode",
+        "repo",
+        "requested_by",
+        "worked_by",
+        "shift",
+        "limit",
+        "per_page",
+        "page",
+    ];
+
+    fn check_values(&self) -> Result<(), String> {
+        filter_one_of("status", self.status.as_ref(), &TodoStatus::names())?;
+        filter_one_of("mode", self.mode.as_ref(), super::todo_file::MODES)
+    }
+}
+
+/// `GET /api/v1/shift/workers`: every slot, or one family's slots.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(crate) struct WorkersQuery {
+    /// Either spelling of a family key; the server canonicalises it.
+    pub family: Option<String>,
+}
+
+impl StrictFields for WorkersQuery {
+    const KEYS: &'static [&'static str] = &["family"];
 }
 
 /// `POST /api/v1/shift/todos`: one todo (`text`) or many (`texts`).
@@ -484,6 +516,12 @@ impl TodoStatus {
 
     pub(crate) fn parse(text: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|status| status.as_str() == text)
+    }
+
+    /// Every status as it is spelled on the wire: the closed set `?status=`
+    /// accepts.
+    pub(crate) fn names() -> Vec<&'static str> {
+        Self::ALL.iter().map(|status| status.as_str()).collect()
     }
 
     /// Whether the server may move a todo from `self` to `next`. Staying put

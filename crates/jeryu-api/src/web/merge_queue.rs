@@ -54,6 +54,26 @@ pub(crate) enum QueueState {
     Dequeued,
 }
 
+impl QueueState {
+    const ALL: [Self; 4] = [Self::Building, Self::Landed, Self::Failed, Self::Dequeued];
+
+    /// The state as it is spelled on the wire, the same string the JSON
+    /// carries, so `?state=` and the listed entries never drift apart.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Building => "building",
+            Self::Landed => "landed",
+            Self::Failed => "failed",
+            Self::Dequeued => "dequeued",
+        }
+    }
+
+    /// Every state as it is spelled on the wire.
+    pub(crate) fn names() -> Vec<&'static str> {
+        Self::ALL.iter().map(|state| state.as_str()).collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Approver {
     pub(crate) login: String,
@@ -494,20 +514,33 @@ pub(super) struct QueueListQuery {
     state: Option<String>,
 }
 
+/// `state=all` asks for every state at once; it is not a state of its own.
+const EVERY_STATE: &str = "all";
+
+impl strict_query::StrictFields for QueueListQuery {
+    const KEYS: &'static [&'static str] = &["state"];
+
+    fn check_values(&self) -> Result<(), String> {
+        let mut allowed = QueueState::names();
+        allowed.push(EVERY_STATE);
+        strict_query::filter_one_of("state", self.state.as_ref(), &allowed)
+    }
+}
+
 /// `GET /api/v1/merge-queue?state=building` — every repository the caller can
 /// read. The runner polls this on each tick, so it reads the index only.
 pub(super) async fn list_all(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
-    Query(query): Query<QueueListQuery>,
+    strict_query::StrictQuery(query): strict_query::StrictQuery<QueueListQuery>,
 ) -> AxumResponse {
-    let wanted = query.state.unwrap_or_else(|| "building".to_string());
+    let wanted = query
+        .state
+        .map(|state| state.trim().to_string())
+        .filter(|state| !state.is_empty())
+        .unwrap_or_else(|| QueueState::Building.as_str().to_string());
     let entries = state.merge_queue.entries(&state, |entry| {
-        let state_name = serde_json::to_value(entry.state)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_string))
-            .unwrap_or_default();
-        (wanted == "all" || state_name == wanted)
+        (wanted == EVERY_STATE || entry.state.as_str() == wanted)
             && entry.repo.split_once('/').is_some_and(|(owner, name)| {
                 account.role == UserRole::Admin
                     || state.core.user_can_read_repo(&account.login, owner, name)

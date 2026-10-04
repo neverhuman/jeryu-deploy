@@ -771,6 +771,71 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
         assert_eq!(body_json(unknown).await["code"], "family_unknown");
     }
 
+    // Nor is a value no todo can carry, or a key the route does not read: the
+    // refusal names the values and the keys it does accept.
+    for (uri, named) in [
+        (
+            "/api/v1/shift/todos?status=bogus",
+            "open, claimed, done, blocked, handoff, parked, closed",
+        ),
+        ("/api/v1/shift/todos?mode=bogus", "now, night"),
+        ("/api/v1/shift/workers?state=working", "family"),
+        ("/api/v1/shift/todos?statuss=open", "status"),
+    ] {
+        let refused = call(HttpMethod::GET, uri, &user, None).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
+        let body = body_json(refused).await;
+        assert_eq!(body["code"], "invalid_query", "{uri}");
+        let said = format!("{} {}", body["reason"], body["common_fixes"]);
+        assert!(said.contains(named), "{uri}: {said}");
+    }
+
+    // A value in the set still filters.
+    let open = body_json(
+        call(
+            HttpMethod::GET,
+            "/api/v1/shift/todos?status=open&mode=night",
+            &user,
+            None,
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert!(
+        open["todos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|todo| todo["status"] == "open" && todo["mode"] == "night"),
+        "{open}"
+    );
+
+    // Workers filter by family, and a family nobody hosts is refused rather
+    // than answered with every slot.
+    let mine = body_json(
+        call(
+            HttpMethod::GET,
+            "/api/v1/shift/workers?family=jeryu",
+            &user,
+            None,
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(mine["workers"].as_array().unwrap().len(), 1, "{mine}");
+    let elsewhere = call(
+        HttpMethod::GET,
+        "/api/v1/shift/workers?family=jeryo",
+        &user,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(elsewhere.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body_json(elsewhere).await["code"], "family_unknown");
+
     // Shifts and the review PR (authored by the configured shift author).
     let shifts = body_json(
         call(

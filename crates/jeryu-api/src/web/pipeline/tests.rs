@@ -532,6 +532,16 @@ async fn events_routes_enforce_reporter_and_admin_access() {
             .contains("after_seq")
     );
 
+    // A key this route does not read is a typo too: `?familyy=` filtered
+    // nothing and answered the whole log, which reads as the filtered page.
+    let misspelled = call(HttpMethod::GET, "/api/v1/events?familyy=acme", &admin, None)
+        .await
+        .unwrap();
+    assert_eq!(misspelled.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let misspelled = body_json(misspelled).await;
+    assert_eq!(misspelled["code"], "events_invalid_query");
+    assert!(misspelled["reason"].as_str().unwrap().contains("family"));
+
     // A kind filter that can only match nothing is a mistake, and says so; a
     // real kind and a prefix ending in a dot are both filters.
     for (uri, status) in [

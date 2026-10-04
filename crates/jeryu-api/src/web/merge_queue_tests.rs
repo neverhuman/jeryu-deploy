@@ -1,7 +1,6 @@
 //! Merge queue over real bare repositories: enqueue, replay, gate, land.
 
 use super::*;
-use axum::extract::Query;
 use jeryu_core::{
     AccountStatus, CheckConclusion, CommitStatusState, CreateCheckRunRequest,
     CreateCommitStatusRequest, CreatePullRequestRequest, CreateRepositoryRequest,
@@ -448,7 +447,7 @@ async fn the_queue_survives_a_restart_and_lists_building_entries() {
     let response = merge_queue::list_all(
         State(reloaded),
         account("alton2", UserRole::Admin),
-        Query(serde_json::from_value(json!({ "state": "building" })).unwrap()),
+        strict_query::StrictQuery(serde_json::from_value(json!({ "state": "building" })).unwrap()),
     )
     .await;
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

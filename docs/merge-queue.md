@@ -72,6 +72,9 @@ A setting per protected branch decides who may enqueue:
 
 - `GET /api/v1/merge-queue?state=building` lists entries:
   `{repo, base, number, queue_ref, queue_sha, pr_head_sha, enqueued_at}`.
+  `state` is `building` (the default), `landed`, `failed`, `dequeued` or `all`;
+  anything else answers `422 invalid_query` naming those, because a runner
+  polling a misspelled state would read an empty queue as nothing to gate.
 - The runner gates `queue_sha` from `queue_ref` exactly as it gates a PR head,
   with the same recipe and tree layout. It posts `<repo>/required` on `queue_sha`.
 - Queue entries rank ahead of ordinary PR heads: they are one step from landing.

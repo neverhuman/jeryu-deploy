@@ -9,10 +9,11 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::attention::{
-    ApiCall, Draft, DraftFacts, Hosts, Item, LatestDeployment, MirrorDrift, MirrorFailure,
-    ProductionFacts, PullFacts, Severity, budget_items, divergence_items, draft_items,
-    mirror_items, order, pin_items, pull_items, queue_items, release_items, runner_items,
-    shift_items, todo_items, web_routes, worker_items,
+    ATTENTION_SCHEMA, ApiCall, AttentionResponse, Counts, Draft, DraftFacts, Filter, Hosts, Item,
+    KINDS, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts, PullFacts, Severity,
+    budget_items, divergence_items, draft_items, mirror_items, only_matching, order, pin_items,
+    pull_items, queue_items, release_items, runner_items, shift_items, todo_items, web_routes,
+    worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -2458,6 +2459,85 @@ fn one_of_every_kind() -> Vec<Item> {
         &hosts(),
     ));
     items
+}
+
+/// Every kind the rules emit is in [`KINDS`], the closed set `?kind=` accepts,
+/// and nothing is listed there that no rule emits: a kind a reader may filter
+/// by is one the inbox can actually answer with.
+#[test]
+fn the_published_kinds_are_the_kinds_the_rules_emit() {
+    let emitted: BTreeSet<&str> = one_of_every_kind().iter().map(|item| item.kind).collect();
+    assert_eq!(emitted, KINDS.iter().copied().collect::<BTreeSet<_>>());
+}
+
+/// A filter keeps only the rows asked for and recounts the severities for
+/// them, so a filtered inbox's counts describe the rows it returned.
+#[test]
+fn a_filter_keeps_only_the_rows_asked_for_and_recounts_them() {
+    let mut items = one_of_every_kind();
+    // The same item in another family, to prove the filter drops it.
+    let mut elsewhere = items[0].clone();
+    elsewhere.id = format!("{}:globex", elsewhere.id);
+    elsewhere.family = Some("globex".to_string());
+    elsewhere.family_label = Some("globex".to_string());
+    items.push(elsewhere);
+    let response = AttentionResponse {
+        schema_version: ATTENTION_SCHEMA,
+        generated_at: "2026-09-19T13:00:00Z".to_string(),
+        counts: Counts::default(),
+        items,
+    };
+    let filtered = |filter: Filter| only_matching(&response, &filter);
+
+    let acme = filtered(Filter {
+        family: Some("acme".to_string()),
+        ..Filter::default()
+    });
+    assert!(
+        acme.items
+            .iter()
+            .all(|item| item.family.as_deref() == Some("acme")),
+        "{:?}",
+        acme.items.iter().map(|i| &i.family).collect::<Vec<_>>()
+    );
+    assert!(!acme.items.is_empty());
+    assert_eq!(
+        acme.counts.critical + acme.counts.action + acme.counts.watch,
+        acme.items.len()
+    );
+    // An item of no family (a mirror, or a pin outside one) is not acme's.
+    assert!(response.items.iter().any(|item| item.family.is_none()));
+    assert!(response.items.len() > acme.items.len() + 1);
+
+    let critical = filtered(Filter {
+        severity: Some(Severity::Critical),
+        ..Filter::default()
+    });
+    assert!(
+        critical
+            .items
+            .iter()
+            .all(|item| item.severity == Severity::Critical)
+    );
+    assert_eq!(critical.counts.action, 0);
+    assert_eq!(critical.counts.watch, 0);
+    assert_eq!(critical.counts.critical, critical.items.len());
+
+    let blocked = filtered(Filter {
+        family: Some("acme".to_string()),
+        kind: Some("todo_blocked".to_string()),
+        ..Filter::default()
+    });
+    assert!(
+        blocked
+            .items
+            .iter()
+            .all(|item| { item.kind == "todo_blocked" && item.family.as_deref() == Some("acme") })
+    );
+    assert!(!blocked.items.is_empty());
+
+    // No filter at all keeps everything.
+    assert!(!Filter::default().any());
 }
 
 /// Every kind's href opens a page of the web app, and the whole inbox is

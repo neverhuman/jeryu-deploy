@@ -32,6 +32,7 @@ use serde_json::{Value, json};
 
 use super::WebState;
 use super::pipeline::{self, NewEvent};
+use super::strict_query::StrictQuery;
 use super::workcells_support::{TypedError, typed_error};
 use heartbeats::{HEALTHY_MS, HeartbeatStore};
 pub(crate) use heartbeats::{migrate as migrate_shift_store, rfc3339_ms};
@@ -39,7 +40,9 @@ use queue::{Queue, WriteError, commit_change, discover};
 pub(crate) use queue::{git as run_git, resolve as resolve_commit};
 use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;
-pub(crate) use types::{BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
+pub(crate) use types::{
+    BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, TodosQuery, WorkerRow,
+};
 #[cfg(test)]
 pub(crate) use types::{Heartbeat, ShiftPr};
 use visibility::stage_event;
@@ -262,7 +265,7 @@ pub(crate) fn all_todos(state: &WebState) -> (Vec<ShiftTodo>, Vec<String>) {
 /// `GET /api/v1/shift/todos`
 pub(crate) async fn list_todos(
     State(state): State<Arc<WebState>>,
-    Query(query): Query<TodosQuery>,
+    StrictQuery(query): StrictQuery<TodosQuery>,
 ) -> AxumResponse {
     let page = match query.paging.page() {
         Ok(page) => page,
@@ -784,14 +787,29 @@ pub(crate) async fn heartbeat(
     .into_response()
 }
 
-/// `GET /api/v1/shift/workers`: every slot seen in the last 24 hours.
-pub(crate) async fn workers(State(state): State<Arc<WebState>>) -> AxumResponse {
+/// `GET /api/v1/shift/workers[?family=]`: every slot seen in the last 24
+/// hours, or one family's slots.
+pub(crate) async fn workers(
+    State(state): State<Arc<WebState>>,
+    StrictQuery(query): StrictQuery<WorkersQuery>,
+) -> AxumResponse {
+    // A family nobody hosts is a typo in the filter, not a family with no
+    // slots: answering every slot would read as that family's workers.
+    let family = match super::family::filter(&state, query.family.as_deref()) {
+        Ok(family) => family,
+        Err(response) => return *response,
+    };
     let now = Utc::now().timestamp_millis();
     match state.shift.heartbeats.latest(now - 24 * 60 * 60 * 1000) {
         Ok(rows) => Json(WorkersResponse {
             generated_at: rfc3339_ms(now),
             workers: rows
                 .into_iter()
+                .filter(|row| {
+                    family.as_ref().is_none_or(|family| {
+                        &super::family::canonical(&row.heartbeat.family) == family
+                    })
+                })
                 .map(|row| WorkerRow {
                     last_seen: rfc3339_ms(row.received_ms),
                     healthy: now - row.received_ms <= HEALTHY_MS,

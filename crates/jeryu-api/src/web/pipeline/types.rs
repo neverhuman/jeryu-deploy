@@ -122,6 +122,29 @@ pub(crate) struct EventsQuery {
     pub needs_human: Option<bool>,
 }
 
+impl crate::web::strict_query::StrictFields for EventsQuery {
+    const KEYS: &'static [&'static str] = &[
+        "after_seq",
+        "since",
+        "before_seq",
+        "limit",
+        "family",
+        "repo",
+        "pr",
+        "todo_id",
+        "source",
+        "kind",
+        "needs_human",
+    ];
+
+    /// The route keeps its own published code for a refused query, and names
+    /// the types its cursors take: the keys alone do not say that.
+    const CODE: &'static str = "events_invalid_query";
+
+    const REPAIR_HINT: &'static str =
+        "after_seq, before_seq, limit and pr are integers; needs_human is true or false";
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct EventsResponse {
     pub schema_version: &'static str,

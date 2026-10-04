@@ -128,7 +128,10 @@ both with different values is `422 events_invalid_query`), `before_seq`, `limit`
 `repo`, `pr`, `todo_id`, `source`, `kind`, `needs_human`. `kind` matches exactly,
 or as a prefix when it ends with a dot (`kind=todo.`). Anything else (`kind=todo`,
 `kind=Not A Kind`) answers `422 events_invalid_query`: it could only ever match nothing, and an
-empty page would read as "no such events".
+empty page would read as "no such events". A key this route does not read
+(`?familyy=acme`) answers `422 events_invalid_query` too, naming the keys it
+does: a misspelled filter used to be ignored, and the whole log read as the
+filtered page. See `docs/errors.md`, "Invalid Query".
 
 - Without `after_seq`: the newest events, **newest first** (a page to show).
 - With `after_seq`: events with `seq > after_seq`, **oldest first** (a cursor
@@ -198,6 +201,12 @@ is fixed.
 Items are sorted by severity, then oldest first. An item somebody
 acknowledged (see [Acknowledgements](#acknowledgements)) is left out, and out
 of `counts`, until the date it was acknowledged until.
+
+Query: `family` (either spelling of a family key), `severity` and `kind`. Each
+comes from a closed set, so a filter that could never match answers
+`422 invalid_query` naming what it accepts rather than an empty inbox (see
+`docs/errors.md`, "Invalid Query"); `counts` is recounted for the rows a filter
+kept, and an item of no family is not any family's.
 
 | Field | Notes |
 |---|---|

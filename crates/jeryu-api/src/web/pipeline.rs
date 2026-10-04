@@ -26,8 +26,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::rejection::QueryRejection;
-use axum::extract::{Extension, Query, State};
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::Utc;
@@ -259,18 +258,13 @@ pub(crate) async fn post_events(
 /// `GET /api/v1/events` (admin-only by path, see `auth::admin_only_path`).
 pub(crate) async fn list_events(
     State(state): State<Arc<WebState>>,
-    query: Result<Query<EventsQuery>, QueryRejection>,
+    query: Result<super::strict_query::StrictQuery<EventsQuery>, super::strict_query::QueryRefused>,
 ) -> AxumResponse {
     let mut query = match query {
-        Ok(Query(query)) => query,
-        Err(rejection) => {
-            return events_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "events_invalid_query",
-                &rejection.body_text(),
-                "after_seq, before_seq, limit and pr are integers; needs_human is true or false",
-            );
-        }
+        Ok(super::strict_query::StrictQuery(query)) => query,
+        // A key this route does not read, or a value it cannot parse: either
+        // way the page it would answer is not the page that was asked for.
+        Err(refused) => return refused.into_response(),
     };
     match (query.after_seq, query.since) {
         (Some(after), Some(since)) if after != since => {

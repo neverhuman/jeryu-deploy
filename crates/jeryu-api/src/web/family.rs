@@ -13,6 +13,7 @@
 //! The endpoints that speak family: `GET /api/v1/repos` (and its `families`
 //! facet, whose entries are canonical keys), `GET /api/v1/attention`,
 //! `GET /api/v1/events`, `GET /api/v1/shift/todos`, `GET /api/v1/shift/shifts`,
+//! `GET /api/v1/shift/workers`,
 //! `GET /api/v1/shift/families`, and `/api/v1/release-board[/:family]`.
 //!
 //! A family nobody hosts is a typed client error ([`UNKNOWN_CODE`]), never an

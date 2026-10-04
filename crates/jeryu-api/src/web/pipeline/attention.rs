@@ -86,6 +86,63 @@ pub(crate) enum Severity {
     Watch,
 }
 
+impl Severity {
+    const ALL: [Self; 3] = [Self::Critical, Self::Action, Self::Watch];
+
+    /// The severity as it is spelled on the wire.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::Action => "action",
+            Self::Watch => "watch",
+        }
+    }
+
+    /// Every severity as it is spelled on the wire: the closed set
+    /// `?severity=` accepts.
+    pub(crate) fn names() -> Vec<&'static str> {
+        Self::ALL.iter().map(|severity| severity.as_str()).collect()
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|severity| severity.as_str() == text)
+    }
+}
+
+/// Every kind the inbox can emit, sorted. The closed set `?kind=` accepts, and
+/// what `docs/attention.md` publishes: a kind absent here could only ever
+/// match nothing, so a reader who filters by it hears so.
+pub(crate) const KINDS: &[&str] = &[
+    "deploy_failed",
+    "gate_runner_down",
+    "mirror_diverged",
+    "mirror_failing",
+    "pin_behind",
+    "pr_awaiting_approval",
+    "pr_changes_requested",
+    "pr_checks_failing",
+    "pr_draft_waiting",
+    "pr_ready_to_merge",
+    "queue_failed",
+    "queue_refused",
+    "queue_stuck",
+    "release_stage_failed",
+    "release_staged",
+    "reviewer_stuck",
+    "shift_budget_spent",
+    "shift_stranded_work",
+    "shift_without_pr",
+    "todo_blocked",
+    "todo_handoff",
+    "todo_parked",
+    "todo_stuck_claim",
+    "todo_untriaged",
+    "todo_waiting_on_blocker",
+    "workers_down",
+];
+
 /// The step as one call on this API: what a caller sends to perform it, not a
 /// link to a page about it. Paths are absolute and ready to send.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -591,18 +648,57 @@ impl AttentionCache {
 }
 
 /// `GET /api/v1/attention` (admin-only by path, see `auth::admin_only_request`).
-/// `GET /api/v1/attention?family=` — either spelling of a family key.
+/// `GET /api/v1/attention?family=&severity=&kind=`: the family filter takes
+/// either spelling of a family key, and `severity` and `kind` come from closed
+/// sets, so a filter that could never match is refused rather than answered
+/// with an empty inbox.
 #[derive(Debug, Default, serde::Deserialize)]
 pub(crate) struct AttentionQuery {
     pub family: Option<String>,
+    pub severity: Option<String>,
+    pub kind: Option<String>,
 }
 
-/// The items of one family, with the counts recounted for that family.
-fn only_family(response: &AttentionResponse, family: &str) -> AttentionResponse {
+impl super::super::strict_query::StrictFields for AttentionQuery {
+    const KEYS: &'static [&'static str] = &["family", "severity", "kind"];
+
+    fn check_values(&self) -> Result<(), String> {
+        use super::super::strict_query::filter_one_of;
+        filter_one_of("severity", self.severity.as_ref(), &Severity::names())?;
+        filter_one_of("kind", self.kind.as_ref(), KINDS)
+    }
+}
+
+/// What a filtered inbox keeps. A field left `None` keeps every item.
+#[derive(Debug, Default)]
+pub(super) struct Filter {
+    pub(super) family: Option<String>,
+    pub(super) severity: Option<Severity>,
+    pub(super) kind: Option<String>,
+}
+
+impl Filter {
+    pub(super) fn keeps(&self, item: &Item) -> bool {
+        self.family
+            .as_ref()
+            .is_none_or(|family| item.family.as_deref() == Some(family.as_str()))
+            && self
+                .severity
+                .is_none_or(|severity| item.severity == severity)
+            && self.kind.as_deref().is_none_or(|kind| item.kind == kind)
+    }
+
+    pub(super) fn any(&self) -> bool {
+        self.family.is_some() || self.severity.is_some() || self.kind.is_some()
+    }
+}
+
+/// The items a filter keeps, with the counts recounted for them.
+pub(super) fn only_matching(response: &AttentionResponse, filter: &Filter) -> AttentionResponse {
     let items: Vec<Item> = response
         .items
         .iter()
-        .filter(|item| item.family.as_deref() == Some(family))
+        .filter(|item| filter.keeps(item))
         .cloned()
         .collect();
     let count = |severity| items.iter().filter(|i| i.severity == severity).count();
@@ -620,15 +716,33 @@ fn only_family(response: &AttentionResponse, family: &str) -> AttentionResponse 
 
 pub(crate) async fn attention(
     State(state): State<Arc<WebState>>,
-    axum::extract::Query(query): axum::extract::Query<AttentionQuery>,
+    super::super::strict_query::StrictQuery(query): super::super::strict_query::StrictQuery<
+        AttentionQuery,
+    >,
 ) -> AxumResponse {
     let family = match super::super::family::filter(&state, query.family.as_deref()) {
         Ok(family) => family,
         Err(response) => return *response,
     };
-    let answer = |response: AttentionResponse| match &family {
-        Some(family) => Json(only_family(&response, family)).into_response(),
-        None => Json(response).into_response(),
+    let trimmed = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    // `check_values` already refused anything outside the closed sets.
+    let filter = Filter {
+        family,
+        severity: trimmed(&query.severity).and_then(|name| Severity::parse(&name)),
+        kind: trimmed(&query.kind),
+    };
+    let answer = |response: AttentionResponse| {
+        if filter.any() {
+            Json(only_matching(&response, &filter)).into_response()
+        } else {
+            Json(response).into_response()
+        }
     };
     let cached = {
         let cache = state

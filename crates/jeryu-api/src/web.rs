@@ -38,6 +38,7 @@ mod search;
 mod sessions;
 pub(crate) mod shift;
 mod site_settings;
+mod strict_query;
 mod surface;
 mod tool_build;
 mod tool_finder;

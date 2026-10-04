@@ -364,3 +364,27 @@ pre-paging `total` and `has_more`. A value out of range is refused with
 `invalid_page_parameter` (422), never clamped. `GET /api/v1/events` refuses a
 `limit` outside 1 to 500 with `events_invalid_query` and echoes the applied
 `limit`.
+
+## Invalid Query
+
+A filter that can never match is a mistake in the request, not an empty
+collection: answering `200` with `[]` reads as "there is nothing to do". Every
+list route below reads its query through `StrictQuery`
+(`crates/jeryu-api/src/web/strict_query.rs`), which refuses
+
+- a key the route does not read (`?statuss=open`), naming every key it does, and
+- a value outside a closed set (`?status=bogus`), naming every value it accepts,
+
+with `invalid_query` (422). `common_fixes` lists the keys the route reads, so a
+client repairs the request from the refusal alone.
+
+| Route | Closed sets |
+|---|---|
+| `GET /api/v1/shift/todos` | `status` (`open`, `claimed`, `done`, `blocked`, `handoff`, `parked`, `closed`), `mode` (`now`, `night`) |
+| `GET /api/v1/shift/workers` | `family` (a hosted family; see `docs/family-key.md`) |
+| `GET /api/v1/merge-queue` | `state` (`building`, `landed`, `failed`, `dequeued`, or `all`; default `building`) |
+| `GET /api/v1/attention` | `severity` (`critical`, `action`, `watch`), `kind` (the inbox kinds, `KINDS` in `attention.rs`), `family` |
+| `GET /api/v1/events` | keys only; it keeps its own `events_invalid_query` code and validates `kind` and `limit` itself |
+
+A `family` that names no hosted family answers `family_unknown` (422) for the
+same reason, on every route that takes one.
