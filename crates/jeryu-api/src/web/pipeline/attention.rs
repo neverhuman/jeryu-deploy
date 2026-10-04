@@ -592,15 +592,19 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         now,
         &hosts,
     ));
-    let staged = state.events.newest_of_kind("release.staged").ok().flatten();
+    // Per repository, not the newest over all of them: two repositories with a
+    // release staged are two things waiting on somebody.
+    let staged = state
+        .events
+        .newest_of_kind_per_repo("release.staged")
+        .unwrap_or_default();
     let stage_failed = state
         .events
-        .newest_of_kind("release.stage_failed")
-        .ok()
-        .flatten();
+        .newest_of_kind_per_repo("release.stage_failed")
+        .unwrap_or_default();
     items.extend(release_items(
-        staged.as_ref(),
-        stage_failed.as_ref(),
+        &staged,
+        &stage_failed,
         &production_facts(state),
         &hosts,
     ));

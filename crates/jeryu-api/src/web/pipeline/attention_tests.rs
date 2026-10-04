@@ -1262,6 +1262,11 @@ fn release_event(seq: i64, kind: &str, sha: &str, ts: &str, needs_human: bool) -
     }
 }
 
+/// One event where the rule reads every repository's newest one.
+fn slice(event: &Event) -> &[Event] {
+    std::slice::from_ref(event)
+}
+
 fn production(sha: &str, at: &str, latest_state: &str) -> ProductionFacts {
     let at = DateTime::parse_from_rfc3339(at)
         .unwrap()
@@ -1293,7 +1298,7 @@ fn a_failed_deploy_that_left_production_on_the_same_release_is_only_a_watch() {
     if let Some(latest) = facts.latest.as_mut() {
         latest.release = Some(release.to_string());
     }
-    let items = release_items(None, None, &[facts.clone()], &hosts());
+    let items = release_items(&[], &[], &[facts.clone()], &hosts());
     assert_eq!(kinds(&items), ["deploy_failed"]);
     assert_eq!(items[0].severity, Severity::Watch);
     assert!(
@@ -1310,7 +1315,7 @@ fn a_failed_deploy_that_left_production_on_the_same_release_is_only_a_watch() {
     // A failure on a release production does not run is still critical.
     let mut moved_on = facts.clone();
     moved_on.current_release = Some("prod-20260922T120000Z-283416e-unsigned".to_string());
-    let items = release_items(None, None, &[moved_on], &hosts());
+    let items = release_items(&[], &[], &[moved_on], &hosts());
     assert_eq!(items[0].severity, Severity::Critical);
 
     // Without release names in the payloads the commits decide.
@@ -1320,8 +1325,72 @@ fn a_failed_deploy_that_left_production_on_the_same_release_is_only_a_watch() {
         latest.release = None;
         latest.sha = "01dfe680a6de5e02da4e9aa7821534742aa46d7e".to_string();
     }
-    let items = release_items(None, None, &[by_sha], &hosts());
+    let items = release_items(&[], &[], &[by_sha], &hosts());
     assert_eq!(items[0].severity, Severity::Critical);
+}
+
+/// A release staged in one repository must not hide one staged in another:
+/// each repository's newest staging brings its own item.
+#[test]
+fn every_repository_with_a_staged_release_gets_its_own_item() {
+    let next = "01dfe680a6de5e02da4e9aa7821534742aa46d7e";
+    let staged_in = |seq: i64, repo: &str, release: &str| {
+        let mut event = release_event(seq, "release.staged", next, "2026-09-19T13:03:26Z", false);
+        event.repo = Some(repo.to_string());
+        event.detail = Some(json!({"release": release}));
+        event
+    };
+    // What the store hands the rule: the newest staging of each of two
+    // repositories of one family.
+    let newest: Vec<Event> = vec![
+        staged_in(10, "acme/acme-web", "web-20260919T130210Z"),
+        staged_in(11, "acme/acme-api", "api-20260919T130500Z"),
+    ];
+
+    let items = release_items(&newest, &[], &[], &hosts());
+    assert_eq!(kinds(&items), ["release_staged", "release_staged"]);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| (item.repo.as_deref().unwrap_or("-"), item.id.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "acme/acme-web",
+                "release-staged:acme/acme-web:web-20260919T130210Z"
+            ),
+            (
+                "acme/acme-api",
+                "release-staged:acme/acme-api:api-20260919T130500Z"
+            )
+        ],
+        "one item per repository, and an id that tells them apart"
+    );
+
+    // A staging that gave up pairs with its own repository's staging, not with
+    // the newest staging anywhere: the newer one here is the other repository's.
+    let gave_up = {
+        let mut event = release_event(
+            12,
+            "release.stage_failed",
+            next,
+            "2026-09-19T13:20:00Z",
+            true,
+        );
+        event.repo = Some("acme/acme-web".to_string());
+        event
+    };
+    // acme-web's staged release is already live, so only the giving-up is left
+    // there; acme-api's staging is untouched by it.
+    let mut live = production(next, "2026-09-19T13:10:00Z", "success");
+    live.repo = "acme/acme-web".to_string();
+    live.latest = None;
+    let items = release_items(&newest, std::slice::from_ref(&gave_up), &[live], &hosts());
+    assert_eq!(
+        kinds(&items),
+        ["release_stage_failed", "release_staged"],
+        "acme-web gave up after staging; acme-api is still waiting for a deploy"
+    );
 }
 
 #[test]
@@ -1332,8 +1401,8 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
 
     // Production runs an older commit, deployed before the staging.
     let waiting = release_items(
-        Some(&staged),
-        None,
+        slice(&staged),
+        &[],
         &[production(live, "2026-09-19T12:29:36Z", "success")],
         &hosts(),
     );
@@ -1355,7 +1424,7 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
         latest.release = Some("prod-20260919T130210Z-01dfe68-unsigned".to_string());
         latest.description = Some("switch.sh exited 1: health check timed out".to_string());
     }
-    let retry = release_items(Some(&staged), None, &[attempt], &hosts());
+    let retry = release_items(slice(&staged), &[], &[attempt], &hosts());
     assert_eq!(kinds(&retry), ["release_staged", "deploy_failed"]);
     assert_eq!(retry[1].severity, Severity::Critical);
     assert!(
@@ -1375,7 +1444,7 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
     // An event that names no repository still says where, without inventing one.
     let mut anonymous = staged.clone();
     anonymous.repo = None;
-    let unnamed = release_items(Some(&anonymous), None, &[], &hosts());
+    let unnamed = release_items(slice(&anonymous), &[], &[], &hosts());
     assert_eq!(kinds(&unnamed), ["release_staged"]);
     assert_eq!(
         unnamed[0].action.run_in.as_deref(),
@@ -1385,8 +1454,8 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
     // Deployed: the same sha is live, or something newer than the staging is.
     assert!(
         release_items(
-            Some(&staged),
-            None,
+            slice(&staged),
+            &[],
             &[production(next, "2026-09-19T13:10:00Z", "success")],
             &hosts()
         )
@@ -1394,8 +1463,8 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
     );
     assert!(
         release_items(
-            Some(&staged),
-            None,
+            slice(&staged),
+            &[],
             &[production(live, "2026-09-19T13:30:00Z", "success")],
             &hosts()
         )
@@ -1427,19 +1496,19 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
     let prod_ok = [production(next, "2026-09-19T13:10:00Z", "success")];
     assert_eq!(
         kinds(&release_items(
-            Some(&staged),
-            Some(&gave_up),
+            slice(&staged),
+            slice(&gave_up),
             &prod_ok,
             &hosts()
         )),
         ["release_stage_failed"]
     );
-    assert!(release_items(Some(&staged), Some(&retrying), &prod_ok, &hosts()).is_empty());
-    assert!(release_items(Some(&staged), Some(&older), &prod_ok, &hosts()).is_empty());
+    assert!(release_items(slice(&staged), slice(&retrying), &prod_ok, &hosts()).is_empty());
+    assert!(release_items(slice(&staged), slice(&older), &prod_ok, &hosts()).is_empty());
 
     let failed = release_items(
-        None,
-        None,
+        &[],
+        &[],
         &[production(live, "2026-09-19T12:29:36Z", "failure")],
         &hosts(),
     );
@@ -2449,8 +2518,8 @@ fn one_of_every_kind() -> Vec<Item> {
         &[],
     ));
     items.extend(release_items(
-        Some(&staged),
-        Some(&gave_up),
+        slice(&staged),
+        slice(&gave_up),
         &[production(
             "5fbe0ef2824d526ce03996cfa0cccca4ac3611d8",
             "2026-09-19T12:27:00Z",

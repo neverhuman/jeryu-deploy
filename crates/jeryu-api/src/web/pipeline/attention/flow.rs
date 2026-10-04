@@ -505,7 +505,48 @@ fn left_production_alone(facts: &ProductionFacts, latest: &LatestDeployment) -> 
 }
 
 /// A staged release nobody deployed, a staging that gave up, a failed deploy.
+///
+/// `staged` and `stage_failed` are the newest such event of every repository,
+/// not one newest event over all of them: a release staged in one repository
+/// must not hide one staged in another, so each repository is asked on its own
+/// and brings its own item. An event that names no repository is its own scope.
 pub(crate) fn release_items(
+    staged: &[Event],
+    stage_failed: &[Event],
+    production: &[ProductionFacts],
+    hosts: &Hosts,
+) -> Vec<Item> {
+    let mut scopes: Vec<Option<&str>> = Vec::new();
+    for event in staged.iter().chain(stage_failed) {
+        let scope = event.repo.as_deref();
+        if !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    let mut items = Vec::new();
+    for scope in scopes {
+        items.extend(staging_items(
+            newest_in(staged, scope),
+            newest_in(stage_failed, scope),
+            production,
+            hosts,
+        ));
+    }
+    items.extend(deploy_failure_items(production));
+    items
+}
+
+/// The newest event of one repository scope, by sequence.
+fn newest_in<'a>(events: &'a [Event], scope: Option<&str>) -> Option<&'a Event> {
+    events
+        .iter()
+        .filter(|event| event.repo.as_deref() == scope)
+        .max_by_key(|event| event.seq)
+}
+
+/// What one repository's staging says: a release waiting for a deploy, or a
+/// staging that gave up on it.
+fn staging_items(
     staged: Option<&Event>,
     stage_failed: Option<&Event>,
     production: &[ProductionFacts],
@@ -544,7 +585,12 @@ pub(crate) fn release_items(
                     },
                 });
             let mut item = Draft {
-                id: format!("release-staged:{release}"),
+                // The release name alone is not an identity across
+                // repositories, and the id is what an acknowledgement hides.
+                id: match event.repo.as_deref() {
+                    Some(repo) => format!("release-staged:{repo}:{release}"),
+                    None => format!("release-staged:{release}"),
+                },
                 kind: "release_staged",
                 severity: Severity::Action,
                 title: format!("{release} is staged and waiting for a deploy"),
@@ -605,6 +651,12 @@ pub(crate) fn release_items(
         item.sha = event.sha.clone();
         items.push(item);
     }
+    items
+}
+
+/// A production deploy that ended in a failure, one item per repository.
+fn deploy_failure_items(production: &[ProductionFacts]) -> Vec<Item> {
+    let mut items = Vec::new();
     for facts in production {
         let Some(latest) = &facts.latest else {
             continue;

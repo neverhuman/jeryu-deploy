@@ -265,16 +265,25 @@ impl EventStore {
             .map_err(|err| err.to_string())
     }
 
-    /// The newest event of exactly `kind`, if any.
-    pub(crate) fn newest_of_kind(&self, kind: &str) -> Result<Option<Event>, String> {
-        Ok(self
-            .query(&EventsQuery {
-                kind: Some(kind.to_string()),
-                limit: Some(1),
-                ..EventsQuery::default()
-            })?
-            .into_iter()
-            .next())
+    /// The newest event of exactly `kind` for each repository that has one,
+    /// newest repository first. An event that names no repository is its own
+    /// scope, so a forge-wide one is kept too.
+    pub(crate) fn newest_of_kind_per_repo(&self, kind: &str) -> Result<Vec<Event>, String> {
+        let mut seen: Vec<Option<String>> = Vec::new();
+        let mut newest = Vec::new();
+        for event in self.query(&EventsQuery {
+            kind: Some(kind.to_string()),
+            limit: Some(MAX_LIMIT),
+            ..EventsQuery::default()
+        })? {
+            // The query answers newest first, so the first event of a scope is
+            // that scope's newest.
+            if !seen.contains(&event.repo) {
+                seen.push(event.repo.clone());
+                newest.push(event);
+            }
+        }
+        Ok(newest)
     }
 }
 

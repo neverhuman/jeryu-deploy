@@ -233,9 +233,35 @@ fn store_assigns_increasing_seq_filters_and_prunes() {
         }),
         [b.seq]
     );
+    // An event that names no repository is its own scope.
     assert_eq!(
-        store.newest_of_kind("todo.claimed").unwrap().unwrap().seq,
-        a.seq
+        store
+            .newest_of_kind_per_repo("todo.claimed")
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect::<Vec<_>>(),
+        [a.seq]
+    );
+
+    // Every repository's newest event of a kind, so a second staged release
+    // does not hide the first.
+    for (repo, summary) in [
+        ("acme/acme-web", "older"),
+        ("acme/acme-api", "api"),
+        ("acme/acme-web", "newer"),
+    ] {
+        let mut staged = event("release.staged", summary);
+        staged.repo = Some(repo.to_string());
+        store.insert("stager", &staged, now).unwrap();
+    }
+    let per_repo = store.newest_of_kind_per_repo("release.staged").unwrap();
+    assert_eq!(
+        per_repo
+            .iter()
+            .map(|e| (e.repo.as_deref().unwrap_or("-"), e.summary.as_str()))
+            .collect::<Vec<_>>(),
+        [("acme/acme-web", "newer"), ("acme/acme-api", "api")]
     );
 
     drop(store);
