@@ -557,6 +557,22 @@ async fn events_routes_enforce_reporter_and_admin_access() {
             .unwrap()
             .contains("after_seq")
     );
+    // A limit outside the range is not repaired by posting as a reporter: the
+    // fixes a read is refused with are about the query it asked for.
+    let bad_limit = call(HttpMethod::GET, "/api/v1/events?limit=0", &admin, None)
+        .await
+        .unwrap();
+    assert_eq!(bad_limit.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bad_limit = body_json(bad_limit).await;
+    assert_eq!(bad_limit["code"], "events_invalid_query");
+    assert_eq!(bad_limit["purpose"], "read the pipeline event log");
+    let fixes = bad_limit["common_fixes"].as_array().unwrap();
+    assert!(
+        fixes
+            .iter()
+            .all(|fix| !fix.as_str().unwrap().contains("JERYU_EVENT_REPORTERS")),
+        "{fixes:?}"
+    );
 
     // A key this route does not read is a typo too: `?familyy=` filtered
     // nothing and answered the whole log, which reads as the filtered page.
@@ -1075,7 +1091,12 @@ async fn since_is_after_seq_and_the_socket_refuses_plain_gets_with_json() {
     );
     let plain = body_json(plain).await;
     assert_eq!(plain["code"], "websocket_upgrade_required");
-    assert_eq!(plain["docs_url"], "docs/pipeline-events.md#websocket");
+    // The envelope maps a repository-relative page onto the URL it is
+    // served at, so an agent can fetch what the error advertises.
+    assert_eq!(
+        plain["docs_url"],
+        "/api/v1/docs/pipeline-events.md#websocket"
+    );
     let bad = get("/api/v1/ws?after_seq=abc".to_string()).await.unwrap();
     assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body_json(bad).await["code"], "ws_invalid_query");

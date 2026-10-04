@@ -9,6 +9,7 @@
 use jeryu_core::ForgeError;
 use serde_json::{Value, json};
 
+use crate::discovery::GH_AUTH_DOCS;
 use crate::routes::Response;
 
 /// Public origin of the web UI, e.g. `https://git.neverhuman.org`. The
@@ -56,8 +57,86 @@ pub(crate) const GH_SETUP_REPAIR_COMMAND: &str =
 pub(crate) const GH_AUTH_BOUNDARY: &str = "GitHub.com auth and local Jeryu host auth are separate; do not run gh auth login for Jeryu hosts.";
 
 /// The fast-path pointer surfaced on every error body so a confused agent is
-/// always handed the capability manifest instead of being left to guess.
-pub(super) const FASTER_PATH: &str = "/.jeryu/capabilities";
+/// always handed the capability manifest instead of being left to guess. It
+/// sits under the `/api/v1` prefix the edge routes: the manifest's original
+/// `/.jeryu/capabilities` path is served too, but only the prefixed one is
+/// advertised, because only it resolves through every deployment's edge.
+pub(super) const FASTER_PATH: &str = crate::discovery::CAPABILITIES_PATH;
+
+/// Every route the GitHub-compatible edge serves, in the shape a caller types
+/// it. The edge's index (`GET /api/v3`), its unmatched-route 404 and the REST
+/// document all answer with this one list, so none of them can drift from
+/// another — `v3_routes_all_dispatch` keeps it from drifting from the router.
+pub const V3_ROUTES: &[&str] = &[
+    "GET /user",
+    "GET /repos",
+    "POST /repos (name, optional owner)",
+    "GET /repos/{owner}/{repo}",
+    "PATCH /repos/{owner}/{repo} (archived: bool or name: string; admin only)",
+    "POST /repos/{owner}/{repo}/transfer (new_owner, optional new_name; admin only)",
+    "GET /repos/{owner}/{repo}/pulls?state=open|closed|all&sort=created|updated|popularity|long-running&direction=asc|desc&head=owner:branch&base=branch&per_page=1-100&page=N (default created/desc; an unaccepted value is a 422)",
+    "POST /repos/{owner}/{repo}/pulls (title, head, base, optional body, draft)",
+    "GET /repos/{owner}/{repo}/pulls/{number}",
+    "PATCH /repos/{owner}/{repo}/pulls/{number} (draft: bool, title, body, state; author or admin. The named Jeryu routes are POST /api/v1/repos/{id}/pulls/{number}/ready and /draft)",
+    "GET /repos/{owner}/{repo}/pulls/{number}/commits?per_page=1-100&page=N",
+    "PUT /repos/{owner}/{repo}/pulls/{number}/merge (optional merge_method, sha)",
+    "GET /repos/{owner}/{repo}/issues?state=open|closed|all&sort=created|updated|comments&direction=asc|desc&per_page=1-100&page=N (default created/desc; an unaccepted value is a 422)",
+    "POST /repos/{owner}/{repo}/issues (title, optional body, labels)",
+    "GET /repos/{owner}/{repo}/issues/{number}",
+    "PATCH /repos/{owner}/{repo}/issues/{number} (title, body, state)",
+    "GET /repos/{owner}/{repo}/issues/{number}/comments",
+    "POST /repos/{owner}/{repo}/issues/{number}/comments (body)",
+    "GET /repos/{owner}/{repo}/commits?sha=&direction=asc|desc&per_page=1-100&page=N (newest first by default; an unaccepted value is a 422)",
+    "GET /repos/{owner}/{repo}/commits/{ref}/status",
+    "POST /repos/{owner}/{repo}/statuses/{sha} (state, optional context, description, target_url)",
+    "GET /repos/{owner}/{repo}/check-runs?per_page=1-100&page=N",
+    "POST /repos/{owner}/{repo}/check-runs (name, head_sha, optional status, conclusion)",
+    "GET /repos/{owner}/{repo}/commits/{ref}/check-runs?per_page=1-100&page=N",
+    "GET /repos/{owner}/{repo}/branches/{branch}/protection",
+    "PUT /repos/{owner}/{repo}/branches/{branch}/protection (required_status_checks, required_pull_request_reviews, ...; admin only)",
+    "GET /repos/{owner}/{repo}/deployments?sha=&ref=&environment=&per_page=1-100&page=N",
+    "POST /repos/{owner}/{repo}/deployments (ref, optional environment, description)",
+    "GET /repos/{owner}/{repo}/deployments/{id}",
+    "GET /repos/{owner}/{repo}/deployments/{id}/statuses?per_page=1-100&page=N",
+    "POST /repos/{owner}/{repo}/deployments/{id}/statuses (state, optional description, environment_url)",
+    "GET /repos/{owner}/{repo}/environments",
+    "GET /repos/{owner}/{repo}/releases?per_page=1-100&page=N",
+    "POST /repos/{owner}/{repo}/releases",
+    "GET /repos/{owner}/{repo}/actions/runs?per_page=1-100&page=N",
+    "GET /repos/{owner}/{repo}/actions/runs/{id}",
+    "GET /repos/{owner}/{repo}/actions/runs/{id}/jobs",
+    "GET /repos/{owner}/{repo}/actions/workflows?per_page=1-100&page=N",
+    "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}",
+    "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs?per_page=1-100&page=N",
+    "GET /repos/{owner}/{repo}/hooks",
+    "POST /repos/{owner}/{repo}/hooks (config.url, optional events, active)",
+    "POST /graphql",
+    "GET /health",
+    "GET /api/v1/version",
+    "GET /.jeryu/agents/first-contact",
+];
+
+/// `GET /api/v3`: the edge's index, with the status an index answers with. It
+/// used to render this body under a 404, which reads to every client (and
+/// every agent) as "there is no such edge".
+pub(super) fn v3_index_response() -> Response {
+    json_response(
+        200,
+        &json!({
+            "message": "Jeryu GitHub-compatible REST edge.",
+            "documentation_url": docs_url(),
+            "jeryu_api_routes": V3_ROUTES,
+            "jeryu_connection": {
+                "capabilities": FASTER_PATH,
+                "first_contact": "/.jeryu/agents/first-contact",
+                "mcp": "/mcp",
+                "typed_api": crate::discovery::TYPED_INDEX_PATH,
+                "openapi": crate::discovery::OPENAPI_PATH,
+            },
+            "jeryu_mcp_tools": MCP_GUIDANCE_TOOLS,
+        }),
+    )
+}
 
 /// RFC 5988 list pagination parsed off the request query string. GitHub's
 /// defaults (`per_page=30`, `page=1`) and ceiling (`per_page<=100`) are
@@ -352,7 +431,7 @@ pub(super) fn actions_write_response(owner: &str, repo: &str) -> Response {
                 "purpose": "route unsupported GitHub Actions write request",
                 "reason": "Jeryu intentionally supports local MCP-driven CI and guided read surfaces instead of hosted Actions dispatch, rerun, or cancel writes.",
                 "common_fixes": [
-                    "use /.jeryu/capabilities to choose the local MCP path for the CI action",
+                    "use /api/v1/capabilities to choose the local MCP path for the CI action",
                     "use jeryu.run_tests instead of hosted Actions writes to run the local CI flow",
                     "use GET /repos/{owner}/{repo}/actions/runs, GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}, or jeryu.get_ci_run_jobs to inspect existing runs before retrying"
                 ],
@@ -381,7 +460,7 @@ pub(super) fn gh_auth_workaround_response(path: &str) -> Response {
         501,
         &json!({
             "message": "Direct GitHub CLI auth setup is not supported for a Jeryu host.",
-            "documentation_url": "docs/errors.md#github-cli-auth-steering",
+            "documentation_url": GH_AUTH_DOCS,
             "jeryu_repair_hint": {
                 "purpose": "route GitHub CLI auth setup through Jeryu",
                 "reason": "Jeryu uses an explicit gh hosts.yml entry plus portable agent-auth receipts; running gh auth login, refresh, or token-hunting workarounds against the Jeryu host is the wrong repair path. GitHub.com auth and local Jeryu host auth are separate.",
@@ -390,10 +469,10 @@ pub(super) fn gh_auth_workaround_response(path: &str) -> Response {
                     GH_SETUP_COMMAND,
                     "for a stale gh host token entry, rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token",
                     GH_AUTH_BOUNDARY,
-                    "use GET /.jeryu/capabilities or the listed jeryu.* MCP tools for PR, CI, issue, and repo workflows",
+                    "use GET /api/v1/capabilities or the listed jeryu.* MCP tools for PR, CI, issue, and repo workflows",
                     "for agent native CLI credentials, run jeryu agent auth doctor <tool> and jeryu agent auth import --from-host <tool>"
                 ],
-                "docs_url": "docs/errors.md#github-cli-auth-steering",
+                "docs_url": GH_AUTH_DOCS,
                 "repair_hint": "rerun jeryu gh-setup for the Jeryu host with --token-file ~/.jeryu/secrets/merge-token, then retry the original Jeryu CLI/MCP/API operation instead of gh auth"
             },
             "jeryu_connection": {
@@ -435,34 +514,15 @@ pub(super) fn not_found(status: u16) -> Response {
             "jeryu_mcp_tools": MCP_GUIDANCE_TOOLS,
             "jeryu_steering": steering(
                 "jeryu.get_system_snapshot",
-                "this path is outside the guided subset; GET /.jeryu/capabilities and prefer the MCP tools",
+                "this path is outside the guided subset; GET /api/v1/capabilities and prefer the MCP tools",
             ),
-            "jeryu_api_routes": [
-                "GET /user",
-                "GET /repos",
-                "GET /repos/{owner}/{repo}",
-                "PATCH /repos/{owner}/{repo} (archived: bool or name: string; admin only)",
-                "POST /repos/{owner}/{repo}/transfer (new_owner, optional new_name; admin only)",
-                "GET /repos/{owner}/{repo}/pulls?state=open|closed|all&sort=created|updated|popularity|long-running&direction=asc|desc&head=owner:branch&base=branch (default created/desc; an unaccepted value is a 422)",
-                "PATCH /repos/{owner}/{repo}/pulls/{number} (draft: bool, title, body, state; author or admin. The named Jeryu routes are POST /api/v1/repos/{id}/pulls/{number}/ready and /draft)",
-                "GET /repos/{owner}/{repo}/issues?state=open|closed|all&sort=created|updated|comments&direction=asc|desc (default created/desc; an unaccepted value is a 422)",
-                "GET /repos/{owner}/{repo}/commits?sha=&direction=asc|desc (newest first by default; an unaccepted value is a 422)",
-                "GET /repos/{owner}/{repo}/commits/{ref}/status",
-                "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
-                "GET /repos/{owner}/{repo}/actions/runs",
-                "GET /repos/{owner}/{repo}/actions/runs/{id}",
-                "GET /repos/{owner}/{repo}/actions/runs/{id}/jobs",
-                "GET /repos/{owner}/{repo}/actions/workflows",
-                "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}",
-                "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
-                "POST /graphql"
-            ]
+            "jeryu_api_routes": V3_ROUTES
         }),
     )
 }
 
 pub(super) fn docs_url() -> String {
-    "/docs/rest".to_owned()
+    crate::discovery::REST_DOC_PATH.to_owned()
 }
 
 /// First-contact doc for a confused agent that landed on the REST edge. Points
@@ -475,7 +535,7 @@ pub(super) fn first_contact_response() -> Response {
             "message": "Welcome — you are talking to the Jeryu GitHub-compatible edge.",
             "start_here": FASTER_PATH,
             "advice": [
-                "GET /.jeryu/capabilities for the live endpoint + gh-command map.",
+                "GET /api/v1/capabilities for the live endpoint + gh-command map.",
                 "Prefer the typed jeryu.* MCP tools over bespoke gh REST calls; they are faster and never dead-end.",
                 "Do not run gh auth login or gh auth refresh for a Jeryu host; run jeryu gh-setup with --token-file ~/.jeryu/secrets/merge-token for the host entry.",
                 "If gh reports a stale local host token, rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token.",

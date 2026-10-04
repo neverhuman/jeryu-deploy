@@ -137,12 +137,95 @@ fn main() -> Result<()> {
         Probe {
             name: "capabilities",
             method: "GET",
-            path: "/.jeryu/capabilities",
+            path: jeryu_api::discovery::CAPABILITIES_PATH,
             expected: 200,
             body: None,
             auth: None,
             accept: Some("application/json"),
             contains: Some("\"mcp_endpoint\":\"/mcp\""),
+            ctype_prefix: Some("application/json"),
+        },
+    );
+    // Where every error body sends a confused agent. These answer JSON or
+    // markdown; the release is not shipped if any of them answers the SPA.
+    probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "docs_index",
+            method: "GET",
+            path: jeryu_api::discovery::DOCS_PATH,
+            expected: 200,
+            body: None,
+            auth: None,
+            accept: Some("application/json"),
+            contains: Some("\"pages\""),
+            ctype_prefix: Some("application/json"),
+        },
+    );
+    probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "docs_errors_page",
+            method: "GET",
+            path: "/api/v1/docs/errors.md",
+            expected: 200,
+            body: None,
+            auth: None,
+            accept: Some("text/markdown"),
+            contains: Some("# Error Repair Surface"),
+            ctype_prefix: Some("text/markdown"),
+        },
+    );
+    probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "docs_rest_edge",
+            method: "GET",
+            path: jeryu_api::discovery::REST_DOC_PATH,
+            expected: 200,
+            body: None,
+            auth: None,
+            accept: Some("application/json"),
+            contains: Some("\"index\":\"/api/v3\""),
+            ctype_prefix: Some("application/json"),
+        },
+    );
+    probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "openapi_document",
+            method: "GET",
+            path: jeryu_api::discovery::OPENAPI_PATH,
+            expected: 200,
+            body: None,
+            auth: None,
+            accept: Some("application/json"),
+            contains: Some("\"openapi\""),
+            ctype_prefix: Some("application/json"),
+        },
+    );
+    // The REST edge's index, which used to answer its own body with a 404.
+    probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "rest_edge_index",
+            method: "GET",
+            path: "/api/v3",
+            expected: 200,
+            body: None,
+            auth: None,
+            accept: Some("application/json"),
+            contains: Some("POST /repos/{owner}/{repo}/pulls"),
             ctype_prefix: Some("application/json"),
         },
     );

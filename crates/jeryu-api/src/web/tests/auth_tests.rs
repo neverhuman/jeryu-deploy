@@ -752,4 +752,44 @@ async fn repeated_bad_tokens_answer_429_with_retry_after() {
     let limited = send(app.clone()).await;
     assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(limited.headers()[header::RETRY_AFTER], "60");
+    assert_eq!(limited.headers()["x-ratelimit-remaining"], "0");
+    assert!(limited.headers().contains_key("x-ratelimit-reset"));
+}
+
+/// A metered read says what is left of its window, so a polling agent can slow
+/// down before it is refused instead of discovering the cap as a 429.
+#[tokio::test]
+async fn a_metered_read_carries_the_rate_limit_budget() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::User)
+        .unwrap();
+    let token = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let read = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+    let headers = read.headers();
+    assert_eq!(headers["x-ratelimit-limit"], "600");
+    assert_eq!(headers["x-ratelimit-remaining"], "599");
+    assert!(headers.contains_key("x-ratelimit-reset"));
+    // The budget is for the limited reads, not an advisory on every answer.
+    assert!(!headers.contains_key(header::RETRY_AFTER));
 }

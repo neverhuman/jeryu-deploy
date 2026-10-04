@@ -610,6 +610,7 @@ pub(super) async fn gate(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connect| connect.0);
+    let mut read_budget = None;
     let auth = if !state.auth_required || local_dev_trusted(&state, peer) {
         HeaderAuth {
             account: trusted_local_account(&state),
@@ -619,8 +620,8 @@ pub(super) async fn gate(
         let ip = client_ip(peer, request.headers());
         let bad_key = format!("bad-credential:{ip}");
         let credential = request_limits::credential_key(request.headers());
-        if credential.is_some()
-            && request_limits::exceeded(
+        if credential.is_some() {
+            let budget = request_limits::budget_for(
                 &state
                     .auth_rate_limits
                     .lock()
@@ -628,16 +629,19 @@ pub(super) async fn gate(
                 &bad_key,
                 Utc::now(),
                 request_limits::bad_tokens_per_window(),
-            )
-        {
-            return request_limits::too_many("too many failed credentials from this client");
+            );
+            if budget.remaining == 0 {
+                return request_limits::refused(
+                    "too many failed credentials from this client",
+                    &budget,
+                );
+            }
         }
         match authenticate_headers(&state, request.headers()) {
             Some(auth) => {
                 let read = matches!(*request.method(), Method::GET | Method::HEAD);
-                if read
-                    && let Some(credential) = credential
-                    && request_limits::hit(
+                if read && let Some(credential) = credential {
+                    let (over, budget) = request_limits::hit_with_budget(
                         &mut state
                             .auth_rate_limits
                             .lock()
@@ -645,9 +649,16 @@ pub(super) async fn gate(
                         format!("read:{credential}"),
                         Utc::now(),
                         request_limits::reads_per_window(),
-                    )
-                {
-                    return request_limits::too_many("too many reads with this credential");
+                    );
+                    if over {
+                        return request_limits::refused(
+                            "too many reads with this credential",
+                            &budget,
+                        );
+                    }
+                    // Every metered read says what is left of the window, so a
+                    // polling client can slow down before it is refused.
+                    read_budget = Some(budget);
                 }
                 auth
             }
@@ -726,7 +737,11 @@ pub(super) async fn gate(
     }
 
     request.extensions_mut().insert(account);
-    next.run(request).await
+    let mut response = next.run(request).await;
+    if let Some(budget) = read_budget {
+        request_limits::stamp(&mut response, &budget);
+    }
+    response
 }
 
 pub(crate) fn authenticate_headers(state: &WebState, headers: &HeaderMap) -> Option<HeaderAuth> {
@@ -840,11 +855,24 @@ pub(super) fn forbidden(message: &str) -> AxumResponse {
 fn auth_applies(path: &str) -> bool {
     path == "/mcp"
         || path.starts_with("/mcp/")
-        || (path.starts_with("/api/v1/")
-            && !matches!(
-                path,
-                "/api/v1/auth/signup" | "/api/v1/auth/login" | "/api/v1/errors"
-            ))
+        || (path.starts_with("/api/v1/") && !open_path(path))
+}
+
+/// The paths that answer without a credential. Signup and login are how a
+/// caller gets one; the rest is discovery — the error bodies every
+/// unauthenticated refusal returns advertise the capability manifest, the
+/// error catalog, the documentation pages and the OpenAPI document, so asking
+/// for a credential to read them would dead-end the agent being steered.
+pub(super) fn open_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/v1/auth/signup"
+            | "/api/v1/auth/login"
+            | "/api/v1/errors"
+            | crate::discovery::CAPABILITIES_PATH
+            | crate::discovery::DOCS_PATH
+            | crate::discovery::OPENAPI_PATH
+    ) || path.starts_with("/api/v1/docs/")
 }
 
 /// The GitHub edge (`/repos`, `/api/v3`, `/graphql`) authenticates outside
@@ -989,12 +1017,10 @@ fn rate_limit_hit(
     request_limits::hit(limits, key, now, AUTH_LIMIT_MAX)
 }
 
+/// Every 429 carries `Retry-After` and the rate-limit budget, so a client
+/// waits the window out instead of retrying straight into the same refusal.
 fn rate_limited() -> AxumResponse {
-    api_error(
-        StatusCode::TOO_MANY_REQUESTS,
-        "rate_limited",
-        "too many authentication attempts",
-    )
+    request_limits::too_many("too many authentication attempts")
 }
 
 fn client_ip(peer: Option<SocketAddr>, headers: &HeaderMap) -> IpAddr {

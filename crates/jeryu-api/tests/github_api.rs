@@ -1067,7 +1067,7 @@ fn unsupported_actions_writes_return_guided_local_ci_errors() {
         );
         assert_eq!(
             parsed["jeryu_connection"]["capabilities"],
-            "/.jeryu/capabilities"
+            jeryu_api::discovery::CAPABILITIES_PATH
         );
         assert_eq!(
             parsed["jeryu_connection"]["first_contact"],
@@ -1229,7 +1229,10 @@ fn error_bodies_carry_jeryu_steering_fields() {
     let not_found = router.get("/repos/alice/missing");
     assert_eq!(not_found.status, 404);
     let steering = &body(&not_found)["jeryu_steering"];
-    assert_eq!(steering["faster_path"], "/.jeryu/capabilities");
+    assert_eq!(
+        steering["faster_path"],
+        jeryu_api::discovery::CAPABILITIES_PATH
+    );
     assert!(
         steering["mcp_tool"]
             .as_str()
@@ -1243,7 +1246,7 @@ fn error_bodies_carry_jeryu_steering_fields() {
     assert_eq!(invalid.status, 422);
     assert_eq!(
         body(&invalid)["jeryu_steering"]["faster_path"],
-        "/.jeryu/capabilities"
+        jeryu_api::discovery::CAPABILITIES_PATH
     );
 
     // 422 from a non-numeric path id.
@@ -1256,7 +1259,7 @@ fn error_bodies_carry_jeryu_steering_fields() {
     assert_eq!(unmatched.status, 404);
     assert_eq!(
         body(&unmatched)["jeryu_steering"]["faster_path"],
-        "/.jeryu/capabilities"
+        jeryu_api::discovery::CAPABILITIES_PATH
     );
 }
 
@@ -1266,13 +1269,17 @@ fn first_contact_returns_a_steering_doc() {
     let doc = router.get("/.jeryu/agents/first-contact");
     assert_eq!(doc.status, 200, "{}", doc.body);
     let parsed = body(&doc);
-    assert_eq!(parsed["start_here"], "/.jeryu/capabilities");
+    assert_eq!(
+        parsed["start_here"],
+        jeryu_api::discovery::CAPABILITIES_PATH
+    );
     let advice = parsed["advice"].as_array().expect("advice array");
     assert!(!advice.is_empty(), "first-contact carries advice");
     assert!(
-        advice
-            .iter()
-            .any(|line| line.as_str().unwrap_or("").contains("/.jeryu/capabilities")),
+        advice.iter().any(|line| line
+            .as_str()
+            .unwrap_or("")
+            .contains(jeryu_api::discovery::CAPABILITIES_PATH)),
         "advice points at the capability manifest"
     );
     assert!(
@@ -2004,4 +2011,68 @@ fn issue_numbers(response: &jeryu_api::Response) -> Vec<u64> {
         .iter()
         .map(|issue| issue["number"].as_u64().expect("issue number"))
         .collect()
+}
+
+/// The published route list is what `GET /api/v3`, the edge's 404 and the REST
+/// document all answer with. A route it names that the router does not serve
+/// would send every reader of those three bodies to a dead end, so each entry
+/// is dispatched: the route-miss 404 is the one answer that carries
+/// `jeryu_api_routes`, which makes it the thing to assert against.
+#[test]
+fn every_published_v3_route_dispatches() {
+    let router = router_with_repo();
+    for published in jeryu_api::V3_ROUTES {
+        let (verb, rest) = published
+            .split_once(' ')
+            .unwrap_or_else(|| panic!("{published:?} reads as '<METHOD> <path>'"));
+        let path = rest
+            .split([' ', '?'])
+            .next()
+            .expect("a path before the query and the note");
+        let method = match verb {
+            "GET" => Method::Get,
+            "POST" => Method::Post,
+            "PATCH" => Method::Patch,
+            "PUT" => Method::Put,
+            other => panic!("{published:?} names an unsupported method {other}"),
+        };
+        let concrete = path
+            .split('/')
+            .map(|segment| match segment {
+                "{owner}" => "alice",
+                "{repo}" => "jeryu",
+                segment if segment.starts_with('{') => "1",
+                segment => segment,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        let response = router.handle(method, &concrete, "{}");
+        assert!(
+            !response.body.contains("jeryu_api_routes"),
+            "{published:?} is published but the router does not route {concrete}: {}",
+            response.body
+        );
+    }
+}
+
+/// `GET /api/v3` used to answer its own index with a 404.
+#[test]
+fn the_v3_index_answers_200_and_lists_opening_a_pull_request() {
+    let router = in_memory_router();
+    for path in ["/api/v3", "/api/v3/", "/"] {
+        let response = router.get(path);
+        assert_eq!(response.status, 200, "{path}: {}", response.body);
+        let parsed = body(&response);
+        assert!(
+            parsed["jeryu_api_routes"]
+                .as_array()
+                .expect("routes")
+                .iter()
+                .any(|route| route
+                    .as_str()
+                    .is_some_and(|route| route.starts_with("POST /repos/{owner}/{repo}/pulls"))),
+            "{path} lists opening a pull request: {}",
+            response.body
+        );
+    }
 }

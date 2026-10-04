@@ -41,7 +41,7 @@ pub(crate) use queue::{git as run_git, resolve as resolve_commit};
 use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;
 pub(crate) use types::{
-    BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, TodosQuery, WorkerRow,
+    BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, TodosQuery, WorkerRow, WorkersQuery,
 };
 #[cfg(test)]
 pub(crate) use types::{Heartbeat, ShiftPr};

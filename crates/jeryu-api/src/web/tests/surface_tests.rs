@@ -437,7 +437,7 @@ async fn capabilities_and_mcp_are_served_through_the_router() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/.jeryu/capabilities")
+                .uri(crate::discovery::CAPABILITIES_PATH)
                 .header(header::USER_AGENT, "curl/8.5.0")
                 .body(Body::empty())
                 .unwrap(),
@@ -450,7 +450,7 @@ async fn capabilities_and_mcp_are_served_through_the_router() {
             .headers()
             .get("x-jeryu-fast-path")
             .and_then(|value| value.to_str().ok()),
-        Some("/.jeryu/capabilities")
+        Some(crate::discovery::CAPABILITIES_PATH)
     );
     assert_eq!(
         response

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Agent discovery resolves. Every URL an error body advertises is now served
+  under the `/api/v1` prefix the edge routes: `GET /api/v1/capabilities` is the
+  capability manifest every `jeryu_steering` block and the `x-jeryu-fast-path`
+  header point at (`/.jeryu/capabilities`, which the edge does not route, stays
+  mounted for clients that learned it), and `GET /api/v1/docs`,
+  `/api/v1/docs/<page>` and `/api/v1/docs/rest` answer the pages `docs_url`
+  names - the repository markdown, embedded in the binary - instead of the web
+  app's HTML shell with a `200`. `GET /api/v1/openapi.json` is the OpenAPI
+  document generated from the mounted routes, and `GET /api/v1` now describes
+  each route's path parameters, query keys and what it needs to be called,
+  rather than listing paths alone. `GET /api/v3` answers its index with `200`
+  (it answered the same body under a `404`) and the index lists every route the
+  edge serves, opening a pull request included. Every `429` carries
+  `Retry-After` and the rate-limit budget, and a metered read carries the
+  budget too.
+
 - Releasing a todo a worker is still running needs `force`. `POST
   /api/v1/shift/todos/:family/:id/action` with `{"action": "release"}` answers
   `409 claim_live` while the todo's claim lease is live, because the released

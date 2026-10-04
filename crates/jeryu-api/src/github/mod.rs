@@ -43,6 +43,7 @@ use serde_json::json;
 use crate::routes::Response;
 
 use listing::{CommitListQuery, IssueListQuery, PullListQuery};
+pub use support::V3_ROUTES;
 pub(crate) use support::{
     GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE,
 };
@@ -50,7 +51,7 @@ pub(crate) use support::{
 pub(crate) use support::{MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL};
 use support::{
     Pagination, first_contact_response, gh_auth_workaround_response, json_response, link_base,
-    not_found,
+    not_found, v3_index_response,
 };
 use work_bridge_repairs::WorkBridgeRepairQueue;
 
@@ -296,6 +297,10 @@ impl GithubRouter {
                 200,
                 &json!({ "status": "ok", "service": "jeryu-api" }),
             )),
+            // The edge's own index. `GET /api/v3` normalizes to `/`, which used
+            // to fall through to the 404 arm: the index body under a status
+            // that says the edge is not there.
+            (Get, [""]) => Ok(v3_index_response()),
             // Steering: first-contact doc for a confused agent on the REST edge.
             (Get, [".jeryu", "agents", "first-contact"]) => Ok(first_contact_response()),
             (

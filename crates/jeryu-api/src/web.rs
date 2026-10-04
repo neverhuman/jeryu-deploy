@@ -6,6 +6,7 @@ mod ci_evidence;
 mod codegraph;
 mod conditional;
 mod control_plane;
+mod discovery;
 mod ecosystem;
 mod embedded_web;
 mod error_codes;
@@ -665,7 +666,7 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
         .route("/health", get(health))
         // Steering surface: advertises the faster jeryu/MCP path so external
         // agents stuck on bespoke `gh` commands can discover it.
-        .route("/.jeryu/capabilities", get(capabilities))
+        .route(discovery::FIRST_CAPABILITIES_PATH, get(capabilities))
         .route("/api/v1", get(route_index::api_v1))
         .route("/api/v1/", get(route_index::api_v1))
         .route("/graphql", post(graphql))
@@ -755,6 +756,12 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
 fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
     vec![
         ("/api/v1/errors", get(error_envelope::catalog)),
+        // Discovery, under the prefix the edge routes: every error body
+        // advertises these, so they answer without a credential.
+        (discovery::CAPABILITIES_PATH, get(capabilities)),
+        (discovery::DOCS_PATH, get(discovery::index)),
+        ("/api/v1/docs/*page", get(discovery::doc_page)),
+        (discovery::OPENAPI_PATH, get(route_index::openapi)),
         ("/api/v1/search", get(search::search)),
         ("/api/v1/bootstrap", get(bootstrap)),
         ("/api/v1/read-model/tui", get(tui_read_model)),
@@ -1120,7 +1127,7 @@ fn advisory_headers(
 ) -> Vec<(&'static str, String)> {
     let mut headers = vec![
         (HDR_API, "v4".to_string()),
-        (HDR_FAST_PATH, "/.jeryu/capabilities".to_string()),
+        (HDR_FAST_PATH, discovery::CAPABILITIES_PATH.to_string()),
     ];
     if is_automation_agent(user_agent)
         && let Some(tool) = suggested_tool(method, path)
@@ -1182,7 +1189,7 @@ fn live_mcp_tools(state: &Arc<WebState>) -> BTreeSet<String> {
         .collect()
 }
 
-/// Pure builder for the `/.jeryu/capabilities` payload (unit-testable).
+/// Pure builder for the `/api/v1/capabilities` payload (unit-testable).
 ///
 /// `tools` is the live backend catalog: every MCP tool named here is looked up
 /// in it first, and a `gh` command whose jeryu answer is a tool that is not
@@ -1206,7 +1213,8 @@ fn capabilities_payload(tools: &BTreeSet<String>) -> Value {
     map_rest(
         "gh auth status",
         &format!(
-            "If status fails for the Jeryu host, do not start a login flow; rerun {GH_SETUP_REPAIR_COMMAND} and inspect /.jeryu/capabilities."
+            "If status fails for the Jeryu host, do not start a login flow; rerun {GH_SETUP_REPAIR_COMMAND} and inspect {}.",
+            discovery::CAPABILITIES_PATH
         ),
     );
     map_rest("gh pr list", "GET /repos/{owner}/{repo}/pulls");
@@ -1222,7 +1230,10 @@ fn capabilities_payload(tools: &BTreeSet<String>) -> Value {
     map_rest("gh run view", "GET /repos/{owner}/{repo}/actions/runs/{id}");
     map_rest(
         "gh api",
-        "Use /.jeryu/capabilities and the listed jeryu.* MCP tools; unsupported REST returns guided JSON.",
+        &format!(
+            "Use {} and the listed jeryu.* MCP tools; unsupported REST returns guided JSON.",
+            discovery::CAPABILITIES_PATH
+        ),
     );
     map_rest("gh repo create", "POST /repos");
     for (command, tool) in [
@@ -1257,6 +1268,12 @@ fn capabilities_payload(tools: &BTreeSet<String>) -> Value {
     json!({
         "server": "jeryu",
         "api_version": "v4",
+        "capabilities": discovery::CAPABILITIES_PATH,
+        "docs_url": discovery::DOCS_PATH,
+        "openapi": discovery::OPENAPI_PATH,
+        "rest_edge": "/api/v3",
+        "routes": route_index::INDEX_PATH,
+        "errors": "/api/v1/errors",
         "graphql": "/graphql",
         "websocket": "/api/v1/ws",
         "mcp_endpoint": "/mcp",

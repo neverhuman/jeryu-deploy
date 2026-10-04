@@ -9,6 +9,30 @@ Every HTTP and MCP response carries a bounded `x-request-id`. Include that value
 with the typed error fields when correlating a failure; caller-supplied IDs must
 use only ASCII letters, digits, `-`, `_`, `.`, or `:` and be at most 128 bytes.
 
+## Agent Discovery
+
+Every URL an error body advertises is served under `/api/v1`, the prefix the
+edge routes:
+
+| URL | answers |
+| --- | --- |
+| `GET /api/v1/capabilities` | the capability manifest: live endpoints, the `gh` command map, the installed `jeryu.*` MCP tools, and the `gh` auth policy. Also served at `/.jeryu/capabilities` for clients that learned that path first. |
+| `GET /api/v1/docs` | the documentation pages this build serves |
+| `GET /api/v1/docs/<page>` | one repository markdown page as `text/markdown`, named the way the repository spells it (`errors.md`, `pipeline-events.md`) |
+| `GET /api/v1/docs/rest` | the GitHub-compatible edge's document: its routes, its auth and the faster typed paths |
+| `GET /api/v1` | the typed route index: every mounted route with its path parameters, the query keys it reads, and what each method needs (`none`, `token` or `admin`) |
+| `GET /api/v1/openapi.json` | the OpenAPI 3.1 document, generated from the mounted routes |
+| `GET /api/v1/errors` | the closed set of error codes |
+| `GET /api/v3` | the GitHub-compatible edge's index, `200`, listing every route it serves |
+
+None of these needs a login: an unauthenticated refusal advertises them, so
+asking for a token to read them would dead-end the agent being steered.
+
+Every `429` carries `Retry-After` (seconds until the window resets) plus
+`X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` (a Unix
+timestamp). A metered read carries the same three headers when it succeeds, so
+a polling client can slow down before it is refused.
+
 ## API Error Envelope
 
 Every error under `/api/v1` (and any unknown `/api/*` path) answers one JSON
@@ -24,9 +48,14 @@ parameter of the wrong type, a method the route does not take, a missing login):
   "purpose": "complete a jeryu API request",
   "common_fixes": ["send a body that parses as JSON"],
   "repair_hint": "look the code up at GET /api/v1/errors, fix the request it names, and retry",
-  "docs_url": "docs/errors.md"
+  "docs_url": "/api/v1/docs/errors.md"
 }
 ```
+
+`docs_url` is a URL this server serves: the pages under `/api/v1/docs/` are the
+repository's own markdown, embedded in the binary, so an agent can fetch what an
+error advertises instead of landing on the web app's HTML. See
+[Agent Discovery](#agent-discovery).
 
 Route on `code`; the other fields are for people and repair loops. Some routes
 add fields of their own (for example `details` on pull-request merges), but the
@@ -276,7 +305,7 @@ owner/test-map proof lane and regenerate the witness before retrying merge.
 Jeryu does not repair a local-host GitHub CLI problem by running `gh auth login`,
 `gh auth refresh`, scraping `hosts.yml`, or hunting credential stores. Configure
 the host entry with `jeryu gh-setup --host <local-jeryu-url> --token-file
-~/.jeryu/secrets/merge-token`, then use `/.jeryu/capabilities`, the Jeryu REST
+~/.jeryu/secrets/merge-token`, then use `/api/v1/capabilities`, the Jeryu REST
 routes, or the `jeryu.*` MCP tools for the original PR, CI, issue, or repository
 task.
 

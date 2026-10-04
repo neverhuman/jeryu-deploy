@@ -89,6 +89,54 @@ fn main() {
     generated.push_str("];\n");
 
     fs::write(out, generated).expect("write embedded web asset table");
+
+    embed_docs(&manifest_dir, &out_dir);
+}
+
+/// Embed the repository's markdown docs so the server can serve the pages its
+/// error bodies advertise (`GET /api/v1/docs/...`). A deployed binary has no
+/// checkout to read them from, so they travel inside it.
+fn embed_docs(manifest_dir: &Path, out_dir: &Path) {
+    let docs_dir = manifest_dir.join("../../docs");
+    println!("cargo:rerun-if-changed={}", docs_dir.display());
+    let mut pages = Vec::new();
+    collect_docs(&docs_dir, &docs_dir, &mut pages);
+    pages.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut generated = String::from("pub(crate) static DOCS: &[EmbeddedDoc] = &[\n");
+    for (route_path, file_path) in pages {
+        println!("cargo:rerun-if-changed={}", file_path.display());
+        generated.push_str("    EmbeddedDoc {\n");
+        generated.push_str(&format!("        path: {route_path:?},\n"));
+        generated.push_str(&format!(
+            "        markdown: include_str!({:?}),\n",
+            file_path.display().to_string()
+        ));
+        generated.push_str("    },\n");
+    }
+    generated.push_str("];\n");
+    fs::write(out_dir.join("embedded_docs.rs"), generated).expect("write embedded docs table");
+}
+
+fn collect_docs(root: &Path, dir: &Path, pages: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_docs(root, &path, pages);
+            continue;
+        }
+        if path.extension().and_then(|part| part.to_str()) != Some("md") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .expect("doc path under docs/")
+            .to_string_lossy()
+            .replace('\\', "/");
+        pages.push((relative, path));
+    }
 }
 
 /// Explicit build commit, for builds whose checkout has no usable `.git`.

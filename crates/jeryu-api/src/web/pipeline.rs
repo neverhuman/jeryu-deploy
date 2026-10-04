@@ -49,20 +49,72 @@ const REPORTERS_ENV: &str = "JERYU_EVENT_REPORTERS";
 const DEFAULT_REPORTERS: &str = "gatebot,pragent";
 const DOCS: &str = "docs/pipeline-events.md";
 
-fn events_error(status: StatusCode, code: &str, reason: &str, hint: &str) -> AxumResponse {
-    typed_error(TypedError {
+/// A refusal of a write to the event log. Its fixes are about the event and
+/// who may post one.
+fn events_write_error(status: StatusCode, code: &str, reason: &str, hint: &str) -> AxumResponse {
+    events_refusal(
         status,
         code,
-        purpose: "record or read the pipeline event log",
+        "record a pipeline event",
         reason,
-        common_fixes: &[
+        &[
             "check the event against docs/pipeline-events.md",
             "post as a global admin or a JERYU_EVENT_REPORTERS identity",
         ],
+        hint,
+    )
+}
+
+/// A refusal of a read of the event log. A mistyped filter on a `GET` is not
+/// repaired by a reporter identity or by rereading the event schema, so the
+/// fixes name the query instead of who may post.
+fn events_read_error(status: StatusCode, code: &str, reason: &str, hint: &str) -> AxumResponse {
+    events_refusal(
+        status,
+        code,
+        "read the pipeline event log",
+        reason,
+        &[
+            "send one cursor (after_seq) and a limit from 1 to 500",
+            "check the filter keys and values against GET /api/v1",
+        ],
+        hint,
+    )
+}
+
+fn events_refusal(
+    status: StatusCode,
+    code: &str,
+    purpose: &'static str,
+    reason: &str,
+    common_fixes: &'static [&'static str],
+    hint: &str,
+) -> AxumResponse {
+    typed_error(TypedError {
+        status,
+        code,
+        purpose,
+        reason,
+        common_fixes,
         docs_url: DOCS,
         repair_hint: hint,
         message: reason,
     })
+}
+
+/// A store failure is on the server, not in the request.
+fn events_store_error(reason: &str) -> AxumResponse {
+    events_refusal(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "events_store_failed",
+        "record or read the pipeline event log",
+        reason,
+        &[
+            "check that <data_dir>/shift.sqlite is writable and not corrupt",
+            "check the server log for the store error this reports",
+        ],
+        "check <data_dir>/shift.sqlite",
+    )
 }
 
 /// Logins that may post events without being a global admin
@@ -207,7 +259,7 @@ pub(crate) async fn post_events(
     body: Bytes,
 ) -> AxumResponse {
     if !may_report(&account, reporters()) {
-        return events_error(
+        return events_write_error(
             StatusCode::FORBIDDEN,
             "events_reporter_required",
             "this account may not post pipeline events (JERYU_EVENT_REPORTERS)",
@@ -217,7 +269,7 @@ pub(crate) async fn post_events(
     let events = match events_from_body(&body) {
         Ok(events) => events,
         Err(reason) => {
-            return events_error(
+            return events_write_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "events_invalid_request",
                 &reason,
@@ -234,12 +286,7 @@ pub(crate) async fn post_events(
                 duplicates += usize::from(inserted.duplicate);
             }
             Err(reason) => {
-                return events_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "events_store_failed",
-                    &reason,
-                    "check <data_dir>/shift.sqlite",
-                );
+                return events_store_error(&reason);
             }
         }
     }
@@ -270,7 +317,7 @@ pub(crate) async fn list_events(
     };
     match (query.after_seq, query.since) {
         (Some(after), Some(since)) if after != since => {
-            return events_error(
+            return events_read_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "events_invalid_query",
                 &format!(
@@ -290,7 +337,7 @@ pub(crate) async fn list_events(
     }
     let limit = query.limit.unwrap_or(store::DEFAULT_LIMIT);
     if !(1..=store::MAX_LIMIT).contains(&limit) {
-        return events_error(
+        return events_read_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "events_invalid_query",
             &format!(
@@ -303,7 +350,7 @@ pub(crate) async fn list_events(
     if let Some(kind) = query.kind.as_deref().filter(|kind| !kind.is_empty())
         && !types::valid_kind_filter(kind)
     {
-        return events_error(
+        return events_read_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "events_invalid_query",
             &format!("kind: {kind:?} is neither a kind (todo.claimed) nor a prefix (todo.)"),
@@ -322,11 +369,6 @@ pub(crate) async fn list_events(
             limit,
         })
         .into_response(),
-        Err(reason) => events_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "events_store_failed",
-            &reason,
-            "check <data_dir>/shift.sqlite",
-        ),
+        Err(reason) => events_store_error(&reason),
     }
 }

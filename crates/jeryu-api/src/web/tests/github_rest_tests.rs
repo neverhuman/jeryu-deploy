@@ -444,7 +444,7 @@ fn advisory_headers_always_present_on_any_route() {
     assert_eq!(header_value(&headers, HDR_API), Some("v4"));
     assert_eq!(
         header_value(&headers, HDR_FAST_PATH),
-        Some("/.jeryu/capabilities")
+        Some(crate::discovery::CAPABILITIES_PATH)
     );
     assert!(header_value(&headers, HDR_TOOL).is_none());
 }
@@ -748,7 +748,7 @@ async fn live_actions_write_returns_guided_json_and_steering_headers() {
             .headers()
             .get("x-jeryu-fast-path")
             .and_then(|value| value.to_str().ok()),
-        Some("/.jeryu/capabilities")
+        Some(crate::discovery::CAPABILITIES_PATH)
     );
     assert_eq!(
         response

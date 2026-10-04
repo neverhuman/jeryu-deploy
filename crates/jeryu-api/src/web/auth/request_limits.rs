@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::Response as AxumResponse;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -74,20 +74,6 @@ pub(super) fn hit(
     bucket.attempts > max
 }
 
-/// True when `key` is already over `max` in the current window, without
-/// counting this request.
-pub(super) fn exceeded(
-    limits: &BTreeMap<String, RateLimitBucket>,
-    key: &str,
-    now: DateTime<Utc>,
-    max: u32,
-) -> bool {
-    max != 0
-        && limits
-            .get(key)
-            .is_some_and(|bucket| bucket.reset_at > now && bucket.attempts >= max)
-}
-
 pub(super) fn open_bucket(
     limits: &mut BTreeMap<String, RateLimitBucket>,
     key: String,
@@ -111,17 +97,119 @@ fn sweep(limits: &mut BTreeMap<String, RateLimitBucket>, now: DateTime<Utc>) {
     }
 }
 
-/// `429 rate_limited` with a `Retry-After` of one window.
-pub(super) fn too_many(message: &str) -> AxumResponse {
-    let mut response = api_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message);
-    response.headers_mut().insert(
-        header::RETRY_AFTER,
-        HeaderValue::from_static(RETRY_AFTER_SECS),
-    );
-    response
+/// What a caller has left in the current window. Every limited answer carries
+/// it, so a client that is close to the cap can slow down before it is
+/// refused, and a refused one knows exactly how long to wait.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Budget {
+    pub(super) limit: u32,
+    pub(super) remaining: u32,
+    /// When the window resets, as a Unix timestamp (the `X-RateLimit-Reset`
+    /// shape GitHub clients already read).
+    pub(super) reset_epoch: i64,
+    /// Seconds until the window resets, at least one: `Retry-After: 0` reads
+    /// as "retry now", which is the one thing the caller must not do.
+    pub(super) retry_after_secs: i64,
 }
 
-const RETRY_AFTER_SECS: &str = "60";
+impl Budget {
+    fn new(limit: u32, attempts: u32, reset_at: DateTime<Utc>, now: DateTime<Utc>) -> Self {
+        Self {
+            limit,
+            remaining: limit.saturating_sub(attempts),
+            reset_epoch: reset_at.timestamp(),
+            // Rounded up: a `Retry-After` a fraction of a second short sends
+            // the caller straight back into the same window.
+            retry_after_secs: ((reset_at - now).num_milliseconds() + 999)
+                .saturating_div(1000)
+                .clamp(1, LIMIT_WINDOW_SECS),
+        }
+    }
+
+    /// The budget for a limit nothing has been counted against yet, used where
+    /// the bucket is gone (its window elapsed) by the time a reply is shaped.
+    fn full(limit: u32, now: DateTime<Utc>) -> Self {
+        Self::new(
+            limit,
+            0,
+            now + chrono::Duration::seconds(LIMIT_WINDOW_SECS),
+            now,
+        )
+    }
+}
+
+/// Counts one request against `key` like [`hit`], and reports what the caller
+/// has left in the window.
+pub(super) fn hit_with_budget(
+    limits: &mut BTreeMap<String, RateLimitBucket>,
+    key: String,
+    now: DateTime<Utc>,
+    max: u32,
+) -> (bool, Budget) {
+    if max == 0 {
+        return (false, Budget::full(max, now));
+    }
+    sweep(limits, now);
+    let bucket = open_bucket(limits, key, now);
+    bucket.attempts = bucket.attempts.saturating_add(1);
+    let over = bucket.attempts > max;
+    (
+        over,
+        Budget::new(max, bucket.attempts, bucket.reset_at, now),
+    )
+}
+
+/// What `key` has left without counting this request.
+pub(super) fn budget_for(
+    limits: &BTreeMap<String, RateLimitBucket>,
+    key: &str,
+    now: DateTime<Utc>,
+    max: u32,
+) -> Budget {
+    match limits.get(key).filter(|bucket| bucket.reset_at > now) {
+        Some(bucket) => Budget::new(max, bucket.attempts, bucket.reset_at, now),
+        None => Budget::full(max, now),
+    }
+}
+
+/// Stamps the rate-limit budget on a reply. A limit of zero is a disabled cap,
+/// which has no budget to report.
+pub(super) fn stamp(response: &mut AxumResponse, budget: &Budget) {
+    if budget.limit == 0 {
+        return;
+    }
+    let headers = response.headers_mut();
+    for (name, value) in [
+        ("x-ratelimit-limit", budget.limit.to_string()),
+        ("x-ratelimit-remaining", budget.remaining.to_string()),
+        ("x-ratelimit-reset", budget.reset_epoch.to_string()),
+    ] {
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            headers.insert(HeaderName::from_static(name), value);
+        }
+    }
+}
+
+/// `429 rate_limited` with the budget and a `Retry-After` that says how long
+/// the window still has to run.
+pub(super) fn too_many(message: &str) -> AxumResponse {
+    refused(message, &Budget::full(0, Utc::now()))
+}
+
+/// [`too_many`] for a caller whose remaining budget is known.
+pub(super) fn refused(message: &str, budget: &Budget) -> AxumResponse {
+    let mut response = api_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message);
+    let retry_after = if budget.limit == 0 {
+        LIMIT_WINDOW_SECS
+    } else {
+        budget.retry_after_secs
+    };
+    if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    stamp(&mut response, budget);
+    response
+}
 
 #[cfg(test)]
 mod tests {
@@ -134,14 +222,63 @@ mod tests {
         for _ in 0..3 {
             assert!(!hit(&mut limits, "k".into(), now, 3));
         }
-        assert!(exceeded(&limits, "k", now, 3));
         assert!(hit(&mut limits, "k".into(), now, 3));
         let later = now + chrono::Duration::seconds(LIMIT_WINDOW_SECS);
-        assert!(!exceeded(&limits, "k", later, 3));
         assert!(!hit(&mut limits, "k".into(), later, 3));
         for _ in 0..10 {
             assert!(!hit(&mut limits, "z".into(), now, 0));
         }
+    }
+
+    #[test]
+    fn a_refusal_carries_retry_after_and_the_budget() {
+        let mut limits = BTreeMap::new();
+        let now = Utc::now();
+        let (over, budget) = hit_with_budget(&mut limits, "k".into(), now, 2);
+        assert!(!over);
+        assert_eq!((budget.limit, budget.remaining), (2, 1));
+        let (over, budget) = hit_with_budget(&mut limits, "k".into(), now, 2);
+        assert!(!over);
+        assert_eq!(budget.remaining, 0);
+        let (over, budget) = hit_with_budget(&mut limits, "k".into(), now, 2);
+        assert!(over);
+        assert_eq!(budget.remaining, 0);
+        assert!((1..=LIMIT_WINDOW_SECS).contains(&budget.retry_after_secs));
+        let response = refused("too many", &budget);
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let headers = response.headers();
+        assert_eq!(
+            headers
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some(budget.retry_after_secs.to_string().as_str())
+        );
+        assert_eq!(
+            headers
+                .get("x-ratelimit-limit")
+                .and_then(|v| v.to_str().ok()),
+            Some("2")
+        );
+        assert_eq!(
+            headers
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok()),
+            Some("0")
+        );
+        assert!(headers.contains_key("x-ratelimit-reset"));
+    }
+
+    /// A 429 from a disabled or unmetered cap still says how long to wait.
+    #[test]
+    fn a_refusal_without_a_known_budget_still_carries_retry_after() {
+        let response = too_many("too many failed credentials");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some(LIMIT_WINDOW_SECS.to_string().as_str())
+        );
     }
 
     #[test]

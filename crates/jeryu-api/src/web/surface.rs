@@ -344,7 +344,7 @@ fn github_account_from_headers(
                     [(header::WWW_AUTHENTICATE, "Basic realm=\"Jeryu\"")],
                     Json(json!({
                         "message": "Requires authentication",
-                        "documentation_url": "/docs/rest",
+                        "documentation_url": crate::discovery::REST_DOC_PATH,
                     })),
                 )
                     .into_response(),
@@ -464,7 +464,7 @@ fn github_forbidden(message: &str) -> AxumResponse {
         StatusCode::FORBIDDEN,
         Json(json!({
             "message": message,
-            "documentation_url": "/docs/rest",
+            "documentation_url": crate::discovery::REST_DOC_PATH,
         })),
     )
         .into_response()
@@ -626,31 +626,20 @@ fn guided_github_edge_response(
         status,
         Json(json!({
             "message": message,
-            "documentation_url": "/docs/rest",
+            "documentation_url": crate::discovery::REST_DOC_PATH,
             "jeryu_repair_hint": {
                 "purpose": purpose,
                 "reason": reason,
                 "common_fixes": [
                     "retry with one of the listed GitHub-compatible REST routes",
-                    "use /.jeryu/capabilities to choose a typed jeryu.* MCP tool",
+                    "use /api/v1/capabilities to choose a typed jeryu.* MCP tool",
                     "add a conformance test before widening the compatibility subset"
                 ],
-                "docs_url": "/docs/rest",
+                "docs_url": crate::discovery::REST_DOC_PATH,
                 "repair_hint": "prefer the listed Jeryu MCP/API alternatives, then rerun cargo test -p jeryu-api --features web"
             },
             "jeryu_mcp_tools": super::MCP_GUIDANCE_TOOLS,
-            "jeryu_api_routes": [
-                "GET /user",
-                "GET /repos",
-                "GET /repos/{owner}/{repo}",
-                "GET /repos/{owner}/{repo}/pulls?state=open|closed|all&sort=created|updated|popularity|long-running&direction=asc|desc&head=owner:branch&base=branch (default created/desc; an unaccepted value is a 422)",
-                "PATCH /repos/{owner}/{repo}/pulls/{number} (draft: bool, title, body, state; author or admin. The named Jeryu routes are POST /api/v1/repos/{id}/pulls/{number}/ready and /draft)",
-                "GET /repos/{owner}/{repo}/issues?state=open|closed|all&sort=created|updated|comments&direction=asc|desc (default created/desc; an unaccepted value is a 422)",
-                "GET /repos/{owner}/{repo}/commits?sha=&direction=asc|desc (newest first by default; an unaccepted value is a 422)",
-                "GET /repos/{owner}/{repo}/commits/{ref}/status",
-                "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
-                "POST /graphql"
-            ],
+            "jeryu_api_routes": crate::github::V3_ROUTES,
             "path": path,
         })),
     )

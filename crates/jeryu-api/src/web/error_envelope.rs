@@ -32,7 +32,11 @@ pub(super) const ENVELOPE_FIELDS: [&str; 7] = [
     "repair_hint",
     "docs_url",
 ];
-const DOCS_URL: &str = "docs/errors.md";
+/// The envelope's own documentation page, as it is served. Handlers may name
+/// another page the way the repository spells it (`docs/testing.md#workcells`);
+/// [`crate::discovery::docs_url`] turns whatever they carry into a URL that
+/// resolves, so a client can actually fetch what the error advertises.
+const DOCS_URL: &str = "/api/v1/docs/errors.md";
 const DEFAULT_PURPOSE: &str = "complete a jeryu API request";
 const DEFAULT_REPAIR_HINT: &str =
     "look the code up at GET /api/v1/errors, fix the request it names, and retry";
@@ -45,6 +49,8 @@ pub(super) async fn catalog() -> Json<Value> {
         "schema": "jeryu.api.errors.v1",
         "envelope_fields": ENVELOPE_FIELDS,
         "docs_url": DOCS_URL,
+        "capabilities": crate::discovery::CAPABILITIES_PATH,
+        "openapi": crate::discovery::OPENAPI_PATH,
         "codes": ERROR_CODES
             .iter()
             .map(|entry| json!({
@@ -155,7 +161,9 @@ fn from_json(status: StatusCode, mut object: Map<String, Value>) -> Value {
     let purpose = text(&object, "purpose").unwrap_or_else(|| DEFAULT_PURPOSE.to_string());
     let repair_hint =
         text(&object, "repair_hint").unwrap_or_else(|| DEFAULT_REPAIR_HINT.to_string());
-    let docs_url = text(&object, "docs_url").unwrap_or_else(|| DOCS_URL.to_string());
+    let docs_url = text(&object, "docs_url")
+        .map(|raw| crate::discovery::docs_url(&raw))
+        .unwrap_or_else(|| DOCS_URL.to_string());
     for (key, value) in [
         ("code", json!(code)),
         ("message", json!(message)),

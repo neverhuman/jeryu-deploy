@@ -4,6 +4,7 @@
 mod autonomy_bridge;
 #[cfg(feature = "web")]
 mod ci_bridge;
+pub mod discovery;
 #[cfg(feature = "web")]
 mod git_materializer;
 #[cfg(feature = "web")]
@@ -19,5 +20,7 @@ mod test_git;
 #[cfg(feature = "web")]
 pub mod web;
 
-pub use github::{GithubRouter, JERYU_API_VERSION, JERYU_BUILD_COMMIT, JERYU_WEB_COMMIT, Method};
+pub use github::{
+    GithubRouter, JERYU_API_VERSION, JERYU_BUILD_COMMIT, JERYU_WEB_COMMIT, Method, V3_ROUTES,
+};
 pub use routes::{ApiState, Response, Router};
