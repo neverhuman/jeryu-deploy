@@ -633,6 +633,30 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     }
 }
 
+/// The kept answer while it is fresh, else a fresh one, kept. Blocking: the
+/// collectors run git and read every open pull request. The inbox route and
+/// the work trace both read the inbox through this, so one computation serves
+/// both.
+pub(super) fn cached(state: &WebState, now: DateTime<Utc>) -> AttentionResponse {
+    let lock = || {
+        state
+            .attention
+            .inner
+            .lock()
+            .expect("attention cache mutex poisoned")
+    };
+    let kept = lock()
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < CACHE_FOR)
+        .map(|(_, response)| response.clone());
+    if let Some(response) = kept {
+        return response;
+    }
+    let response = collect(state, now);
+    *lock() = Some((Instant::now(), response.clone()));
+    response
+}
+
 /// The last answer, reused for [`CACHE_FOR`]: the inbox badge polls this.
 #[derive(Clone, Default)]
 pub(crate) struct AttentionCache {
@@ -744,34 +768,12 @@ pub(crate) async fn attention(
             Json(response).into_response()
         }
     };
-    let cached = {
-        let cache = state
-            .attention
-            .inner
-            .lock()
-            .expect("attention cache mutex poisoned");
-        cache
-            .as_ref()
-            .filter(|(at, _)| at.elapsed() < CACHE_FOR)
-            .map(|(_, response)| response.clone())
-    };
-    if let Some(response) = cached {
-        return answer(response);
-    }
     // The collectors run git and read every open pull request: keep them off
     // the async workers.
     let worker_state = state.clone();
-    let response = tokio::task::spawn_blocking(move || collect(&worker_state, Utc::now())).await;
+    let response = tokio::task::spawn_blocking(move || cached(&worker_state, Utc::now())).await;
     match response {
-        Ok(response) => {
-            *state
-                .attention
-                .inner
-                .lock()
-                .expect("attention cache mutex poisoned") =
-                Some((Instant::now(), response.clone()));
-            answer(response)
-        }
+        Ok(response) => answer(response),
         Err(error) => {
             use super::super::workcells_support::{TypedError, typed_error};
             let reason = error.to_string();

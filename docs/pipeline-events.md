@@ -12,6 +12,8 @@ tools. This page is the contract that makes it visible in one place:
   answers "what could be released".
 - **`/api/v1/shift/todos`** additions: whether a done todo is merged and
   released, and which pull request carries it.
+- **`/api/v1/trace`**: where one piece of work is, from the todo that filed it
+  to the deployment that ships it. It answers "where is this".
 
 JSON is snake_case. Every refusal on these routes is a typed JSON error
 (`code`, `message`, `reason`, `repair_hint`, `common_fixes`, `docs_url`),
@@ -20,9 +22,9 @@ never HTML. A path under `/api/` (any version) that no route matches answers
 `404 shift_family_not_found` on the shift todo and shift list routes, never an empty list.
 
 Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
-`crates/jeryu-api/src/web/pipeline/` (store, emit points, attention rules),
-`crates/jeryu-api/src/web/shift/truth.rs` and `shift/visibility.rs`,
-`db/migrations/0002_pipeline_events.sql`.
+`crates/jeryu-api/src/web/pipeline/` (store, emit points, attention rules,
+the work trace), `crates/jeryu-api/src/web/shift/truth.rs` and
+`shift/visibility.rs`, `db/migrations/0002_pipeline_events.sql`.
 
 ## Access
 
@@ -33,6 +35,7 @@ Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
 | `GET /api/v1/attention` | global admins |
 | `GET`, `POST /api/v1/attention/acks` | global admins |
 | `GET /api/v1/pins` | global admins |
+| `GET /api/v1/trace` | global admins |
 | WebSocket scope `pipeline` | global admins |
 
 Reads are admin-only in v1 because events and attention items carry todo
@@ -445,6 +448,77 @@ production deployment moved, and merged or released work is never re-checked.
 A family whose repos live under another owner than its queue resolves them by
 unique repository name.
 
+## Work trace
+
+`GET /api/v1/trace` answers where one piece of work is in one call. A todo and
+the pull request that carries it are the same work, and nothing said so before:
+the event log filters by `todo_id` **or** by `repo` and `pr` and never joins
+them, so a todo's page knew the queue file and a pull request's page knew its
+own events. The trace is that join, made on the `Todo: <id>` trailer every
+landing carries.
+
+Ask for one todo or one pull request:
+
+- `GET /api/v1/trace?todo=<id>`
+- `GET /api/v1/trace?repo=<owner>/<name>&pr=<number>` — every todo whose
+  trailer is on one of the pull request's commits, traced together
+
+Anything else is `422 trace_invalid_query`; a todo no family queue holds is
+`404 trace_todo_not_found` and a pull request this forge does not host is
+`404 trace_pull_not_found`, never an answer with empty stages.
+
+```json
+{"schema_version": "jeryu.trace/v1", "generated_at": "2026-10-03T07:00:00Z",
+ "subject": {"todos": ["20261003-020951-c0c38e"], "family": "acme",
+             "family_label": "acme", "repo": "acme/widgets-web", "pr": 7,
+             "shift": "nightshift/2026-10-03", "released_by": "acme/deploy"},
+ "stages": [{"stage": "pinned", "state": "done",
+             "at": "2026-10-03T06:10:00Z",
+             "source": {"from": "derived"},
+             "summary": "acme/deploy pins it at 4e11f0b, which reaches the work",
+             "href": "/releases?repo=acme/deploy",
+             "attention": []}]}
+```
+
+| Field | Meaning |
+|---|---|
+| `subject.todos` | every todo the trace follows, by id |
+| `subject.repo` | the repository the work lands in, `owner/name` |
+| `subject.released_by` | the repository whose release carries the work, when the work's own repository ships by being pinned into another; null when it releases itself |
+| `stages[].stage` | `filed`, `claimed`, `done`, `shift`, `pr`, `gate`, `review`, `queue`, `merged`, `pinned`, `staged`, `deployed`, always all twelve and always in this order |
+| `stages[].state` | `done`, `active` (running now), `waiting`, `blocked` (a person is the next step), `failed`, `skipped` (it will not happen and nothing is missing), `not_applicable` (this work never passes this stage) or `unknown` (nothing the forge can read says) |
+| `stages[].at` | when the stage reached that state, RFC 3339, or null |
+| `stages[].source` | `{"from": "event", "seq": 30}` when a stored event said so (read it with `GET /api/v1/events?after_seq=29&limit=1`), `{"from": "derived"}` when it was read from the repositories, `{"from": "reported"}` when another system filed it with the forge (a deployment, a review, a commit status) |
+| `stages[].summary` | one line: what this stage says about the work |
+| `stages[].href` | the in-app page that explains the stage |
+| `stages[].attention` | the ids of the open [attention](#attention) items that belong to this stage, so a stuck stage carries its own next step |
+
+Where each stage's answer comes from:
+
+| Stage | Read from |
+|---|---|
+| `filed`, `claimed`, `done` | the newest `todo.*` event for the todo, else the queue file: its `filed_at`, its attempts and its status. A `blocked` or `handoff` todo is `blocked` at `done` and the summary is its own note; a `closed` one is `skipped` |
+| `shift` | the todo's shift branch |
+| `pr` | the shift pull request the todo names, or the one asked for: `done` when merged, `failed` when closed unmerged, `waiting` while it is a draft |
+| `gate` | the newest `gate.*` event, else the combined commit status of the head |
+| `review` | the newest `pr.approved`, `pr.review` or `review.*` event, else the newest review verdict on the pull request |
+| `queue` | the newest `queue.*` event, else the merge-queue entry. A pull request that merged with no entry is `skipped`: the queue is not the only way in |
+| `merged` | `pr.merged` or `todo.merged`, else the derived [todo truth](#todo-truth): every commit of the work is on the base branch, as itself or replayed under its `Todo:` trailer |
+| `pinned` | the consumer pin `/api/v1/pins` reports for the work's repository: `done` when the pinned commit reaches the work, `waiting` while it is behind, `not_applicable` when nothing pins the repository |
+| `staged` | the newest `release.staged` for whichever repository ships the work, `done` when the release it names carries the work. A deployment that carries the work also settles this: production cannot run a release that was never staged |
+| `deployed` | what production runs: for a pinned repository the consumer's production deployment, else the todo's derived `released` |
+
+**A repository that ships by being pinned.** jeryu-web has no release and no
+deployment of its own: jeryu-deploy pins it and ships it, which is why
+[todo truth](#todo-truth) leaves its work `released = null` for ever. The trace
+answers it instead by reading the consumer's lock **at the commit in question**
+— the pin on the consumer's branch for `pinned`, the staged commit for
+`staged`, the deployed commit for `deployed` — and asking whether the
+dependency commit it names reaches the work. Reaching means the work's commit
+is that commit or an ancestor of it, counting both the sha the todo recorded
+and the base commit that carries its `Todo:` trailer, because a shift branch
+is replayed onto the base and the sha changes.
+
 ## Runner heartbeats
 
 `/runners` is drawn from heartbeats, not from the event log. Gate runner slots,
@@ -630,6 +704,12 @@ on an old event as an open item.
 `state = "behind"` is merged, green work that no release of the consumer would
 include; `unreleased` lists it and `bump_pr` says whether the bump is already
 proposed. Do not open a second bump while `bump_pr` is set.
+
+**Find out where one piece of work is.** `GET /api/v1/trace?todo=<id>` (or
+`?repo=&pr=`), then read the stages in order: the first one that is not `done`
+is where the work stands, its `summary` says what that means and its
+`attention` ids name the items waiting on a person. A stage's `source` says
+whether to believe an event, the repositories or another system's report.
 
 **Tell a missing route from success.** A `404` with
 `code = "api_route_not_found"` means this server does not have the route; it

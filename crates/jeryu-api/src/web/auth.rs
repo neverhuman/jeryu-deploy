@@ -905,6 +905,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || (release_board_path(path) && !unsafe_method(method))
         || attention_path(path)
         || pins_path(path)
+        || trace_path(path)
         || audit_path(path)
 }
 
@@ -937,6 +938,12 @@ fn attention_path(path: &str) -> bool {
 /// included, so like the inbox they are for global admins only.
 fn pins_path(path: &str) -> bool {
     path == "/api/v1/pins" || path == "/api/v1/pins/"
+}
+
+/// One work trace names the todos, pull requests and deployments of every
+/// repository the work touches, so like the inbox it is for global admins.
+fn trace_path(path: &str) -> bool {
+    path == "/api/v1/trace" || path == "/api/v1/trace/"
 }
 
 fn admin_only_path(path: &str) -> bool {

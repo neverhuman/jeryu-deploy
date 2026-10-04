@@ -611,6 +611,26 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         424,
         "the MCP tool has no execution adapter installed on this server",
     ),
+    entry(
+        "trace_collect_failed",
+        500,
+        "the work trace could not be collected",
+    ),
+    entry(
+        "trace_invalid_query",
+        422,
+        "the trace names neither one todo nor one pull request",
+    ),
+    entry(
+        "trace_pull_not_found",
+        404,
+        "this forge does not host that pull request",
+    ),
+    entry(
+        "trace_todo_not_found",
+        404,
+        "no family queue holds that todo",
+    ),
     entry("unauthorized", 401, "the request needs a login or token"),
     entry(
         "unsupported_media_type",

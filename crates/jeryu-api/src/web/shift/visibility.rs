@@ -119,3 +119,80 @@ pub(crate) fn worker_rows(state: &WebState, now: DateTime<Utc>) -> Vec<WorkerRow
         })
         .collect()
 }
+
+/// Where one todo lives, for a surface that follows a single piece of work:
+/// the todo with its derived truth, and what its repositories are called and
+/// who hosts them.
+pub(crate) struct TodoTrace {
+    pub todo: ShiftTodo,
+    pub base_branch: String,
+    /// Every repo the todo committed to, as (family repo name, hosted owner).
+    pub owners: Vec<(String, String)>,
+}
+
+/// The todos named by `ids`, with derived merged/released and the carrying
+/// pull requests filled in (see `truth.rs`). An id no family queue holds is
+/// left out, so the caller can tell "no such todo" from "nothing happened".
+pub(crate) fn todo_traces(state: &WebState, ids: &[String], now: DateTime<Utc>) -> Vec<TodoTrace> {
+    let mut traces = Vec::new();
+    for queue in discover(&state.repo_manager) {
+        let queued = queue_todos(state, &queue).unwrap_or_default();
+        let mut todos: Vec<ShiftTodo> = queued
+            .iter()
+            .map(|q| q.todo.to_api(now))
+            .filter(|todo| ids.iter().any(|id| id == &todo.id))
+            .collect();
+        if todos.is_empty() {
+            continue;
+        }
+        state.shift.truth.enrich(state, &queue, &mut todos);
+        for todo in todos {
+            let owners = todo
+                .commits
+                .keys()
+                .filter_map(|repo| {
+                    let owner = super::truth::hosted_owner(state, &queue, repo)?;
+                    Some((repo.clone(), owner))
+                })
+                .collect();
+            traces.push(TodoTrace {
+                todo,
+                base_branch: queue.family.base_branch.clone(),
+                owners,
+            });
+        }
+    }
+    traces
+}
+
+/// The todo ids that the commits in `range` (any revision range git log takes,
+/// `base..head`) carry as a `Todo:` trailer: how a pull request is joined to
+/// the work it carries.
+pub(crate) fn trailer_todos(state: &WebState, owner: &str, repo: &str, range: &str) -> Vec<String> {
+    let Ok(opened) = state.repo_manager.open_parts(owner, repo) else {
+        return Vec::new();
+    };
+    let git_bin = &state.repo_manager.config().git_bin;
+    let mut ids: Vec<String> = super::truth::scan_trailers(git_bin, &opened.path, range)
+        .into_keys()
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The commit on `base_branch` that carries `Todo: <id>`, when one does: where
+/// a todo's work ended up after its shift branch was replayed onto the base.
+pub(crate) fn trailer_commit(
+    state: &WebState,
+    owner: &str,
+    repo: &str,
+    base_branch: &str,
+    id: &str,
+) -> Option<String> {
+    let opened = state.repo_manager.open_parts(owner, repo).ok()?;
+    let git_bin = &state.repo_manager.config().git_bin;
+    let base = format!("refs/heads/{base_branch}");
+    super::truth::scan_trailers(git_bin, &opened.path, &base)
+        .get(id)
+        .cloned()
+}

@@ -8,7 +8,7 @@
 mod heartbeats;
 pub(crate) mod queue;
 mod shifts;
-mod todo_file;
+pub(crate) mod todo_file;
 mod truth;
 mod types;
 mod visibility;
@@ -46,7 +46,10 @@ pub(crate) use types::{
 #[cfg(test)]
 pub(crate) use types::{Heartbeat, ShiftPr};
 use visibility::stage_event;
-pub(crate) use visibility::{FamilySnapshot, attention_snapshot, shift_context, worker_rows};
+pub(crate) use visibility::{
+    FamilySnapshot, attention_snapshot, shift_context, todo_traces, trailer_commit, trailer_todos,
+    worker_rows,
+};
 
 const PR_AUTHOR_ENV: &str = "JERYU_SHIFT_PR_AUTHOR";
 const DEFAULT_PR_AUTHOR: &str = "alton2";

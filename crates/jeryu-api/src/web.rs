@@ -1019,6 +1019,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             get(pipeline::attention::acks::list_acks).post(pipeline::attention::acks::ack),
         ),
         ("/api/v1/pins", get(pipeline::pins::pins)),
+        ("/api/v1/trace", get(pipeline::trace::trace)),
         ("/api/v1/release-board", get(release_board::list_boards)),
         (
             "/api/v1/release-board/:family",
