@@ -14,6 +14,11 @@
 //! which machine and in which directory; otherwise the step is to open `href`
 //! and do what `action.label` says. `next_step` spells that out in one
 //! sentence for a reader, human or agent, with no other context.
+//!
+//! `action.api` is set as well whenever a route of this API performs the step:
+//! it is the call to make, so an agent replays the step instead of reading
+//! `next_step` and guessing which endpoint it meant. `href` stays where to go
+//! to understand the item.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -24,6 +29,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde_json::{Value, json};
 
 use super::super::WebState;
 use super::super::merge_queue::QueueState;
@@ -48,7 +54,9 @@ pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_ite
 pub(crate) use pins::pin_items;
 pub(crate) use work::{shift_items, todo_items, worker_items};
 
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1";
+/// `v1.1` added `action.api`: every earlier field is unchanged, so a client
+/// written against `v1` reads a `v1.1` answer as it always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.1";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -77,11 +85,26 @@ pub(crate) enum Severity {
     Watch,
 }
 
+/// The step as one call on this API: what a caller sends to perform it, not a
+/// link to a page about it. Paths are absolute and ready to send.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct ApiCall {
+    pub method: &'static str,
+    pub path: String,
+    /// The request body, left out of the JSON when the route takes none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct Action {
     pub label: String,
     /// A copyable shell line when the step happens off-site.
     pub command: Option<String>,
+    /// The call that performs the step, when a route of this API does. Left
+    /// out of the JSON when no route does it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<ApiCall>,
     /// Where `command` is run, as a short phrase naming the machine and the
     /// directory ("xbabe0, any directory"). Set exactly when `command` is, and
     /// left out of the JSON otherwise.
@@ -143,6 +166,8 @@ pub(super) struct Draft<'a> {
     pub(super) reason: String,
     pub(super) href: String,
     pub(super) label: &'a str,
+    /// The call that performs the step; see [`ApiCall`].
+    pub(super) api: Option<ApiCall>,
     pub(super) command: Option<Shell>,
 }
 
@@ -172,11 +197,13 @@ impl Draft<'_> {
                 Some(shell) => Action {
                     label,
                     command: Some(shell.line),
+                    api: self.api,
                     run_in: Some(shell.run_in),
                 },
                 None => Action {
                     label,
                     command: None,
+                    api: self.api,
                     run_in: None,
                 },
             },
@@ -235,6 +262,46 @@ pub(super) const WORKERS_HREF: &str = "/work#workers";
 /// last, what is merged in a dependency and not yet pinned.
 pub(super) fn releases_href(repo: &str) -> String {
     format!("/releases?repo={repo}")
+}
+
+/// `POST /api/v1/shift/shifts/:family/pr`: open the review pull request of
+/// one shift branch, in every repository of the family that has the branch.
+pub(super) fn open_shift_pr_call(family: &str, branch: &str) -> ApiCall {
+    ApiCall {
+        method: "POST",
+        path: format!("/api/v1/shift/shifts/{family}/pr"),
+        body: Some(json!({ "branch": branch })),
+    }
+}
+
+/// `POST /api/v1/shift/todos/:family/:id/action`: `release`, `done`, `park`
+/// and the rest of one todo's transitions.
+pub(super) fn todo_action_call(family: &str, id: &str, action: &str) -> ApiCall {
+    ApiCall {
+        method: "POST",
+        path: format!("/api/v1/shift/todos/{family}/{id}/action"),
+        body: Some(json!({ "action": action })),
+    }
+}
+
+/// `POST /api/v1/repos/:id/pulls/:number/queue`: join the merge queue. The
+/// repository is addressed by `owner/name`, which the API resolves.
+pub(super) fn enqueue_call(repo: &str, number: u64) -> ApiCall {
+    ApiCall {
+        method: "POST",
+        path: format!("/api/v1/repos/{repo}/pulls/{number}/queue"),
+        body: None,
+    }
+}
+
+/// `POST /api/v1/repos/:id/pulls/:number/ready`: a draft becomes a pull
+/// request that reviews, gates and the queue act on.
+pub(super) fn ready_for_review_call(repo: &str, number: u64) -> ApiCall {
+    ApiCall {
+        method: "POST",
+        path: format!("/api/v1/repos/{repo}/pulls/{number}/ready"),
+        body: None,
+    }
 }
 
 fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {

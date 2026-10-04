@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::attention::{
-    Draft, DraftFacts, Hosts, Item, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts,
-    PullFacts, Severity, divergence_items, draft_items, mirror_items, order, pin_items, pull_items,
-    queue_items, release_items, runner_items, shift_items, todo_items, web_routes, worker_items,
+    ApiCall, Draft, DraftFacts, Hosts, Item, LatestDeployment, MirrorDrift, MirrorFailure,
+    ProductionFacts, PullFacts, Severity, divergence_items, draft_items, mirror_items, order,
+    pin_items, pull_items, queue_items, release_items, runner_items, shift_items, todo_items,
+    web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -83,6 +84,29 @@ fn assert_actionable(item: &Item) {
         None => assert!(item.next_step.contains(item.href.as_str()), "{item:?}"),
     }
     assert_says_where(item);
+    assert_api_is_a_call(item);
+}
+
+/// An `action.api` is a call this API serves: a method and an absolute
+/// `/api/v1` path, ready to send as it stands.
+pub(super) fn assert_api_is_a_call(item: &Item) {
+    let Some(api) = &item.action.api else {
+        return;
+    };
+    assert_eq!(api.method, "POST", "{item:?}");
+    assert!(api.path.starts_with("/api/v1/"), "{item:?}");
+    assert!(!api.path.contains(' '), "{item:?}");
+}
+
+/// What one item's step is, as a call: `None` when no route performs it.
+fn api(item: &Item) -> Option<(&str, &str, Value)> {
+    item.action.api.as_ref().map(|api: &ApiCall| {
+        (
+            api.method,
+            api.path.as_str(),
+            api.body.clone().unwrap_or(Value::Null),
+        )
+    })
 }
 
 /// The href opens a page of the web app directly. `assert_actionable` runs
@@ -323,6 +347,62 @@ fn a_shift_branch_with_work_and_no_pull_request() {
     assert_eq!(items[0].action.label, "Open the shift's review PR");
 }
 
+/// Opening a shift's review pull request is one call, so the item carries it
+/// whole: branch and all. Moving todos into a replacement pull request
+/// somebody else opened is not, so that item carries none.
+#[test]
+fn a_shift_branch_carries_the_call_that_opens_its_review_pull_request() {
+    let repo = |name: &str, review_pr: Option<ShiftPr>| ShiftRepo {
+        repo: name.to_string(),
+        head: "9f8214948f1a8508fb95b1d3b941c162bf76a73a".to_string(),
+        ahead: 2,
+        behind: 0,
+        pr: review_pr.as_ref().map(|_| ShiftPr {
+            number: 71,
+            state: "closed".to_string(),
+            url: "/repos/jeryu/widget-shop/pulls/71".to_string(),
+        }),
+        unmerged_todos: vec!["t1".to_string()],
+        review_pr,
+        reviewed_todos: Vec::new(),
+    };
+    let items = shift_items(
+        "acme",
+        &[ShiftBranch {
+            family: "acme".to_string(),
+            family_label: "acme".to_string(),
+            branch: "nightshift/2026-09-19".to_string(),
+            kind: "nightshift".to_string(),
+            date: "2026-09-19".to_string(),
+            repos: vec![
+                repo("widget-shop", None),
+                repo(
+                    "widget-api",
+                    Some(ShiftPr {
+                        number: 78,
+                        state: "mergeable".to_string(),
+                        url: "/repos/jeryu/widget-api/pulls/78".to_string(),
+                    }),
+                ),
+            ],
+            todo_ids: vec!["t1".to_string()],
+        }],
+    );
+    assert_eq!(kinds(&items), ["shift_without_pr", "shift_without_pr"]);
+    assert_eq!(
+        api(&items[0]),
+        Some((
+            "POST",
+            "/api/v1/shift/shifts/acme/pr",
+            json!({"branch": "nightshift/2026-09-19"})
+        ))
+    );
+    assert_eq!(api(&items[1]), None);
+    for item in &items {
+        assert_actionable(item);
+    }
+}
+
 /// A shift PR closed on a queue conflict and replaced by an open PR from
 /// another branch, cherry-picked onto the base: the todos the replacement
 /// carries are under review, not waiting for a pull request of their own.
@@ -524,6 +604,18 @@ fn pull_requests_waiting_on_a_person() {
     assert!(items[2].reason.contains("0 of 1 required approval"));
     assert!(items[3].reason.contains("45 minutes"));
     assert_eq!(items[3].pr, Some(4));
+    // A pull request that has passed its gate lands by joining the queue;
+    // every other posture waits on a review or a push, which no route does.
+    assert_eq!(
+        api(&items[3]),
+        Some((
+            "POST",
+            "/api/v1/repos/jeryu/jeryu-web/pulls/4/queue",
+            Value::Null
+        ))
+    );
+    assert_eq!(api(&items[0]), None);
+    assert_eq!(api(&items[2]), None);
 }
 
 fn draft(number: u64, days_old: i64, base_ref: &str) -> DraftFacts {
@@ -569,6 +661,14 @@ fn a_draft_idle_past_the_threshold_is_waiting_on_a_person() {
         items[1]
             .next_step
             .starts_with("Mark the draft ready for review")
+    );
+    assert_eq!(
+        api(&items[1]),
+        Some((
+            "POST",
+            "/api/v1/repos/acme/widget-shop/pulls/4/ready",
+            Value::Null
+        ))
     );
 
     // The threshold is what decides it, so raising it empties the list.
@@ -621,6 +721,14 @@ fn a_failed_merge_queue_entry_whose_pull_request_is_still_open() {
         "the queue's own reason leads: {}",
         items[0].reason
     );
+    assert_eq!(
+        api(&items[0]),
+        Some((
+            "POST",
+            "/api/v1/repos/jeryu/jeryu-deploy/pulls/40/queue",
+            Value::Null
+        ))
+    );
 }
 
 /// A refusal is not a dropped entry: it never built a queue commit, so
@@ -658,6 +766,11 @@ fn a_refused_enqueue_names_the_step_that_makes_the_pull_request_replayable() {
         items[0].reason
     );
     assert!(items[0].reason.contains("never joined the queue"));
+    assert_eq!(
+        api(&items[0]),
+        None,
+        "queueing it again is refused again, so there is nothing to replay"
+    );
 
     // Merge commits are the same question: the base wants linear history.
     let items = queue_items(&[refused("queue_merge_commits")], &open, now());
@@ -668,6 +781,19 @@ fn a_refused_enqueue_names_the_step_that_makes_the_pull_request_replayable() {
     let items = queue_items(&[refused("queue_mismatch")], &open, now());
     assert_eq!(kinds(&items), ["queue_refused"]);
     assert_eq!(items[0].action.label, "Push a new head");
+    assert_eq!(api(&items[0]), None);
+
+    // A refusal the queue has no code of its own for: reading what it
+    // reported and queueing again is the step, and the queue route does it.
+    let items = queue_items(&[refused("queue_internal")], &open, now());
+    assert_eq!(
+        api(&items[0]),
+        Some((
+            "POST",
+            "/api/v1/repos/acme/widgets/pulls/7/queue",
+            Value::Null
+        ))
+    );
 }
 
 fn queued(number: u64, minutes_old: i64) -> QueueEntry {
@@ -1178,7 +1304,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["schema_version"], "jeryu.attention/v1");
+    assert_eq!(body["schema_version"], "jeryu.attention/v1.1");
     let items = body["items"].as_array().unwrap();
     let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
     // Critical first (open todos and no worker has ever reported), then the
@@ -1219,7 +1345,16 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
             .unwrap()
             .keys()
             .collect::<Vec<_>>(),
-        ["command", "label"]
+        ["api", "command", "label"]
+    );
+    // The step as a call, beside the prose that spells it out.
+    assert_eq!(
+        of_kind("shift_without_pr")["action"]["api"],
+        json!({
+            "method": "POST",
+            "path": "/api/v1/shift/shifts/jeryu/pr",
+            "body": {"branch": "nightshift/2026-09-18"},
+        })
     );
     assert_eq!(items[1]["shift"], "nightshift/2026-09-18");
 
@@ -1254,6 +1389,58 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// An agent that replays an item's `action.api` as it stands fixes what the
+/// item is about: the next collect no longer reports it.
+#[tokio::test]
+async fn replaying_an_items_api_call_clears_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = shift_forge(dir.path());
+    let inbox = || async {
+        let response = router
+            .clone()
+            .oneshot(request(HttpMethod::GET, "/api/v1/attention", &admin, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        body_json(response).await
+    };
+    let item_of = |body: &Value, kind: &str| {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == kind)
+            .cloned()
+    };
+
+    let before = inbox().await;
+    let call = item_of(&before, "shift_without_pr").expect("the shift branch has no PR")["action"]
+        ["api"]
+        .clone();
+    assert_eq!(call["method"], "POST");
+
+    let replayed = router
+        .clone()
+        .oneshot(request(
+            HttpMethod::POST,
+            call["path"].as_str().unwrap(),
+            &admin,
+            Some(call["body"].clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(replayed.status(), StatusCode::OK);
+
+    // The inbox keeps its answer for a few seconds; opening the pull request
+    // invalidates it, so the next read is of the state the call left behind.
+    let after = inbox().await;
+    assert_eq!(
+        item_of(&after, "shift_without_pr"),
+        None,
+        "the branch has a pull request now: {after}"
+    );
+}
+
 /// `since` arrives in several RFC 3339 spellings. Ordering the text put
 /// `…:38.100Z` before `…:37Z`-style neighbours by punctuation; the order is by
 /// instant, undated first, id as the tie-break.
@@ -1268,6 +1455,7 @@ fn items_order_by_instant_not_by_timestamp_spelling() {
             reason: String::new(),
             href: "/work/shift".to_string(),
             label: "Open",
+            api: None,
             command: None,
         }
         .build();
@@ -1485,6 +1673,21 @@ fn a_blocked_todos_kind_picks_its_label() {
     assert_eq!(label(1), "Close and refile smaller, or raise the cap");
     assert_eq!(label(2), "Add the repo to the family config, then release");
     assert_eq!(label(3), "Release the todo");
+    // Only the steps a todo transition performs whole carry a call: marking
+    // an owner's task done, releasing a blocked one.
+    let call = |action: &str, id: &str| {
+        Some((
+            "POST",
+            format!("/api/v1/shift/todos/acme/{id}/action"),
+            json!({ "action": action }),
+        ))
+    };
+    let called =
+        |at: usize| api(&items[at]).map(|(method, path, body)| (method, path.to_string(), body));
+    assert_eq!(called(0), call("done", "t-owner"));
+    assert_eq!(called(3), call("release", "t-agent"));
+    assert_eq!(called(1), None, "releasing it stops it again at once");
+    assert_eq!(called(2), None, "the family config comes first");
     // An over-budget todo never offers a release, in the label or the step.
     assert!(!items[1].action.label.contains("Release"), "{:?}", items[1]);
     assert!(!items[1].next_step.contains("Release"), "{:?}", items[1]);
@@ -1551,8 +1754,21 @@ fn a_parked_todo_waits_quietly_until_its_date() {
         "{}",
         items[0].reason
     );
+    assert_eq!(
+        api(&items[0]),
+        None,
+        "a park that has not run out is nobody's step yet"
+    );
     assert_eq!(items[1].severity, Severity::Action);
     assert_eq!(items[1].action.label, "Release the todo or park it again");
+    assert_eq!(
+        api(&items[1]),
+        Some((
+            "POST",
+            "/api/v1/shift/todos/acme/t-due/action",
+            json!({"action": "release"})
+        ))
+    );
     assert!(
         items[1].reason.contains("ran out at"),
         "{}",

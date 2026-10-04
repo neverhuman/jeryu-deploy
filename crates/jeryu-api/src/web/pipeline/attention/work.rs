@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::{
-    Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, UNTRIAGED_MINUTES, WORKERS_HREF,
-    parse_time, todo_href, work_href,
+    ApiCall, Draft, Hosts, Item, STUCK_CLAIM_MINUTES, Severity, Shell, UNTRIAGED_MINUTES,
+    WORKERS_HREF, open_shift_pr_call, parse_time, todo_action_call, todo_href, work_href,
 };
 use crate::web::shift::{BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow};
 
@@ -59,6 +59,34 @@ fn blocked_step(family: &str, kind: BlockKind) -> (String, &'static str) {
     }
 }
 
+/// The todo transition that performs a blocked todo's step, where one does it
+/// whole. Releasing an over-budget todo only stops it again, and an unknown
+/// repo has to be added to the family config first: both steps start outside
+/// this API, so neither names a call.
+fn blocked_action(kind: BlockKind) -> Option<&'static str> {
+    match kind {
+        BlockKind::OwnerTask => Some("done"),
+        BlockKind::Handoff | BlockKind::AgentBlocked => Some("release"),
+        BlockKind::OverBudget | BlockKind::UnknownRepo => None,
+    }
+}
+
+/// The call that performs one todo item's step, for the kinds whose step is a
+/// transition of the todo. A step that waits on a person's judgement — what
+/// the title should be, whether a worker is really gone — names none: the
+/// item is for a reader, and `action.api` is for replaying a decision already
+/// made.
+fn todo_api(family: &str, todo: &ShiftTodo, item: &Item) -> Option<ApiCall> {
+    let action = match item.kind {
+        "todo_blocked" => blocked_action(todo.block_kind.unwrap_or(BlockKind::AgentBlocked))?,
+        // A park that has not run out is nobody's step yet.
+        "todo_parked" if item.severity == Severity::Action => "release",
+        "todo_handoff" => "release",
+        _ => return None,
+    };
+    Some(todo_action_call(family, &todo.id, action))
+}
+
 /// Queue todos that wait on a person: blocked, handed off, untriaged, a dead
 /// claim, or open behind a blocker that itself cannot move.
 /// `has_worker` says whether the family has a healthy worker slot: a worker
@@ -81,6 +109,7 @@ pub(crate) fn todo_items(
             reason,
             href: todo_href(family, &todo.id),
             label,
+            api: None,
             command: None,
         };
         let drafted = match todo.status {
@@ -240,6 +269,7 @@ pub(crate) fn todo_items(
         };
         if let Some(draft) = drafted {
             let mut item = draft.build();
+            item.action.api = todo_api(family, todo, &item);
             item.since = if item.kind == "todo_stuck_claim" {
                 Some(todo.lease_until.clone())
             } else {
@@ -327,6 +357,12 @@ pub(crate) fn shift_items(family: &str, shifts: &[ShiftBranch]) -> Vec<Item> {
                     Some(_) => "Add the missing todo(s) to the open review PR",
                     None => "Open the shift's review PR",
                 },
+                // Opening the branch's review pull request is one call; moving
+                // todos into somebody else's open pull request is not.
+                api: match repo.review_pr {
+                    Some(_) => None,
+                    None => Some(open_shift_pr_call(family, &shift.branch)),
+                },
                 command: None,
             }
             .build();
@@ -379,6 +415,7 @@ pub(crate) fn worker_items(
             ),
             href: WORKERS_HREF.to_string(),
             label: "Check the todoq supervisor on the worker host",
+            api: None,
             command: Some(Shell {
                 line: format!("systemctl --user status todoq-supervisor@{family}"),
                 run_in: Hosts::anywhere(host),
@@ -412,6 +449,9 @@ fn stranded_item(family: &str, shift: &ShiftBranch, repo: &ShiftRepo) -> Item {
         ),
         href: work_href(family),
         label: "Open a new review PR for the branch",
+        // The branch's merged pull request is behind it: asking again opens a
+        // fresh one for what is still unmerged.
+        api: Some(open_shift_pr_call(family, &shift.branch)),
         command: None,
     }
     .build();

@@ -70,6 +70,7 @@ pub(crate) fn mirror_items(failures: &[MirrorFailure], hosts: &Hosts) -> Vec<Ite
         ),
         href: "/repos".to_string(),
         label: "Set up the mirror's SSH rewrite and deploy key on the forge host",
+        api: None,
         command: Some(Shell {
             line: "git config --global --get-regexp '^url\\..*insteadof'".to_string(),
             // `--global` reads the home of whoever runs it, and the pushes are
@@ -147,6 +148,7 @@ pub(crate) fn divergence_items(drifts: &[MirrorDrift]) -> Vec<Item> {
                 reason,
                 href: repo_href(&drift.repo),
                 label: "Decide what happens to the GitHub-only work",
+                api: None,
                 command: None,
             }
             .build();

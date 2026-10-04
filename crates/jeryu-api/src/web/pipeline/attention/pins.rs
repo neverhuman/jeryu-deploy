@@ -120,6 +120,7 @@ fn pin_item(
             ),
             href: releases_href(&consumer.repo),
             label: "See what is waiting for a tag",
+            api: None,
             command: None,
         },
         (_, Some(bump)) => Draft {
@@ -137,6 +138,7 @@ fn pin_item(
             ),
             href: bump.url.clone(),
             label: "Follow the pin bump pull request",
+            api: None,
             command: None,
         },
         (_, None) if let (Some(event), Some(head)) = (gave_up, pin.latest_sha.as_deref()) => {
@@ -155,6 +157,7 @@ fn pin_item(
                 ),
                 href: releases_href(&consumer.repo),
                 label: "Clear the give-up and retry auto-pin",
+                api: None,
                 command: Some(Shell {
                     line: format!(
                         "rm -f {AUTO_PIN_FAILURES}/{head} && systemctl --user start {AUTO_PIN_UNIT}"
@@ -177,6 +180,7 @@ fn pin_item(
             ),
             href: releases_href(&consumer.repo),
             label: "See what is waiting",
+            api: None,
             command: None,
         },
         (_, None) => Draft {
@@ -196,6 +200,7 @@ fn pin_item(
             ),
             href: releases_href(&consumer.repo),
             label: "Run auto-pin now",
+            api: None,
             command: Some(Shell {
                 line: format!("systemctl --user start {AUTO_PIN_UNIT}"),
                 run_in: Hosts::anywhere(&hosts.release),

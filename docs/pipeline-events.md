@@ -191,7 +191,7 @@ for 10 seconds), never from old events, so an item disappears when its cause
 is fixed.
 
 ```json
-{"schema_version": "jeryu.attention/v1", "generated_at": "...",
+{"schema_version": "jeryu.attention/v1.1", "generated_at": "...",
  "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1}}
 ```
 
@@ -209,7 +209,7 @@ of `counts`, until the date it was acknowledged until.
 | `since` | RFC 3339 or null |
 | `family`, `repo`, `pr`, `todo_id`, `sha`, `shift` | nullable join keys. `repo` is `owner/name`, except on `shift_without_pr`, which uses the family repo name as the Shift API does |
 | `href` | the in-app page where the step happens |
-| `action` | `{"label", "command", "run_in"}`. `command` is a copyable shell line when the step happens off-site, else null. `run_in` says where that line is run, as a short phrase naming the machine and the directory (`"node-a, any directory"`, `"node-a, in a jeryu/jeryu-deploy checkout"`); it is a string on every item whose `command` is set and the key is absent on every other item |
+| `action` | `{"label", "command", "run_in", "api"}`. `command` is a copyable shell line when the step happens off-site, else null. `run_in` says where that line is run, as a short phrase naming the machine and the directory (`"node-a, any directory"`, `"node-a, in a jeryu/jeryu-deploy checkout"`); it is a string on every item whose `command` is set and the key is absent on every other item. `api` is the call that performs the step, and the key is absent when no route of this API does it (see [Replaying a step](#replaying-a-step)) |
 | `next_step` | the one next step as a sentence: `<label>: on <run_in>, run \`<command>\`` or `<label>: open <href>` |
 
 Every item names exactly one next step: run `action.command` on the machine and
@@ -221,6 +221,42 @@ and do what `action.label` says. A command item's action:
  "command": "systemctl --user start jeryu-auto-pin.service",
  "run_in": "node-a, any directory"}
 ```
+
+### Replaying a step
+
+`action.api` is the step as one call on this API: `{"method", "path", "body"}`,
+with `body` absent when the route takes none. The path is absolute and ready
+to send as it stands, so a caller performs the step without parsing
+`next_step` or guessing which endpoint it meant; `href` stays where to go to
+understand the item. Performing the call clears the item on the next collect,
+which is the test the rules are held to.
+
+```json
+{"label": "Open the shift's review PR",
+ "command": null,
+ "api": {"method": "POST", "path": "/api/v1/shift/shifts/acme/pr",
+         "body": {"branch": "nightshift/2026-09-19"}}}
+```
+
+`api` is set only where one route performs the whole step. A step that starts
+somewhere else carries none, and the item still says in prose what to do:
+pushing a fix, adding a repo to the family config, cherry-picking onto a base
+that wants linear history, deciding a title.
+
+| Kind with an `api` | Call |
+|---|---|
+| `shift_without_pr` (no replacement PR open) | `POST /api/v1/shift/shifts/<family>/pr` with `{"branch": "<shift branch>"}` |
+| `shift_stranded_work` | the same: the merged pull request is behind it, so asking again opens a fresh one |
+| `todo_blocked` (`owner_task`) | `POST /api/v1/shift/todos/<family>/<id>/action` with `{"action": "done"}` |
+| `todo_blocked` (`handoff`, `agent_blocked`), `todo_handoff`, `todo_parked` (`action`) | the same route with `{"action": "release"}` |
+| `pr_draft_waiting` | `POST /api/v1/repos/<owner>/<name>/pulls/<n>/ready` |
+| `pr_ready_to_merge` | `POST /api/v1/repos/<owner>/<name>/pulls/<n>/queue` |
+| `queue_failed` | the same: the entry is retried by queueing it again once the reason is fixed |
+| `queue_refused` (a code with no step of its own) | the same |
+
+The schema version says `v1.1` because `action.api` is additive: every field
+of `v1` is unchanged, so a client written against `v1` reads a `v1.1` answer
+as it always did.
 
 The machine in `run_in` is one of three roles, each named by an environment
 variable of the server (see [Operations](#operations)): the release host
@@ -251,7 +287,7 @@ pushes leave from there).
 | `pr_changes_requested`, `pr_checks_failing`, `pr_awaiting_approval`, `pr_ready_to_merge` | action | an open, non-draft pull request; the first that applies, in this order. `pr_checks_failing` is `action` only when a context the base branch **requires** failed. `pr_awaiting_approval` needs green required checks; `pr_ready_to_merge` needs the PR unchanged for 10 minutes **and** no merge-queue entry building for it, because the queue is the thing that merges it. When none of those applies and only checks the branch does not require failed, `pr_checks_failing` is a `watch` item whose reason names the check and says it does not block the merge |
 | `pr_draft_waiting` | action | an open draft with no push for `JERYU_DRAFT_IDLE_DAYS` days (default 3), whatever its base branch. A draft does not merge, is not reviewed by an automation and is not queued, so nothing else in the inbox would mention it; the step is to mark it ready for review or close it |
 | `queue_failed` | action | a merge-queue entry failed or was dropped in the last 24 hours and its PR is still open |
-| `queue_refused` | action | an enqueue the queue refused in the last 24 hours (stored as a dequeued entry carrying the forge code) while its PR is still open. The entry never built a commit, so queueing or merging it again is refused again: the step is per code — a replacement PR from the base with the commits cherry-picked for `queue_conflict` and `queue_merge_commits`, a new head for `queue_mismatch` |
+| `queue_refused` | action | an enqueue the queue refused in the last 24 hours (stored as a dequeued entry carrying the forge code) while its PR is still open. The entry never built a commit, so queueing or merging it again is refused again: the step is per code — a replacement PR from the base with the commits cherry-picked for `queue_conflict` and `queue_merge_commits`, a new head for `queue_mismatch`, and for a code with no step of its own, reading what the queue reported and queueing again |
 | `queue_stuck` | watch | an entry has been `building` for 30 minutes or more while its PR is open: a queue commit normally gates in a few minutes, so either no runner picked it up or its gate never reported |
 | `reviewer_stuck` | action | the automated reviewer's last verdict on a still-open PR is `hold`, `too_large`, `publication_rejected` or `failed` |
 | `gate_runner_down` | critical | no gate runner slot is online while a PR is open or the merge queue is building |
@@ -276,6 +312,10 @@ help.
 | `unknown_repo` | `unknown repo`, `is not in family`, `not in the family config` | `Add the repo to the family config, then release` |
 | `handoff` | status `handoff`, or `handoff`/`by hand` in the words | `Release the todo` |
 | `agent_blocked` | anything else | `Release the todo` |
+
+The two labels that end in a release, and `owner_task`'s, carry the call that
+performs them in `action.api`; `over_budget` and `unknown_repo` carry none,
+because both steps start outside this API.
 
 An over-budget todo is never offered a release: spend is summed over every
 attempt, so the next attempt stops where the last one did. An owner's task is
@@ -568,9 +608,10 @@ to follow one thing. Or subscribe to the `pipeline` WebSocket scope with
 (see [WebSocket](#websocket)).
 
 **Find out what needs a person.** `GET /api/v1/attention`, then for each item
-read `next_step`. When `action.command` is set the step is that shell command,
-to be run by the operator on the host the reason names; otherwise the step
-happens on the page at `href`. Items are current state: fix the cause and the
+read `next_step`. When `action.api` is set the step is that call and can be
+replayed as it stands; when `action.command` is set the step is that shell
+command, to be run by the operator on the host the reason names; otherwise
+the step happens on the page at `href`. Items are current state: fix the cause and the
 item is gone on the next call (within 10 seconds). Do not treat `needs_human`
 on an old event as an open item.
 

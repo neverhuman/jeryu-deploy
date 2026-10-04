@@ -879,6 +879,12 @@ pub(crate) async fn open_shift_pr(
             "list shift branches with GET /api/v1/shift/shifts",
         ),
         Ok(prs) => {
+            // The inbox keeps its answer for a few seconds, and an opened
+            // pull request is what clears the branch's item: a reader that
+            // acts on the item must see it gone on the next read.
+            if prs.iter().any(|pr| pr.created) {
+                state.attention.invalidate();
+            }
             for pr in prs.iter().filter(|pr| pr.created) {
                 pipeline::emit(
                     &state,

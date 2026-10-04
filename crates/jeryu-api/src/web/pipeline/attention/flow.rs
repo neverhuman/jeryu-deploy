@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 use super::{
     Draft, Hosts, Item, QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES,
-    Severity, Shell, parse_time, pull_href,
+    Severity, Shell, enqueue_call, parse_time, pull_href, ready_for_review_call,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -69,6 +69,9 @@ pub(crate) fn draft_items(drafts: &[DraftFacts], idle_days: i64, now: DateTime<U
             ),
             href: pull_href(&draft.repo, draft.number),
             label: "Mark the draft ready for review, or close it",
+            // Marking it ready is the step; closing it is the other decision,
+            // which the pull request page takes.
+            api: Some(ready_for_review_call(&draft.repo, draft.number)),
             command: None,
         }
         .build();
@@ -121,6 +124,7 @@ pub(crate) fn pull_items(
                     ),
                     href: pull_href(&pull.repo, pull.number),
                     label: "Check the gate runners, then dequeue and queue the pull request again",
+                    api: None,
                     command: None,
                 }
                 .build();
@@ -190,7 +194,7 @@ pub(crate) fn pull_items(
                         )
                     }
                 ),
-                "Merge the pull request",
+                "Queue the pull request to merge it",
             ))
         } else if !posture.failing_optional.is_empty() {
             // Red, but not what the base branch requires: the pull request can
@@ -212,6 +216,9 @@ pub(crate) fn pull_items(
         };
         if let Some((kind, title, reason, step)) = verdict {
             let blocks = kind != "pr_checks_failing" || !posture.failing.is_empty();
+            // A pull request that has passed its gate lands by joining the
+            // merge queue; every other posture waits on a review or a push.
+            let api = (kind == "pr_ready_to_merge").then(|| enqueue_call(&pull.repo, pull.number));
             let mut item = Draft {
                 id: format!("{}:{}:{}", kind.replace('_', "-"), pull.repo, pull.number),
                 kind,
@@ -224,6 +231,7 @@ pub(crate) fn pull_items(
                 reason,
                 href: pull_href(&pull.repo, pull.number),
                 label: step,
+                api,
                 command: None,
             }
             .build();
@@ -269,7 +277,9 @@ pub(crate) fn queue_items(
         );
         // A refused enqueue never built a queue commit, so queueing it again
         // is refused again: the step is whatever makes the PR replayable.
-        let (kind, title, body, step) = match entry.refusal_code.as_deref() {
+        // A refused enqueue is replayable only where queueing again is the
+        // step: a conflict or a stale head has to be fixed on the branch first.
+        let (kind, title, body, step, api) = match entry.refusal_code.as_deref() {
             Some(code) => (
                 "queue_refused",
                 format!(
@@ -292,6 +302,10 @@ pub(crate) fn queue_items(
                     _ => "Read what the queue reported, then queue the pull request again"
                         .to_string(),
                 },
+                match code {
+                    "queue_conflict" | "queue_merge_commits" | "queue_mismatch" => None,
+                    _ => Some(enqueue_call(&entry.repo, entry.number)),
+                },
             ),
             None => (
                 "queue_failed",
@@ -306,6 +320,7 @@ pub(crate) fn queue_items(
                     entry.base
                 ),
                 "Fix what the reason names, then queue the pull request again".to_string(),
+                Some(enqueue_call(&entry.repo, entry.number)),
             ),
         };
         let mut item = Draft {
@@ -316,6 +331,7 @@ pub(crate) fn queue_items(
             reason: body,
             href: pull_href(&entry.repo, entry.number),
             label: &step,
+            api,
             command: None,
         }
         .build();
@@ -366,6 +382,7 @@ pub(crate) fn runner_items(
             ),
             href: pull_href(&last.repo, pr),
             label: "Review the pull request by hand",
+            api: None,
             command: None,
         }
         .build();
@@ -403,6 +420,7 @@ pub(crate) fn runner_items(
             ),
             href: "/runners".to_string(),
             label: "Check the gate runner timers on the gate host",
+            api: None,
             command: Some(Shell {
                 line: "systemctl --user list-timers 'pr-gate-runner@*'".to_string(),
                 run_in: Hosts::anywhere(&hosts.gate),
@@ -532,6 +550,7 @@ pub(crate) fn release_items(
                 ),
                 href: "/releases".to_string(),
                 label: "Deploy the staged release",
+                api: None,
                 command,
             }
             .build();
@@ -567,6 +586,7 @@ pub(crate) fn release_items(
             ),
             href: "/activity?kind=release.".to_string(),
             label: "Read the staging log and fix the build",
+            api: None,
             command: None,
         }
         .build();
@@ -604,6 +624,7 @@ pub(crate) fn release_items(
                 ),
                 href: "/releases".to_string(),
                 label: "Read the failed attempt; production is unchanged",
+                api: None,
                 command: None,
             }
         } else {
@@ -620,6 +641,7 @@ pub(crate) fn release_items(
                 ),
                 href: "/releases".to_string(),
                 label: "Check what production runs, then redeploy or roll back",
+                api: None,
                 command: None,
             }
         };
