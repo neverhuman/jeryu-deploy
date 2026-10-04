@@ -357,3 +357,24 @@ fn a_query_value_is_percent_encoded_into_the_page_address() {
     assert_eq!(urlencoding("jeryu-web"), "jeryu-web");
     assert_eq!(urlencoding("a b/c"), "a%20b%2Fc");
 }
+
+/// A todo hit links to the todo's own page, not to the queue it sits in.
+#[tokio::test]
+async fn a_todo_hit_links_to_its_own_page() {
+    let f = Fixture::new();
+    // The family queue lives in the same git storage the fixture serves.
+    crate::web::shift::tests::fixture(&f._root.path().join("git"));
+    let (status, answer) = f.get("/api/v1/search?q=Ship%20it", Some("admin")).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let todo = answer["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hit| hit["kind"] == "todo")
+        .unwrap_or_else(|| panic!("no todo hit: {answer}"));
+    assert_eq!(todo["title"], "Ship it");
+    assert_eq!(
+        todo["path"], "/work/20260919-010000-abcdef?family=jeryu",
+        "{answer}"
+    );
+}

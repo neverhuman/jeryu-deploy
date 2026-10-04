@@ -582,10 +582,11 @@ fn todo_hits(state: &WebState, needle: &str) -> (Vec<Ranked>, Vec<String>) {
                     title: todo.title.clone(),
                     context: format!("{} · {}", todo.family, todo.status.as_str()),
                     snippet: found.snippet,
+                    // The todo's own page, not the queue it sits in.
                     path: format!(
-                        "/work?family={}&todo={}",
-                        urlencoding(&todo.family),
-                        urlencoding(&todo.id)
+                        "/work/{}?family={}",
+                        urlencoding(&todo.id),
+                        urlencoding(&todo.family)
                     ),
                     updated_at: Some(todo.filed_at),
                     repo: None,
