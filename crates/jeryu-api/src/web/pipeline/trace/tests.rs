@@ -312,6 +312,9 @@ fn each_attention_kind_belongs_to_one_stage_or_to_the_forge() {
     // work: the inbox keeps it and the trace stays quiet.
     assert_eq!(stage_of("mirror_diverged"), None);
     assert_eq!(stage_of("mirror_failing"), None);
+    // A release board is a family's picture of what it runs, not a stage of
+    // one todo's journey.
+    assert_eq!(stage_of("release_board_problem"), None);
 }
 
 // The route, over hosted bare repositories: an acme todo in acme/widgets-web,

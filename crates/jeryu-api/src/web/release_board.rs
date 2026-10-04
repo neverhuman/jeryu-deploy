@@ -368,6 +368,15 @@ impl ReleaseBoardStore {
             .map(|stored| stored.board.clone())
     }
 
+    /// Every stored board, by family. The attention inbox reads these to see
+    /// what the page is showing (`pipeline::attention::board`).
+    pub(crate) fn all(&self) -> Vec<ReleaseBoard> {
+        let Ok(boards) = self.boards.lock() else {
+            return Vec::new();
+        };
+        boards.values().map(|stored| stored.board.clone()).collect()
+    }
+
     pub(crate) fn list(&self) -> Vec<BoardSummary> {
         let Ok(boards) = self.boards.lock() else {
             return Vec::new();

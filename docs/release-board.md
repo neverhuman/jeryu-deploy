@@ -38,6 +38,10 @@ Keep the env file and the token mode 600.
   snapshot, marked "reported after this snapshot".
 - A successful PUT publishes `release_board.updated` on the `pipeline` websocket scope, so open
   pages refetch within seconds. It is not written to the event log.
+- A red lane, a source the collector could not read, and a board that stopped arriving each reach
+  **Needs you** as `release_board_problem` (`docs/pipeline-events.md`); a red lane's item opens the
+  lane itself (`/releases/family/<family>#lane-<id>`). Nothing else watched the board, so one left
+  red over a weekend told nobody.
 - Snapshots are kept in memory, like runner heartbeats. After a forge restart the board is empty
   until the next collector run.
 

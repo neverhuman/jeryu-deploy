@@ -36,6 +36,7 @@ use super::super::merge_queue::QueueState;
 use super::super::shift::FamilySnapshot;
 
 pub(crate) mod acks;
+mod board;
 mod flow;
 mod hosts;
 mod mirror;
@@ -45,6 +46,7 @@ pub(super) mod web_routes;
 mod work;
 
 pub(crate) use acks::AckStore;
+pub(crate) use board::{BoardFacts, BoardLane, board_items};
 pub(crate) use flow::{
     DraftFacts, LatestDeployment, ProductionFacts, PullFacts, draft_items, pull_items, queue_items,
     release_items, runner_items,
@@ -128,6 +130,7 @@ pub(crate) const KINDS: &[&str] = &[
     "queue_failed",
     "queue_refused",
     "queue_stuck",
+    "release_board_problem",
     "release_stage_failed",
     "release_staged",
     "reviewer_stuck",
@@ -513,6 +516,40 @@ fn production_facts(state: &WebState) -> Vec<ProductionFacts> {
     all
 }
 
+/// Every release board as the board rules need it: which lanes the page draws
+/// red, and which sources the collector could not read.
+fn board_facts(state: &WebState) -> Vec<BoardFacts> {
+    use super::super::release_board::StageState;
+    state
+        .release_boards
+        .all()
+        .into_iter()
+        .map(|board| BoardFacts {
+            family: board.family,
+            observed_at: board.observed_at,
+            lanes: board
+                .lanes
+                .into_iter()
+                .map(|lane| BoardLane {
+                    id: lane.id,
+                    name: lane.name,
+                    red_stages: lane
+                        .stages
+                        .into_iter()
+                        .filter(|stage| stage.state == StageState::Bad)
+                        .map(|stage| format!("{}: {}", stage.name, stage.status))
+                        .collect(),
+                })
+                .collect(),
+            problems: board
+                .problems
+                .into_iter()
+                .map(|problem| format!("{}: {}", problem.source, problem.message))
+                .collect(),
+        })
+        .collect()
+}
+
 /// Everything waiting on a person right now, most urgent first.
 pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse {
     let mut items = Vec::new();
@@ -608,6 +645,9 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         &production_facts(state),
         &hosts,
     ));
+    // What `/releases` is showing: a red lane, a source its collector could
+    // not read, a board that stopped arriving.
+    items.extend(board_items(&board_facts(state), now));
     // An acknowledged item is one somebody deliberately deferred: leave it
     // out, and out of the counts, until its date passes (see `acks.rs`).
     let hidden = state

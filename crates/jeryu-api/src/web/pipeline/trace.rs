@@ -296,8 +296,9 @@ fn oldest<'a>(events: &'a [Event], kinds: &[&str]) -> Option<&'a Event> {
 }
 
 /// The attention kinds each stage owns. An item whose kind is in no stage
-/// (a diverged mirror, a failing mirror push) is about the forge rather than
-/// about one piece of work, and the trace leaves it to the inbox.
+/// (a diverged mirror, a failing mirror push, a red release board) is about
+/// the forge or a whole family rather than about one piece of work, and the
+/// trace leaves it to the inbox.
 fn stage_of(kind: &str) -> Option<Stage> {
     Some(match kind {
         "todo_untriaged" | "todo_waiting_on_blocker" => Stage::Filed,

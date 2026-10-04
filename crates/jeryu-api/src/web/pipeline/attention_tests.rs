@@ -9,11 +9,11 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::attention::{
-    ATTENTION_SCHEMA, ApiCall, AttentionResponse, Counts, Draft, DraftFacts, Filter, Hosts, Item,
-    KINDS, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts, PullFacts, Severity,
-    budget_items, divergence_items, draft_items, mirror_items, only_matching, order, pin_items,
-    pull_items, queue_items, release_items, runner_items, shift_items, todo_items, web_routes,
-    worker_items,
+    ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
+    Filter, Hosts, Item, KINDS, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts,
+    PullFacts, Severity, board_items, budget_items, divergence_items, draft_items, mirror_items,
+    only_matching, order, pin_items, pull_items, queue_items, release_items, runner_items,
+    shift_items, todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -1748,6 +1748,143 @@ fn items_order_by_instant_not_by_timestamp_spelling() {
     );
 }
 
+/// A lane the board draws red: one stage in state `bad`, as the collector
+/// reported it.
+fn red_lane() -> BoardLane {
+    BoardLane {
+        id: "cloud-app".to_string(),
+        name: "Cloud app".to_string(),
+        red_stages: vec!["prod: 4.2.0 is three releases behind stage".to_string()],
+    }
+}
+
+fn board(observed_at: &str, lanes: Vec<BoardLane>, problems: Vec<&str>) -> BoardFacts {
+    BoardFacts {
+        family: "acme".to_string(),
+        observed_at: observed_at.to_string(),
+        lanes,
+        problems: problems.into_iter().map(str::to_string).collect(),
+    }
+}
+
+/// A red lane is one item per lane, pointing at the lane on the board; an
+/// unread source is one item for the family; a board nobody refreshed is a
+/// `watch` dated by the snapshot it is stuck on. A fresh board with nothing
+/// red asks for nobody.
+#[test]
+fn a_red_lane_an_unread_source_and_a_board_that_stopped_arriving() {
+    let fresh = "2026-09-19T12:55:00Z";
+    let quiet = board(fresh, vec![], vec![]);
+    assert_eq!(board_items(&[quiet], now()), Vec::new());
+
+    let green = BoardLane {
+        id: "website".to_string(),
+        name: "Website".to_string(),
+        red_stages: Vec::new(),
+    };
+    let one_red = board(fresh, vec![red_lane(), green], vec![]);
+    let items = board_items(&[one_red], now());
+    assert_eq!(kinds(&items), ["release_board_problem"]);
+    assert_eq!(items[0].href, "/releases/family/acme#lane-cloud-app");
+    assert_eq!(items[0].severity, Severity::Action);
+    assert_eq!(items[0].family.as_deref(), Some("acme"));
+    assert!(items[0].title.contains("Cloud app"), "{:?}", items[0]);
+    assert!(
+        items[0].reason.contains("1 stage of the lane is red")
+            && items[0].reason.contains("three releases behind"),
+        "{:?}",
+        items[0]
+    );
+    assert_eq!(items[0].since, None);
+
+    // Two hours of silence from the collector, with a source it could not
+    // read on its last run.
+    let stale = board(
+        "2026-09-19T11:00:00Z",
+        vec![red_lane()],
+        vec!["fleet-nodes: ssh to node-2.example timed out"],
+    );
+    let items = board_items(&[stale], now());
+    assert_eq!(
+        kinds(&items),
+        [
+            "release_board_problem",
+            "release_board_problem",
+            "release_board_problem"
+        ]
+    );
+    let severities: Vec<Severity> = items.iter().map(|item| item.severity).collect();
+    assert_eq!(
+        severities,
+        [Severity::Action, Severity::Action, Severity::Watch]
+    );
+    assert!(
+        items[1].reason.contains("ssh to node-2.example timed out"),
+        "{:?}",
+        items[1]
+    );
+    assert_eq!(items[2].href, "/releases/family/acme");
+    assert_eq!(items[2].since.as_deref(), Some("2026-09-19T11:00:00Z"));
+    // Every item of a board is its own row, and acknowledging one leaves the
+    // others: the ids differ.
+    let ids: BTreeSet<&str> = items.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(ids.len(), 3);
+
+    // A snapshot with no readable date cannot be called fresh.
+    let undated = board("", vec![], vec![]);
+    let items = board_items(&[undated], now());
+    assert_eq!(kinds(&items), ["release_board_problem"]);
+    assert_eq!(items[0].severity, Severity::Watch);
+    assert_eq!(items[0].since, None);
+}
+
+/// The inbox reads the stored boards, so a board PUT by a collector reaches
+/// Needs you with the lane's own link.
+#[test]
+fn a_stored_board_with_a_red_lane_reaches_the_inbox() {
+    let state = WebState::new(ForgeCore::new());
+    let snapshot = json!({
+        "schema": "jeryu.release_board.v1",
+        "family": "acme",
+        "observed_at": "2026-09-19T12:55:00Z",
+        "summary": "One lane red.",
+        "collector": {
+            "host": "collector-1", "version": "1", "trigger": "timer", "duration_ms": 10
+        },
+        "lanes": [{
+            "id": "cloud-app",
+            "name": "Cloud app",
+            "source": "acme/cloud-app",
+            "owner_family": "acme",
+            "stages": [{
+                "id": "prod",
+                "name": "prod",
+                "version": "4.2.0",
+                "state": "bad",
+                "status": "4.2.0 is three releases behind stage",
+                "known_by": "reported"
+            }]
+        }]
+    });
+    state
+        .release_boards
+        .put(
+            "acme",
+            serde_json::from_value(snapshot).expect("a v1 board"),
+            now(),
+        )
+        .expect("the board is accepted");
+
+    let board: Vec<Item> = super::attention::collect(&state, now())
+        .items
+        .into_iter()
+        .filter(|item| item.kind == "release_board_problem")
+        .collect();
+    assert_eq!(board.len(), 1, "{board:?}");
+    assert_eq!(board[0].href, "/releases/family/acme#lane-cloud-app");
+    assert_eq!(board[0].family.as_deref(), Some("acme"));
+}
+
 #[test]
 fn a_failing_mirror_is_one_item_however_many_repositories() {
     assert!(mirror_items(&[], &hosts()).is_empty());
@@ -2260,6 +2397,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("queue_failed", "/repos/:provider/:owner/*"),
     ("queue_refused", "/repos/:provider/:owner/*"),
     ("queue_stuck", "/repos/:provider/:owner/*"),
+    ("release_board_problem", "/releases/family/:family"),
     ("release_stage_failed", "/activity"),
     ("release_staged", "/releases"),
     ("reviewer_stuck", "/repos/:provider/:owner/*"),
@@ -2516,6 +2654,15 @@ fn one_of_every_kind() -> Vec<Item> {
             3,
         )],
         &[],
+    ));
+    items.extend(board_items(
+        &[BoardFacts {
+            family: family.to_string(),
+            observed_at: "2026-09-19T11:00:00Z".to_string(),
+            lanes: vec![red_lane()],
+            problems: vec!["fleet-nodes: ssh to node-2.example timed out".to_string()],
+        }],
+        now(),
     ));
     items.extend(release_items(
         slice(&staged),
