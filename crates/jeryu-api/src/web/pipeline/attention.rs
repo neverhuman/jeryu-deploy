@@ -313,6 +313,17 @@ pub(super) fn enqueue_call(repo: &str, number: u64) -> ApiCall {
     }
 }
 
+/// `POST /api/v1/repos/:id/pulls/:number/regate`: gate the current head
+/// again. The gate runner reuses a result it already has for a head, so a
+/// failure that was not the head's own fault needs this to be proved again.
+pub(super) fn regate_call(repo: &str, number: u64) -> ApiCall {
+    ApiCall {
+        method: "POST",
+        path: format!("/api/v1/repos/{repo}/pulls/{number}/regate"),
+        body: None,
+    }
+}
+
 /// `POST /api/v1/repos/:id/pulls/:number/ready`: a draft becomes a pull
 /// request that reviews, gates and the queue act on.
 pub(super) fn ready_for_review_call(repo: &str, number: u64) -> ApiCall {

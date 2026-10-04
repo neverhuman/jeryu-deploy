@@ -24,6 +24,7 @@ mod mcp_backend;
 mod permissions;
 mod pipeline;
 mod pulls;
+mod regate;
 mod release_board;
 mod repo_address;
 mod repo_admin;
@@ -146,6 +147,8 @@ pub(crate) struct WebState {
     pub(crate) merge_queue: Arc<merge_queue::MergeQueue>,
     /// The last merge attempt per PR and its forge answer (`merge_attempts`).
     pub(crate) merge_attempts: merge_attempts::MergeAttemptStore,
+    /// Re-gate requests the gate runner reads each tick (`regate`).
+    pub(crate) regate_requests: regate::RegateStore,
     /// Kept answers to `POST` writes that carried an `Idempotency-Key`.
     pub(crate) idempotency: idempotency::IdempotencyStore,
     /// todoq shift heartbeats (`<data_dir>/shift.sqlite`) and PR author.
@@ -312,6 +315,7 @@ impl WebState {
             release_boards: release_board::ReleaseBoardStore::from_env(),
             merge_queue: Arc::default(),
             merge_attempts: merge_attempts::MergeAttemptStore::default(),
+            regate_requests: regate::RegateStore::default(),
             idempotency: idempotency::IdempotencyStore::default(),
             shift,
             events,
@@ -894,6 +898,11 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/repos/:id/pulls/:number/queue",
             post(merge_queue::enqueue).delete(merge_queue::dequeue),
         ),
+        // Gate this head again although the gate already has a result for it.
+        (
+            "/api/v1/repos/:id/pulls/:number/regate",
+            post(regate::request),
+        ),
         (
             "/api/v1/repos/:id/pulls/:number/merge-attempt",
             get(merge_attempts::show),
@@ -903,6 +912,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         // grants, runners, deployers) and where it is mirrored to.
         ("/api/v1/repos/:id/automation", get(repo_automation::show)),
         ("/api/v1/merge-queue", get(merge_queue::list_all)),
+        ("/api/v1/gate-regate", get(regate::list)),
         (
             "/api/v1/repos/:id/jankurai-scores",
             get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),

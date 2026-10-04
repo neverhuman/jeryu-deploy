@@ -109,3 +109,36 @@ whose `lastRun.conclusion` is `scored`, `tool-failed`, `refused` or `failed`.
 A deployer that writes the forge's own deployment trail
 (`POST /repos/{owner}/{repo}/deployments` and its statuses) needs no heartbeat:
 each environment's newest deployment is listed as a deployer too.
+
+## Re-gating a head
+
+The gate runner reuses a terminal result whose inputs are identical and holds a
+failure until an input changes, so a head that failed for a reason outside its
+own sources had no way back to the gate: the attention inbox said "fix or re-run
+it" while nothing re-ran anything.
+
+`POST /api/v1/repos/:id/pulls/:number/regate` records the ask against the pull
+request's current head (write access to the repository; `409 not_open` for a
+draft, a closed or a merged pull request) and answers `202` with it:
+
+```json
+{
+  "repo": "acme/widgets",
+  "number": 7,
+  "head_sha": "9c1f7b3d5e4a2c8b6d0f9e8a7b6c5d4e3f2a1b09",
+  "requested_at": "2026-10-04T09:00:00Z",
+  "requested_by": "dana"
+}
+```
+
+`GET /api/v1/gate-regate?state=pending` is what the runner reads each tick
+(`ops/pr-gate/bin/pr-gate-runner.sh` in jeryu-ci-runner): one request per pull
+request, kept only while the pull request is open and its head is still the one
+the request names, because a head that moved is gated for being new. The runner
+records the `requested_at` it honoured, so one request is one re-gate and asking
+again records a newer one. `state=all` answers what was asked regardless.
+
+The store is in memory: a request lives for one runner tick, and a forge that
+restarts in between should be asked again rather than replay an older ask. It is
+the attention inbox's `action.api` for a `pr_checks_failing` item whose failing
+check is one the base requires.

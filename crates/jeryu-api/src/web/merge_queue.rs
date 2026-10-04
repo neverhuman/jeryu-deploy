@@ -307,7 +307,9 @@ fn build_after(
     Ok(())
 }
 
-fn is_open(pr: &PullRequest) -> bool {
+/// A pull request with a head to act on: not a draft, not closed, not merged.
+/// Shared with [`super::regate`], which asks the same question of a re-gate.
+pub(super) fn is_open_pull(pr: &PullRequest) -> bool {
     use jeryu_core::PullRequestState::{Closed, Draft, Merged};
     !pr.merged && !matches!(pr.state, Closed | Merged | Draft)
 }
@@ -340,7 +342,7 @@ pub(super) async fn enqueue(
         Ok(pr) => pr,
         Err(_) => return api_error(StatusCode::NOT_FOUND, "not_found", "pull request not found"),
     };
-    if !is_open(&pr) {
+    if !is_open_pull(&pr) {
         // A draft is the one refusal a reader can act on, so the queue says so
         // on the pull request's own timeline instead of only in this response.
         if pr.draft {
@@ -678,7 +680,7 @@ fn advance(state: &WebState, owner: &str, repo: &str, number: u64, entry: &mut Q
         Ok(pr) => pr,
         Err(_) => return,
     };
-    if !is_open(&pr) {
+    if !is_open_pull(&pr) {
         entry.state = QueueState::Dequeued;
         entry.reason = Some("the pull request is no longer open".to_string());
         persist(state, owner, repo, entry);

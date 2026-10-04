@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 use super::{
     Draft, Hosts, Item, QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES,
-    Severity, Shell, enqueue_call, parse_time, pull_href, ready_for_review_call,
+    Severity, Shell, enqueue_call, parse_time, pull_href, ready_for_review_call, regate_call,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -217,8 +217,18 @@ pub(crate) fn pull_items(
         if let Some((kind, title, reason, step)) = verdict {
             let blocks = kind != "pr_checks_failing" || !posture.failing.is_empty();
             // A pull request that has passed its gate lands by joining the
-            // merge queue; every other posture waits on a review or a push.
-            let api = (kind == "pr_ready_to_merge").then(|| enqueue_call(&pull.repo, pull.number));
+            // merge queue; a required check that failed is gated again on the
+            // same head, which is what "re-run it" means now that a route does
+            // it. A check the base does not require is not the gate's own
+            // context, so re-gating would not re-run it and is not offered.
+            // Every other posture waits on a review or a push.
+            let api = match kind {
+                "pr_ready_to_merge" => Some(enqueue_call(&pull.repo, pull.number)),
+                "pr_checks_failing" if !posture.failing.is_empty() => {
+                    Some(regate_call(&pull.repo, pull.number))
+                }
+                _ => None,
+            };
             let mut item = Draft {
                 id: format!("{}:{}:{}", kind.replace('_', "-"), pull.repo, pull.number),
                 kind,

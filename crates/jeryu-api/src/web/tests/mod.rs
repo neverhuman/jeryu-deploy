@@ -34,6 +34,7 @@ mod git_authorization;
 mod github_rest_tests;
 mod jankurai_audit_tests;
 mod pulls_tests;
+mod regate_tests;
 mod release_board_tests;
 mod repo_admin_tests;
 mod repo_automation_tests;

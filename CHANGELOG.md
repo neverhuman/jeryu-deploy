@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A pull request's head can be gated again: `POST
+  /api/v1/repos/:id/pulls/:n/regate` records the ask against its current head,
+  and `GET /api/v1/gate-regate?state=pending` is what the gate runner reads each
+  tick, so a head whose gate failed for a reason outside its own sources no
+  longer needs a push or a shell on the gate host. The attention inbox carries
+  the route as the `action.api` of a `pr_checks_failing` item whose failing check
+  the base requires (`docs/repo-automation.md`).
+
 - The split family's membership and release identity are read from the one
   authority manifest `jeryu-release-ops` publishes; this repository no longer
   ships a `repos.manifest.toml` of its own. `jeryu-split` finds that file

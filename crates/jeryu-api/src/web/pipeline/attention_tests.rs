@@ -616,6 +616,18 @@ fn pull_requests_waiting_on_a_person() {
     );
     assert_eq!(api(&items[0]), None);
     assert_eq!(api(&items[2]), None);
+    // A required check that failed is re-run by gating the same head again.
+    assert_eq!(
+        api(&items[1]),
+        Some((
+            "POST",
+            "/api/v1/repos/jeryu/jeryu-web/pulls/2/regate",
+            Value::Null
+        ))
+    );
+    // A check the base does not require is not the gate's context, so
+    // re-gating would not re-run it: items[4] is that posture.
+    assert_eq!(api(&items[4]), None);
 }
 
 fn draft(number: u64, days_old: i64, base_ref: &str) -> DraftFacts {
