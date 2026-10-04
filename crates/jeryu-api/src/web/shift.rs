@@ -504,9 +504,11 @@ pub(crate) fn apply_action(
             todo.lease_until.clear();
             todo.park_until.clear();
             todo.attempts = 0;
-            if let Some(note) = note {
-                todo.note = note.to_string();
-            }
+            // The note said why the todo stopped, which a released todo is no
+            // longer: it is open work again. A release with a note says why it
+            // was taken back, and one without leaves no reason at all rather
+            // than the one that is no longer true.
+            todo.note = note.unwrap_or_default().to_string();
         }
         "block" => {
             todo.status = TodoStatus::Blocked;
@@ -643,7 +645,10 @@ pub(crate) async fn todo_action(
     enum Refused {
         NotFound,
         Invalid(String),
+        /// A release of a todo a worker is still running, with no `force`.
+        ClaimLive(String),
     }
+    let now = Utc::now();
     let result = commit_change(
         &state.repo_manager,
         &queue,
@@ -654,6 +659,13 @@ pub(crate) async fn todo_action(
                 .iter()
                 .find(|q| q.todo.id == id)
                 .ok_or(Refused::NotFound)?;
+            // A live lease means a worker is working on the todo right now.
+            // Releasing it would open work that is already being done, so a
+            // second worker claims it and two attempts run at once; only an
+            // explicit `force` says the admin means to take it back.
+            if request.action == "release" && !request.force && found.todo.lease_live(now) {
+                return Err(Refused::ClaimLive(found.todo.claim_by.clone()));
+            }
             let mut todo = found.todo.clone();
             apply_action(&mut todo, &request, &family_repos).map_err(Refused::Invalid)?;
             Ok((vec![(found.path.clone(), Some(todo.dump()))], todo))
@@ -692,6 +704,19 @@ pub(crate) async fn todo_action(
             "list todos with GET /api/v1/shift/todos?family=",
         ),
         Err(WriteError::Rejected(Refused::Invalid(reason))) => bad_request(&reason),
+        Err(WriteError::Rejected(Refused::ClaimLive(claim_by))) => shift_error(
+            StatusCode::CONFLICT,
+            "claim_live",
+            &format!(
+                "todo {id:?} is claimed by {} and its lease is still live",
+                if claim_by.is_empty() {
+                    "a worker"
+                } else {
+                    claim_by.as_str()
+                }
+            ),
+            "wait for the lease to run out, or release with {\"force\": true}",
+        ),
         Err(WriteError::Git(reason)) => git_failure(&reason),
     }
 }

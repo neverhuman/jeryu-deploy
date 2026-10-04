@@ -59,6 +59,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `bad_request` | 422 | the request was rejected before it reached a handler |
 | `blob_too_large` | 413 | the requested blob is too large to render |
 | `ci_run_id_required` | 422 | a CI run id is required |
+| `claim_live` | 409 | the todo's claim lease is still live, so a worker is running it |
 | `codegraph_index_failed` | 500 | the codegraph index could not be built |
 | `codegraph_invalid_request` | 422 | the codegraph query failed validation |
 | `codegraph_materialize_failed` | 500 | the repository could not be materialized for codegraph |
@@ -85,6 +86,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `idempotency_conflict` | 409 | the Idempotency-Key was used with a different request |
 | `idempotency_key_in_flight` | 409 | a request with this Idempotency-Key is still running |
 | `idempotency_key_reused` | 422 | the Idempotency-Key was already used for a different request |
+| `idempotency_store_failed` | 500 | the Idempotency-Key store could not be read |
 | `internal_error` | 500 | the server failed while handling the request |
 | `invalid_branch` | 422 | the branch name is not valid |
 | `invalid_compare` | 422 | the compare range is not valid |
@@ -248,8 +250,11 @@ hours answers the kept reply again with `Idempotent-Replayed: true` and does not
 run the write twice. A repeat while the first still runs answers
 `idempotency_key_in_flight` (retry later); the same key on a different request
 answers `idempotency_key_reused` (use a fresh key). 5xx answers are not kept, so
-a retry after a server error runs the write. `PUT`, `PATCH` and `DELETE` set a
-named resource and are idempotent without a key.
+a retry after a server error runs the write. The keys are kept in
+`<data_dir>/shift.sqlite`, so a retry that arrives after a restart or a deploy
+still replays the first answer; when that store cannot be read the write is
+refused with `idempotency_store_failed` rather than run a second time. `PUT`,
+`PATCH` and `DELETE` set a named resource and are idempotent without a key.
 
 ## Missing Receipt
 

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Releasing a todo a worker is still running needs `force`. `POST
+  /api/v1/shift/todos/:family/:id/action` with `{"action": "release"}` answers
+  `409 claim_live` while the todo's claim lease is live, because the released
+  todo would be claimed by a second worker while the first is still working on
+  it; `{"action": "release", "force": true}` takes it back anyway. A release
+  now replaces the note it finds — with the one the body carries, or with
+  nothing — so a released todo no longer reads as the reason it stopped.
+
+- Kept answers to writes that carried an `Idempotency-Key` live in
+  `<data_dir>/shift.sqlite` (`db/migrations/0007_idempotency_keys.sql`) rather
+  than in memory, so a retry that arrives after a restart or a deploy replays
+  the first answer instead of filing the work twice. A reservation whose
+  request never answered is freed when the store is opened, and a write whose
+  key cannot be read answers `500 idempotency_store_failed` rather than run a
+  second time.
+
 - A pull request's head can be gated again: `POST
   /api/v1/repos/:id/pulls/:n/regate` records the ask against its current head,
   and `GET /api/v1/gate-regate?state=pending` is what the gate runner reads each

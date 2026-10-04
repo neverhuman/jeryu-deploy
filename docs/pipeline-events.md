@@ -364,7 +364,7 @@ moves a `done` todo.
 
 | Action | Body | What it does |
 |---|---|---|
-| `release` | `note?` | back to `open`, lease and park cleared, attempts reset to 0 |
+| `release` | `note?`, `force?` | back to `open`, lease and park cleared, attempts reset to 0, and the note replaced by `note` (empty when none is given: the reason the todo stopped is no longer true). A todo whose claim lease is still live is being worked on right now, so releasing it would let a second worker claim the same work: that answers `409 claim_live` unless the body says `"force": true` |
 | `block` | `note` | `blocked`, attempts kept; the note is what the inbox reads the `block_kind` from |
 | `done` | `note?` | `done`: the work is finished, by hand or otherwise, and the item leaves the inbox |
 | `close` | `note?` | `closed`: it will not be done. Like `done` it asks nobody for anything, and unlike `done` an admin may still release it |

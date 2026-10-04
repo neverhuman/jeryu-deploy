@@ -290,6 +290,12 @@ pub(crate) struct TodoActionRequest {
     /// todo stays parked until somebody acts on it.
     #[serde(default)]
     pub until: Option<String>,
+    /// `release`: take the todo back from a worker whose claim lease is still
+    /// live. Without it such a release answers `409 claim_live`, because the
+    /// released todo would be claimed by a second worker while the first is
+    /// still running it.
+    #[serde(default)]
+    pub force: bool,
     /// `edit`: the fields to overwrite. A field left out is left alone.
     #[serde(default)]
     pub title: Option<String>,

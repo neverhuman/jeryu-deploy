@@ -19,19 +19,28 @@
 //! happened, and a retry should run it. Answers that are not a bounded,
 //! buffered body (event streams) are not kept either. Runs inside the auth
 //! gate, so a rejected caller never reserves a key.
+//!
+//! The keys live in `<data_dir>/shift.sqlite` (`idempotency_keys`,
+//! `db/migrations/0007_idempotency_keys.sql`), not in memory: a retry that
+//! arrives after a restart or a deploy must replay the first answer rather
+//! than run the write a second time. A reservation whose request never
+//! answered is dropped when the store is opened, because the process that
+//! held it is gone.
 
-use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
+use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 use super::api_error;
+use super::shift::migrate_shift_store;
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 pub(crate) const REPLAYED: HeaderName = HeaderName::from_static("idempotent-replayed");
@@ -40,18 +49,12 @@ const MAX_KEY_BYTES: usize = 255;
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 /// Response bodies past this size are passed through and not kept.
 const MAX_KEPT_RESPONSE_BYTES: usize = 1024 * 1024;
-const RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
-const MAX_ENTRIES: usize = 4096;
+const RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
+const MAX_ENTRIES: i64 = 4096;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct IdempotencyStore {
-    entries: Arc<Mutex<HashMap<String, Entry>>>,
-}
-
-struct Entry {
-    fingerprint: [u8; 32],
-    at: Instant,
-    reply: Option<KeptReply>,
+    inner: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
@@ -66,64 +69,169 @@ enum Reservation {
     Replay(KeptReply),
     InFlight,
     Reused,
+    /// The store could not be read or written, so whether this key already
+    /// ran is unknown and the write must not be guessed at.
+    Unavailable(String),
 }
 
 impl IdempotencyStore {
-    fn reserve(&self, scope: &str, fingerprint: [u8; 32]) -> Reservation {
-        let mut entries = self.lock();
-        let now = Instant::now();
-        entries.retain(|_, entry| now.duration_since(entry.at) < RETENTION);
-        if let Some(entry) = entries.get(scope) {
-            if entry.fingerprint != fingerprint {
-                return Reservation::Reused;
-            }
-            return match &entry.reply {
-                Some(reply) => Reservation::Replay(reply.clone()),
-                None => Reservation::InFlight,
-            };
-        }
-        if entries.len() >= MAX_ENTRIES {
-            // Forget the oldest finished answer rather than refusing new keys.
-            if let Some(oldest) = entries
-                .iter()
-                .filter(|(_, entry)| entry.reply.is_some())
-                .min_by_key(|(_, entry)| entry.at)
-                .map(|(scope, _)| scope.clone())
-            {
-                entries.remove(&oldest);
-            }
-        }
-        entries.insert(
-            scope.to_string(),
-            Entry {
-                fingerprint,
-                at: now,
-                reply: None,
-            },
-        );
-        Reservation::Reserved
+    /// Open the keys in `path` (the shift store), forgetting both the keys
+    /// that are a day old and the reservations of requests that never
+    /// answered: whoever held them is no longer running.
+    pub(crate) fn open(path: &Path) -> Result<Self, String> {
+        let conn = Connection::open(path).map_err(|err| err.to_string())?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(|err| err.to_string())?;
+        migrate_shift_store(&conn)?;
+        conn.execute("DELETE FROM idempotency_keys WHERE status IS NULL", [])
+            .map_err(|err| err.to_string())?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(conn)),
+        })
     }
 
-    fn keep(&self, scope: &str, reply: KeptReply) {
-        if let Some(entry) = self.lock().get_mut(scope) {
-            entry.at = Instant::now();
-            entry.reply = Some(reply);
+    /// A store of its own, for a test that wants no file.
+    #[cfg(test)]
+    fn in_memory() -> Self {
+        let conn = Connection::open_in_memory().expect("open an in-memory idempotency store");
+        migrate_shift_store(&conn).expect("migrate an in-memory idempotency store");
+        Self {
+            inner: Arc::new(Mutex::new(conn)),
         }
+    }
+
+    fn reserve(&self, scope: &str, fingerprint: [u8; 32], now_ms: i64) -> Reservation {
+        match self.try_reserve(scope, fingerprint, now_ms) {
+            Ok(reservation) => reservation,
+            Err(reason) => Reservation::Unavailable(reason),
+        }
+    }
+
+    fn try_reserve(
+        &self,
+        scope: &str,
+        fingerprint: [u8; 32],
+        now_ms: i64,
+    ) -> Result<Reservation, String> {
+        let conn = self.lock();
+        conn.execute(
+            "DELETE FROM idempotency_keys WHERE at_ms <= ?1",
+            params![now_ms - RETENTION_MS],
+        )
+        .map_err(|err| err.to_string())?;
+        let found = conn
+            .query_row(
+                "SELECT fingerprint, status, headers, body FROM idempotency_keys WHERE scope = ?1",
+                params![scope],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        if let Some((kept, status, headers, body)) = found {
+            if kept != fingerprint {
+                return Ok(Reservation::Reused);
+            }
+            let Some(status) = status else {
+                return Ok(Reservation::InFlight);
+            };
+            return Ok(match kept_reply(status, headers, body) {
+                Some(reply) => Reservation::Replay(reply),
+                // A row that cannot be read back as an answer is no answer:
+                // forget it and run the write.
+                None => {
+                    conn.execute(
+                        "DELETE FROM idempotency_keys WHERE scope = ?1",
+                        params![scope],
+                    )
+                    .map_err(|err| err.to_string())?;
+                    Reservation::Reserved
+                }
+            });
+        }
+        let kept: i64 = conn
+            .query_row("SELECT count(*) FROM idempotency_keys", [], |row| {
+                row.get(0)
+            })
+            .map_err(|err| err.to_string())?;
+        if kept >= MAX_ENTRIES {
+            // Forget the oldest finished answers rather than refusing new keys.
+            conn.execute(
+                "DELETE FROM idempotency_keys WHERE scope IN (
+                   SELECT scope FROM idempotency_keys
+                    WHERE status IS NOT NULL ORDER BY at_ms LIMIT ?1
+                 )",
+                params![kept - MAX_ENTRIES + 1],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+        conn.execute(
+            "INSERT INTO idempotency_keys (scope, fingerprint, at_ms) VALUES (?1, ?2, ?3)",
+            params![scope, fingerprint.as_slice(), now_ms],
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(Reservation::Reserved)
+    }
+
+    fn keep(&self, scope: &str, reply: &KeptReply, now_ms: i64) {
+        let _ = self.lock().execute(
+            "UPDATE idempotency_keys
+                SET at_ms = ?2, status = ?3, headers = ?4, body = ?5
+              WHERE scope = ?1 AND status IS NULL",
+            params![
+                scope,
+                now_ms,
+                i64::from(reply.status.as_u16()),
+                rendered_headers(&reply.headers),
+                reply.body.as_ref(),
+            ],
+        );
     }
 
     fn release(&self, scope: &str) {
-        let mut entries = self.lock();
-        if entries
-            .get(scope)
-            .is_some_and(|entry| entry.reply.is_none())
-        {
-            entries.remove(scope);
-        }
+        let _ = self.lock().execute(
+            "DELETE FROM idempotency_keys WHERE scope = ?1 AND status IS NULL",
+            params![scope],
+        );
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// The headers of a kept answer, as a JSON array of `[name, value]` pairs. A
+/// value that is not text is left out: every header worth replaying is.
+fn rendered_headers(headers: &HeaderMap) -> String {
+    let pairs: Vec<[&str; 2]> = headers
+        .iter()
+        .filter_map(|(name, value)| Some([name.as_str(), value.to_str().ok()?]))
+        .collect();
+    serde_json::to_string(&pairs).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn kept_reply(status: i64, headers: Option<String>, body: Option<Vec<u8>>) -> Option<KeptReply> {
+    let status = u16::try_from(status)
+        .ok()
+        .and_then(|status| StatusCode::from_u16(status).ok())?;
+    let pairs: Vec<[String; 2]> = serde_json::from_str(headers.as_deref().unwrap_or("[]")).ok()?;
+    let mut map = HeaderMap::new();
+    for [name, value] in pairs {
+        if let (Ok(name), Ok(value)) = (HeaderName::try_from(name), HeaderValue::from_str(&value)) {
+            map.append(name, value);
+        }
+    }
+    Some(KeptReply {
+        status,
+        headers: map,
+        body: Bytes::from(body.unwrap_or_default()),
+    })
 }
 
 /// Frees a reservation whose request never produced a kept answer, including
@@ -167,7 +275,8 @@ pub(super) async fn replay(
     };
     let scope = scope(&parts.headers, &key);
     let fingerprint = fingerprint(&parts.method, &parts.uri, &body);
-    match store.reserve(&scope, fingerprint) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    match store.reserve(&scope, fingerprint, now_ms) {
         Reservation::Reserved => {}
         Reservation::Replay(reply) => return replayed(reply),
         Reservation::InFlight => {
@@ -182,6 +291,15 @@ pub(super) async fn replay(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "idempotency_key_reused",
                 "this Idempotency-Key was already used for a different request",
+            );
+        }
+        // Running the write without knowing whether this key already ran it
+        // is exactly what the key is here to prevent.
+        Reservation::Unavailable(reason) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "idempotency_store_failed",
+                &format!("the Idempotency-Key store could not be read: {reason}"),
             );
         }
     }
@@ -203,11 +321,12 @@ pub(super) async fn replay(
     };
     store.keep(
         &scope,
-        KeptReply {
+        &KeptReply {
             status: parts.status,
             headers: parts.headers.clone(),
             body: bytes.clone(),
         },
+        chrono::Utc::now().timestamp_millis(),
     );
     Response::from_parts(parts, Body::from(bytes))
 }
@@ -323,7 +442,7 @@ mod tests {
     #[tokio::test]
     async fn repeat_with_the_same_key_replays_without_running_the_handler() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(IdempotencyStore::default(), calls.clone());
+        let app = app(IdempotencyStore::in_memory(), calls.clone());
         let first = send(&app, "/api/v1/things", Some("k1"), "token a", "{}").await;
         assert_eq!(first.status(), StatusCode::CREATED);
         assert!(!first.headers().contains_key(REPLAYED));
@@ -339,7 +458,7 @@ mod tests {
     #[tokio::test]
     async fn without_a_key_or_outside_scope_every_request_runs() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(IdempotencyStore::default(), calls.clone());
+        let app = app(IdempotencyStore::in_memory(), calls.clone());
         send(&app, "/api/v1/things", None, "token a", "{}").await;
         send(&app, "/api/v1/things", None, "token a", "{}").await;
         send(&app, "/elsewhere", Some("k1"), "token a", "{}").await;
@@ -350,7 +469,7 @@ mod tests {
     #[tokio::test]
     async fn a_different_request_under_the_same_key_is_refused() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(IdempotencyStore::default(), calls.clone());
+        let app = app(IdempotencyStore::in_memory(), calls.clone());
         send(&app, "/api/v1/things", Some("k1"), "token a", "{\"a\":1}").await;
         let reused = send(&app, "/api/v1/things", Some("k1"), "token a", "{\"a\":2}").await;
         assert_eq!(reused.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -361,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn keys_are_scoped_to_the_caller() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(IdempotencyStore::default(), calls.clone());
+        let app = app(IdempotencyStore::in_memory(), calls.clone());
         send(&app, "/api/v1/things", Some("k1"), "token a", "{}").await;
         let other = send(&app, "/api/v1/things", Some("k1"), "token b", "{}").await;
         assert!(!other.headers().contains_key(REPLAYED));
@@ -371,7 +490,7 @@ mod tests {
     #[tokio::test]
     async fn server_errors_are_not_kept_so_a_retry_runs_again() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(IdempotencyStore::default(), calls.clone());
+        let app = app(IdempotencyStore::in_memory(), calls.clone());
         let failed = send(&app, "/api/v1/things", Some("k1"), "token a", "fail").await;
         assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
         send(&app, "/api/v1/things", Some("k1"), "token a", "fail").await;
@@ -381,7 +500,7 @@ mod tests {
     #[tokio::test]
     async fn a_malformed_key_is_rejected() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(IdempotencyStore::default(), calls.clone());
+        let app = app(IdempotencyStore::in_memory(), calls.clone());
         let long = "x".repeat(MAX_KEY_BYTES + 1);
         for key in ["has space", long.as_str()] {
             let response = send(&app, "/api/v1/things", Some(key), "token a", "{}").await;
@@ -392,14 +511,102 @@ mod tests {
 
     #[test]
     fn a_running_request_holds_its_key_until_released() {
-        let store = IdempotencyStore::default();
+        let store = IdempotencyStore::in_memory();
         let print = [7; 32];
-        assert!(matches!(store.reserve("s", print), Reservation::Reserved));
-        assert!(matches!(store.reserve("s", print), Reservation::InFlight));
+        let now = 1_700_000_000_000;
+        assert!(matches!(
+            store.reserve("s", print, now),
+            Reservation::Reserved
+        ));
+        assert!(matches!(
+            store.reserve("s", print, now),
+            Reservation::InFlight
+        ));
         drop(Reserved {
             store: &store,
             scope: "s",
         });
-        assert!(matches!(store.reserve("s", print), Reservation::Reserved));
+        assert!(matches!(
+            store.reserve("s", print, now),
+            Reservation::Reserved
+        ));
+    }
+
+    /// A key outlives the process that took it: the same file, opened again,
+    /// replays the first answer instead of running the write a second time.
+    #[tokio::test]
+    async fn a_key_kept_on_disk_replays_after_a_restart() {
+        let dir = tempfile::tempdir().expect("idempotency store dir");
+        let path = dir.path().join("shift.sqlite");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first = app(
+            IdempotencyStore::open(&path).expect("open the store"),
+            calls.clone(),
+        );
+        let created = send(&first, "/api/v1/things", Some("k1"), "token a", "{}").await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert_eq!(text(created).await, "created #1");
+
+        // The process is gone; the keys are not.
+        drop(first);
+        let restarted = app(
+            IdempotencyStore::open(&path).expect("reopen the store"),
+            calls.clone(),
+        );
+        let again = send(&restarted, "/api/v1/things", Some("k1"), "token a", "{}").await;
+        assert_eq!(again.status(), StatusCode::CREATED);
+        assert_eq!(again.headers()[REPLAYED], "true");
+        assert_eq!(text(again).await, "created #1");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A reservation whose request never answered belongs to a process that
+    /// is no longer running, so reopening the store frees it rather than
+    /// answering `409 idempotency_key_in_flight` for the rest of the day.
+    #[test]
+    fn a_reservation_left_by_a_stopped_process_is_freed_on_open() {
+        let dir = tempfile::tempdir().expect("idempotency store dir");
+        let path = dir.path().join("shift.sqlite");
+        let print = [7; 32];
+        let now = 1_700_000_000_000;
+        let store = IdempotencyStore::open(&path).expect("open the store");
+        assert!(matches!(
+            store.reserve("s", print, now),
+            Reservation::Reserved
+        ));
+        drop(store);
+        let restarted = IdempotencyStore::open(&path).expect("reopen the store");
+        assert!(matches!(
+            restarted.reserve("s", print, now),
+            Reservation::Reserved
+        ));
+    }
+
+    #[test]
+    fn a_key_older_than_its_retention_is_forgotten() {
+        let store = IdempotencyStore::in_memory();
+        let print = [7; 32];
+        let now = 1_700_000_000_000;
+        assert!(matches!(
+            store.reserve("s", print, now),
+            Reservation::Reserved
+        ));
+        store.keep(
+            "s",
+            &KeptReply {
+                status: StatusCode::CREATED,
+                headers: HeaderMap::new(),
+                body: Bytes::from_static(b"created"),
+            },
+            now,
+        );
+        assert!(matches!(
+            store.reserve("s", print, now + RETENTION_MS - 1),
+            Reservation::Replay(_)
+        ));
+        assert!(matches!(
+            store.reserve("s", print, now + RETENTION_MS),
+            Reservation::Reserved
+        ));
     }
 }

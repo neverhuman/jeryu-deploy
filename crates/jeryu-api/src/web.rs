@@ -150,7 +150,9 @@ pub(crate) struct WebState {
     pub(crate) merge_attempts: merge_attempts::MergeAttemptStore,
     /// Re-gate requests the gate runner reads each tick (`regate`).
     pub(crate) regate_requests: regate::RegateStore,
-    /// Kept answers to `POST` writes that carried an `Idempotency-Key`.
+    /// Kept answers to `POST` writes that carried an `Idempotency-Key`
+    /// (`<data_dir>/shift.sqlite`, `idempotency_keys`), so a retry after a
+    /// restart replays the first answer instead of writing twice.
     pub(crate) idempotency: idempotency::IdempotencyStore,
     /// todoq shift heartbeats (`<data_dir>/shift.sqlite`) and PR author.
     pub(crate) shift: shift::ShiftState,
@@ -317,7 +319,8 @@ impl WebState {
             merge_queue: Arc::default(),
             merge_attempts: merge_attempts::MergeAttemptStore::default(),
             regate_requests: regate::RegateStore::default(),
-            idempotency: idempotency::IdempotencyStore::default(),
+            idempotency: idempotency::IdempotencyStore::open(&shift_path)
+                .expect("open idempotency key store"),
             shift,
             events,
             disputes,

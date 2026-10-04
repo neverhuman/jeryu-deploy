@@ -13,6 +13,7 @@ file for an applied version stops the server at startup.
 | `0004_work_bridge_repairs.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/github/work_bridge_repairs.rs` |
 | `0005_site_settings.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/site_settings.rs` |
 | `0006_attention_acks.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/attention/acks.rs` |
+| `0007_idempotency_keys.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/idempotency.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. Every later migration must be ordered, immutable after

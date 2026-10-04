@@ -81,8 +81,35 @@ fn release_returns_unfinished_work_to_open() {
         assert_eq!(todo.status, TodoStatus::Open, "from {from:?}");
         assert!(todo.lease_until.is_empty());
         assert_eq!(todo.attempts, 0);
-        assert_eq!(todo.note, "before", "no note leaves the note alone");
+        assert_eq!(
+            todo.note, "",
+            "the reason the todo stopped is no longer true"
+        );
     }
+}
+
+/// The note on a released todo says why it was taken back, not why it stopped.
+#[test]
+fn a_release_note_replaces_the_one_the_todo_stopped_with() {
+    let mut todo = todo_in(TodoStatus::Blocked);
+    let request: TodoActionRequest =
+        serde_json::from_value(json!({"action": "release", "note": "the slot is gone"})).unwrap();
+    act(&mut todo, &request).expect("release");
+    assert_eq!(todo.status, TodoStatus::Open);
+    assert_eq!(todo.note, "the slot is gone");
+}
+
+/// `force` only decides whether the route performs the release (see
+/// `tests.rs`); the release it performs is the same one.
+#[test]
+fn force_changes_nothing_about_the_release_itself() {
+    let mut forced = todo_in(TodoStatus::Claimed);
+    let request: TodoActionRequest =
+        serde_json::from_value(json!({"action": "release", "force": true})).unwrap();
+    act(&mut forced, &request).expect("forced release");
+    let mut plain = todo_in(TodoStatus::Claimed);
+    act(&mut plain, &action("release")).expect("release");
+    assert_eq!(forced.dump(), plain.dump());
 }
 
 #[test]

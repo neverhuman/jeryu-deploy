@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use axum::http::{Method as HttpMethod, Request, StatusCode, header};
-use chrono::{TimeZone, Utc};
+use chrono::{SecondsFormat, TimeZone, Utc};
 use jeryu_core::{CreateRepositoryRequest, ForgeCore, UserRole};
 use jeryu_gitd::{GitdConfig, RepoManager};
 use serde_json::{Value, json};
@@ -1455,4 +1455,93 @@ async fn todo_actions_finish_park_and_edit_a_todo() {
     };
     assert_eq!(status_of(&id).as_deref(), Some("open"));
     assert_eq!(listed["todos"].as_array().unwrap().len(), 6, "{listed}");
+}
+
+/// A release while a worker is still running the todo needs `force`: without
+/// it the todo would be open work again, a second worker would claim it, and
+/// two attempts would run at once.
+#[tokio::test]
+async fn releasing_a_live_claim_needs_force_and_replaces_the_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = crate::web::pipeline::tests::shift_forge(dir.path());
+    let call = |uri: String, body| {
+        let router = router.clone();
+        let admin = admin.clone();
+        async move {
+            let response = router
+                .oneshot(request(HttpMethod::POST, &uri, &admin, body))
+                .await
+                .unwrap();
+            (response.status(), body_json(response).await)
+        }
+    };
+    let (status, filed) = call(
+        "/api/v1/shift/todos".to_string(),
+        Some(json!({"family": "jeryu", "text": "Fix the cache key", "mode": "now"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{filed}");
+    let id = filed["id"].as_str().unwrap().to_string();
+    let action = format!("/api/v1/shift/todos/jeryu/{id}/action");
+
+    // Claim it the way a worker does: a lease that has not run out yet.
+    let manager = RepoManager::new(GitdConfig::new(dir.path()));
+    let queue = discover(&manager).remove(0);
+    let claim = |lease_until: &str| {
+        let lease_until = lease_until.to_string();
+        let id = id.clone();
+        commit_change(&manager, &queue, "alton", "claim", move |todos| {
+            let found = todos.iter().find(|t| t.todo.id == id).expect("filed todo");
+            let mut todo = found.todo.clone();
+            todo.status = TodoStatus::Claimed;
+            todo.claim_by = "alton@xbabe0/w1".to_string();
+            todo.lease_until = lease_until.clone();
+            todo.attempts = 1;
+            todo.note = "blocked on the design".to_string();
+            Ok::<_, String>((vec![(found.path.clone(), Some(todo.dump()))], ()))
+        })
+        .expect("claim the todo");
+    };
+    let live = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Secs, true);
+    claim(&live);
+
+    let head_before = resolve("git", &queue.path, QUEUE_REF).unwrap();
+    let (status, refused) = call(action.clone(), Some(json!({"action": "release"}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "claim_live");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("alton@xbabe0/w1"),
+        "{refused}"
+    );
+    assert_eq!(
+        resolve("git", &queue.path, QUEUE_REF).unwrap(),
+        head_before,
+        "a refused release leaves the queue alone"
+    );
+
+    // Forced, the same release goes through and the note says why.
+    let (status, released) = call(
+        action.clone(),
+        Some(json!({"action": "release", "force": true, "note": "the slot is gone"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{released}");
+    assert_eq!(released["status"], "open");
+    assert_eq!(released["note"], "the slot is gone");
+    assert_eq!(released["lease_until"], "");
+    assert_eq!(released["lease_live"], false);
+    assert_eq!(released["attempts"], 0);
+
+    // A lease that has run out means nobody is running the todo, so a plain
+    // release still works, and it leaves no reason behind.
+    let spent =
+        (Utc::now() - chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Secs, true);
+    claim(&spent);
+    let (status, released) = call(action, Some(json!({"action": "release"}))).await;
+    assert_eq!(status, StatusCode::OK, "{released}");
+    assert_eq!(released["status"], "open");
+    assert_eq!(released["note"], "");
 }

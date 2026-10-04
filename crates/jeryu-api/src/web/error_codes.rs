@@ -115,6 +115,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("ci_run_id_required", 422, "a CI run id is required"),
     entry(
+        "claim_live",
+        409,
+        "the todo's claim lease is still live, so a worker is running it",
+    ),
+    entry(
         "codegraph_index_failed",
         500,
         "the codegraph index could not be built",
@@ -223,6 +228,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "idempotency_key_reused",
         422,
         "the Idempotency-Key was already used for a different request",
+    ),
+    entry(
+        "idempotency_store_failed",
+        500,
+        "the Idempotency-Key store could not be read",
     ),
     entry(
         "internal_error",
