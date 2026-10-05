@@ -1250,7 +1250,11 @@ fn ship_facts(
 /// todos **and** the ones tagged with its pull request. Filtering by one key
 /// or the other is what kept a todo's trace and its pull request's trace
 /// apart; the trace is the join.
-fn events_of(state: &WebState, todos: &[String], pr: Option<&PrFacts>) -> Vec<Event> {
+fn events_of(
+    state: &WebState,
+    todos: &[String],
+    pr: Option<&PrFacts>,
+) -> Result<Vec<Event>, Box<AxumResponse>> {
     let mut events: Vec<Event> = Vec::new();
     let mut queries: Vec<EventsQuery> = todos
         .iter()
@@ -1269,12 +1273,20 @@ fn events_of(state: &WebState, todos: &[String], pr: Option<&PrFacts>) -> Vec<Ev
         });
     }
     for query in &queries {
-        events.extend(state.events.query(query).unwrap_or_default());
+        let found = state.events.query(query).map_err(|err| {
+            trace_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "trace_events_unreadable",
+                &format!("activity log: {err}"),
+                "retry; if it persists check that the activity log database is readable",
+            )
+        })?;
+        events.extend(found);
     }
     let mut seen = BTreeSet::new();
     events.retain(|event| seen.insert(event.seq));
     events.sort_by_key(|event| std::cmp::Reverse(event.seq));
-    events
+    Ok(events)
 }
 
 /// Whether one attention item is about this work: it names one of the todos,
@@ -1408,7 +1420,7 @@ fn collect(
         state,
         &traces.iter().map(|t| t.todo.id.clone()).collect::<Vec<_>>(),
         pr.as_ref(),
-    );
+    )?;
     let ship = match &repo {
         Some(repo) => ship_facts(state, repo, &work, released, &events),
         None => ShipFacts::default(),
