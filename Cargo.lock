@@ -22,6 +22,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -666,7 +675,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1191,17 +1200,17 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jeryu-agent-stream"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "uuid",
 ]
 
 [[package]]
 name = "jeryu-agentbridge"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "jeryu-ci-scheduler",
  "jeryu-core",
@@ -1258,7 +1267,7 @@ dependencies = [
 [[package]]
 name = "jeryu-autonomy"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.3#323753b75c65220db9b448af4309197a72cb44f5"
+source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.4#43c1acf66c5fc6665a6815104c497986a53459dd"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1278,7 +1287,7 @@ source = "git+https://github.com/neverhuman/jeryu-release-ops.git?tag=jeryu-rele
 [[package]]
 name = "jeryu-ci-compiler"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "jeryu-ci-ir",
 ]
@@ -1286,12 +1295,12 @@ dependencies = [
 [[package]]
 name = "jeryu-ci-ir"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 
 [[package]]
 name = "jeryu-ci-scheduler"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-core",
@@ -1318,7 +1327,7 @@ dependencies = [
 [[package]]
 name = "jeryu-codegraph"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.3#323753b75c65220db9b448af4309197a72cb44f5"
+source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.4#43c1acf66c5fc6665a6815104c497986a53459dd"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1334,7 +1343,7 @@ dependencies = [
 [[package]]
 name = "jeryu-core"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.11#49d5593824ef10767611abbcc281c511bd5face5"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.12#6c3c1b04d7235ba5889ef4e1795c673fb31125e1"
 dependencies = [
  "argon2",
  "chrono",
@@ -1351,14 +1360,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "jeryu-egress"
+version = "5.0.0"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+dependencies = [
+ "serde",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "jeryu-enterprise"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.11#49d5593824ef10767611abbcc281c511bd5face5"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.12#6c3c1b04d7235ba5889ef4e1795c673fb31125e1"
 
 [[package]]
 name = "jeryu-gitd"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.11#49d5593824ef10767611abbcc281c511bd5face5"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.12#6c3c1b04d7235ba5889ef4e1795c673fb31125e1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1368,7 +1389,7 @@ dependencies = [
 [[package]]
 name = "jeryu-jira"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-jira.git?tag=jeryu-jira-v5.0.0-split.2#8e8015cb25444ca5b6db2f4d437afd8afbced326"
+source = "git+https://github.com/neverhuman/jeryu-jira.git?tag=jeryu-jira-v5.0.0-split.3#f503fce44324770bc6b438ffbf499ffba80a46da"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -1382,7 +1403,7 @@ dependencies = [
 [[package]]
 name = "jeryu-mcp"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.3#323753b75c65220db9b448af4309197a72cb44f5"
+source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.4#43c1acf66c5fc6665a6815104c497986a53459dd"
 dependencies = [
  "anyhow",
  "axum",
@@ -1405,7 +1426,7 @@ source = "git+https://github.com/neverhuman/jeryu-release-ops.git?tag=jeryu-rele
 [[package]]
 name = "jeryu-proof"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.11#49d5593824ef10767611abbcc281c511bd5face5"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.12#6c3c1b04d7235ba5889ef4e1795c673fb31125e1"
 dependencies = [
  "jeryu-core",
 ]
@@ -1413,7 +1434,7 @@ dependencies = [
 [[package]]
 name = "jeryu-readmodel"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.11#49d5593824ef10767611abbcc281c511bd5face5"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.12#6c3c1b04d7235ba5889ef4e1795c673fb31125e1"
 dependencies = [
  "chrono",
  "serde",
@@ -1436,12 +1457,12 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-core"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 
 [[package]]
 name = "jeryu-runner-microvm"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "jeryu-runner-core",
 ]
@@ -1449,7 +1470,7 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-native"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "jeryu-runner-core",
  "jeryu-sandbox-linux",
@@ -1458,27 +1479,28 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-oci"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
+ "jeryu-egress",
  "jeryu-runner-core",
 ]
 
 [[package]]
 name = "jeryu-runner-protocol"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "hex",
  "jeryu-ci-ir",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
 name = "jeryu-runner-registry"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-runner-protocol",
@@ -1489,7 +1511,7 @@ dependencies = [
 [[package]]
 name = "jeryu-runnerd"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-runner-core",
@@ -1504,19 +1526,19 @@ dependencies = [
 [[package]]
 name = "jeryu-rustjet"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.3#323753b75c65220db9b448af4309197a72cb44f5"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.4#43c1acf66c5fc6665a6815104c497986a53459dd"
 
 [[package]]
 name = "jeryu-sandbox-linux"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.3#c6c2498816c8a53c07d37d9981e8520339564546"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
 dependencies = [
  "jeryu-runner-core",
  "landlock",
  "libc",
  "nix",
  "seccompiler",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1641,6 +1663,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1697,6 +1725,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
+
+[[package]]
 name = "matchit"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1737,14 +1774,23 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.29.0"
+version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
 dependencies = [
  "bitflags",
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1945,7 +1991,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2027,6 +2073,23 @@ checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"
@@ -2123,7 +2186,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2180,7 +2243,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2406,6 +2469,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2554,7 +2626,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2604,6 +2676,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "thread_local"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -2839,6 +2920,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "matchers",
+ "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
 ]
 
 [[package]]
@@ -2965,6 +3076,12 @@ dependencies = [
  "serde_core",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"
@@ -3145,7 +3262,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

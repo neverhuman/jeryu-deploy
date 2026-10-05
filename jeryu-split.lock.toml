@@ -7,8 +7,8 @@ web_artifact = "pinned"
 name = "jeryu-core"
 github_slug = "neverhuman/jeryu-core"
 local_path = "/home/ubuntu/jeryu-split/jeryu-core"
-tag = "jeryu-core-v5.0.0-split.11"
-commit = "49d5593824ef10767611abbcc281c511bd5face5"
+tag = "jeryu-core-v5.0.0-split.12"
+commit = "6c3c1b04d7235ba5889ef4e1795c673fb31125e1"
 required_check = "jeryu-core/required"
 
 [[repo]]
@@ -39,8 +39,8 @@ required_check = "jeryu-intelligence/required"
 name = "jeryu-jira"
 github_slug = "neverhuman/jeryu-jira"
 local_path = "/home/ubuntu/jeryu-split/jeryu-jira"
-tag = "jeryu-jira-v5.0.0-split.2"
-commit = "8e8015cb25444ca5b6db2f4d437afd8afbced326"
+tag = "jeryu-jira-v5.0.0-split.3"
+commit = "f503fce44324770bc6b438ffbf499ffba80a46da"
 required_check = "jeryu-jira/required"
 
 [[repo]]

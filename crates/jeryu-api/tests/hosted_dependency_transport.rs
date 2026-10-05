@@ -50,27 +50,27 @@ const EXPECTED_MAPPINGS: [(&str, &str); 8] = [
 const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     (
         "jeryu-ci-runner",
-        "jeryu-ci-runner-v5.0.0-split.3",
-        "c6c2498816c8a53c07d37d9981e8520339564546",
-        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.3",
+        "jeryu-ci-runner-v5.0.0-split.4",
+        "8626a3eb90dd48bbdd132acbe90d3dab100aee11",
+        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.4",
     ),
     (
         "jeryu-core",
-        "jeryu-core-v5.0.0-split.11",
-        "49d5593824ef10767611abbcc281c511bd5face5",
-        "refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.11",
+        "jeryu-core-v5.0.0-split.12",
+        "6c3c1b04d7235ba5889ef4e1795c673fb31125e1",
+        "refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.12",
     ),
     (
         "jeryu-intelligence",
-        "jeryu-intelligence-v5.0.0-split.3",
-        "323753b75c65220db9b448af4309197a72cb44f5",
-        "refs/heads/preserve/hosted-cargo/jeryu-intelligence-v5.0.0-split.3",
+        "jeryu-intelligence-v5.0.0-split.4",
+        "43c1acf66c5fc6665a6815104c497986a53459dd",
+        "refs/heads/preserve/hosted-cargo/jeryu-intelligence-v5.0.0-split.4",
     ),
     (
         "jeryu-jira",
-        "jeryu-jira-v5.0.0-split.2",
-        "8e8015cb25444ca5b6db2f4d437afd8afbced326",
-        "refs/heads/preserve/hosted-cargo/jeryu-jira-v5.0.0-split.2",
+        "jeryu-jira-v5.0.0-split.3",
+        "f503fce44324770bc6b438ffbf499ffba80a46da",
+        "refs/heads/preserve/hosted-cargo/jeryu-jira-v5.0.0-split.3",
     ),
     (
         "jeryu-release-ops",
@@ -292,13 +292,13 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
     assert_ne!(parse_mappings(&extra), expected_mappings);
 
     let missing_pin = pin_policy.replacen(
-        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.3|c6c2498816c8a53c07d37d9981e8520339564546|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.3\n",
+        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.4|8626a3eb90dd48bbdd132acbe90d3dab100aee11|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.4\n",
         "",
         1,
     );
     assert_ne!(parse_pins(&missing_pin), expected_pins);
     let wrong_pin = pin_policy.replacen(
-        "c6c2498816c8a53c07d37d9981e8520339564546",
+        "8626a3eb90dd48bbdd132acbe90d3dab100aee11",
         "0000000000000000000000000000000000000000",
         1,
     );

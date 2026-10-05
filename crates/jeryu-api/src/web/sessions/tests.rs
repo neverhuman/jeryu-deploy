@@ -1247,9 +1247,16 @@ async fn create_session_docker_runtime_streams_live_and_carries_hardened_flags()
         text.contains("--read-only"),
         "docker argv must carry --read-only: {text}"
     );
+    // Model egress rides the separate allow-listing proxy bridge, configured
+    // host-side, so a session container with no configured route gets no route
+    // off itself at all. Open container networking must never come back.
     assert!(
-        text.contains("--network bridge"),
-        "docker argv must keep --network bridge: {text}"
+        text.contains("--network none"),
+        "docker argv must confine the session to --network none: {text}"
+    );
+    assert!(
+        !text.contains("--network bridge") && !text.contains("--network host"),
+        "docker argv must not widen the session onto an open network: {text}"
     );
     assert!(
         text.contains(":/workspace"),
