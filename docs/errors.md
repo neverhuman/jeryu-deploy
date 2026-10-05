@@ -202,6 +202,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `tool_proposal_registry_write_failed` | 500 | the tool registry could not be written |
 | `tool_unavailable` | 424 | the MCP tool has no execution adapter installed on this server |
 | `trace_collect_failed` | 500 | the work trace could not be collected |
+| `trace_events_unreadable` | 500 | the activity log could not be read for the work trace |
 | `trace_invalid_query` | 422 | the trace names neither one todo nor one pull request |
 | `trace_pull_not_found` | 404 | this forge does not host that pull request |
 | `trace_todo_not_found` | 404 | no family queue holds that todo |

@@ -617,6 +617,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the work trace could not be collected",
     ),
     entry(
+        "trace_events_unreadable",
+        500,
+        "the activity log could not be read for the work trace",
+    ),
+    entry(
         "trace_invalid_query",
         422,
         "the trace names neither one todo nor one pull request",
