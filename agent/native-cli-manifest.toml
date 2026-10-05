@@ -37,6 +37,6 @@ category = "audit_cli"
 version = "1.6.11"
 binary = "/home/ubuntu/.jeryu/bin/jankurai"
 observed_path = "/home/ubuntu/.jeryu/bin/jankurai"
-observed_digest = "sha256:d94d3e21b9e91c94eddc9adca3af5025d323ba9ceb560015fc6027343217f3ab"
+observed_digest = "sha256:9aa101c10cdc40c8a15e3f5c1341be3bce78e86f61754d849bbe8229e485a783"
 health_command = ["/home/ubuntu/.jeryu/bin/jankurai", "--version"]
 requires_portable_auth = false

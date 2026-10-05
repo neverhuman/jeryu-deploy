@@ -18,11 +18,11 @@ set -euo pipefail
 # BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
 export JERYU_JANKURAI_SOURCE_REPO="https://git.neverhuman.org/git/jeryu/jankurai.git"
 export JERYU_JANKURAI_VERSION="jankurai 1.6.11"
-export JERYU_JANKURAI_SHA256="d94d3e21b9e91c94eddc9adca3af5025d323ba9ceb560015fc6027343217f3ab"
-export JERYU_JANKURAI_SOURCE_REV="aaed4a0dace42a0e63c88b951eb67f5f0c24a5c8"
-export JERYU_JANKURAI_SOURCE_TAG="v1.6.11-deadlang-precision-split.5"
-export JERYU_JANKURAI_SOURCE_TREE="c1f353e7c8efdcb4746732f4002fa8f505eb3c24"
-export JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256="bde45dc004bdaddd9d64f8297210b00bf0321c28e061f7837f83986f1a045b1e"
+export JERYU_JANKURAI_SHA256="9aa101c10cdc40c8a15e3f5c1341be3bce78e86f61754d849bbe8229e485a783"
+export JERYU_JANKURAI_SOURCE_REV="2ec7eb2af47e16d2e0dce0bed31c521be4322920"
+export JERYU_JANKURAI_SOURCE_TAG="v1.6.11-deadlang-precision-split.6"
+export JERYU_JANKURAI_SOURCE_TREE="d3c63d138583404a57dc3177f0972952b1b399c7"
+export JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256="66849f13399e5a8b5d461c48a27322fe3b29a83e86cc5ce41d8c5d89e5d045ea"
 export JERYU_JANKURAI_CARGO_LOCK_SHA256="b9acb981c326226a687d0b6703e4f7ee303148e9e1a6dda1aa03d77988820f6a"
 export JERYU_JANKURAI_RUST_TOOLCHAIN="1.95.0"
 export JERYU_JANKURAI_RUSTC_VERSION="rustc 1.95.0 (59807616e 2026-04-14)"
@@ -40,7 +40,7 @@ export JERYU_JANKURAI_CARGO_CONFIG_SHA256="b8982c761d62e447f2d1653c199d2d58e6b2d
 export JERYU_JANKURAI_BUILD_ENVIRONMENT="CARGO_NET_OFFLINE=true,HOME=/tmp,LANG=C,LC_ALL=C,SOURCE_DATE_EPOCH=0,TZ=UTC"
 export JERYU_JANKURAI_RUSTFLAGS="--remap-path-prefix=/opt/jeryu/jankurai=/jankurai-build/source --remap-path-prefix=/opt/jeryu/vendor=/jankurai-build/vendor --remap-path-prefix=/opt/jeryu/target=/jankurai-build/target --remap-path-prefix=/usr/local/cargo=/jankurai-build/cargo"
 export JERYU_JANKURAI_BUILD_COMMAND="cargo install --locked --offline --path /opt/jeryu/jankurai/crates/jankurai --root /opt/jeryu/out --bin jankurai"
-export JERYU_JANKURAI_BUILD_CONTEXT_SHA256="78b3a85efd4192c2b0a69264a9994cdcdcd4d5db171648ca063c5b9c9a9c5da2"
+export JERYU_JANKURAI_BUILD_CONTEXT_SHA256="9c66e2485632b6c16c8c5ea945f5a649786bff18abbee3ebb74654d9e21e517f"
 # END GENERATED JANKURAI PIN
 
 mode="${1:-smoke}"
@@ -188,7 +188,7 @@ expect_zero "jankurai is the pinned 1.6.11" \
 expect_zero "jankurai is a single-link physical file" \
   sh -c '[ -f /opt/rust/cargo/bin/jankurai ] && [ ! -L /opt/rust/cargo/bin/jankurai ] && [ "$(realpath -e /opt/rust/cargo/bin/jankurai)" = /opt/rust/cargo/bin/jankurai ] && [ "$(stat -c %h /opt/rust/cargo/bin/jankurai)" = 1 ]'
 expect_zero "jankurai has the governed digest" \
-  sh -c '[ "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '\''{print $1}'\'')" = d94d3e21b9e91c94eddc9adca3af5025d323ba9ceb560015fc6027343217f3ab ]'
+  sh -c '[ "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '\''{print $1}'\'')" = 9aa101c10cdc40c8a15e3f5c1341be3bce78e86f61754d849bbe8229e485a783 ]'
 expect_zero "jankurai resolves to the pinned path (no shadowing)" \
   sh -c '[ "$(command -v jankurai)" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \
@@ -196,7 +196,7 @@ expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \
 expect_zero "JERYU_GOVERNED_JANKURAI_BIN points at the pinned path" \
   sh -c '[ "$JERYU_GOVERNED_JANKURAI_BIN" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_RECEIPT points at the baked content-addressed receipt" \
-  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/f315e7abe04b00f51bc986341b25aca2bf70fffac5579b8ad7cb9e18a624157a.json" ]'
+  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/521df0817f22e3786b7d71c00884a4ede8abe8b57b0b4cd644ef6d88970718d2.json" ]'
 expect_zero "governed Jankurai verifier passes against the baked receipt" \
   bash /opt/jeryu/governance/ensure-jankurai.sh
 

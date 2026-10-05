@@ -43,9 +43,9 @@ image_receipt_path="/opt/jeryu/receipts/jankurai/sha256/${image_receipt_sha}.jso
 [[ "$(jq -r '.source.tree' "${image_receipt}")" == "${JERYU_JANKURAI_SOURCE_TREE}" ]]
 [[ "$(jq -r '.source.archive_sha256' "${image_receipt}")" == "${JERYU_JANKURAI_SOURCE_ARCHIVE_SHA256}" ]]
 [[ "$(jq -r '.source.cargo_lock_sha256' "${image_receipt}")" == "${JERYU_JANKURAI_CARGO_LOCK_SHA256}" ]]
-[[ "$(jq -r '.governance.manifest_commit' "${image_receipt}")" == "81df173b9cfadfd0380236733ef4c35694f872ce" ]]
-[[ "$(jq -r '.governance.manifest_tree' "${image_receipt}")" == "6064eedff1c1af41b0cb9ef4755a2368b157c57e" ]]
-[[ "$(jq -r '.governance.manifest_sha256' "${image_receipt}")" == "5ef27c3379826b57222a8a4ff67d5c7b0ad112a79e9172db2de25ff8adc5280f" ]]
+[[ "$(jq -r '.governance.manifest_commit' "${image_receipt}")" == "4b6c49e32d273eb4846c9320108bafc9045dc686" ]]
+[[ "$(jq -r '.governance.manifest_tree' "${image_receipt}")" == "80f6a86698bbef3b67b72dbdcba5acf9c041b698" ]]
+[[ "$(jq -r '.governance.manifest_sha256' "${image_receipt}")" == "d5c8e3adcdd1f9f32499d9f36e6d7055aef7186ce7bcca4d0fb56c5962b71901" ]]
 [[ "$(jq -r '.installation.path' "${image_receipt}")" == "/opt/rust/cargo/bin/jankurai" ]]
 grep -Fq -- "${image_receipt_path}" "${ROOT}/images/agent-sandbox/Dockerfile"
 grep -Fq -- "${image_receipt_path}" "${ROOT}/ops/agent-sandbox/smoke.sh"
