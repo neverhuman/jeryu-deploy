@@ -146,6 +146,7 @@ pub(crate) async fn runner_heartbeat(
     {
         Ok(accepted) => {
             crate::web::pipeline::emit::runner_heartbeat(&state, previous.as_ref(), &heartbeat);
+            super::live::runner_changed(&state, previous.as_ref(), &heartbeat);
             Json(accepted).into_response()
         }
         Err(reason) => (

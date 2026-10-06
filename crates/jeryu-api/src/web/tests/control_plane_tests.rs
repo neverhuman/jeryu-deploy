@@ -975,3 +975,84 @@ async fn control_plane_repo_count_excludes_archived_and_reports_them_apart() {
     assert_eq!(json["repoCount"], 2);
     assert_eq!(json["archivedRepoCount"], 3);
 }
+
+/// A running gate says how long passes of its recipe on its repository usually
+/// take, once three have finished; the answer carries the forge's clock so a
+/// page can tick elapsed time without trusting its own.
+#[tokio::test]
+async fn a_running_gate_carries_an_estimate_from_its_recent_passes() {
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "test", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let post = |beat: serde_json::Value| {
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/api/v1/runners/heartbeat")
+            .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(beat.to_string()))
+            .unwrap()
+    };
+    let fleet = || async {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/control-plane/runners")
+                    .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        response_json(response).await
+    };
+    let running = serde_json::json!({
+        "runnerId": "gate-a/slot0", "host": "gate-a", "slot": 0,
+        "current": {"repo": "acme/widgets", "pr": 9, "sha": "abcdef9",
+                    "recipe": "just required", "startedAt": "2026-10-06T12:00:00Z"}
+    });
+
+    // A runner's first beat after a restart may repeat an old result, so only
+    // results after it count.
+    let accepted = router.clone().oneshot(post(running.clone())).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    for (n, seconds) in [300, 600, 420].into_iter().enumerate() {
+        if n == 2 {
+            let body = fleet().await;
+            let task = &body["local"]["nodeDetails"][0]["activeTasks"][0];
+            assert!(
+                task.get("estimate").is_none(),
+                "two passes are no estimate: {task}"
+            );
+        }
+        let beat = serde_json::json!({
+            "runnerId": "gate-a/slot0", "host": "gate-a", "slot": 0,
+            "current": running["current"],
+            "last": {"repo": "acme/widgets", "pr": 8, "sha": format!("{n:07x}"),
+                     "recipe": "just required", "conclusion": "success",
+                     "seconds": seconds, "finishedAt": "2026-10-06T11:00:00Z"}
+        });
+        let accepted = router.clone().oneshot(post(beat)).await.unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+    }
+
+    let body = fleet().await;
+    assert!(body["serverTime"].is_string(), "{body}");
+    let task = &body["local"]["nodeDetails"][0]["activeTasks"][0];
+    assert_eq!(task["startedAt"], "2026-10-06T12:00:00+00:00");
+    assert_eq!(
+        task["estimate"],
+        serde_json::json!({"typicalSeconds": 420, "slowSeconds": 600, "samples": 3})
+    );
+}

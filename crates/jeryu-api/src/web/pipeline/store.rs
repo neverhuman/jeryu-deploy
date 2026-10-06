@@ -307,6 +307,60 @@ impl EventStore {
         }
         Ok(newest)
     }
+
+    /// How long the newest finished passes of `kind` on `repo` took, newest
+    /// first: at most `limit` values, counting only the events whose outcome is
+    /// one of `outcomes` and whose `detail.recipe` is `recipe`. A pass that
+    /// failed early says little about how long a whole one takes, so callers
+    /// name the outcomes that mean "ran to the end".
+    pub(crate) fn finished_seconds(
+        &self,
+        kind: &str,
+        repo: &str,
+        recipe: &str,
+        outcomes: &[&str],
+        limit: usize,
+    ) -> Result<Vec<u64>, String> {
+        // Other recipes on the same repository share the rows, so read a few
+        // pages' worth and keep the matching ones.
+        let scan = i64::try_from(limit.saturating_mul(5)).unwrap_or(MAX_LIMIT);
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner
+            .conn
+            .prepare_cached(
+                "SELECT outcome, seconds, detail_json FROM pipeline_events
+                  WHERE kind = ?1 AND repo = ?2 AND seconds IS NOT NULL
+                  ORDER BY seq DESC LIMIT ?3",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![kind, repo, scan], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut seconds = Vec::new();
+        for row in rows {
+            let (outcome, secs, detail) = row.map_err(|err| err.to_string())?;
+            let finished = outcome.as_deref().is_some_and(|o| outcomes.contains(&o));
+            let same_recipe = detail
+                .as_deref()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                .is_some_and(|detail| detail["recipe"].as_str() == Some(recipe));
+            if finished && same_recipe {
+                if let Ok(secs) = u64::try_from(secs) {
+                    seconds.push(secs);
+                }
+                if seconds.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(seconds)
+    }
 }
 
 fn event_from_row(row: &Row<'_>) -> rusqlite::Result<Event> {

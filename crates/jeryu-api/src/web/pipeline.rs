@@ -10,6 +10,7 @@
 
 pub(crate) mod attention;
 pub(crate) mod emit;
+pub(crate) mod estimate;
 pub(crate) mod pins;
 mod store;
 pub(crate) mod trace;

@@ -94,6 +94,9 @@ struct PullRequestChecks {
     pending: u32,
     skipped: u32,
     checks: Vec<PullRequestCheck>,
+    /// When the forge built this answer, so a page can tick a running check's
+    /// elapsed time on the forge's clock rather than its own.
+    server_time: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,8 +126,31 @@ struct PullRequestCheck {
     required: bool,
     /// Why a check is not required, said on its row (`None` when required).
     advisory: Option<CheckAdvisory>,
+    /// When this check's newest run started: a check run's own start, or the
+    /// `pending` status that opened the run. `None` for a status concluded
+    /// with no `pending` before it (a green head re-verified in place).
     started_at: Option<String>,
+    /// When the newest run concluded; `None` while it is still pending.
     completed_at: Option<String>,
+    /// The gate runner working on this check right now, if one reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    running: Option<RunningGate>,
+}
+
+/// A gate runner's pass on the PR head, as its heartbeat reports it, with how
+/// long passes of that recipe on this repository usually take.
+#[derive(Debug, Clone, Serialize)]
+struct RunningGate {
+    runner_id: String,
+    recipe: String,
+    started_at: String,
+    /// The median of the recent passes, in seconds; absent with fewer than
+    /// three of them.
+    typical_seconds: Option<u64>,
+    /// The 90th percentile of the recent passes, in seconds.
+    slow_seconds: Option<u64>,
+    /// How many recent passes the two figures come from (0 with none).
+    samples: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]

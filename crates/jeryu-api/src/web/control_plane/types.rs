@@ -230,6 +230,10 @@ pub(crate) struct RunnerFabricResponse {
     /// The forge's own build: what code serves this page.
     #[serde(default)]
     pub forge: ForgeBuild,
+    /// When the forge built this answer, so a page can tick elapsed time from
+    /// `startedAt` on the forge's clock rather than its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_time: Option<String>,
     pub local: RunnerLocalFabric,
     pub mirror: MirrorEvidence,
 }
@@ -366,6 +370,11 @@ pub(crate) struct RunnerTaskSummary {
     pub started_at: Option<String>,
     pub updated_at: Option<String>,
     pub tty_preview: RunnerTtyPreview,
+    /// How long a gate or review of this recipe on this repository usually
+    /// takes, read from its recent passes; absent with too few of them and
+    /// for workcell runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<crate::web::pipeline::estimate::DurationEstimate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

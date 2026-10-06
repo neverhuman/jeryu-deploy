@@ -19,6 +19,7 @@ mod depends;
 mod gate_runners;
 mod graph;
 mod handlers;
+pub(crate) mod live;
 mod mcp;
 mod model;
 mod priorities;

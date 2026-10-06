@@ -1907,3 +1907,139 @@ async fn the_pull_list_carries_drafts_and_their_non_main_base() {
     assert_eq!(list["items"][0]["draft"], true);
     assert_eq!(list["items"][0]["base_ref"], "rc/auto");
 }
+
+/// Finish `count` passes of `recipe` on `repo` through the heartbeat path, so
+/// the event log holds what an estimate is read from.
+fn finish_gate_passes(state: &WebState, repo: &str, recipe: &str, seconds: &[u64]) {
+    let beat = |last: Option<serde_json::Value>| -> crate::web::control_plane::GateRunnerHeartbeat {
+        serde_json::from_value(serde_json::json!({
+            "runnerId": "build-1/slot0", "host": "build-1", "slot": 0, "last": last
+        }))
+        .expect("heartbeat")
+    };
+    let mut previous = beat(None);
+    for (n, secs) in seconds.iter().enumerate() {
+        let current = beat(Some(serde_json::json!({
+            "repo": repo, "pr": 1, "sha": format!("{n:07x}"), "recipe": recipe,
+            "conclusion": "success", "seconds": secs, "finishedAt": "2026-10-06T12:00:00Z"
+        })));
+        crate::web::pipeline::emit::runner_heartbeat(state, Some(&previous), &current);
+        previous = current;
+    }
+}
+
+/// A pending gate check names the runner working on it, when that run started
+/// and how long the recipe usually takes; once concluded, the row keeps the
+/// real start (the `pending` post) instead of repeating its conclusion time.
+#[tokio::test]
+async fn a_running_gate_check_says_when_it_started_and_what_to_expect() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "widgets".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "widgets",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["widgets/required".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "widgets",
+            "alice",
+            CreatePullRequestRequest {
+                title: "feature".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("deadbeef".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let status = |state: CommitStatusState| {
+        core.create_commit_status(
+            "alice",
+            "widgets",
+            "deadbeef",
+            "gatebot",
+            CreateCommitStatusRequest {
+                state,
+                context: "widgets/required".to_string(),
+                description: None,
+                target_url: None,
+            },
+        )
+        .unwrap()
+    };
+    let pending = status(CommitStatusState::Pending);
+    let state = Arc::new(WebState::new(core.clone()));
+    finish_gate_passes(
+        &state,
+        "alice/widgets",
+        "just required",
+        &[600, 300, 900, 480],
+    );
+    finish_gate_passes(&state, "alice/widgets", "other recipe", &[5, 5, 5]);
+    state
+        .gate_runners
+        .record(
+            serde_json::from_value(serde_json::json!({
+                "runnerId": "build-1/slot1", "host": "build-1", "slot": 1,
+                "current": {"repo": "alice/widgets", "pr": pr.number, "sha": "deadbeef",
+                            "recipe": "just required", "startedAt": "2026-10-06T12:00:00Z"}
+            }))
+            .unwrap(),
+            "gatebot",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    let read = || async {
+        response_json(
+            crate::web::pulls::checks(
+                State(state.clone()),
+                AxumPath((repo.id.to_string(), pr.number)),
+            )
+            .await,
+        )
+        .await
+    };
+
+    let checks = read().await;
+    let gate = &checks["checks"][0];
+    assert_eq!(gate["status"], "pending", "{checks}");
+    assert_eq!(gate["started_at"], pending.created_at.to_rfc3339());
+    assert!(gate["completed_at"].is_null());
+    assert_eq!(gate["running"]["runner_id"], "build-1/slot1");
+    assert_eq!(gate["running"]["started_at"], "2026-10-06T12:00:00+00:00");
+    assert_eq!(
+        gate["running"]["typical_seconds"], 480,
+        "the other recipe is not counted"
+    );
+    assert_eq!(gate["running"]["slow_seconds"], 900);
+    assert_eq!(gate["running"]["samples"], 4);
+    assert!(checks["server_time"].is_string());
+
+    let done = status(CommitStatusState::Success);
+    let checks = read().await;
+    let gate = &checks["checks"][0];
+    assert_eq!(gate["status"], "success");
+    assert_eq!(gate["started_at"], pending.created_at.to_rfc3339());
+    assert_eq!(gate["completed_at"], done.updated_at.to_rfc3339());
+    assert!(
+        gate.get("running").is_none(),
+        "a concluded check has no running gate"
+    );
+}

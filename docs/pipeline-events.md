@@ -188,6 +188,16 @@ holds at most 500 events: if you get 500, page the rest with
 can arrive twice, so drop frames whose `payload.seq` you have already seen.
 Without a cursor there is no replay: only events stored after the subscription.
 
+**Runner changes.** A heartbeat that starts or finishes a pass is also pushed
+as one `runner.changed` frame on scope `runners` (any signed-in account, like
+`GET /api/v1/control-plane/runners`), and, for gate slots and the reviewer, on
+`repo.<owner>.<name>` for each repository the pass touches (anyone who can read
+that repository). The payload is what the beat said: `runnerId`, `kind`,
+`current` (`repo`, `pr`, `sha`, `recipe`, `startedAt`) and `last` (`repo`,
+`pr`, `sha`, `recipe`, `conclusion`, `seconds`). These frames are not stored and
+have no cursor: treat one as a nudge to refetch. A beat that changes nothing
+pushes nothing.
+
 ```js
 const ws = new WebSocket(`wss://${forgeHost}/api/v1/ws?after_seq=${last}`);
 ws.onopen = () => ws.send(JSON.stringify({type: "subscribe", subscriptions: [{scope: "pipeline"}]}));
@@ -667,6 +677,27 @@ build passes, else the checkout's `git rev-parse HEAD`) and `null` when the
 build could not tell; `webCommit` is the jeryu-web commit `jeryu-split.lock.toml`
 pinned, and so the SPA embedded. `GET /api/v1/version` carries the same
 `commit` and `webCommit` beside `version` and `name`.
+
+**How long a running pass takes.** A gate slot's or the reviewer's running
+task carries `"estimate": {"typicalSeconds": 420, "slowSeconds": 600, "samples": 12}`:
+the median and the 90th percentile of the newest 20 passes of the same recipe
+on the same repository that ran to the end (`gate.finished` with outcome
+`success`, `review.finished` with `approve` or `hold`; implementation
+`crates/jeryu-api/src/web/pipeline/estimate.rs`). With fewer than three such
+passes in the event log's 30 days there is no `estimate` key, and a page shows
+elapsed time instead of a guess. The response's top-level `serverTime` is the
+forge's clock when it answered, so a page can tick elapsed time from
+`startedAt` without trusting the viewer's clock.
+
+`GET /api/v1/repos/:id/pulls/:number/checks` says the same about the gate on a
+pull request head. The pending required status the gate posted
+(`<repo>/required`, or the only pending required status) carries
+`"running": {"runner_id", "recipe", "started_at", "typical_seconds", "slow_seconds", "samples"}`
+while an online gate slot reports that head; the two figures are `null` with
+too few passes. Every status row's `started_at` is the `pending` post that
+opened its newest run and `completed_at` is `null` until it concludes; a status
+concluded with no `pending` before it (a green head re-verified in place) has
+`started_at: null`. The answer carries `server_time`.
 
 ## Release boards
 

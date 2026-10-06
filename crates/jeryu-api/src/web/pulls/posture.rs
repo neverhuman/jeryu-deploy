@@ -2,6 +2,10 @@
 
 use super::*;
 
+use chrono::{DateTime, Utc};
+
+use crate::web::control_plane::{holds_gate_slot, is_online};
+
 pub(super) fn passport_hash(
     state: &WebState,
     pr: &PullRequest,
@@ -433,10 +437,11 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
         Ok(list) => latest_check_runs_by_name(list.check_runs),
         Err(_) => Vec::new(),
     };
-    let statuses = match core.combined_status(&pr.owner, &pr.repo, &pr.head.sha) {
-        Ok(combined) => latest_statuses_by_context(combined.statuses),
+    let history = match core.combined_status(&pr.owner, &pr.repo, &pr.head.sha) {
+        Ok(combined) => combined.statuses,
         Err(_) => Vec::new(),
     };
+    let statuses = latest_statuses_by_context(history.clone());
     let required = required_context_names(state, pr);
     let mut passing = 0;
     let mut failing = 0;
@@ -470,9 +475,11 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
             advisory: (!is_required).then(|| check_advisory(pr, &run.name)),
             started_at: Some(run.started_at.to_rfc3339()),
             completed_at: run.completed_at.map(|at| at.to_rfc3339()),
+            running: None,
         });
     }
     for status in &statuses {
+        let (started, completed) = status_span(&history, status);
         let bucket = status_bucket(&status.state);
         count(bucket);
         let is_required = required.contains(&status.context);
@@ -490,9 +497,16 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
             web_url: status.target_url.clone(),
             required: is_required,
             advisory: (!is_required).then(|| check_advisory(pr, &status.context)),
-            started_at: Some(status.created_at.to_rfc3339()),
-            completed_at: Some(status.updated_at.to_rfc3339()),
+            started_at: started.map(|at| at.to_rfc3339()),
+            completed_at: completed.map(|at| at.to_rfc3339()),
+            running: None,
         });
+    }
+    if let Some(gate) = running_gate(state, pr) {
+        let index = gate_check_index(&checks, &pr.repo);
+        if let Some(check) = index.and_then(|index| checks.get_mut(index)) {
+            check.running = Some(gate);
+        }
     }
     PullRequestChecks {
         total: u32::try_from(checks.len()).unwrap_or(u32::MAX),
@@ -501,7 +515,81 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
         pending,
         skipped,
         checks,
+        server_time: server_time(),
     }
+}
+
+/// When the newest run of `latest.context` started and concluded. Statuses
+/// are append-only and a gate posts `pending` when it starts, so a run starts
+/// at the first `pending` after the previous conclusion. A conclusion with no
+/// `pending` before it (a green head re-verified in place) has no known start,
+/// and a run still pending has no conclusion.
+fn status_span(
+    history: &[CommitStatus],
+    latest: &CommitStatus,
+) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+    let mut run_start = None;
+    for status in history.iter().filter(|s| s.context == latest.context) {
+        if status.id == latest.id {
+            break;
+        }
+        if status.updated_at > latest.updated_at {
+            continue;
+        }
+        if status.state == CommitStatusState::Pending {
+            run_start.get_or_insert(status.created_at);
+        } else {
+            run_start = None;
+        }
+    }
+    if latest.state == CommitStatusState::Pending {
+        (Some(run_start.unwrap_or(latest.created_at)), None)
+    } else {
+        (run_start, Some(latest.updated_at))
+    }
+}
+
+/// The online gate slot gating this PR's head right now, if any.
+fn running_gate(state: &WebState, pr: &PullRequest) -> Option<RunningGate> {
+    let repo = format!("{}/{}", pr.owner, pr.repo);
+    let now = Utc::now();
+    let records = state.gate_runners.snapshot();
+    let (runner_id, task) = records.iter().find_map(|record| {
+        let beat = &record.heartbeat;
+        let task = beat.current.as_ref()?;
+        (holds_gate_slot(beat)
+            && is_online(record, now)
+            && task.repo == repo
+            && task.sha == pr.head.sha)
+            .then(|| (beat.runner_id.clone(), task.clone()))
+    })?;
+    let estimate = crate::web::pipeline::estimate::for_pass(state, "gate", &repo, &task.recipe);
+    Some(RunningGate {
+        runner_id,
+        started_at: task.started_at.to_rfc3339(),
+        typical_seconds: estimate.map(|e| e.typical_seconds),
+        slow_seconds: estimate.map(|e| e.slow_seconds),
+        samples: estimate.map_or(0, |e| e.samples),
+        recipe: task.recipe,
+    })
+}
+
+/// The pending required status the gate runner posts: `<repo>/required` when
+/// present, otherwise the only pending required status there is. A gate that
+/// re-verifies a green head posts no `pending`, so it has no row to ride on.
+fn gate_check_index(checks: &[PullRequestCheck], repo: &str) -> Option<usize> {
+    let candidates: Vec<usize> = checks
+        .iter()
+        .enumerate()
+        .filter(|(_, check)| check.kind == "status" && check.required && check.status == "pending")
+        .map(|(index, _)| index)
+        .collect();
+    let named = format!("{repo}/required");
+    candidates
+        .iter()
+        .copied()
+        .find(|&index| checks[index].name == named)
+        .or_else(|| (candidates.len() == 1).then(|| candidates[0]))
 }
 
 /// The contexts the base branch waits for: its protection rule's required

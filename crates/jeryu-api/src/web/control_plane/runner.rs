@@ -27,6 +27,9 @@ pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFa
     {
         with_merge_outcome(state, node);
     }
+    for node in &mut seed {
+        with_estimates(state, node);
+    }
     let node_details = build_runner_nodes(seed, &workcells, &agent_runs);
     let last_updated = node_details
         .iter()
@@ -66,6 +69,7 @@ pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFa
     RunnerFabricResponse {
         schema_version: "jeryu.runner_fabric/v1".to_string(),
         forge: ForgeBuild::current(),
+        server_time: Some(now.to_rfc3339()),
         local: RunnerLocalFabric {
             state: if online_runners == 0 {
                 EvidenceState::Unknown
@@ -169,6 +173,7 @@ pub(crate) fn gate_runner_nodes(
                         state: EvidenceState::Missing,
                         lines: Vec::new(),
                     },
+                    estimate: None,
                 })
                 .collect();
             RunnerNodeSummary {
@@ -244,6 +249,22 @@ fn with_merge_outcome(state: &WebState, node: &mut RunnerNodeSummary) {
         .iter()
         .filter_map(|repo| crate::web::merge_attempts::grant_gap(state, repo))
         .collect();
+}
+
+/// Gate slots and reviewers say how long their running pass usually takes,
+/// so `/runners` can show how much of it is left.
+fn with_estimates(state: &WebState, node: &mut RunnerNodeSummary) {
+    let noun = match node.kind.as_str() {
+        "gate" => "gate",
+        "reviewer" => "review",
+        _ => return,
+    };
+    for task in &mut node.active_tasks {
+        if let Some(repo) = task.repo.as_deref() {
+            task.estimate =
+                crate::web::pipeline::estimate::for_pass(state, noun, repo, &task.program);
+        }
+    }
 }
 
 fn build_runner_nodes(
@@ -383,6 +404,7 @@ fn runner_task_summary(
             },
             lines: tty_lines,
         },
+        estimate: None,
     }
 }
 
