@@ -518,3 +518,72 @@ async fn tui_read_model_is_served_under_its_own_path_and_the_suffixed_alias() {
         "both paths serve the same read model"
     );
 }
+
+/// The unknown-API-route 404 told the caller to "compare /api/v1/bootstrap
+/// versions", but bootstrap only carries the payload's `schema_version`: a
+/// client following the hint never found a build version. The hint now names
+/// `GET /api/v1/version`, and this asserts that route really answers with the
+/// build identity it promises.
+#[tokio::test]
+async fn the_unknown_route_404_points_at_a_version_route_that_serves_the_build() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let fetch = |path: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            (status, response_json(response).await)
+        }
+    };
+
+    let (status, missing) = fetch("/api/v1/no-such-route").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let fixes: Vec<String> = missing["common_fixes"]
+        .as_array()
+        .expect("common_fixes")
+        .iter()
+        .filter_map(|fix| fix.as_str().map(str::to_string))
+        .collect();
+    assert!(
+        fixes.iter().any(|fix| fix.contains("GET /api/v1/version")),
+        "the version hint names the route that serves it: {fixes:?}"
+    );
+    assert!(
+        !fixes.iter().any(|fix| fix.contains("/api/v1/bootstrap")),
+        "bootstrap carries no build version, so the hint must not send clients there: {fixes:?}"
+    );
+
+    let (version_status, version) = fetch("/api/v1/version").await;
+    assert_eq!(
+        version_status,
+        StatusCode::OK,
+        "the hinted route answers: {version}"
+    );
+    assert_eq!(version["version"].as_str(), Some(crate::JERYU_API_VERSION));
+    for field in ["commit", "webCommit"] {
+        assert!(
+            version
+                .as_object()
+                .expect("version object")
+                .contains_key(field),
+            "{field} is part of the build identity: {version}"
+        );
+    }
+
+    let (bootstrap_status, bootstrap) = fetch("/api/v1/bootstrap").await;
+    assert_eq!(bootstrap_status, StatusCode::OK, "{bootstrap}");
+    assert!(
+        bootstrap.get("version").is_none(),
+        "the hint is accurate only while bootstrap stays free of a build version: {bootstrap}"
+    );
+}

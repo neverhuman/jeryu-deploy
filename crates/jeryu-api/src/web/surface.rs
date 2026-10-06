@@ -140,7 +140,10 @@ fn unknown_api_route(path: &str) -> AxumResponse {
         reason: &format!("no API route matches {path}"),
         common_fixes: &[
             "check the path and HTTP method against the route index at GET /api/v1",
-            "the server may be older than the client: compare /api/v1/bootstrap versions",
+            // Bootstrap carries a payload `schema_version`, never the build's
+            // identity; the build version, commit and web commit live at
+            // `GET /api/v1/version`.
+            "the server may be older than the client: compare builds with GET /api/v1/version",
         ],
         docs_url: super::route_index::INDEX_PATH,
         repair_hint: "list the available routes with GET /api/v1 and retry with one of them",
