@@ -1335,6 +1335,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
             && !shift_heartbeat_path(path)
             && !shift_todo_action_path(path))
         || (pipeline_events_path(path) && !unsafe_method(method))
+        || pipeline_histogram_path(path)
         || (release_board_path(path) && !unsafe_method(method))
         || attention_path(path)
         || pins_path(path)
@@ -1383,6 +1384,12 @@ fn shift_todo_action_path(path: &str) -> bool {
 /// identity), like runner heartbeats.
 fn pipeline_events_path(path: &str) -> bool {
     path == "/api/v1/events" || path == "/api/v1/events/"
+}
+
+/// The histogram counts the same rows the log holds, so it is read by the
+/// same accounts. It takes no writes, so every method is admin-only.
+fn pipeline_histogram_path(path: &str) -> bool {
+    path == "/api/v1/events/histogram" || path == "/api/v1/events/histogram/"
 }
 
 /// Release boards name hosts, commands and the pinned commits of private

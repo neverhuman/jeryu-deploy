@@ -251,6 +251,12 @@ fn admin_allow_list_matches_the_route_table() {
     ));
     assert!(admin_only_request(&Method::GET, "/api/v1/events"));
     assert!(!admin_only_request(&Method::POST, "/api/v1/events"));
+    // The histogram counts the rows the log holds, so it reads the same.
+    assert!(admin_only_request(&Method::GET, "/api/v1/events/histogram"));
+    assert!(admin_only_request(
+        &Method::POST,
+        "/api/v1/events/histogram"
+    ));
     assert!(admin_only_request(&Method::GET, "/api/v1/attention"));
     assert!(admin_only_request(&Method::GET, "/api/v1/pins/"));
 }

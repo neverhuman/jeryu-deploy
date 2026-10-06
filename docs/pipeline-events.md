@@ -42,6 +42,7 @@ projection and the Flow report), `db/migrations/0002_pipeline_events.sql`,
 | `POST /api/v1/shift/heartbeat` | a global admin, or a login in `JERYU_SHIFT_REPORTERS` (comma-separated site setting, e.g. `fleet-bot,pool-bot`) |
 | `POST /api/v1/agent-presence` | a global admin or a login in `JERYU_PRESENCE_REPORTERS` for any scope; any other login for repositories it can write (`docs/agent-presence.md`) |
 | `GET /api/v1/events` | global admins |
+| `GET /api/v1/events/histogram` | global admins |
 | `GET /api/v1/attention` | global admins |
 | `GET`, `POST /api/v1/attention/acks` | global admins |
 | `GET /api/v1/pins` | global admins |
@@ -193,6 +194,73 @@ mistaken for "more behind it". `next_cursor` is the `seq` of the last event on
 the page (absent for an empty one): send it as `after_seq` to keep walking
 forward, or as `before_seq` on the default newest-first read. One paging rule
 for both edges is written once in `docs/pagination.md`.
+
+### `GET /api/v1/events/histogram`
+
+How much pipeline there was, bucketed over time: what the chart at the top of
+the Activity page draws and what its wall-mode tiles count. `GET
+/api/v1/events` answers at most 500 rows, so a chart drawn from it counts the
+page it happens to hold; this route counts the window itself, as one
+`GROUP BY` over `pipeline_events`.
+
+Query: `hours` (1 to 720, default 24; out of range is a
+`422 events_invalid_query`, never clamped), `bucket` (`5m`, `15m`, `1h`,
+`1d`), and the filters of `GET /api/v1/events` that narrow a window rather
+than page it: `family`, `repo`, `source`, `kind` (exact, or a prefix ending in
+a dot) and `needs_human`. A key this route does not read (`after_seq`,
+`limit`) answers `422 events_invalid_query` naming the keys it does.
+
+Without `bucket` the window picks one: `5m` up to 2 hours, `15m` up to 12,
+`1h` up to 168, `1d` beyond. One answer holds at most 1500 buckets; a finer
+bucket over a longer window is refused with the bucket to use instead
+(`hours=720&bucket=5m` is 8640 bars), never silently coarsened.
+
+Bucket starts are whole multiples of the bucket since the epoch, so two calls
+seconds apart draw the same bars and a `1d` bucket is a UTC day. `from` is the
+first bucket's start, inclusive; `to` is the last bucket's end, exclusive, and
+the bucket holding "now" is included whole, so `to` is at or just after the
+time of the request. Every bucket in between is present: a quiet hour is a row
+of zeros, never a gap in the series.
+
+```json
+{"schema_version": "jeryu.pipeline_events/v1",
+ "from": "2026-10-05T09:00:00Z", "to": "2026-10-06T10:00:00Z", "bucket_seconds": 3600,
+ "buckets": [{"start": "2026-10-05T09:00:00Z", "total": 12,
+              "by_group": {"todos": 4, "gates": 3, "reviews": 2, "pulls": 1,
+                           "merges": 1, "releases": 0, "deploys": 1, "other": 0},
+              "failures": 1, "needs_human": 1, "cost_usd": 0.42, "seconds_p50": 114}],
+ "totals": {"todos_finished": 9, "blocked": 1, "prs_merged": 4, "deploys": 2, "spent_usd": 3.71}}
+```
+
+- `by_group` counts the same kind prefixes as the Activity chips: `todo.`,
+  `gate.`, `review.` plus `pr.review`, `pr.`, `queue.`, `release.`, `deploy.`,
+  and `other` for everything no chip names (`worker.`, `pin.`, `shift.`). A
+  `pr.review` is a review verdict, not a pull-request beat, so it is counted
+  as a review; each event is counted in exactly one group, so the groups sum
+  to `total`.
+- `failures` counts the events whose `outcome` says the step did not get
+  through: `failure`, `failed`, `error`, `blocked`, `timed_out`,
+  `request_changes`, `inputs_changed`.
+- `cost_usd` and `spent_usd` are summed to the cent. `seconds_p50` is the
+  median `seconds` of the events in the bucket that carry one (the upper of
+  the two middles for an even count), `null` when none does.
+- `totals` covers the whole window, not one bucket: the five wall-mode tiles.
+  `todos_finished` and `blocked` are `todo.attempt_finished` with `outcome`
+  `done` and `blocked`, `prs_merged` is `pr.merged`, and `deploys` is
+  `deploy.status` with `outcome` `success`.
+
+**One happening, counted once.** A finished gate is reported twice —
+`gate.finished` from the forge's reading of the runner heartbeat, then
+`gate.log` from the runner's own reporter — and so is a review
+(`review.finished`, then the `pr.review` verdict). The histogram drops the
+echo, keeping the report that carries more, exactly as the feed does
+(`foldEchoes` in `jeryu-web`'s `activityModel.ts`): a `gate.finished` is
+dropped when a `gate.log` for the same `repo` and `sha` with the same outcome
+(or any non-plain outcome the heartbeat flattened to `error`) lies within five
+minutes, and a `review.finished` when a `pr.review` for the same `repo`, `pr`
+and `sha` does. A lone report of either kind is kept. So `total` is happenings,
+not rows, and it can be lower than the number of rows `GET /api/v1/events`
+returns for the same window.
 
 ### WebSocket
 

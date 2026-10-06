@@ -1,6 +1,7 @@
-//! Pipeline visibility: the append-only event log (`/api/v1/events`), the
-//! attention inbox (`/api/v1/attention`) and one piece of work's trace from
-//! todo to deployment (`/api/v1/trace`). Contract: `docs/pipeline-events.md`.
+//! Pipeline visibility: the append-only event log (`/api/v1/events`), its
+//! volume over time (`/api/v1/events/histogram`), the attention inbox
+//! (`/api/v1/attention`) and one piece of work's trace from todo to
+//! deployment (`/api/v1/trace`). Contract: `docs/pipeline-events.md`.
 //!
 //! Every lifecycle step (todo claimed, gate finished, review posted, queued,
 //! merged, staged, deployed) becomes one row in `<data_dir>/shift.sqlite` and
@@ -11,6 +12,7 @@
 pub(crate) mod attention;
 pub(crate) mod emit;
 pub(crate) mod estimate;
+pub(crate) mod histogram;
 pub(crate) mod pins;
 mod store;
 pub(crate) mod trace;
@@ -20,6 +22,8 @@ mod types;
 mod attention_tests;
 #[cfg(test)]
 mod emit_tests;
+#[cfg(test)]
+mod histogram_tests;
 #[cfg(test)]
 mod ledger_tests;
 #[cfg(test)]

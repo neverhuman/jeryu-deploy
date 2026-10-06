@@ -1251,7 +1251,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/events",
             get(pipeline::list_events).post(pipeline::post_events),
         ),
-        ("/api/v1/events/histogram", get(pipeline::events_histogram)),
+        (
+            "/api/v1/events/histogram",
+            get(pipeline::histogram::histogram),
+        ),
         ("/api/v1/usage", get(pipeline::usage)),
         ("/api/v1/attention", get(pipeline::attention::attention)),
         (

@@ -38,6 +38,17 @@
   idempotency store: a retry with the same key answers 409
   `idempotent_secret_withheld` and does not run the write twice. `/mcp/bot`, the token exchange
   and the setup-script proxy keep working for existing bot hosts.
+- `GET /api/v1/events/histogram` counts pipeline volume over a window instead
+  of leaving a chart to count the page it holds: `hours` (1 to 720, default
+  24) and `bucket` (`5m`, `15m`, `1h`, `1d`, chosen from `hours` when it is
+  not given), narrowed by the event log's own `family`, `repo`, `source`,
+  `kind` and `needs_human` filters. One answer is a dense series - a quiet
+  bucket is a row of zeros, not a gap - with each bucket counted by Activity
+  chip, plus the window's own `todos_finished`, `blocked`, `prs_merged`,
+  `deploys` and `spent_usd` for the wall-mode tiles. The two reports of one
+  finished gate or review are counted once, as the feed shows them. Admin-only,
+  like reading the log.
+
 - Design for Flow (`docs/flow.md`, ADR 0004): the delivery line as stations,
   with WIP, queue and process time, rework loops, holds, the bottleneck and the
   runners behind each station, built from the event log and heartbeats.

@@ -471,6 +471,7 @@ client repairs the request from the refusal alone.
 | `GET /api/v1/merge-queue` | `state` (`building`, `landed`, `failed`, `dequeued`, or `all`; default `building`) |
 | `GET /api/v1/attention` | `severity` (`critical`, `action`, `watch`), `kind` (the inbox kinds, `KINDS` in `attention.rs`), `family` |
 | `GET /api/v1/events` | keys only; it keeps its own `events_invalid_query` code and validates `kind` and `limit` itself |
+| `GET /api/v1/events/histogram` | `bucket` (`5m`, `15m`, `1h`, `1d`); it keeps the log's `events_invalid_query` code and validates `hours` and `kind` itself |
 
 A `family` that names no hosted family answers `family_unknown` (422) for the
 same reason, on every route that takes one.

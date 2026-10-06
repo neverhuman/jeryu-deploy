@@ -27,6 +27,87 @@ const PRUNE_EVERY_MS: i64 = 60 * 60 * 1000;
 pub(crate) const DEFAULT_LIMIT: i64 = 100;
 pub(crate) const MAX_LIMIT: i64 = 500;
 
+/// Minutes two reports of one happening may lie apart and still be one
+/// happening, as the Activity page reads them (`SAME_HAPPENING_MS` in
+/// `jeryu-web`'s `activityModel.ts`).
+pub(crate) const SAME_HAPPENING_MS: i64 = 5 * 60 * 1000;
+
+/// The group a kind is counted in, one `CASE` per Activity chip and in the
+/// chips' order: `pr.review` is a review verdict, not a pull-request beat, so
+/// it is tried before the `pr.` prefix.
+const GROUP_CASE: &str = "CASE
+    WHEN kind = 'pr.review' OR substr(kind, 1, 7) = 'review.' THEN 'reviews'
+    WHEN substr(kind, 1, 5) = 'todo.' THEN 'todos'
+    WHEN substr(kind, 1, 5) = 'gate.' THEN 'gates'
+    WHEN substr(kind, 1, 3) = 'pr.' THEN 'pulls'
+    WHEN substr(kind, 1, 6) = 'queue.' THEN 'merges'
+    WHEN substr(kind, 1, 8) = 'release.' THEN 'releases'
+    WHEN substr(kind, 1, 7) = 'deploy.' THEN 'deploys'
+    ELSE 'other'
+  END";
+
+/// What the histogram counts as a failure: the outcomes the Activity page
+/// paints as failed, plus the ones that mean a step did not get through.
+const FAILED_CASE: &str = "CASE WHEN outcome IN
+    ('failure', 'failed', 'error', 'blocked', 'timed_out', 'request_changes', 'inputs_changed')
+  THEN 1 ELSE 0 END";
+
+/// The window one histogram covers, and the filters it counts inside it.
+pub(crate) struct HistogramWindow<'a> {
+    /// Start of the first bucket, inclusive.
+    pub from_ms: i64,
+    /// End of the last bucket, exclusive.
+    pub to_ms: i64,
+    pub bucket_ms: i64,
+    /// `family`, `repo`, `source`, `kind` and `needs_human`, read exactly as
+    /// `GET /api/v1/events` reads them.
+    pub filter: &'a EventsQuery,
+}
+
+/// One bucket's worth of one group, as the `GROUP BY` answers it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GroupRow {
+    /// Buckets since `from_ms`.
+    pub bucket: i64,
+    pub group: String,
+    pub total: i64,
+    pub failures: i64,
+    pub needs_human: i64,
+    pub cost_usd: f64,
+    /// The `seconds` of the events in this row that carry one, unsorted.
+    pub seconds: Vec<i64>,
+    pub todos_finished: i64,
+    pub blocked: i64,
+    pub prs_merged: i64,
+    pub deploys: i64,
+}
+
+/// Drops the second report of a happening the reader counts once: a
+/// `gate.finished` whose `gate.log` arrived within five minutes for the same
+/// commit and outcome, and a `review.finished` whose `pr.review` verdict did.
+/// This is `foldEchoes` in `jeryu-web`'s `activityModel.ts`, in SQL, so a
+/// chart drawn from the histogram and a feed drawn from the log agree.
+fn echo_filter(same_happening: &str) -> String {
+    format!(
+        "NOT (kind = 'gate.finished' AND EXISTS (
+            SELECT 1 FROM pipeline_events echo
+             WHERE echo.kind = 'gate.log'
+               AND echo.repo IS NOT NULL AND echo.repo = pipeline_events.repo
+               AND echo.sha IS NOT NULL AND echo.sha = pipeline_events.sha
+               AND (echo.outcome IS pipeline_events.outcome
+                    OR (pipeline_events.outcome = 'error' AND echo.outcome IS NOT NULL
+                        AND echo.outcome NOT IN ('success', 'failure')))
+               AND abs(echo.ts_ms - pipeline_events.ts_ms) <= {same_happening}))
+         AND NOT (kind = 'review.finished' AND EXISTS (
+            SELECT 1 FROM pipeline_events echo
+             WHERE echo.kind = 'pr.review'
+               AND echo.repo IS NOT NULL AND echo.repo = pipeline_events.repo
+               AND echo.pr IS NOT NULL AND echo.pr = pipeline_events.pr
+               AND echo.sha IS NOT NULL AND echo.sha = pipeline_events.sha
+               AND abs(echo.ts_ms - pipeline_events.ts_ms) <= {same_happening}))"
+    )
+}
+
 const COLUMNS: &str = "seq, ts_ms, event_id, source, kind, reporter, actor, family, repo, pr, sha, todo_id,
     shift, outcome, needs_human, summary, reason, cost_usd, seconds, log_tail, log_url, detail_json";
 
@@ -468,6 +549,104 @@ impl EventStore {
             }
         }
         Ok(reached)
+    }
+
+    /// One `GROUP BY` over the window behind `GET /api/v1/events/histogram`:
+    /// a row per (bucket, group) that the route zero-fills into a dense
+    /// series. The echoes a reader would see as one happening are dropped
+    /// here rather than counted twice ([`ECHOES_FOLDED`]).
+    pub(crate) fn histogram(&self, window: &HistogramWindow<'_>) -> Result<Vec<GroupRow>, String> {
+        let mut values: Vec<SqlValue> = Vec::new();
+        let mut push = |value: SqlValue| -> String {
+            values.push(value);
+            format!("?{}", values.len())
+        };
+        let from = push(SqlValue::Integer(window.from_ms));
+        let to = push(SqlValue::Integer(window.to_ms));
+        let bucket = push(SqlValue::Integer(window.bucket_ms));
+        let same_happening = push(SqlValue::Integer(SAME_HAPPENING_MS));
+        let mut clauses = vec![
+            format!("ts_ms >= {from}"),
+            format!("ts_ms < {to}"),
+            echo_filter(&same_happening),
+        ];
+        let filter = window.filter;
+        let family = filter
+            .family
+            .as_deref()
+            .map(crate::web::family::canonical)
+            .filter(|family| !family.is_empty());
+        fn text(value: &Option<String>) -> Option<&str> {
+            value.as_deref().map(str::trim).filter(|v| !v.is_empty())
+        }
+        for (column, value) in [
+            ("family", family.as_deref()),
+            ("repo", text(&filter.repo)),
+            ("source", text(&filter.source)),
+        ] {
+            if let Some(value) = value {
+                let bound = push(SqlValue::Text(value.to_string()));
+                clauses.push(format!("{column} = {bound}"));
+            }
+        }
+        if let Some(kind) = text(&filter.kind) {
+            let bound = push(SqlValue::Text(kind.to_string()));
+            // A prefix (`todo.`) compares the leading characters, so no LIKE
+            // wildcard in the value can widen the match; the route refuses
+            // anything that is neither a kind nor a prefix.
+            if kind.ends_with('.') {
+                clauses.push(format!("substr(kind, 1, length({bound})) = {bound}"));
+            } else {
+                clauses.push(format!("kind = {bound}"));
+            }
+        }
+        if let Some(needs_human) = filter.needs_human {
+            let bound = push(SqlValue::Integer(i64::from(needs_human)));
+            clauses.push(format!("needs_human = {bound}"));
+        }
+        let sql = format!(
+            "SELECT (ts_ms - {from}) / {bucket} AS bucket, {GROUP_CASE} AS grp,
+                    COUNT(*), SUM({FAILED_CASE}), SUM(needs_human),
+                    SUM(COALESCE(cost_usd, 0)), group_concat(seconds),
+                    SUM(CASE WHEN kind = 'todo.attempt_finished' AND outcome = 'done'
+                             THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN kind = 'todo.attempt_finished' AND outcome = 'blocked'
+                             THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN kind = 'pr.merged' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN kind = 'deploy.status' AND outcome = 'success'
+                             THEN 1 ELSE 0 END)
+               FROM pipeline_events
+              WHERE {}
+              GROUP BY bucket, grp
+              ORDER BY bucket",
+            clauses.join(" AND ")
+        );
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner.conn.prepare(&sql).map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(values.iter()), |row| {
+                let seconds: Option<String> = row.get(6)?;
+                Ok(GroupRow {
+                    bucket: row.get(0)?,
+                    group: row.get(1)?,
+                    total: row.get(2)?,
+                    failures: row.get(3)?,
+                    needs_human: row.get(4)?,
+                    cost_usd: row.get(5)?,
+                    seconds: seconds
+                        .unwrap_or_default()
+                        .split(',')
+                        .filter_map(|value| value.parse::<i64>().ok())
+                        .collect(),
+                    todos_finished: row.get(7)?,
+                    blocked: row.get(8)?,
+                    prs_merged: row.get(9)?,
+                    deploys: row.get(10)?,
+                })
+            })
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())
     }
 
     /// Every family the log has an event for, canonical keys, sorted.
