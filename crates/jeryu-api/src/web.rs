@@ -33,6 +33,7 @@ mod permissions;
 mod pipeline;
 mod principals;
 mod proxy_trust;
+mod pull_import;
 mod pull_origin;
 mod pulls;
 mod regate;
@@ -203,6 +204,16 @@ pub(crate) struct WebState {
     pub(crate) pull_maintainers: Arc<Vec<String>>,
     /// What the newest GitHub-mirror reconcile found per repository.
     pub(crate) mirror_state: mirror_reconcile::MirrorStateStore,
+    /// Which repositories import their GitHub mirror's pull requests, read
+    /// from the split manifests. Empty unless a site both enrols a repository
+    /// and arms the forge; see [`crate::github_pull_import::PullImport::load`].
+    pub(crate) pull_import: Arc<crate::github_pull_import::PullImport>,
+    /// How the importer reaches GitHub. Absent on every forge that does not
+    /// import, so no test or embedded caller can make an outbound call.
+    pub(crate) github_api: Option<Arc<dyn crate::github_pull_import::GithubApi>>,
+    /// What the importer last told each GitHub pull request, so a pass that
+    /// changes nothing does not post the same comment twice.
+    pub(crate) import_reports: pull_import::ImportReportStore,
     /// The attention inbox's last answer (`GET /api/v1/attention`).
     pub(crate) attention: pipeline::attention::AttentionCache,
     /// Deliberately deferred attention items (`<data_dir>/shift.sqlite`,
@@ -379,6 +390,9 @@ impl WebState {
             pull_importers: Arc::new(pull_origin::importers_from_env()),
             pull_maintainers: Arc::new(pull_origin::maintainers_from_env()),
             mirror_state: mirror_reconcile::MirrorStateStore::default(),
+            pull_import: Arc::new(crate::github_pull_import::PullImport::default()),
+            github_api: None,
+            import_reports: pull_import::ImportReportStore::default(),
             attention: pipeline::attention::AttentionCache::default(),
             attention_acks,
             pins: pipeline::pins::PinsCache::default(),
@@ -435,6 +449,20 @@ impl WebState {
     /// embedded caller ever attempts a network push.
     fn with_github_mirror(mut self, mirror: Arc<crate::github_mirror::GithubMirror>) -> Self {
         self.github = self.github.with_github_mirror(mirror);
+        self
+    }
+
+    /// Attach the mirror pull request importer and the GitHub transport it
+    /// reaches out through. Production-only chaining in `serve()`, and only
+    /// when a site has both enrolled a repository and armed the forge; every
+    /// other constructor leaves both absent, so nothing imports by default.
+    fn with_pull_import(
+        mut self,
+        import: Arc<crate::github_pull_import::PullImport>,
+        api: Option<Arc<dyn crate::github_pull_import::GithubApi>>,
+    ) -> Self {
+        self.pull_import = import;
+        self.github_api = api;
         self
     }
 
@@ -497,6 +525,20 @@ impl WebState {
     pub(crate) fn with_pull_trust(mut self, importers: &[&str], maintainers: &[&str]) -> Self {
         self.pull_importers = Arc::new(importers.iter().map(|l| (*l).to_string()).collect());
         self.pull_maintainers = Arc::new(maintainers.iter().map(|l| (*l).to_string()).collect());
+        self
+    }
+
+    /// Test-only: enrol a repository in the importer and stand a fake GitHub
+    /// in for the network, so a test drives the whole import without env
+    /// (the crate forbids `unsafe`, so `std::env::set_var` is unavailable).
+    #[cfg(test)]
+    pub(crate) fn with_test_pull_import(
+        mut self,
+        import: crate::github_pull_import::PullImport,
+        api: Arc<dyn crate::github_pull_import::GithubApi>,
+    ) -> Self {
+        self.pull_import = Arc::new(import);
+        self.github_api = Some(api);
         self
     }
 
@@ -690,6 +732,17 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     let github_mirror = Arc::new(crate::github_mirror::GithubMirror::load(
         &config.split_manifests,
     ));
+    // Importing a mirror's pull requests: off unless the forge is armed AND a
+    // repository asks for it in the manifest. With no target the transport is
+    // never built, so an unarmed forge holds no GitHub credential at all.
+    let pull_import = Arc::new(crate::github_pull_import::PullImport::load(
+        &config.split_manifests,
+    ));
+    let github_api: Option<Arc<dyn crate::github_pull_import::GithubApi>> = pull_import
+        .is_enabled()
+        .then(crate::github_pull_import::CurlGithubApi::from_env)
+        .flatten()
+        .map(|api| Arc::new(api) as Arc<dyn crate::github_pull_import::GithubApi>);
     let state = WebState::with_repo_manager(
         core,
         repo_manager,
@@ -698,6 +751,7 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
         split_catalog,
     )
     .with_github_mirror(github_mirror)
+    .with_pull_import(pull_import, github_api)
     .with_tool_registry_path(tool_registry_path)
     .with_split_manifests(config.split_manifests.clone())
     .with_auth(
@@ -717,6 +771,7 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     tool_finder_schedule::spawn(state.clone());
     merge_queue::spawn_worker(state.clone(), std::time::Duration::from_secs(10));
     mirror_reconcile::spawn(state.clone());
+    pull_import::spawn(state.clone());
     let app = router(state);
     let listener = TcpListener::bind(config.bind).await?;
     // ConnectInfo gives the git handlers the peer address so the gitd auth layer
@@ -1082,6 +1137,12 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         (
             "/api/v1/repos/:id/pulls/:number/origin",
             get(pull_origin::show).put(pull_origin::set),
+        ),
+        // A pull request opened on a GitHub mirror, delivered by the site's
+        // webhook relay. The payload only names what to read from GitHub.
+        (
+            "/api/v1/github-mirror/pull-events",
+            post(pull_import::events),
         ),
         ("/api/v1/repos/:id/merge-queue", get(merge_queue::list_repo)),
         // What acts on the repository (checks, reviewer, merger and their

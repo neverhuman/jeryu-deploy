@@ -141,6 +141,76 @@ The pull request's title, description and diff are the contributor's words:
 they are data everywhere they are read, and nothing in them changes the
 marking, the maintainer list, or what the gate decides.
 
+## Importing a mirror's pull requests
+
+The marking above says what a contribution *is*; the importer is what brings
+one here. It is off by default and must stay off until the forge can run a
+stranger's code safely — see "Before switching it on".
+
+A repository imports when its `[[repo]]` entry carries the mirror fields AND:
+
+```toml
+import_github_pulls = true
+```
+
+and the forge is armed for the whole instance with
+`JERYU_GITHUB_PULL_IMPORT=1`. Either one missing means nothing is imported and
+no GitHub credential is even loaded. The token for the API calls comes from
+`JERYU_GITHUB_API_TOKEN` or `JERYU_GITHUB_API_TOKEN_FILE`, and never reaches a
+process argument: curl reads it from a config on stdin.
+
+For each pull request open on an enrolled mirror the importer:
+
+1. fetches its commits (`refs/pull/<number>/head`, which GitHub publishes for a
+   fork and a branch alike) into the forge repository as
+   `contrib/gh-<number>`. The commits are fetched, never rewritten, so every
+   original author and committer survives;
+2. opens a forge pull request from that branch against the mirror's branch,
+   titled as the contributor titled it, linking the GitHub pull request, and
+   authored by `gh-<github login>` so the importer is never the author of what
+   it marks;
+3. marks it `contributed`, which is the hold described above;
+4. posts the forge gate's answer back as the `jeryu/forge-gate` commit status
+   on the GitHub head, and the maintainer review summary as a comment — each
+   only when it has something new to say;
+5. closes the GitHub pull request once the forge settles it: `merged as <sha>`
+   after the mirror push has carried the commits to the branch (GitHub marks a
+   pull request merged itself when its exact commits land), or the reason when
+   the forge closed it unmerged.
+
+A contributor who force-pushes moves the forge pull request's head with them.
+A pull request on a repository nobody enrolled is ignored, and Dependabot is
+not a special case: its pull requests take exactly this path.
+
+Deliveries arrive two ways:
+
+- `POST /api/v1/github-mirror/pull-events`, called by the site's webhook relay
+  as a `JERYU_PULL_IMPORTERS` identity (or a global admin). The payload is
+  untrusted: only the repository name and the pull request number are read, and
+  the pull request itself is then read from the GitHub API, so a forged
+  delivery cannot hand the forge a head commit of its own.
+- the poll, every `JERYU_GITHUB_PULL_IMPORT_MINUTES` (default 5, `0` turns it
+  off), which is the fallback for a delivery that never arrived.
+
+A contributor's title, body, branch name and login are data everywhere: they
+are copied into the forge pull request and never interpreted, and nothing in
+them chooses a repository, a branch or a command.
+
+### Before switching it on
+
+An imported contribution is a stranger's code that the forge's gate then runs.
+`import_github_pulls` may not be set, and the forge may not be armed, before
+all of these are in place:
+
+- the untrusted-pull-request flag and the sandboxed gate, so a contribution's
+  gate run reaches neither the forge nor the network, and
+- a live `pr-redteam` running the `jeryu-ci-runner` main code: the older copy
+  approves by default and would wave a contribution through.
+
+The contributed-origin hold stops an imported pull request from *merging*
+without a maintainer. It does not stop the gate from *running* the code, which
+is what the two above are for.
+
 ## Turning it off
 
 `JERYU_GITHUB_PUSH=0` loads the mirror with no targets. Merges, tag pushes and

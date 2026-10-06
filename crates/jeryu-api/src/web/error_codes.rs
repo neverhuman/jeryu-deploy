@@ -474,6 +474,26 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "only an open pull request can change its draft state",
     ),
     entry(
+        "pull_import_failed",
+        500,
+        "the mirror pull request import did not run",
+    ),
+    entry(
+        "pull_import_github_unreachable",
+        502,
+        "the pull request could not be read from GitHub",
+    ),
+    entry(
+        "pull_import_importer_required",
+        403,
+        "only an admin or a JERYU_PULL_IMPORTERS login may deliver mirror pull request events",
+    ),
+    entry(
+        "pull_import_invalid_request",
+        422,
+        "the mirror pull request event body failed validation",
+    ),
+    entry(
         "pull_merge_invalid_request",
         422,
         "the merge body failed validation",

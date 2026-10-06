@@ -41,6 +41,7 @@ mod gate_wanted_tests;
 mod git_authorization;
 mod github_rest_tests;
 mod jankurai_audit_tests;
+mod pull_import_tests;
 mod pull_origin_tests;
 mod pulls_tests;
 mod regate_tests;
