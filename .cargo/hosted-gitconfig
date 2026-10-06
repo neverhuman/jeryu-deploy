@@ -24,4 +24,5 @@
 	insteadOf = https://github.com/neverhuman/jeryu-jira.git
 
 [url "https://git.neverhuman.org/git/jeryu/jeryu-release-ops.git"]
+	insteadOf = http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git
 	insteadOf = https://github.com/neverhuman/jeryu-release-ops.git

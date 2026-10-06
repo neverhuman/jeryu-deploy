@@ -55,8 +55,8 @@ required_check = "jeryu-web/required"
 name = "jeryu-release-ops"
 github_slug = "neverhuman/jeryu-release-ops"
 local_path = "/home/ubuntu/jeryu-split/jeryu-release-ops"
-tag = "jeryu-release-ops-v5.0.0-split.0"
-commit = "6f57a3153a9c64c7191f4fbc6c7a4e44767a8cac"
+tag = "jeryu-release-ops-v5.0.0-split.8"
+commit = "2c03082fe3a0cf720781058ec07a55eff98a95a9"
 required_check = "jeryu-release-ops/required"
 
 [[repo]]

@@ -33,6 +33,7 @@ expected_pairs=(
   'http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git|https://git.neverhuman.org/git/jeryu/jeryu-ci-runner.git'
   'https://github.com/neverhuman/jeryu-ci-runner.git|https://git.neverhuman.org/git/jeryu/jeryu-ci-runner.git'
   'https://github.com/neverhuman/jeryu-jira.git|https://git.neverhuman.org/git/jeryu/jeryu-jira.git'
+  'http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git|https://git.neverhuman.org/git/jeryu/jeryu-release-ops.git'
   'https://github.com/neverhuman/jeryu-release-ops.git|https://git.neverhuman.org/git/jeryu/jeryu-release-ops.git'
 )
 
@@ -141,10 +142,9 @@ done
 expected_lock_sources=(
   'http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git'
   'http://127.0.0.1:8787/git/jeryu/jeryu-core.git'
-  'http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git'
+  'http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git'
   'https://github.com/neverhuman/jeryu-intelligence.git'
   'https://github.com/neverhuman/jeryu-jira.git'
-  'https://github.com/neverhuman/jeryu-release-ops.git'
 )
 mapfile -t lock_sources < <(
   awk -F '"' '/^source = "git\+/ {

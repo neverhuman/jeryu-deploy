@@ -3,16 +3,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const EXPECTED_LOCK_SOURCES: [&str; 6] = [
+const EXPECTED_LOCK_SOURCES: [&str; 5] = [
     "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git",
     "http://127.0.0.1:8787/git/jeryu/jeryu-core.git",
-    "http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git",
+    "http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git",
     "https://github.com/neverhuman/jeryu-intelligence.git",
     "https://github.com/neverhuman/jeryu-jira.git",
-    "https://github.com/neverhuman/jeryu-release-ops.git",
 ];
 
-const EXPECTED_MAPPINGS: [(&str, &str); 8] = [
+const EXPECTED_MAPPINGS: [(&str, &str); 9] = [
     (
         "http://127.0.0.1:8787/git/jeryu/jeryu-core.git",
         "https://git.neverhuman.org/git/jeryu/jeryu-core.git",
@@ -40,6 +39,10 @@ const EXPECTED_MAPPINGS: [(&str, &str); 8] = [
     (
         "https://github.com/neverhuman/jeryu-jira.git",
         "https://git.neverhuman.org/git/jeryu/jeryu-jira.git",
+    ),
+    (
+        "http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git",
+        "https://git.neverhuman.org/git/jeryu/jeryu-release-ops.git",
     ),
     (
         "https://github.com/neverhuman/jeryu-release-ops.git",
@@ -74,9 +77,9 @@ const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     ),
     (
         "jeryu-release-ops",
-        "jeryu-release-ops-v5.0.0-split.0",
-        "6f57a3153a9c64c7191f4fbc6c7a4e44767a8cac",
-        "refs/heads/preserve/hosted-cargo/jeryu-release-ops-v5.0.0-split.0",
+        "jeryu-release-ops-v5.0.0-split.8",
+        "2c03082fe3a0cf720781058ec07a55eff98a95a9",
+        "refs/heads/preserve/hosted-cargo/jeryu-release-ops-v5.0.0-split.8",
     ),
 ];
 

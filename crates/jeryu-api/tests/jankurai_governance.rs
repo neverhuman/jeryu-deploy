@@ -154,8 +154,9 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("release graph must declare its Core source unifier");
     assert_eq!(
         patches.len(),
-        3,
-        "release graph may patch only the historical Core, Intelligence and CI Runner sources"
+        4,
+        "release graph may patch only the historical Core, Intelligence, CI Runner \
+         and release-ops sources"
     );
 
     // jeryu-api and the historical Intelligence release both name the GitHub
@@ -239,8 +240,13 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         !read("Cargo.toml").contains("path = \"../jeryu-"),
         "release Cargo.toml must not contain sibling Jeryu paths"
     );
+    // jeryu-release-ops names the local-forge Intelligence source at split.0,
+    // and Intelligence names the GitHub release-ops source at split.0: the two
+    // release tags pin each other, so each cycle edge needs its own unifier.
+    // Cargo rejects a patch whose target repeats the patched repository, so the
+    // surviving identity is always the other spelling of the same hosted repo.
     let intelligence_patches = patches
-        .get("https://github.com/neverhuman/jeryu-intelligence.git")
+        .get("http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git")
         .and_then(toml::Value::as_table)
         .expect("historical Intelligence source patch must be a table");
     assert_eq!(
@@ -254,7 +260,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("jeryu-rustjet unifier must be a table");
     assert_eq!(
         rustjet_source.get("git").and_then(toml::Value::as_str),
-        Some("http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git")
+        Some("https://github.com/neverhuman/jeryu-intelligence.git")
     );
     assert_eq!(
         rustjet_source.get("tag").and_then(toml::Value::as_str),
@@ -263,6 +269,32 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
     assert!(
         rustjet_source.get("path").is_none(),
         "jeryu-rustjet must not resolve from a sibling path"
+    );
+
+    let release_ops_patches = patches
+        .get("https://github.com/neverhuman/jeryu-release-ops.git")
+        .and_then(toml::Value::as_table)
+        .expect("historical release-ops source patch must be a table");
+    assert_eq!(
+        release_ops_patches.len(),
+        1,
+        "release-ops unifier must contain only jeryu-signing"
+    );
+    let signing_source = release_ops_patches
+        .get("jeryu-signing")
+        .and_then(toml::Value::as_table)
+        .expect("jeryu-signing unifier must be a table");
+    assert_eq!(
+        signing_source.get("git").and_then(toml::Value::as_str),
+        Some("http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git")
+    );
+    assert_eq!(
+        signing_source.get("tag").and_then(toml::Value::as_str),
+        Some("jeryu-release-ops-v5.0.0-split.8")
+    );
+    assert!(
+        signing_source.get("path").is_none(),
+        "jeryu-signing must not resolve from a sibling path"
     );
 
     let api: toml::Value =
@@ -298,7 +330,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             &["jeryu-autonomy", "jeryu-codegraph", "jeryu-mcp"][..],
         ),
         (
-            "jeryu-release-ops-v5.0.0-split.0",
+            "jeryu-release-ops-v5.0.0-split.8",
             &["jeryu-bench", "jeryu-obs", "jeryu-wsversion"][..],
         ),
         ("jeryu-jira-v5.0.0-split.3", &["jeryu-jira"][..]),
@@ -392,7 +424,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         } else if name == "jeryu-rustjet" {
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.4#43c1acf66c5fc6665a6815104c497986a53459dd"
+                "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.4#43c1acf66c5fc6665a6815104c497986a53459dd"
             );
         }
     }

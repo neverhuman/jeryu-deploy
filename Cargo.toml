@@ -24,7 +24,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 hmac = "0.13"
-jeryu-repogate = { git = "https://github.com/neverhuman/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.0" }
+jeryu-repogate = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.8" }
 parking_lot = "0.12"
 proptest = "1"
 serde = { version = "1", features = ["derive"] }
@@ -71,8 +71,19 @@ jeryu-runner-registry = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner
 jeryu-runnerd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.4" }
 jeryu-sandbox-linux = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.4" }
 
-[patch."https://github.com/neverhuman/jeryu-intelligence.git"]
-jeryu-rustjet = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.4" }
+# Intelligence and release-ops unification. The two repositories pin each other
+# at split.0, so their release tags form a cycle: jeryu-release-ops names the
+# local-forge Intelligence source at split.0, and the Intelligence release names
+# the GitHub release-ops source at split.0. Cargo only breaks a cycle edge that
+# is patched, and it rejects a patch whose target repeats the patched
+# repository, so each unifier redirects one transitive package onto the other
+# hosted spelling of the same repository at the reviewed tag. Both spellings
+# resolve to git.neverhuman.org through `.cargo/hosted-gitconfig`.
+[patch."http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git"]
+jeryu-rustjet = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.4" }
+
+[patch."https://github.com/neverhuman/jeryu-release-ops.git"]
+jeryu-signing = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git", tag = "jeryu-release-ops-v5.0.0-split.8" }
 
 # Account creation and login hash with argon2 at production cost; unoptimized it
 # takes ~1 s per hash, which dominated the web tests' wall time. Optimizing just
