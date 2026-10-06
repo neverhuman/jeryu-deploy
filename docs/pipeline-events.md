@@ -79,7 +79,7 @@ valid across pruning and restarts.
 | `kind` | string | dotted lower-case words, `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`, at most 64 characters; the vocabulary below is open |
 | `reporter` | string | the login that posted it, `forge` for server-emitted; always set by the server |
 | `actor` | string or null | who did the thing, e.g. `dev@node-a/w1`, `review-bot`, `build-1/slot0`; clipped to 128 characters |
-| `family` | string or null | shift family |
+| `family` | string or null | shift family; server-derived from `repo` when the producer omits it (see below) |
 | `repo` | string or null | `owner/name` |
 | `pr` | integer or null | positive |
 | `sha` | string or null | 7 to 64 hex characters, stored lower-case |
@@ -101,6 +101,24 @@ Human text (`summary`, `reason`, `actor`, `log_tail`) is clipped instead,
 because producers send it best-effort and a long line is no reason to lose the
 event. Blank strings become `null`. Unknown fields are ignored, so a producer
 cannot choose its own `seq`, `ts` or `reporter`.
+
+### Family is server-derived from the repo
+
+A producer that names a `repo` need not name a `family`. When `family` is
+absent and `repo` is set, the server resolves the repo's family before storing
+the event and stores that key, so the row is already tagged when it is read.
+The registry it reads is the one behind the repository family pills and
+`GET /api/v1/shift/families`: the split catalog's classification of
+`owner/name` first, the repository's persisted family second, canonicalised
+(`<x>-split` and `<x>` are one key, see `docs/family-key.md`). A producer that
+does name a family keeps it, and a repo the forge hosts in no family -- or an
+event that names no repo at all -- stores `family` null.
+
+This matters because `?family=` on the reads below is a column filter: before
+the server derived it, every `gate.*`, `review.*`, `deploy.*`, `release.*` and
+`pin.*` event stored a null family, so filtering the Activity page by family
+hid work that was plainly there. Rows stored before this behaviour were
+backfilled by `db/migrations/0016_pipeline_event_families.sql`.
 
 ### Kinds
 

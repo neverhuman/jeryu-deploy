@@ -164,7 +164,8 @@ pub(crate) fn record(
     reporter: &str,
     event: NewEvent,
 ) -> Result<Inserted, String> {
-    let event = normalize(event)?;
+    let mut event = normalize(event)?;
+    derive_family(state, &mut event);
     let now_ms = Utc::now().timestamp_millis();
     let inserted = state.events.insert(reporter, &event, now_ms)?;
     if !inserted.duplicate {
@@ -172,6 +173,25 @@ pub(crate) fn record(
         record_usage(state, &inserted.event, now_ms);
     }
     Ok(inserted)
+}
+
+/// Fill `family` from `repo` when the producer named no family.
+///
+/// Only the queue and shift emitters tag their own events, so every `gate.*`,
+/// `review.*`, `deploy.*`, `release.*` and `pin.*` row landed with `family`
+/// null and then vanished from the Activity page's family filter: a repo of
+/// the family had events, but `?family=<x>&kind=gate.` answered none of them.
+/// The repo is enough to know the family, so the server resolves it through
+/// the same registry the repository family pills read
+/// ([`crate::web::repositories::family_for_slug`]). A producer that does name
+/// a family keeps it; a repo the forge hosts in no family stays null.
+fn derive_family(state: &WebState, event: &mut NewEvent) {
+    if event.family.is_some() {
+        return;
+    }
+    if let Some(repo) = event.repo.as_deref() {
+        event.family = crate::web::repositories::family_for_slug(state, repo);
+    }
 }
 
 /// A finished attempt may carry the attempt's final token totals as

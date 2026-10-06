@@ -1003,6 +1003,22 @@ pub(super) fn effective_family(state: &WebState, repo: &Repository) -> Option<St
         .map(|family| super::family::canonical(&family))
 }
 
+/// The family of the repository an `owner/name` slug names, for a caller that
+/// holds the slug rather than the row: the pipeline event log, whose producers
+/// name a repo but mostly no family. Reads the same registry as
+/// [`effective_family`] -- the split catalog first, the persisted repository
+/// family second -- so a derived event family matches the family pill the
+/// repository shows. `None` when the slug is not `owner/name`, when the forge
+/// hosts no such repository, or when it belongs to no family.
+pub(super) fn family_for_slug(state: &WebState, slug: &str) -> Option<String> {
+    let (owner, name) = slug.split_once('/')?;
+    if let Some((family, _)) = state.split_catalog.classify(owner, name) {
+        return Some(super::family::canonical(&family));
+    }
+    let repo = state.github.core().get_repository(owner, name).ok()?;
+    effective_family(state, &repo)
+}
+
 /// Push-mirror bookkeeping check. A mirror hiccup is surfaced through the
 /// dedicated mirror-status field, not as repository ill-health.
 const GITHUB_MIRROR_CHECK: &str = "jeryu/github-mirror";

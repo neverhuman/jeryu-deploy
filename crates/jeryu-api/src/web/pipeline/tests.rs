@@ -1198,3 +1198,152 @@ async fn a_gate_started_without_a_pr_number_names_the_open_pr_at_its_head() {
         format!("node-2/slot0 gating jeryu/jeryu-deploy#{}", pr.number)
     );
 }
+
+#[tokio::test]
+async fn an_event_that_names_only_a_repo_is_stored_in_that_repo_s_family() {
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
+        .unwrap();
+    for (owner, name, family) in [
+        // The registry spells this one with the split suffix; the derived
+        // family is the canonical key.
+        ("jeryu", "jeryu-web", Some("jeryu-split")),
+        ("globex", "widgets", Some("globex")),
+        ("jeryu", "scratch", None),
+    ] {
+        core.create_repository(
+            owner,
+            jeryu_core::CreateRepositoryRequest {
+                name: name.to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+        if let Some(family) = family {
+            core.set_repository_family(owner, name, Some(family.to_string()))
+                .unwrap();
+        }
+    }
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "t", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, reporter) = (token("alice"), token("ci-bot"));
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let sha = "b761244b76371995527bfe7795e98492703553a8";
+    let posted = router
+        .clone()
+        .oneshot(request(
+            HttpMethod::POST,
+            "/api/v1/events",
+            &reporter,
+            Some(json!({"events": [
+                {"source": "pr-gate", "kind": "gate.finished", "repo": "jeryu/jeryu-web",
+                 "sha": sha, "outcome": "success", "summary": "gate passed on jeryu/jeryu-web"},
+                {"source": "pr-gate", "kind": "gate.finished", "repo": "jeryu/scratch",
+                 "outcome": "success", "summary": "gate passed on jeryu/scratch"},
+                // A producer that does name a family keeps it, whatever its repo says.
+                {"source": "pr-redteam", "kind": "review.finished", "repo": "jeryu/jeryu-web",
+                 "family": "globex", "outcome": "success", "summary": "reviewed for globex"},
+                // Nothing to derive from: no repo.
+                {"source": "deploy", "kind": "deploy.status", "outcome": "success",
+                 "summary": "forge deployed"},
+            ]})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::CREATED);
+
+    // The bug this fixes: the family filter answered nothing for a gate the
+    // repo filter found.
+    let by_family = events_of(&router, &admin, "family=jeryu&kind=gate.").await;
+    assert_eq!(by_family.len(), 1, "{by_family:?}");
+    assert_eq!(by_family[0]["repo"], "jeryu/jeryu-web");
+    assert_eq!(by_family[0]["family"], "jeryu");
+    assert_eq!(by_family[0]["family_label"], "jeryu");
+    // Either spelling of the key filters the same rows.
+    assert_eq!(
+        events_of(&router, &admin, "family=jeryu-split&kind=gate.")
+            .await
+            .len(),
+        1
+    );
+
+    let reviewed = events_of(&router, &admin, "family=globex&kind=review.").await;
+    assert_eq!(reviewed.len(), 1, "{reviewed:?}");
+    assert_eq!(reviewed[0]["repo"], "jeryu/jeryu-web", "the producer wins");
+
+    // A repo in no family, and an event naming no repo, stay unfiled.
+    for filter in ["repo=jeryu/scratch", "kind=deploy."] {
+        let unfiled = events_of(&router, &admin, filter).await;
+        assert_eq!(unfiled.len(), 1, "{filter}: {unfiled:?}");
+        assert_eq!(unfiled[0]["family"], Value::Null, "{filter}");
+    }
+}
+
+#[test]
+fn the_family_backfill_fills_rows_from_what_the_log_knows_of_their_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shift.sqlite");
+    let store = EventStore::open(&path).unwrap();
+    let now = Utc::now().timestamp_millis();
+    let repo_event = |kind: &str, repo: &str, family: Option<&str>| NewEvent {
+        repo: Some(repo.to_string()),
+        family: family.map(str::to_string),
+        ..event(kind, kind)
+    };
+    // What the log looked like before the server derived families: one tagged
+    // row per repo from the shift emitters, and untagged pipeline rows beside
+    // it. `jeryu/scratch` has nothing to learn from.
+    store
+        .insert(
+            "forge",
+            &repo_event("pr.opened", "jeryu/web", Some("jeryu")),
+            now,
+        )
+        .unwrap();
+    let gate = store
+        .insert(
+            "ci-bot",
+            &repo_event("gate.finished", "jeryu/web", None),
+            now,
+        )
+        .unwrap()
+        .event;
+    let scratch = store
+        .insert(
+            "ci-bot",
+            &repo_event("gate.finished", "jeryu/scratch", None),
+            now,
+        )
+        .unwrap()
+        .event;
+    assert_eq!(gate.family, None, "the row landed untagged");
+
+    // Re-run the migration the way an upgrade applies it for the first time.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("DELETE FROM shift_schema_migrations WHERE version = 13", [])
+        .unwrap();
+    crate::web::shift::migrate_shift_store(&conn).unwrap();
+
+    let stored = |seq: i64| {
+        store
+            .query(&EventsQuery {
+                after_seq: Some(seq - 1),
+                limit: Some(1),
+                ..EventsQuery::default()
+            })
+            .unwrap()
+            .remove(0)
+    };
+    assert_eq!(stored(gate.seq).family.as_deref(), Some("jeryu"));
+    assert_eq!(stored(scratch.seq).family, None, "no evidence, no family");
+}

@@ -1,0 +1,31 @@
+# Structured metadata for 0016_pipeline_event_families.sql. The SQL file is
+# checksum-bound once applied, so its lock and timeout posture lives here.
+#
+# The store is SQLite, not PostgreSQL: there is no `SET lock_timeout` or
+# `SET statement_timeout` to put in the SQL (SQLite rejects both). The
+# equivalents below are what bound this migration in practice.
+
+migration = "0016_pipeline_event_families"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/pipeline/store.rs"
+apply = "HeartbeatStore::open / EventStore::open -> migrate(), one transaction per migration"
+
+[lock_timeout]
+# SQLite's lock wait is the connection busy timeout, set before migrate() runs.
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+
+[statement_timeout]
+# SQLite has no statement timeout. The bound is the backfill's source: one
+# UPDATE over pipeline_events rows whose family is NULL, a table the server
+# prunes to 30 days, with the repo and family indexes serving the lookup.
+mechanism = "backfill bounded by pipeline_events 30-day retention"
+value = "one pass over at most 30 days of events"
+
+[rollback]
+plan = "fix-forward: re-run the statement; or delete version 14 from shift_schema_migrations and run the previous binary (a derived family is a filter value in a telemetry-only table)"
+backup = "not required: telemetry only, nothing of record is lost"
+
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::pipeline::tests::the_family_backfill_fills_rows_from_what_the_log_knows_of_their_repo (re-applying version 13 fills from the log's own evidence and leaves unknowable repos null)"

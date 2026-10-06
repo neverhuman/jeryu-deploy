@@ -90,6 +90,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0015_usage_samples",
         include_str!("../../../../../db/migrations/0015_usage_samples.sql"),
     ),
+    (
+        16,
+        "0016_pipeline_event_families",
+        include_str!("../../../../../db/migrations/0016_pipeline_event_families.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;

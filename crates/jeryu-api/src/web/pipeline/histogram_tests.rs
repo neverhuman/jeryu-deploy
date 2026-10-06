@@ -156,7 +156,10 @@ async fn events_land_in_their_bucket_grouped_by_chip_with_totals() {
         ("repo=jeryu/jeryu-web", 6),
         ("source=todoq", 4),
         ("needs_human=true", 1),
-        ("family=jeryu", 1),
+        // The family of the six `jeryu/jeryu-web` events is derived from
+        // their repo, so they count here beside the one event that named the
+        // family itself.
+        ("family=jeryu", 7),
     ] {
         let uri = format!("/api/v1/events/histogram?hours=1&bucket=1h&{filter}");
         let (status, page) = get(&router, &uri, &admin).await;
