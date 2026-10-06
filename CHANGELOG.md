@@ -38,6 +38,20 @@
   idempotency store: a retry with the same key answers 409
   `idempotent_secret_withheld` and does not run the write twice. `/mcp/bot`, the token exchange
   and the setup-script proxy keep working for existing bot hosts.
+- The forge's event kinds are a closed set. `docs/pipeline-events.md` now says
+  exactly what makes each one, so a quiet kind can be read as a fact rather
+  than a fault: `todo.filed` is the filing route only (a todo pushed into the
+  queue repository with git emits nothing and arrives as `todo.claimed`),
+  `pr.approved` is the one-click approve route only (an approval sent as a
+  review is `pr.review` with `outcome = approve`), `review.started` and
+  `gate.started` need a beat carrying `current` (a runner that beats only once
+  a pass has finished reports `*.finished` alone), and `queue.*` covers the
+  merge queue alone (a direct merge has `pr.merged` only). The table also
+  documents `repo.archived`, `repo.unarchived`, `repo.renamed` and
+  `repo.transferred`, which it emitted without naming. Tests hold the contract
+  to the sources: every documented kind has a live emit point, every forge
+  emit point is documented, and neither side may grow alone.
+
 - `GET /api/v1/events/histogram` counts pipeline volume over a window instead
   of leaving a chart to count the page it holds: `hours` (1 to 720, default
   24) and `bucket` (`5m`, `15m`, `1h`, `1d`, chosen from `hours` when it is

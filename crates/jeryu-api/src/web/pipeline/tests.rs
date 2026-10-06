@@ -964,6 +964,13 @@ async fn repeated_review_failures_collapse_onto_one_event_that_says_why() {
         [("review.finished", "hold"), ("review.finished", "failed")],
         "the repeated failure must not add a third line"
     );
+    // A reviewer that beats only once a pass has finished never carries
+    // `current`, and so opens no `review.started`: the verdict is the whole
+    // record of the pass. docs/pipeline-events.md says so under Kinds.
+    assert!(
+        !lines.iter().any(|(kind, _)| *kind == "review.started"),
+        "{lines:?}"
+    );
     assert_eq!(
         events[1]["reason"],
         "the review review ended failed: no usable base ref: refs/heads/main does not exist"

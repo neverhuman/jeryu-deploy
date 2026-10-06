@@ -25,6 +25,10 @@ mod emit_tests;
 #[cfg(test)]
 mod histogram_tests;
 #[cfg(test)]
+mod kinds;
+#[cfg(test)]
+mod kinds_tests;
+#[cfg(test)]
 mod ledger_tests;
 #[cfg(test)]
 mod pins_tests;
