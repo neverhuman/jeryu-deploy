@@ -105,6 +105,42 @@ mirror, because only a person knows what was cut from that tag downstream.
   and `mirror_diverged` (GitHub holds work the forge does not — one item per
   repository, naming the commits). See `docs/pipeline-events.md`.
 
+## Contributions that arrive on a mirror
+
+The mirrors are read-only copies, and the owner-run GitHub ruleset lets only
+the mirror identity update a branch there, so nothing can be merged on GitHub.
+An outside contributor still opens a pull request there, and an importer brings
+it to the forge, where it is gated, reviewed and merged; the next mirror push
+carries it back.
+
+Such a pull request is marked, by the importer and only by the importer:
+
+```
+PUT /api/v1/repos/{id}/pulls/{n}/origin   {"origin": "contributed"}
+GET /api/v1/repos/{id}/pulls/{n}/origin
+```
+
+- `JERYU_PULL_IMPORTERS` names the logins that may write the marking, besides a
+  global admin. A pull request's own author may never write it, so a
+  contribution cannot declare itself trusted.
+- A pull request with no marking reads as `internal`, which is what everything
+  written inside the forge is.
+- Every pull request summary carries `origin:internal` or `origin:contributed`
+  in `labels`, so a client that already has the row — the list, the pull
+  request page, an agent reviewer — reads the marking without a second call.
+
+A contributed pull request merges only after a login in
+`JERYU_PULL_MAINTAINERS` has an effective approval on the exact head. Until
+then its merge passport carries `passport_blocked_contributed_origin`, so the
+pull request page states the hold, `POST .../merge` refuses it, and the merge
+queue will not land it. An approval from anybody else — including an agent
+reviewer — is advice and clears nothing. With no maintainer list configured, no
+contribution merges at all.
+
+The pull request's title, description and diff are the contributor's words:
+they are data everywhere they are read, and nothing in them changes the
+marking, the maintainer list, or what the gate decides.
+
 ## Turning it off
 
 `JERYU_GITHUB_PUSH=0` loads the mirror with no targets. Merges, tag pushes and

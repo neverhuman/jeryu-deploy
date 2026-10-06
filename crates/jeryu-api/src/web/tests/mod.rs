@@ -41,6 +41,7 @@ mod gate_wanted_tests;
 mod git_authorization;
 mod github_rest_tests;
 mod jankurai_audit_tests;
+mod pull_origin_tests;
 mod pulls_tests;
 mod regate_tests;
 mod release_board_tests;
@@ -56,6 +57,82 @@ mod work_authorization;
 mod work_tests;
 mod workcells_tests;
 mod ws_tests;
+
+fn bare_ref(storage_root: &std::path::Path, owner: &str, repo: &str, ref_name: &str) -> String {
+    let bare = storage_root.join(owner).join(format!("{repo}.git"));
+    let output = crate::test_git::git_command()
+        .args(["rev-parse", ref_name])
+        .current_dir(&bare)
+        .output()
+        .unwrap_or_else(|e| panic!("git rev-parse {ref_name} failed to spawn: {e}"));
+    assert!(
+        output.status.success(),
+        "git rev-parse {ref_name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn git_in(cwd: &std::path::Path, args: &[&str]) -> String {
+    let output = crate::test_git::git_command()
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_AUTHOR_NAME", "jeryu-test")
+        .env("GIT_AUTHOR_EMAIL", "jeryu-test@example.com")
+        .env("GIT_COMMITTER_NAME", "jeryu-test")
+        .env("GIT_COMMITTER_EMAIL", "jeryu-test@example.com")
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn build_bare_repo_with_main_and_feature(
+    storage_root: &std::path::Path,
+    owner: &str,
+    repo: &str,
+    feature_path: &str,
+    feature_contents: &str,
+) -> (String, String) {
+    let bare = storage_root.join(owner).join(format!("{repo}.git"));
+    std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
+    let work = storage_root.join(format!("{owner}-{repo}-merge-work"));
+    std::fs::create_dir_all(&work).expect("create work dir");
+
+    let git = |args: &[&str], cwd: &std::path::Path| git_in(cwd, args);
+
+    git(&["init", "--quiet", "-b", "main"], &work);
+    std::fs::write(work.join("BASE.txt"), "base\n").expect("write base file");
+    git(&["add", "BASE.txt"], &work);
+    git(&["commit", "--quiet", "-m", "base"], &work);
+    let base_sha = git(&["rev-parse", "HEAD"], &work);
+
+    git(&["checkout", "--quiet", "-b", "feature"], &work);
+    let path = work.join(feature_path);
+    std::fs::create_dir_all(path.parent().expect("feature file parent"))
+        .expect("create feature file dir");
+    std::fs::write(&path, feature_contents).expect("write feature file");
+    git(&["add", feature_path], &work);
+    git(&["commit", "--quiet", "-m", "feature"], &work);
+    let head_sha = git(&["rev-parse", "HEAD"], &work);
+    git(
+        &[
+            "clone",
+            "--quiet",
+            "--bare",
+            ".",
+            bare.to_str().expect("bare utf8"),
+        ],
+        &work,
+    );
+    git(&["symbolic-ref", "HEAD", "refs/heads/main"], bare.as_path());
+
+    (base_sha, head_sha)
+}
 
 fn write_file(root: &Path, relative: &str, contents: &str) {
     let path = root.join(relative);

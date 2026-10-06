@@ -172,6 +172,9 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `pull_draft_forbidden` | 403 | only the author or an admin can change a pull request's draft state |
 | `pull_draft_not_open` | 409 | only an open pull request can change its draft state |
 | `pull_merge_invalid_request` | 422 | the merge body failed validation |
+| `pull_origin_author_forbidden` | 403 | a pull request's own author may not mark its origin |
+| `pull_origin_importer_required` | 403 | only an admin or a JERYU_PULL_IMPORTERS login may mark a pull request's origin |
+| `pull_origin_invalid_request` | 422 | the pull request origin body failed validation |
 | `pull_request_serialize_failed` | 500 | the pull request could not be serialized |
 | `pull_review_invalid_request` | 422 | the review body failed validation |
 | `pull_self_approval_forbidden` | 403 | an author may not approve their own pull request |

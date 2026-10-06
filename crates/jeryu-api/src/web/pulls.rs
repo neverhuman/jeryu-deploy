@@ -32,6 +32,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::paging::{PageInfo, PageParams};
+use super::pull_origin::{self, OriginPosture};
 use super::repositories::{find_repo, repo_id};
 use super::{WebState, server_time};
 
@@ -933,7 +934,8 @@ fn detail_for_pr_with_required_contexts(
     authenticated_login: Option<&str>,
 ) -> PullRequestDetail {
     let mut summary = summary_with_required_contexts(state, pr, required_contexts);
-    let merge_passport = passport(&summary, pr, required_contexts);
+    let origin = pull_origin::posture(state, pr);
+    let merge_passport = passport(&summary, pr, required_contexts, &origin);
     let reviews = reviews_for_pr(state, pr);
     summary.review.user_review_state = authenticated_login.and_then(|login| {
         reviews
@@ -961,10 +963,12 @@ fn summary_with_required_contexts(
         .expect("PR owner/repo must resolve to a repository");
     let checks = checks_for_pr(state, pr);
     let review = review_posture(state, pr);
+    let origin = pull_origin::posture(state, pr);
     let web_state = web_pr_state(pr);
     let mergeable = !pr.draft
         && !pr.merged
         && matches!(web_state, WebPullRequestState::Open)
+        && !origin.blocks_merge()
         && pr.mergeable
         && required_contexts
             .iter()
@@ -976,6 +980,8 @@ fn summary_with_required_contexts(
         None
     } else if pr.draft {
         Some("draft pull request".to_string())
+    } else if let Some(reason) = origin.reason() {
+        Some(reason)
     } else if let Some(context) = required_contexts
         .iter()
         .find(|context| context.state != RequiredContextState::Passing)
@@ -1001,7 +1007,7 @@ fn summary_with_required_contexts(
     } else {
         MergePassportStatus::Blocked
     };
-    let blockers = passport_blockers(required_contexts, &review, pr);
+    let blockers = passport_blockers(required_contexts, &review, pr, &origin);
     let passport_hash = passport_hash(
         state,
         pr,
@@ -1009,6 +1015,7 @@ fn summary_with_required_contexts(
         &blockers,
         &review,
         required_contexts,
+        &origin,
     );
     PullRequestSummary {
         repo: repo_id(&repo),
@@ -1050,7 +1057,10 @@ fn summary_with_required_contexts(
             evidence_packets: 0,
             blockers: 0,
         },
-        labels: Vec::new(),
+        // Every pull request carries its origin as a label, so a client that
+        // already has the row (the list, the page, an agent reviewer) reads
+        // the trust marking without asking a second route.
+        labels: vec![origin.origin.label()],
         updated_at: pr.updated_at.to_rfc3339(),
         passport_hash: Some(passport_hash),
         available_actions: available_actions(pr, &web_state),

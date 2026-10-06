@@ -33,6 +33,7 @@ mod permissions;
 mod pipeline;
 mod principals;
 mod proxy_trust;
+mod pull_origin;
 mod pulls;
 mod regate;
 mod release_board;
@@ -188,6 +189,18 @@ pub(crate) struct WebState {
     pub(crate) disputes: jankurai::DisputeStore,
     /// Instance-wide admin settings (`<data_dir>/shift.sqlite`, `site_settings`).
     pub(crate) site_settings: site_settings::SiteSettingsStore,
+    /// Where each pull request came from — internal, or brought in from a
+    /// mirror by the importer (`<data_dir>/shift.sqlite`,
+    /// `pull_request_origins`). A contributed pull request merges only on a
+    /// configured maintainer's approval.
+    pub(crate) pull_origin: pull_origin::PullOriginStore,
+    /// Logins that may mark a pull request's origin without being a global
+    /// admin (`JERYU_PULL_IMPORTERS`), resolved once at startup.
+    pub(crate) pull_importers: Arc<Vec<String>>,
+    /// Logins whose approval lets a contributed pull request merge
+    /// (`JERYU_PULL_MAINTAINERS`), resolved once at startup. Empty holds every
+    /// contribution for a person to look at.
+    pub(crate) pull_maintainers: Arc<Vec<String>>,
     /// What the newest GitHub-mirror reconcile found per repository.
     pub(crate) mirror_state: mirror_reconcile::MirrorStateStore,
     /// The attention inbox's last answer (`GET /api/v1/attention`).
@@ -324,6 +337,8 @@ impl WebState {
             jankurai::DisputeStore::open(&shift_path).expect("open jankurai dispute store");
         let site_settings =
             site_settings::SiteSettingsStore::open(&shift_path).expect("open site settings store");
+        let pull_origin = pull_origin::PullOriginStore::open(&shift_path)
+            .expect("open pull request origin store");
         let attention_acks = pipeline::attention::AckStore::open(&shift_path)
             .expect("open attention acknowledgement store");
         // Managed execution is Firecracker-only. Constructing the web edge
@@ -360,6 +375,9 @@ impl WebState {
             events,
             disputes,
             site_settings,
+            pull_origin,
+            pull_importers: Arc::new(pull_origin::importers_from_env()),
+            pull_maintainers: Arc::new(pull_origin::maintainers_from_env()),
             mirror_state: mirror_reconcile::MirrorStateStore::default(),
             attention: pipeline::attention::AttentionCache::default(),
             attention_acks,
@@ -470,6 +488,16 @@ impl WebState {
             WarmPool::new(warm_runtime, warm_target).expect("pre-warm the test agent pool"),
         ));
         state
+    }
+
+    /// Test-only: name the importer and maintainer logins directly, so a test
+    /// drives the contributed-origin gate without mutating process-wide env
+    /// (the crate forbids `unsafe`, so `std::env::set_var` is unavailable).
+    #[cfg(test)]
+    pub(crate) fn with_pull_trust(mut self, importers: &[&str], maintainers: &[&str]) -> Self {
+        self.pull_importers = Arc::new(importers.iter().map(|l| (*l).to_string()).collect());
+        self.pull_maintainers = Arc::new(maintainers.iter().map(|l| (*l).to_string()).collect());
+        self
     }
 
     /// Test-only: override the session runtime backend + docker seam directly so a
@@ -1048,6 +1076,12 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         (
             "/api/v1/repos/:id/pulls/:number/merge-attempt",
             get(merge_attempts::show),
+        ),
+        // Where this pull request came from. The importer marks a contribution
+        // brought in from a mirror; the marking is never the author's.
+        (
+            "/api/v1/repos/:id/pulls/:number/origin",
+            get(pull_origin::show).put(pull_origin::set),
         ),
         ("/api/v1/repos/:id/merge-queue", get(merge_queue::list_repo)),
         // What acts on the repository (checks, reviewer, merger and their

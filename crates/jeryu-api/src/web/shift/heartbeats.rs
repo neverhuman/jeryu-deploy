@@ -80,6 +80,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0013_repo_merge_settings",
         include_str!("../../../../../db/migrations/0013_repo_merge_settings.sql"),
     ),
+    (
+        14,
+        "0014_pull_request_origins",
+        include_str!("../../../../../db/migrations/0014_pull_request_origins.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;

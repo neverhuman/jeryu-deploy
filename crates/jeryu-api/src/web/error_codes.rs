@@ -479,6 +479,21 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the merge body failed validation",
     ),
     entry(
+        "pull_origin_author_forbidden",
+        403,
+        "a pull request's own author may not mark its origin",
+    ),
+    entry(
+        "pull_origin_importer_required",
+        403,
+        "only an admin or a JERYU_PULL_IMPORTERS login may mark a pull request's origin",
+    ),
+    entry(
+        "pull_origin_invalid_request",
+        422,
+        "the pull request origin body failed validation",
+    ),
+    entry(
         "pull_request_serialize_failed",
         500,
         "the pull request could not be serialized",

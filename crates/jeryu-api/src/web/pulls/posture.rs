@@ -13,6 +13,7 @@ pub(super) fn passport_hash(
     blockers: &[MergePassportBlocker],
     review: &ReviewPosture,
     required_contexts: &[RequiredContextPosture],
+    origin: &OriginPosture,
 ) -> String {
     let core = state.github.core();
     let branch_protection = core
@@ -55,6 +56,11 @@ pub(super) fn passport_hash(
         "review": review,
         "branch_protection": branch_protection,
         "required_contexts": required_context_states,
+        // The trust marking and the maintainer approval that clears it are
+        // part of the gate, so a contribution that gains (or loses) its
+        // maintainer approval is a different passport.
+        "origin": origin.origin.wire_name(),
+        "maintainer_approvals": origin.maintainer_approvals,
     });
     format!(
         "passport:{}",
@@ -66,6 +72,7 @@ pub(super) fn passport(
     summary: &PullRequestSummary,
     pr: &PullRequest,
     required_contexts: &[RequiredContextPosture],
+    origin: &OriginPosture,
 ) -> MergePassport {
     let status = if summary.mergeable.can_merge {
         MergePassportStatus::Pass
@@ -75,7 +82,7 @@ pub(super) fn passport(
     MergePassport {
         status,
         head_sha: summary.head_sha.clone(),
-        blockers: passport_blockers(required_contexts, &summary.review, pr),
+        blockers: passport_blockers(required_contexts, &summary.review, pr, origin),
         evaluated_at: server_time(),
     }
 }
@@ -84,6 +91,7 @@ pub(super) fn passport_blockers(
     required_contexts: &[RequiredContextPosture],
     review: &ReviewPosture,
     pr: &PullRequest,
+    origin: &OriginPosture,
 ) -> Vec<MergePassportBlocker> {
     // A merged or closed pull request has no merge question left. Judging
     // its historical head against today's rules listed "missing" checks and
@@ -109,6 +117,9 @@ pub(super) fn passport_blockers(
         WebPullRequestState::Open => {}
     }
     let mut blockers = Vec::new();
+    // The trust marking first: it is the one hold a green pull request cannot
+    // clear by itself, so it is the first thing a reader of the gate sees.
+    blockers.extend(origin.blocker());
     if pr.draft {
         // `details` carries the route that clears this blocker, so the panel
         // showing it can also offer the button instead of only stating a rule.
