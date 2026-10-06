@@ -688,6 +688,7 @@ mod commits;
 mod compare;
 mod deployed;
 mod pages;
+mod release_pins;
 mod release_tag;
 mod source;
 
@@ -697,6 +698,7 @@ pub(super) use commits::repo_commits;
 pub(super) use compare::repo_compare;
 pub(super) use deployed::deployed_repositories;
 pub(super) use pages::repo_pages;
+pub(super) use release_pins::release_pins;
 pub(super) use release_tag::{TagLookupMiss, nearest_release_tag, repo_release_tag};
 pub(super) use source::{
     repo_blob, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree,
