@@ -487,6 +487,7 @@ fn beat(
             detail: None,
             capacity: None,
             active: None,
+            usage: None,
         },
     }
 }

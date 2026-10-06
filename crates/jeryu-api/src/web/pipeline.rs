@@ -47,6 +47,7 @@ use serde_json::{Value, json};
 use super::WebState;
 use super::workcells_support::{TypedError, typed_error};
 use store::Inserted;
+pub(crate) use store::RETENTION_MS as EVENT_RETENTION_MS;
 pub(crate) use store::{EventStore, LedgerRow};
 use types::{EVENTS_SCHEMA, EventsResponse, MAX_BATCH, normalize};
 pub(crate) use types::{Event, EventsQuery, NewEvent};
@@ -164,13 +165,46 @@ pub(crate) fn record(
     event: NewEvent,
 ) -> Result<Inserted, String> {
     let event = normalize(event)?;
-    let inserted = state
-        .events
-        .insert(reporter, &event, Utc::now().timestamp_millis())?;
+    let now_ms = Utc::now().timestamp_millis();
+    let inserted = state.events.insert(reporter, &event, now_ms)?;
     if !inserted.duplicate {
         publish(state, &inserted.event);
+        record_usage(state, &inserted.event, now_ms);
     }
     Ok(inserted)
+}
+
+/// A finished attempt may carry the attempt's final token totals as
+/// `detail.usage` (flat, or todoq's per-model object summed over its models;
+/// see [`crate::web::usage::attempt_usage`]); store them as that slot's
+/// newest usage sample, so the
+/// Activity chart counts the tail of an attempt whose last heartbeat went out
+/// before it ended. The slot comes from the event's `actor`.
+fn record_usage(state: &WebState, event: &Event, now_ms: i64) {
+    if event.kind != types::ATTEMPT_FINISHED_KIND {
+        return;
+    }
+    let Some(usage) = event
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("usage"))
+        .and_then(crate::web::usage::attempt_usage)
+    else {
+        return;
+    };
+    let (operator, host, slot) = crate::web::usage::actor_slot(event.actor.as_deref());
+    crate::web::usage::record(
+        state,
+        crate::web::usage::Sample {
+            ts_ms: now_ms,
+            operator,
+            host,
+            slot,
+            family: event.family.clone().unwrap_or_default(),
+            todo_id: event.todo_id.clone(),
+            usage,
+        },
+    );
 }
 
 fn publish(state: &WebState, event: &Event) {

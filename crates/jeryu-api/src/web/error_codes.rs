@@ -810,6 +810,16 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the request body needs Content-Type: application/json",
     ),
     entry(
+        "usage_invalid_query",
+        422,
+        "the token usage query failed validation",
+    ),
+    entry(
+        "usage_store_failed",
+        500,
+        "the token usage sample store failed",
+    ),
+    entry(
         "waitlist_full",
         503,
         "the waitlist is not accepting new addresses",

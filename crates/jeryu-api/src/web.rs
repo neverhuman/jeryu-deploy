@@ -58,6 +58,7 @@ mod tool_finder_schedule;
 mod tool_proposals;
 mod tool_registry;
 mod tool_status_messages;
+pub(crate) mod usage;
 mod work;
 mod workcells;
 mod workcells_support;
@@ -186,6 +187,9 @@ pub(crate) struct WebState {
     pub(crate) shift: shift::ShiftState,
     /// Pipeline event log (`<data_dir>/shift.sqlite`, table `pipeline_events`).
     pub(crate) events: pipeline::EventStore,
+    /// Live token usage per worker slot (`<data_dir>/shift.sqlite`, table
+    /// `usage_samples`), behind `GET /api/v1/usage`.
+    pub(crate) usage: usage::UsageStore,
     /// Quality-gate disputes (`<data_dir>/shift.sqlite`, `jankurai_disputes`).
     pub(crate) disputes: jankurai::DisputeStore,
     /// Instance-wide admin settings (`<data_dir>/shift.sqlite`, `site_settings`).
@@ -344,6 +348,7 @@ impl WebState {
         };
         let shift = shift::ShiftState::open(&shift_path);
         let events = pipeline::EventStore::open(&shift_path).expect("open pipeline event store");
+        let usage = usage::UsageStore::open(&shift_path).expect("open token usage store");
         let disputes =
             jankurai::DisputeStore::open(&shift_path).expect("open jankurai dispute store");
         let site_settings =
@@ -384,6 +389,7 @@ impl WebState {
                 .expect("open idempotency key store"),
             shift,
             events,
+            usage,
             disputes,
             site_settings,
             pull_origin,
@@ -1255,7 +1261,6 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/events/histogram",
             get(pipeline::histogram::histogram),
         ),
-        ("/api/v1/usage", get(pipeline::usage)),
         ("/api/v1/attention", get(pipeline::attention::attention)),
         (
             "/api/v1/attention/acks",
@@ -1266,6 +1271,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/yield", get(yields::yield_report)),
         ("/api/v1/flow", get(flow::flow)),
         ("/api/v1/flow/layout", get(flow::layout)),
+        ("/api/v1/usage", get(usage::usage)),
         ("/api/v1/release-board", get(release_board::list_boards)),
         (
             "/api/v1/release-board/:family",

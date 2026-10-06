@@ -19,6 +19,8 @@ tools. This page is the contract that makes it visible in one place:
 - **`/api/v1/flow`**: how much work sits at each step of the line, how long it
   waits there, where it loops back and which step is the bottleneck. It
   answers "where does the time go". Contract: `docs/flow.md`.
+- **`/api/v1/usage`**: how many tokens and how much money the worker slots are
+  spending, live and over time. It answers "what is this costing right now".
 
 JSON is snake_case. Every refusal on these routes is a typed JSON error
 (`code`, `message`, `reason`, `repair_hint`, `common_fixes`, `docs_url`),
@@ -33,6 +35,8 @@ the work trace), `crates/jeryu-api/src/web/shift/truth.rs` and
 `crates/jeryu-api/src/web/flow.rs` and `flow/` (the station route, the
 projection and the Flow report), `db/migrations/0002_pipeline_events.sql`,
 `db/migrations/0010_cost_ledger.sql`, `db/migrations/0011_flow_ledger.sql`.
+`crates/jeryu-api/src/web/usage.rs`, `db/migrations/0002_pipeline_events.sql`,
+`db/migrations/0010_cost_ledger.sql`, `db/migrations/0015_usage_samples.sql`.
 
 ## Access
 
@@ -50,6 +54,7 @@ projection and the Flow report), `db/migrations/0002_pipeline_events.sql`,
 | `GET /api/v1/yield` | global admins |
 | `GET /api/v1/flow` | global admins |
 | `GET /api/v1/flow/layout` | global admins |
+| `GET /api/v1/usage` | global admins |
 | WebSocket scope `pipeline` | global admins |
 
 Reads are admin-only in v1 because events and attention items carry todo
@@ -148,7 +153,7 @@ Posted by producers:
 
 | Source | Kinds |
 |---|---|
-| `todoq` | `todo.claimed`, `todo.attempt_finished` (`outcome` `done`, `retry`, `blocked`, `ratelimit`, `retarget` or `killed`; `cost_usd`, `seconds`, `log_tail`; `detail` has `usage`, `model`, `agent`, `experiment`, `session`, `factory`), `todo.merged`, `todo.waiting_on_unmerged`, `shift.exhausted` (`shift` is the shift branch, `needs_human` when claimable todos are left waiting; `detail` has `spent_usd`, `budget_usd` and `waiting`), `worker.error` |
+| `todoq` | `todo.claimed`, `todo.attempt_finished` (`outcome` `done`, `retry`, `blocked`, `ratelimit`, `retarget` or `killed`; `cost_usd`, `seconds`, `log_tail`; `detail` has `usage` (per model; its totals are also the slot's last usage sample, see [Token usage](#token-usage)), `model`, `agent`, `experiment`, `session`, `factory`), `todo.merged`, `todo.waiting_on_unmerged`, `shift.exhausted` (`shift` is the shift branch, `needs_human` when claimable todos are left waiting; `detail` has `spent_usd`, `budget_usd` and `waiting`), `worker.error` |
 | `auto-stage` | `release.staged` (`sha` is the staged commit; `detail` has `release`, `previous_release`, `deploy_command`), `release.stage_failed` (`log_tail`; `needs_human` on the final attempt) |
 | `auto-pin` | `pin.bump_opened` (`repo` is the consumer, `pr` the bump, `sha` the dependency commit; `detail` has `dependency`, `from`, `to`, `web_dist_sha256`), `pin.bump_failed` (`log_tail`; `needs_human` on the second failure for the same commit), `pin.bump_superseded` (a stale, unqueued bump closed for a newer head; `pr` is the new bump, `detail.superseded_pr` the closed one), `pin.bump_diverged` (`needs_human`; an open bump pins a commit that is not an ancestor of the dependency head, so it is left open) |
 | the pull request reviewer | `pr.reviewed` (`repo`, `pr`, `sha`, `outcome` is the review decision, `cost_usd`, `seconds`; `detail` has `usage`, `model`, `decision`). The yield report reads the kind, not the source name |
@@ -968,6 +973,96 @@ In `GET /api/v1/shift/workers/history` a pool member contributes the largest
 slot a queue worker contributes: a pool of four accounts running five jobs is
 five busy. A pool member that reports no `active` counts as one busy slot
 while it works.
+## Token usage
+
+`GET /api/v1/usage?hours=24&bucket=5m[&family=]` answers what the worker slots
+are spending: a chart of the token counters over time, and what each slot is
+spending on the attempt it is running now. Implementation:
+`crates/jeryu-api/src/web/usage.rs`, samples in `<data_dir>/shift.sqlite`
+(`usage_samples`), pruned with the same 30-day retention as the event log.
+
+### Reporting it
+
+A producer reports **running totals for the slot's current attempt**, as a
+`usage` object on its shift heartbeat (`POST /api/v1/shift/heartbeat`) or as
+`detail.usage` on a `todo.attempt_finished` event. The totals **reset when the
+slot moves to another todo**: they measure one attempt, not a slot's lifetime.
+
+`detail.usage` on `todo.attempt_finished` comes in either of two shapes. The
+flat object below is checked and stored as the slot's sample. The per-model
+object todoq writes for the yield report (`{"<model>": {input, output,
+cache_read, cache_write, thinking, cost_usd, cost_basis, ...}}`, see the todo
+attempt fields above) is kept exactly as sent, because the yield report reads
+it, and the sample is its sum over models: `input`, `output`, `cache_read` and
+`cache_write` are the four token counts below, `cost_usd` adds up, and `model`
+is the one model's name, or null when the attempt ran on more than one.
+
+| Field | Type | Notes |
+|---|---|---|
+| `model` | string or null | the model the attempt runs on, as the producer spells it |
+| `input_tokens` | integer | not negative; default 0 |
+| `output_tokens` | integer | not negative; default 0 |
+| `cache_read_input_tokens` | integer | not negative; default 0 |
+| `cache_creation_input_tokens` | integer | not negative; default 0 |
+| `cost_usd` | number or null | not negative |
+| `turns` | integer or null | not negative |
+| `updated_at` | string or null | RFC 3339, when the producer last read the totals |
+
+The object is optional everywhere: a heartbeat or an event without it is
+stored as before, and the slot's usage reads `null`. A negative count or cost
+is refused with `422` (`shift_invalid_request` on the heartbeat,
+`events_invalid_request` on the event), because a count nobody can chart is a
+bug in the producer, not news. A beat that repeats the totals the slot already
+reported for the same todo stores no sample, so an idle attempt costs one row
+an hour, not one a beat.
+
+### Reading it
+
+`GET /api/v1/shift/workers` carries each slot's `usage`: the newest totals it
+reported **for the todo it is working now**, or `null` when its producer
+reports none.
+
+`GET /api/v1/usage` takes `hours` (1 to 720, default 24; out of range is a
+`422 usage_invalid_query`, never clamped), `bucket` (a count and a unit, `30s`
+to `24h`, default `5m`; at most 2000 buckets per answer) and `family` (either
+spelling of a family key; one the forge does not host answers
+`422 family_unknown`). A key the route does not read answers
+`422 usage_invalid_query` too.
+
+```json
+{"from": "2026-10-06T00:00:00Z", "to": "2026-10-07T00:00:00Z", "bucket_seconds": 300,
+ "buckets": [{"start": "2026-10-06T00:00:00Z", "input_tokens": 1200, "output_tokens": 140,
+              "cache_read_input_tokens": 90000, "cache_creation_input_tokens": 400,
+              "cost_usd": 0.42}],
+ "live": [{"slot": "w1", "operator": "dana", "host": "build-1.example", "family": "acme",
+           "todo_id": "20261006-120000-a1b2c3", "model": "model-a",
+           "input_tokens": 1400, "output_tokens": 200, "cache_read_input_tokens": 90000,
+           "cache_creation_input_tokens": 400, "cost_usd": 0.55, "turns": 7,
+           "updated_at": "2026-10-06T12:00:00Z", "tokens_per_minute": 312.5}],
+ "totals": {"input_tokens": 1400, "output_tokens": 200, "cache_read_input_tokens": 90000,
+            "cache_creation_input_tokens": 400, "cost_usd": 0.55}}
+```
+
+A bucket holds **deltas between consecutive cumulative samples of the same
+`(slot, todo_id)`**, never negative. So a producer that restarted its counters,
+or a slot that moved to the next todo, reports smaller totals than before and
+that step counts as no spend at all — the same tokens are never counted twice.
+An attempt already running when the window opened is measured from its newest
+sample before the window, so a token counted in yesterday's chart is not
+counted again in today's. Empty buckets are kept: a chart needs the gap.
+`tokens_per_minute` is fresh input plus output plus cache-creation tokens a
+minute over the attempt's samples in the window, and `null` until the attempt
+has two samples apart in time. `totals` is the sum of the buckets.
+
+### `usage.changed`
+
+A sample that changed a slot's usage publishes one `usage.changed` frame on the
+`pipeline` WebSocket scope, **at most one a second server-wide**: a dozen slots
+beating every few seconds would otherwise repaint the page faster than a reader
+can see it change. The payload is
+`{slot, operator, host, family, todo_id, usage}`. Like `release_board.updated`
+it is a nudge, not an event: nothing is written to the log, and a page that
+missed a frame reads `GET /api/v1/usage` again.
 
 ## Release boards
 

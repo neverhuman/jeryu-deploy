@@ -45,6 +45,7 @@ fn pool_beat(
             detail: detail.map(str::to_string),
             capacity,
             active: held,
+            usage: None,
         },
     }
 }

@@ -103,10 +103,11 @@ pub(crate) fn attention_snapshot(state: &WebState, now: DateTime<Utc>) -> Vec<Fa
         .collect()
 }
 
-/// Every slot seen in the last 24 hours, with its health at `now`.
+/// Every slot seen in the last 24 hours, with its health and token usage at
+/// `now`.
 pub(crate) fn worker_rows(state: &WebState, now: DateTime<Utc>) -> Vec<WorkerRow> {
     let now = now.timestamp_millis();
-    state
+    let mut rows: Vec<WorkerRow> = state
         .shift
         .heartbeats
         .latest(now - 24 * 60 * 60 * 1000)
@@ -117,7 +118,9 @@ pub(crate) fn worker_rows(state: &WebState, now: DateTime<Utc>) -> Vec<WorkerRow
             healthy: now - row.received_ms <= HEALTHY_MS,
             heartbeat: row.heartbeat,
         })
-        .collect()
+        .collect();
+    super::super::usage::attach_live(state, &mut rows);
+    rows
 }
 
 /// Where one todo lives, for a surface that follows a single piece of work:

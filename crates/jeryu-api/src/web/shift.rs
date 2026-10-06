@@ -47,6 +47,7 @@ use super::bot_token::BotPrincipal;
 use super::people;
 use super::pipeline::{self, NewEvent};
 use super::strict_query::StrictQuery;
+use super::usage;
 use super::workcells_support::{TypedError, typed_error};
 use heartbeats::HeartbeatStore;
 #[cfg(test)]
@@ -955,6 +956,10 @@ fn heartbeat_from(request: HeartbeatRequest) -> Result<Heartbeat, String> {
         detail: blank(request.detail),
         capacity: request.capacity,
         active: request.active,
+        usage: match request.usage {
+            Some(usage) => Some(usage.checked("usage")?),
+            None => None,
+        },
     })
 }
 
@@ -1010,6 +1015,22 @@ pub(crate) async fn heartbeat(
     if let Some(event) = stage_event(previous.as_ref().map(|p| &p.heartbeat), &heartbeat) {
         pipeline::emit(&state, event);
     }
+    // Token usage is reported on the beat but kept apart from it: a slot that
+    // beats without moving its counters adds no sample (see `web/usage.rs`).
+    if let Some(usage) = heartbeat.usage.clone() {
+        usage::record(
+            &state,
+            usage::Sample {
+                ts_ms: now.timestamp_millis(),
+                operator: heartbeat.operator.clone(),
+                host: heartbeat.host.clone(),
+                slot: heartbeat.slot.clone(),
+                family: heartbeat.family.clone(),
+                todo_id: heartbeat.todo_id.clone(),
+                usage,
+            },
+        );
+    }
     Json(json!({
         "ok": true,
         "server_time": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -1031,9 +1052,8 @@ pub(crate) async fn workers(
     };
     let now = Utc::now().timestamp_millis();
     match state.shift.heartbeats.latest(now - 24 * 60 * 60 * 1000) {
-        Ok(rows) => Json(WorkersResponse {
-            generated_at: rfc3339_ms(now),
-            workers: rows
+        Ok(rows) => {
+            let mut workers: Vec<WorkerRow> = rows
                 .into_iter()
                 .filter(|row| {
                     family.as_ref().is_none_or(|family| {
@@ -1045,9 +1065,14 @@ pub(crate) async fn workers(
                     healthy: now - row.received_ms <= HEALTHY_MS,
                     heartbeat: row.heartbeat,
                 })
-                .collect(),
-        })
-        .into_response(),
+                .collect();
+            usage::attach_live(&state, &mut workers);
+            Json(WorkersResponse {
+                generated_at: rfc3339_ms(now),
+                workers,
+            })
+            .into_response()
+        }
         Err(err) => shift_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "shift_heartbeat_store_failed",

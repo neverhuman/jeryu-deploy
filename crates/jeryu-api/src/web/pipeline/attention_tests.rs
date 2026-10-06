@@ -1779,6 +1779,7 @@ fn worker(family: &str, slot: &str, healthy: bool) -> WorkerRow {
             detail: None,
             capacity: None,
             active: None,
+            usage: None,
         },
         last_seen: "2026-09-19T12:45:19Z".to_string(),
         healthy,

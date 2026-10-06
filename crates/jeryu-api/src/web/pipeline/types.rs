@@ -16,6 +16,9 @@ pub(crate) const MAX_EVENT_ID_CHARS: usize = 64;
 pub(crate) const EVENTS_SCHEMA: &str = "jeryu.pipeline_events/v1";
 pub(crate) const MAX_LOG_TAIL_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_DETAIL_BYTES: usize = 8 * 1024;
+/// The kind whose `detail.usage` is read as the attempt's final token totals
+/// (see `crate::web::usage`).
+pub(crate) const ATTEMPT_FINISHED_KIND: &str = "todo.attempt_finished";
 
 /// An event as a producer describes it: no `seq`, `ts` or `reporter`, which
 /// the server assigns. Unknown fields are ignored, so a producer that echoes
@@ -332,6 +335,10 @@ pub(crate) fn normalize(event: NewEvent) -> Result<NewEvent, String> {
         }
         Some(_) => return Err("detail: must be a JSON object".to_string()),
     };
+    // A finished attempt may report the attempt's token totals. They are read
+    // as usage (`crate::web::usage`), so a malformed object is refused rather
+    // than stored as a number nobody can chart.
+    let (detail, _usage) = detail_usage(&event.kind, detail)?;
     Ok(NewEvent {
         event_id,
         source: event.source,
@@ -356,4 +363,38 @@ pub(crate) fn normalize(event: NewEvent) -> Result<NewEvent, String> {
         log_url,
         detail,
     })
+}
+
+/// `detail` with its `usage` object checked, when the kind is the one that
+/// carries one. The checked usage comes back too, for a caller that stores it.
+fn detail_usage(
+    kind: &str,
+    detail: Option<Value>,
+) -> Result<(Option<Value>, Option<crate::web::usage::Usage>), String> {
+    let Some(Value::Object(mut map)) = detail else {
+        return Ok((detail, None));
+    };
+    let reported = (kind == ATTEMPT_FINISHED_KIND)
+        .then(|| map.get("usage").cloned())
+        .flatten()
+        .filter(|usage| !usage.is_null());
+    let Some(reported) = reported else {
+        return Ok((Some(Value::Object(map)), None));
+    };
+    // todoq's per-model object is the yield report's record of the attempt
+    // (`crate::web::yields`), so it is stored exactly as sent; the usage
+    // sample is derived from it when the event is recorded.
+    if crate::web::usage::per_model(&reported).is_some() {
+        return Ok((Some(Value::Object(map)), None));
+    }
+    let usage: crate::web::usage::Usage =
+        serde_json::from_value(reported).map_err(|err| format!("detail.usage: {err}"))?;
+    let usage = usage.checked("detail.usage")?;
+    // Store the tidied object, so what the event carries is what the chart
+    // counted.
+    map.insert(
+        "usage".to_string(),
+        serde_json::to_value(&usage).map_err(|err| format!("detail.usage: {err}"))?,
+    );
+    Ok((Some(Value::Object(map)), Some(usage)))
 }

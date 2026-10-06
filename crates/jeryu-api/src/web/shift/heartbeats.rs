@@ -85,6 +85,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0014_pull_request_origins",
         include_str!("../../../../../db/migrations/0014_pull_request_origins.sql"),
     ),
+    (
+        15,
+        "0015_usage_samples",
+        include_str!("../../../../../db/migrations/0015_usage_samples.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
@@ -263,6 +268,9 @@ impl HeartbeatStore {
                         detail: row.get(14)?,
                         capacity: row.get(15)?,
                         active: row.get(16)?,
+                        // Usage is not a heartbeat column: it is read from the
+                        // slot's usage samples (`crate::web::usage`).
+                        usage: None,
                     },
                 })
             })

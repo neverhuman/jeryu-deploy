@@ -259,6 +259,11 @@ fn admin_allow_list_matches_the_route_table() {
     ));
     assert!(admin_only_request(&Method::GET, "/api/v1/attention"));
     assert!(admin_only_request(&Method::GET, "/api/v1/pins/"));
+    // Token usage reads with the other pipeline reads, and only there: a
+    // look-alike path is not admitted.
+    assert!(admin_only_request(&Method::GET, "/api/v1/usage"));
+    assert!(admin_only_request(&Method::GET, "/api/v1/usage/"));
+    assert!(!admin_only_request(&Method::GET, "/api/v1/usages"));
 }
 
 #[test]

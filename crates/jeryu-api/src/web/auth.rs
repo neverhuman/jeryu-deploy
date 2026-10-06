@@ -1343,6 +1343,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || yield_path(path)
         || activity_reads_path(path)
         || flow_path(path)
+        || usage_path(path)
         || audit_path(path)
 }
 
@@ -1432,6 +1433,14 @@ fn yield_path(path: &str) -> bool {
 /// so like the yield report it is for global admins.
 fn flow_path(path: &str) -> bool {
     path == "/api/v1/flow" || path == "/api/v1/flow/" || path.starts_with("/api/v1/flow/")
+}
+
+/// Token usage names the models, spend and todos of every family's workers,
+/// so like the event log it is read by global admins only. It is reported on
+/// the shift heartbeat and on pipeline events, whose own writers decide who
+/// may post.
+fn usage_path(path: &str) -> bool {
+    path == "/api/v1/usage" || path == "/api/v1/usage/"
 }
 
 fn admin_only_path(path: &str) -> bool {

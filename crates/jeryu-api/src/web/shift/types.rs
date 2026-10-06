@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::web::paging::{PageInfo, PageParams};
 use crate::web::strict_query::{StrictFields, filter_one_of};
+use crate::web::usage::Usage;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FamiliesResponse {
@@ -378,6 +379,11 @@ pub(crate) struct HeartbeatRequest {
     pub capacity: Option<i64>,
     #[serde(default)]
     pub active: Option<i64>,
+    /// Running token totals for the slot's current attempt, reset when
+    /// `todo_id` changes (see `crate::web::usage`). A producer that reports
+    /// none leaves it out, and the slot's usage reads `null`.
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 /// A stored heartbeat, as returned by `GET /api/v1/shift/workers`.
@@ -400,6 +406,10 @@ pub(crate) struct Heartbeat {
     pub detail: Option<String>,
     pub capacity: Option<i64>,
     pub active: Option<i64>,
+    /// What the slot's current attempt has spent so far; `null` when the
+    /// producer reports no usage. Filled in from the usage samples the slot
+    /// reported, not from the heartbeat row (see `crate::web::usage`).
+    pub usage: Option<Usage>,
 }
 
 #[derive(Clone, Debug, Serialize)]
