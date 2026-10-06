@@ -8,8 +8,15 @@ use crate::web::jankurai::audits::{claim, list};
 use jeryu_core::CheckRunStatus;
 use serde_json::json;
 
-const GOVERNED_VERSION: &str = "jankurai 1.6.11";
 const GOVERNED_SHA256: &str = crate::ci_bridge::GOVERNED_JANKURAI_SHA256;
+
+/// The pinned auditor's `--version` line, read from the governed receipt the
+/// forge ships, so the tests follow the pin instead of naming a release.
+fn governed_version() -> String {
+    crate::ci_bridge::jankurai::governed_auditor_identity()
+        .expect("the pinned receipt agrees")
+        .0
+}
 
 /// A repository plus one queued audit ticket for a unique head, so tests that
 /// share the process-wide queue never see each other's work.
@@ -36,7 +43,7 @@ fn submission(ticket: &AuditTicket, score: u64) -> serde_json::Value {
         "commit_sha": ticket.head_sha,
         "base_sha": ticket.base_sha,
         "runner_id": "node-2/slot0",
-        "jankurai_version": GOVERNED_VERSION,
+        "jankurai_version": governed_version(),
         "jankurai_sha256": GOVERNED_SHA256,
         "jankurai_receipt_sha256": "a".repeat(64),
         "tool_exit": 0,

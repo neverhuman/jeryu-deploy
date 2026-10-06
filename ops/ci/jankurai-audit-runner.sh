@@ -131,16 +131,18 @@ audit_one() {
   fi
   # Forced scoring for unconfigured repositories: a head that carries no policy
   # of its own is audited against the jeryu-managed default, dropped into the
-  # throwaway clone only (untracked files do not enter the diff set).
+  # throwaway clone only (untracked files do not enter the diff set). The
+  # tool version it names is the receipt-verified auditor require_jankurai
+  # selected, never a literal that goes stale when the pin moves.
   if [ ! -f "${src}/agent/audit-policy.toml" ]; then
     mkdir -p "${src}/agent"
-    cat > "${src}/agent/audit-policy.toml" <<'POLICY'
+    cat > "${src}/agent/audit-policy.toml" <<POLICY
 schema_version = "1.0.0"
 workspace = "unconfigured"
 minimum_score = 85
 hard_findings_allowed = 0
 required_tool = "jankurai"
-required_tool_version = "1.6.11"
+required_tool_version = "${JERYU_JANKURAI_SEMVER}"
 
 [scan]
 excluded_paths = [".jankurai/", "apps/web/dist/"]

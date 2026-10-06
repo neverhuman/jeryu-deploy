@@ -91,10 +91,12 @@ validate_baseline() {
      .report.policy_fingerprint == $baseline[0].policy_fingerprint and
      .report.score >= 85 and .report.hard_findings == 0 and .report.caps == 0' \
     "${BASELINE_PROVENANCE}" >/dev/null
+  # Jankurai 1.6.11 writes git.head as a 7-character prefix, 1.7 the full id.
   jq -e \
     --arg short "${baseline_commit:0:7}" \
+    --arg full "${baseline_commit}" \
     '.schema_version == "1.9.0" and
-     .git.head == $short and
+     (.git.head == $short or .git.head == $full) and
      .git.mode == "full" and
      .git.dirty_worktree == false and
      .score >= 85 and

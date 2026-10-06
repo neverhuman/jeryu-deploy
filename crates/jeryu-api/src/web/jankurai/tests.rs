@@ -773,7 +773,9 @@ fn a_head_with_no_commit_base_is_only_scored_by_a_full_audit() {
         commit_sha: head.clone(),
         base_sha: NO_COMMIT_BASE_OID.to_string(),
         runner_id: "runner0".to_string(),
-        jankurai_version: "jankurai 1.6.11".to_string(),
+        jankurai_version: crate::ci_bridge::jankurai::governed_auditor_identity()
+            .expect("the pinned receipt agrees")
+            .0,
         jankurai_sha256: crate::ci_bridge::GOVERNED_JANKURAI_SHA256.to_string(),
         audit_mode: mode.to_string(),
         jankurai_receipt_sha256: None,
