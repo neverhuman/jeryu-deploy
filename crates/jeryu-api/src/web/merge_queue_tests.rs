@@ -139,7 +139,7 @@ impl Fixture {
             "alice",
             "jeryu",
             pr.number,
-            "pragent",
+            "review-bot",
             CreateReviewRequest {
                 body: None,
                 event: ReviewState::Approved,
@@ -195,7 +195,7 @@ impl Fixture {
                 "alice",
                 "jeryu",
                 sha,
-                "gatebot",
+                "ci-bot",
                 CreateCommitStatusRequest {
                     state,
                     context: "ci/fast".to_string(),
@@ -207,7 +207,7 @@ impl Fixture {
     }
 
     async fn enqueue(&self) -> (StatusCode, Value) {
-        self.enqueue_as(account("alton2", UserRole::Admin)).await
+        self.enqueue_as(account("rel-bot", UserRole::Admin)).await
     }
 
     async fn enqueue_as(&self, who: Extension<AccountSummary>) -> (StatusCode, Value) {
@@ -260,7 +260,7 @@ async fn a_pr_already_on_the_tip_lands_as_itself() {
     let (status, body) = fx.enqueue().await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["queue_sha"], fx.head);
-    assert_eq!(body["approvers"][0]["login"], "pragent");
+    assert_eq!(body["approvers"][0]["login"], "review-bot");
     assert_eq!(body["approvers"][0]["automation"], true);
 
     assert_eq!(merge_queue::tick(&fx.state), 1);
@@ -446,7 +446,7 @@ async fn the_queue_survives_a_restart_and_lists_building_entries() {
     });
     let response = merge_queue::list_all(
         State(reloaded),
-        account("alton2", UserRole::Admin),
+        account("rel-bot", UserRole::Admin),
         strict_query::StrictQuery(serde_json::from_value(json!({ "state": "building" })).unwrap()),
     )
     .await;
@@ -543,14 +543,14 @@ async fn refused_merges_are_recorded_and_the_missing_grant_is_flagged() {
     let core = &fx.state.core;
     core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
         .unwrap();
-    core.create_account("jain-merge-bot", "merge-password", UserRole::User)
+    core.create_account("merge-bot", "merge-password", UserRole::User)
         .unwrap();
     let token = |login: &str| {
         core.create_personal_access_token(login, "test", None)
             .unwrap()
             .secret
     };
-    let (admin, merger) = (token("jeryu-admin"), token("jain-merge-bot"));
+    let (admin, merger) = (token("jeryu-admin"), token("merge-bot"));
     let app = app(
         (*fx.state).clone().with_auth(true, false, false),
         Path::new("/tmp/jeryu-no-spa"),
@@ -586,8 +586,8 @@ async fn refused_merges_are_recorded_and_the_missing_grant_is_flagged() {
     let (status, page) = call(admin.clone(), "GET", attempt_path.clone()).await;
     assert_eq!(status, StatusCode::OK, "{page}");
     assert!(page["attempt"].is_null(), "{page}");
-    assert_eq!(page["approvedBy"], json!(["pragent"]), "{page}");
-    assert_eq!(page["grantGap"]["identity"], "jain-merge-bot", "{page}");
+    assert_eq!(page["approvedBy"], json!(["review-bot"]), "{page}");
+    assert_eq!(page["grantGap"]["identity"], "merge-bot", "{page}");
 
     // 1. The merge identity has no grant: the auth gate answers 403.
     let (status, _) = call(merger.clone(), "POST", queue_path.clone()).await;
@@ -595,7 +595,7 @@ async fn refused_merges_are_recorded_and_the_missing_grant_is_flagged() {
     let (_, page) = call(admin.clone(), "GET", attempt_path.clone()).await;
     assert_eq!(page["attempt"]["result"], "refused", "{page}");
     assert_eq!(page["attempt"]["status"], 403, "{page}");
-    assert_eq!(page["attempt"]["actor"], "jain-merge-bot", "{page}");
+    assert_eq!(page["attempt"]["actor"], "merge-bot", "{page}");
     assert_eq!(
         page["blockedReason"], "permission_denied - repository access denied",
         "{page}"
@@ -604,7 +604,7 @@ async fn refused_merges_are_recorded_and_the_missing_grant_is_flagged() {
     // 2. Granted, the queue refuses the merge commits.
     core.grant_repo_access(
         "jeryu-admin",
-        "jain-merge-bot",
+        "merge-bot",
         "alice",
         "jeryu",
         jeryu_core::RepoAccessLevel::Write,
@@ -625,7 +625,7 @@ async fn refused_merges_are_recorded_and_the_missing_grant_is_flagged() {
 
     // /runners joins the refusal onto the reviewer's approval of this PR.
     let beat: crate::web::control_plane::GateRunnerHeartbeat = serde_json::from_value(json!({
-        "runnerId": "xbabe0/redteam", "host": "xbabe0", "slot": 0, "labels": ["redteam"],
+        "runnerId": "node-0/redteam", "host": "node-0", "slot": 0, "labels": ["redteam"],
         "last": {
             "repo": "alice/jeryu", "pr": fx.number, "sha": fx.head.clone(),
             "recipe": "redteam-review", "conclusion": "approve",
@@ -635,7 +635,7 @@ async fn refused_merges_are_recorded_and_the_missing_grant_is_flagged() {
     .unwrap();
     fx.state
         .gate_runners
-        .record(beat, "pragent", chrono::Utc::now())
+        .record(beat, "review-bot", chrono::Utc::now())
         .unwrap();
     let fabric = crate::web::control_plane::runner_fabric(&fx.state);
     let reviewer = &fabric.local.node_details[0];
@@ -652,10 +652,10 @@ fn a_reviewer_row_flags_a_repo_the_merge_identity_cannot_write() {
     let fx = Fixture::new("feature.txt", "feature\n");
     fx.state
         .core
-        .create_account("jain-merge-bot", "merge-password", UserRole::User)
+        .create_account("merge-bot", "merge-password", UserRole::User)
         .unwrap();
     let beat: crate::web::control_plane::GateRunnerHeartbeat = serde_json::from_value(json!({
-        "runnerId": "xbabe0/redteam", "host": "xbabe0", "slot": 0, "labels": ["redteam"],
+        "runnerId": "node-0/redteam", "host": "node-0", "slot": 0, "labels": ["redteam"],
         "current": {
             "repo": "alice/jeryu", "pr": fx.number, "sha": fx.head.clone(),
             "recipe": "redteam-review", "started_at": chrono::Utc::now().to_rfc3339()
@@ -664,13 +664,13 @@ fn a_reviewer_row_flags_a_repo_the_merge_identity_cannot_write() {
     .unwrap();
     fx.state
         .gate_runners
-        .record(beat, "pragent", chrono::Utc::now())
+        .record(beat, "review-bot", chrono::Utc::now())
         .unwrap();
     let fabric = crate::web::control_plane::runner_fabric(&fx.state);
     let gaps = &fabric.local.node_details[0].merge_grant_gaps;
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert_eq!(gaps[0].repo, "alice/jeryu");
-    assert_eq!(gaps[0].identity, "jain-merge-bot");
+    assert_eq!(gaps[0].identity, "merge-bot");
 }
 
 #[tokio::test]

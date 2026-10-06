@@ -41,7 +41,7 @@ priority = 2
 blocked_by = []
 status = "open"
 attempts = 0
-requested_by = "alton"
+requested_by = "operator"
 filed_at = "2026-10-01T09:00:00Z"
 claim_by = ""
 lease_until = ""
@@ -154,7 +154,7 @@ async fn forge() -> Forge {
             HttpMethod::POST,
             "/api/v1/events",
             Some(json!({
-                "source": "gatebot",
+                "source": "ci-bot",
                 "kind": "todo.claimed",
                 "family": ALIAS,
                 "summary": "claimed the lane widening",

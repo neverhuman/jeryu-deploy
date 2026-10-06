@@ -35,7 +35,7 @@ fn submission(ticket: &AuditTicket, score: u64) -> serde_json::Value {
         "branch": ticket.branch,
         "commit_sha": ticket.head_sha,
         "base_sha": ticket.base_sha,
-        "runner_id": "xbabe2/slot0",
+        "runner_id": "node-2/slot0",
         "jankurai_version": GOVERNED_VERSION,
         "jankurai_sha256": GOVERNED_SHA256,
         "jankurai_receipt_sha256": "a".repeat(64),
@@ -75,8 +75,8 @@ async fn a_runner_report_for_an_open_ticket_becomes_the_head_proof() {
     let claimed = response_json(
         claim(
             State(state.clone()),
-            authenticated_account("gatebot"),
-            axum::body::Bytes::from(json!({"runner_id": "xbabe2/slot0", "max": 8}).to_string()),
+            authenticated_account("ci-bot"),
+            axum::body::Bytes::from(json!({"runner_id": "node-2/slot0", "max": 8}).to_string()),
         )
         .await,
     )
@@ -92,7 +92,7 @@ async fn a_runner_report_for_an_open_ticket_becomes_the_head_proof() {
 
     let accepted = ingest(
         &state,
-        authenticated_account("gatebot"),
+        authenticated_account("ci-bot"),
         "audit-happy",
         &submission(&ticket, 92),
     )
@@ -107,7 +107,7 @@ async fn a_runner_report_for_an_open_ticket_becomes_the_head_proof() {
     assert_eq!(scores[0].score, Some(92));
     let report = scores[0].report_json.as_deref().expect("report is kept");
     assert!(
-        report.contains("xbabe2/slot0") && report.contains(&base),
+        report.contains("node-2/slot0") && report.contains(&base),
         "the score keeps the provenance of the run: {report}"
     );
     let checks = core
@@ -125,7 +125,7 @@ async fn a_runner_report_for_an_open_ticket_becomes_the_head_proof() {
     // and `<repo>/required` between them audit a head once.
     let again = ingest(
         &state,
-        authenticated_account("gatebot"),
+        authenticated_account("ci-bot"),
         "audit-happy",
         &submission(&ticket, 99),
     )
@@ -177,7 +177,7 @@ async fn forged_and_mismatched_reports_are_rejected() {
     ] {
         let response = ingest(
             &state,
-            authenticated_account("gatebot"),
+            authenticated_account("ci-bot"),
             "audit-forged",
             &body,
         )
@@ -212,7 +212,7 @@ async fn forged_and_mismatched_reports_are_rejected() {
     // The rejections left the real job claimable.
     let good = ingest(
         &state,
-        authenticated_account("gatebot"),
+        authenticated_account("ci-bot"),
         "audit-forged",
         &submission(&ticket, 90),
     )
@@ -239,7 +239,7 @@ async fn the_audit_queue_is_runner_only() {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
     let visible =
-        response_json(list(State(state), authenticated_admin_account("alton2")).await).await;
+        response_json(list(State(state), authenticated_admin_account("rel-bot")).await).await;
     assert!(
         visible["tickets"]
             .as_array()

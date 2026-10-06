@@ -80,12 +80,18 @@ fn automation_names_every_check_and_the_merge_identity_that_cannot_merge() {
         },
     )
     .expect("protect main");
-    core.create_account("pragent", "review-password", UserRole::User)
+    core.create_account("review-bot", "review-password", UserRole::User)
         .expect("create reviewer");
-    core.create_account("jain-merge-bot", "merge-password", UserRole::User)
+    core.create_account("merge-bot", "merge-password", UserRole::User)
         .expect("create merger");
-    core.grant_repo_access("acme-admin", "pragent", OWNER, NAME, RepoAccessLevel::Write)
-        .expect("grant the reviewer");
+    core.grant_repo_access(
+        "acme-admin",
+        "review-bot",
+        OWNER,
+        NAME,
+        RepoAccessLevel::Write,
+    )
+    .expect("grant the reviewer");
     let state = WebState::new(core);
 
     let view = automation_of(&state, "acme-admin", true);
@@ -130,17 +136,17 @@ fn automation_names_every_check_and_the_merge_identity_that_cannot_merge() {
             .clone()
     };
     let reviewer = kind("reviewer");
-    assert_eq!(reviewer["identity"], "pragent");
+    assert_eq!(reviewer["identity"], "review-bot");
     assert_eq!(reviewer["grant"]["present"], true);
     assert_eq!(reviewer["grant"]["held"], "write");
 
     let merger = kind("merger");
-    assert_eq!(merger["identity"], "jain-merge-bot");
+    assert_eq!(merger["identity"], "merge-bot");
     assert_eq!(merger["grant"]["present"], false);
     assert_eq!(merger["grant"]["required"], "write");
     assert!(merger["grant"]["held"].is_null(), "{merger}");
     let warning = merger["grant"]["warning"].as_str().expect("a warning");
-    assert!(warning.contains("jain-merge-bot"), "{warning}");
+    assert!(warning.contains("merge-bot"), "{warning}");
     assert!(warning.contains("403"), "{warning}");
     assert_eq!(view["warnings"][0], warning);
 }
@@ -150,11 +156,11 @@ fn automation_names_every_check_and_the_merge_identity_that_cannot_merge() {
 #[test]
 fn a_granted_merge_identity_raises_no_warning() {
     let core = forge();
-    core.create_account("jain-merge-bot", "merge-password", UserRole::User)
+    core.create_account("merge-bot", "merge-password", UserRole::User)
         .expect("create merger");
     core.grant_repo_access(
         "acme-admin",
-        "jain-merge-bot",
+        "merge-bot",
         OWNER,
         NAME,
         RepoAccessLevel::Write,
@@ -189,7 +195,7 @@ fn a_granted_merge_identity_raises_no_warning() {
 fn a_deploy_timer_reports_what_it_shipped_and_where() {
     let core = forge();
     let mut state = WebState::new(core);
-    state.gate_runners = GateRunnerStore::with_reporters(["gatebot"]);
+    state.gate_runners = GateRunnerStore::with_reporters(["ci-bot"]);
     let beat = GateRunnerHeartbeat {
         runner_id: "buildhost1/publish".to_string(),
         host: "buildhost1".to_string(),
@@ -213,7 +219,7 @@ fn a_deploy_timer_reports_what_it_shipped_and_where() {
     };
     state
         .gate_runners
-        .record(beat, "gatebot", chrono::Utc::now())
+        .record(beat, "ci-bot", chrono::Utc::now())
         .expect("the deploy beat is accepted");
 
     let view = automation_of(&state, "acme-admin", true);

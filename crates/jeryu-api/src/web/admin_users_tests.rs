@@ -59,7 +59,7 @@ async fn admin_creates_a_user_with_a_role_and_duplicates_conflict() {
         &router,
         "/api/v1/admin/users",
         &reader,
-        &json!({ "login": "alton2", "role": "user" }),
+        &json!({ "login": "rel-bot", "role": "user" }),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -69,11 +69,11 @@ async fn admin_creates_a_user_with_a_role_and_duplicates_conflict() {
         &router,
         "/api/v1/admin/users",
         &admin,
-        &json!({ "login": "alton2", "role": "admin" }),
+        &json!({ "login": "rel-bot", "role": "admin" }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["login"], "alton2", "{body}");
+    assert_eq!(body["login"], "rel-bot", "{body}");
     assert_eq!(body["role"], "admin", "{body}");
     let password = body["password"].as_str().unwrap_or_default().to_string();
     assert!(password.starts_with("jeryu-"), "{body}");
@@ -103,8 +103,8 @@ async fn admin_creates_a_user_with_a_role_and_duplicates_conflict() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["login"] == "alton2")
-        .unwrap_or_else(|| panic!("alton2 missing: {users}"));
+        .find(|row| row["login"] == "rel-bot")
+        .unwrap_or_else(|| panic!("rel-bot missing: {users}"));
     assert_eq!(created["role"], "admin", "{users}");
     assert_eq!(created["must_change_password"], true, "{users}");
 
@@ -112,7 +112,7 @@ async fn admin_creates_a_user_with_a_role_and_duplicates_conflict() {
         &router,
         "/api/v1/auth/login",
         &admin,
-        &json!({ "login": "alton2", "password": password }),
+        &json!({ "login": "rel-bot", "password": password }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{login}");
@@ -122,7 +122,7 @@ async fn admin_creates_a_user_with_a_role_and_duplicates_conflict() {
         &router,
         "/api/v1/admin/users",
         &admin,
-        &json!({ "login": "alton2", "role": "user" }),
+        &json!({ "login": "rel-bot", "role": "user" }),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");

@@ -41,9 +41,9 @@
 //! sha256), so a reader can see which auditor binary a runner really invokes.
 //!
 //! Who may report: logins named in `JERYU_RUNNER_REPORTERS` (comma-separated,
-//! default `gatebot,pragent`), or any forge admin. The rule exists so an
-//! ordinary account cannot paint fake runners; admins are not ordinary
-//! accounts, and the timers run as the admin `alton2`.
+//! no default — a runner login is site configuration), or any forge admin. The
+//! rule exists so an ordinary account cannot paint fake runners; admins are not
+//! ordinary accounts, and a site runs its timers as an admin.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -58,7 +58,6 @@ pub(crate) const RUNNER_OFFLINE_AFTER_SECS: i64 = 180;
 const OFFLINE_AFTER_INTERVALS: i64 = 3;
 const INTERVAL_SECONDS: std::ops::RangeInclusive<u64> = 30..=86_400;
 const MAX_RUNNERS: usize = 256;
-const DEFAULT_REPORTERS: &str = "gatebot,pragent";
 /// Heartbeat label that marks a PR reviewer (pr-redteam) instead of a gate slot.
 pub(crate) const REVIEWER_LABEL: &str = "redteam";
 /// Heartbeat label that marks a background timer (auto-pin, auto-stage).
@@ -94,7 +93,7 @@ const TOOL_VERSION_MAX: usize = 100;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct GateRunnerHeartbeat {
-    /// Stable id, e.g. `xbabe2/slot0`.
+    /// Stable id, e.g. `node-2/slot0`.
     pub runner_id: String,
     pub host: String,
     pub slot: u32,
@@ -214,8 +213,9 @@ pub(crate) struct GateRunnerStore {
 
 impl GateRunnerStore {
     pub(crate) fn from_env() -> Self {
-        let configured = std::env::var("JERYU_RUNNER_REPORTERS")
-            .unwrap_or_else(|_| DEFAULT_REPORTERS.to_string());
+        // No default: a reporter login is one installation's identity. Unset,
+        // only forge admins may report.
+        let configured = std::env::var("JERYU_RUNNER_REPORTERS").unwrap_or_default();
         Self::with_reporters(configured.split(','))
     }
 
@@ -234,7 +234,7 @@ impl GateRunnerStore {
 
     /// A named reporter or any forge admin. The rule exists so an ordinary
     /// account cannot paint fake runners; admins are not ordinary accounts,
-    /// and the release timers run as the admin `alton2`.
+    /// and the release timers run as the admin `rel_bot`.
     pub(crate) fn may_report(&self, login: &str, admin: bool) -> bool {
         admin || self.reporters.iter().any(|reporter| reporter == login)
     }
@@ -534,7 +534,7 @@ mod tests {
     fn beat(runner_id: &str) -> GateRunnerHeartbeat {
         GateRunnerHeartbeat {
             runner_id: runner_id.to_string(),
-            host: "xbabe2".to_string(),
+            host: "node-2".to_string(),
             slot: 0,
             labels: vec!["pr-gate".to_string()],
             interval_seconds: None,
@@ -564,27 +564,27 @@ mod tests {
 
     #[test]
     fn only_configured_reporters_may_report() {
-        let store = GateRunnerStore::with_reporters(" gatebot , ci-bot,".split(','));
-        assert!(store.may_report("gatebot", false));
+        let store = GateRunnerStore::with_reporters(" ci-bot , other-bot,".split(','));
         assert!(store.may_report("ci-bot", false));
-        assert!(!store.may_report("alton", false));
+        assert!(store.may_report("other-bot", false));
+        assert!(!store.may_report("operator", false));
         assert!(!store.may_report("", false));
     }
 
     #[test]
     fn latest_heartbeat_per_runner_wins() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let now = Utc::now();
-        store.record(beat("xbabe2/slot0"), "gatebot", now).unwrap();
-        let mut idle = beat("xbabe2/slot0");
+        store.record(beat("node-2/slot0"), "ci-bot", now).unwrap();
+        let mut idle = beat("node-2/slot0");
         idle.current = None;
         store
-            .record(idle, "gatebot", now + Duration::seconds(30))
+            .record(idle, "ci-bot", now + Duration::seconds(30))
             .unwrap();
-        store.record(beat("xbabe2/slot1"), "gatebot", now).unwrap();
+        store.record(beat("node-2/slot1"), "ci-bot", now).unwrap();
         let runners = store.snapshot();
         assert_eq!(runners.len(), 2);
-        assert_eq!(runners[0].heartbeat.runner_id, "xbabe2/slot0");
+        assert_eq!(runners[0].heartbeat.runner_id, "node-2/slot0");
         assert!(runners[0].heartbeat.current.is_none());
     }
 
@@ -593,7 +593,7 @@ mod tests {
     /// other label may claim a target.
     #[test]
     fn deploy_beats_carry_a_target_and_a_deploy_verdict() {
-        let store = GateRunnerStore::with_reporters(["alton2"]);
+        let store = GateRunnerStore::with_reporters(["rel-bot"]);
         let now = Utc::now();
         let mut deploy = beat("buildhost1/publish");
         deploy.labels = vec![DEPLOY_LABEL.to_string()];
@@ -601,35 +601,35 @@ mod tests {
         deploy.last.as_mut().unwrap().target = Some("edge-pages".to_string());
         for conclusion in ["deployed", "failed", "skipped"] {
             deploy.last.as_mut().unwrap().conclusion = conclusion.to_string();
-            assert!(store.record(deploy.clone(), "alton2", now).is_ok());
+            assert!(store.record(deploy.clone(), "rel-bot", now).is_ok());
         }
         assert!(!holds_gate_slot(&deploy), "a deployer holds no gate slot");
 
         // A gate verdict is not a deploy verdict.
         deploy.last.as_mut().unwrap().conclusion = "success".to_string();
-        assert!(store.record(deploy.clone(), "alton2", now).is_err());
+        assert!(store.record(deploy.clone(), "rel-bot", now).is_err());
 
         // A deploy beat with no target says nothing useful.
         deploy.last.as_mut().unwrap().conclusion = "deployed".to_string();
         deploy.last.as_mut().unwrap().target = None;
-        assert!(store.record(deploy.clone(), "alton2", now).is_err());
+        assert!(store.record(deploy.clone(), "rel-bot", now).is_err());
 
         // Only a deploy beat carries a target.
-        let mut gate = beat("xbabe2/slot0");
+        let mut gate = beat("node-2/slot0");
         gate.last.as_mut().unwrap().target = Some("edge-pages".to_string());
-        assert!(store.record(gate, "alton2", now).is_err());
+        assert!(store.record(gate, "rel-bot", now).is_err());
 
         // Two kinds at once is a contradiction, not a runner.
         let mut both = beat("buildhost1/publish");
         both.labels = vec![DEPLOY_LABEL.to_string(), REVIEWER_LABEL.to_string()];
-        assert!(store.record(both, "alton2", now).is_err());
+        assert!(store.record(both, "rel-bot", now).is_err());
     }
 
     #[test]
     fn runner_goes_offline_after_silence() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let then = Utc::now();
-        store.record(beat("xbabe2/slot0"), "gatebot", then).unwrap();
+        store.record(beat("node-2/slot0"), "ci-bot", then).unwrap();
         let record = &store.snapshot()[0];
         assert!(is_online(
             record,
@@ -643,46 +643,46 @@ mod tests {
 
     #[test]
     fn malformed_heartbeats_are_refused() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let now = Utc::now();
-        let mut bad_id = beat("xbabe2/slot0");
+        let mut bad_id = beat("node-2/slot0");
         bad_id.runner_id = "<script>".to_string();
-        assert!(store.record(bad_id, "gatebot", now).is_err());
-        let mut bad_repo = beat("xbabe2/slot0");
+        assert!(store.record(bad_id, "ci-bot", now).is_err());
+        let mut bad_repo = beat("node-2/slot0");
         bad_repo.current.as_mut().unwrap().repo = "jain-web".to_string();
-        assert!(store.record(bad_repo, "gatebot", now).is_err());
-        let mut bad_sha = beat("xbabe2/slot0");
+        assert!(store.record(bad_repo, "ci-bot", now).is_err());
+        let mut bad_sha = beat("node-2/slot0");
         bad_sha.last.as_mut().unwrap().sha = "not-a-sha".to_string();
-        assert!(store.record(bad_sha, "gatebot", now).is_err());
-        let mut bad_conclusion = beat("xbabe2/slot0");
+        assert!(store.record(bad_sha, "ci-bot", now).is_err());
+        let mut bad_conclusion = beat("node-2/slot0");
         bad_conclusion.last.as_mut().unwrap().conclusion = "green".to_string();
-        assert!(store.record(bad_conclusion, "gatebot", now).is_err());
+        assert!(store.record(bad_conclusion, "ci-bot", now).is_err());
         assert!(store.snapshot().is_empty());
     }
 
     #[test]
     fn reviewer_beats_carry_review_verdicts() {
-        let store = GateRunnerStore::with_reporters(["pragent"]);
+        let store = GateRunnerStore::with_reporters(["review-bot"]);
         let now = Utc::now();
-        let mut review = beat("xbabe0/redteam");
+        let mut review = beat("node-0/redteam");
         review.labels = vec![REVIEWER_LABEL.to_string()];
         for conclusion in ["approve", "hold", "failed"] {
             review.last.as_mut().unwrap().conclusion = conclusion.to_string();
-            assert!(store.record(review.clone(), "pragent", now).is_ok());
+            assert!(store.record(review.clone(), "review-bot", now).is_ok());
         }
         review.last.as_mut().unwrap().conclusion = "success".to_string();
-        assert!(store.record(review, "pragent", now).is_err());
-        let mut gate = beat("xbabe2/slot0");
+        assert!(store.record(review, "review-bot", now).is_err());
+        let mut gate = beat("node-2/slot0");
         gate.last.as_mut().unwrap().conclusion = "approve".to_string();
-        assert!(store.record(gate, "pragent", now).is_err());
+        assert!(store.record(gate, "review-bot", now).is_err());
     }
 
     #[test]
-    fn pragent_reports_by_default() {
-        let store = GateRunnerStore::with_reporters(DEFAULT_REPORTERS.split(','));
-        assert!(store.may_report("pragent", false));
-        assert!(store.may_report("gatebot", false));
-        assert!(!store.may_report("alton", false));
+    fn with_no_reporters_configured_only_admins_report() {
+        let store = GateRunnerStore::with_reporters([]);
+        assert!(!store.may_report("ci-bot", false));
+        assert!(!store.may_report("review-bot", false));
+        assert!(store.may_report("ci-bot", true));
     }
 
     #[test]
@@ -691,14 +691,14 @@ mod tests {
         // contract denied them as unknown fields, so no reviewer ever showed
         // on /runners, and the refusal was plain text the tool did not log.
         let beat: GateRunnerHeartbeat = serde_json::from_str(
-            r#"{"runnerId":"xbabe0/redteam","host":"xbabe0","slot":0,"labels":["redteam"],
+            r#"{"runnerId":"node-0/redteam","host":"node-0","slot":0,"labels":["redteam"],
                 "current":{"repo":"jeryu/jeryu-web","pr":43,"sha":"30106a749a37f0d8","recipe":"redteam-review","started_at":"2026-09-19T17:47:30Z"},
                 "last":{"repo":"jeryu/jeryu-deploy","pr":63,"sha":"3ccfa84d8e8f07cd","recipe":"redteam-review","conclusion":"approve","seconds":14,"finished_at":"2026-09-19T17:47:48Z"}}"#,
         )
         .expect("snake_case stamps are accepted");
         assert!(is_reviewer(&beat));
-        let store = GateRunnerStore::with_reporters(["pragent"]);
-        assert!(store.record(beat, "pragent", Utc::now()).is_ok());
+        let store = GateRunnerStore::with_reporters(["review-bot"]);
+        assert!(store.record(beat, "review-bot", Utc::now()).is_ok());
         // The camelCase spelling the gate runner sends still works.
         let camel: Result<GateRunnerResult, _> = serde_json::from_str(
             r#"{"repo":"veox/jain-web","pr":1,"sha":"abc30d78","recipe":"just required","conclusion":"success","seconds":9,"finishedAt":"2026-09-19T17:47:48Z"}"#,
@@ -708,7 +708,7 @@ mod tests {
 
     fn timer(runner_id: &str) -> GateRunnerHeartbeat {
         serde_json::from_str(&format!(
-            r#"{{"runnerId":"{runner_id}","host":"xbabe0","slot":0,"labels":["automation"],
+            r#"{{"runnerId":"{runner_id}","host":"node-0","slot":0,"labels":["automation"],
                 "intervalSeconds":300,
                 "last":{{"repo":"jeryu/jeryu-deploy","sha":"77dc3310aa","recipe":"auto-stage",
                          "conclusion":"staged","seconds":0,"finishedAt":"2026-09-20T04:10:00Z"}}}}"#
@@ -718,13 +718,13 @@ mod tests {
 
     #[test]
     fn automation_beats_need_no_pull_request() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
-        let beat = timer("xbabe0/auto-stage");
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
+        let beat = timer("node-0/auto-stage");
         assert!(is_automation(&beat));
         assert_eq!(beat.last.as_ref().unwrap().pr, None);
-        let accepted = store.record(beat, "alton2", Utc::now()).unwrap();
+        let accepted = store.record(beat, "rel-bot", Utc::now()).unwrap();
         assert_eq!(accepted.offline_after_seconds, 900);
-        assert_eq!(store.snapshot()[0].heartbeat.runner_id, "xbabe0/auto-stage");
+        assert_eq!(store.snapshot()[0].heartbeat.runner_id, "node-0/auto-stage");
         // An explicit null is the same as leaving `pr` out, for every label.
         let gate: GateRunnerTask = serde_json::from_str(
             r#"{"repo":"veox/jain-web","pr":null,"sha":"abc30d78","recipe":"just required","startedAt":"2026-09-19T17:47:48Z"}"#,
@@ -735,58 +735,58 @@ mod tests {
 
     #[test]
     fn automation_beats_carry_their_own_conclusions() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let now = Utc::now();
-        let mut pin = timer("xbabe0/auto-pin");
+        let mut pin = timer("node-0/auto-pin");
         for conclusion in AUTOMATION_CONCLUSIONS {
             pin.last.as_mut().unwrap().conclusion = (*conclusion).to_string();
-            assert!(store.record(pin.clone(), "alton2", now).is_ok());
+            assert!(store.record(pin.clone(), "rel-bot", now).is_ok());
         }
         for conclusion in ["success", "approve", "done"] {
             pin.last.as_mut().unwrap().conclusion = conclusion.to_string();
-            let refused = store.record(pin.clone(), "alton2", now).unwrap_err();
+            let refused = store.record(pin.clone(), "rel-bot", now).unwrap_err();
             assert_eq!(
                 refused,
                 "last.conclusion: expected opened, staged, waiting, failed"
             );
         }
-        let mut gate = beat("xbabe2/slot0");
+        let mut gate = beat("node-2/slot0");
         gate.last.as_mut().unwrap().conclusion = "staged".to_string();
-        assert!(store.record(gate, "gatebot", now).is_err());
-        let mut both = timer("xbabe0/auto-pin");
+        assert!(store.record(gate, "ci-bot", now).is_err());
+        let mut both = timer("node-0/auto-pin");
         both.labels.push(REVIEWER_LABEL.to_string());
-        assert!(store.record(both, "alton2", now).is_err());
+        assert!(store.record(both, "rel-bot", now).is_err());
     }
 
     #[test]
     fn interval_is_bounded() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let now = Utc::now();
         for (interval, ok) in [(29, false), (30, true), (86_400, true), (86_401, false)] {
-            let mut beat = timer("xbabe0/auto-pin");
+            let mut beat = timer("node-0/auto-pin");
             beat.interval_seconds = Some(interval);
-            let recorded = store.record(beat, "alton2", now);
+            let recorded = store.record(beat, "rel-bot", now);
             assert_eq!(recorded.is_ok(), ok, "interval {interval}");
             if let Err(reason) = recorded {
                 assert_eq!(reason, "intervalSeconds: expected 30 to 86400");
             }
         }
         // A short interval never shortens the flat threshold.
-        let mut quick = timer("xbabe0/auto-pin");
+        let mut quick = timer("node-0/auto-pin");
         quick.interval_seconds = Some(30);
         assert_eq!(offline_after_secs(&quick), RUNNER_OFFLINE_AFTER_SECS);
         assert_eq!(
-            offline_after_secs(&beat("xbabe2/slot0")),
+            offline_after_secs(&beat("node-2/slot0")),
             RUNNER_OFFLINE_AFTER_SECS
         );
     }
 
     #[test]
     fn offline_threshold_honours_the_interval() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let then = Utc::now();
         store
-            .record(timer("xbabe0/auto-pin"), "alton2", then)
+            .record(timer("node-0/auto-pin"), "rel-bot", then)
             .unwrap();
         let record = &store.snapshot()[0];
         assert!(is_online(record, then + Duration::seconds(181)));
@@ -798,39 +798,39 @@ mod tests {
     fn a_timer_or_a_reviewer_is_not_a_gate_slot() {
         // The inbox raises `gate_runner_down` when nothing that holds a gate
         // slot is online: a beating timer must not hide a dead gate host.
-        assert!(holds_gate_slot(&beat("xbabe2/slot0")));
-        assert!(!holds_gate_slot(&timer("xbabe0/auto-pin")));
-        let mut review = beat("xbabe0/redteam");
+        assert!(holds_gate_slot(&beat("node-2/slot0")));
+        assert!(!holds_gate_slot(&timer("node-0/auto-pin")));
+        let mut review = beat("node-0/redteam");
         review.labels = vec![REVIEWER_LABEL.to_string()];
         assert!(!holds_gate_slot(&review));
     }
 
     #[test]
     fn admins_report_without_being_named() {
-        let store = GateRunnerStore::with_reporters(DEFAULT_REPORTERS.split(','));
-        assert!(store.may_report("alton2", true));
-        assert!(!store.may_report("alton2", false));
+        let store = GateRunnerStore::with_reporters(["ci-bot", "review-bot"]);
+        assert!(store.may_report("rel-bot", true));
+        assert!(!store.may_report("rel-bot", false));
     }
 
     #[test]
     fn heartbeat_json_is_strict() {
         let accepted: Result<GateRunnerHeartbeat, _> = serde_json::from_str(
-            r#"{"runnerId":"xbabe2/slot0","host":"xbabe2","slot":0,"surprise":true}"#,
+            r#"{"runnerId":"node-2/slot0","host":"node-2","slot":0,"surprise":true}"#,
         );
         assert!(accepted.is_err());
     }
 
     #[test]
     fn store_is_bounded() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let now = Utc::now();
         for slot in 0..MAX_RUNNERS {
             store
-                .record(beat(&format!("xbabe2/slot{slot}")), "gatebot", now)
+                .record(beat(&format!("node-2/slot{slot}")), "ci-bot", now)
                 .unwrap();
         }
-        assert!(store.record(beat("xbabe2/extra"), "gatebot", now).is_err());
-        assert!(store.record(beat("xbabe2/slot0"), "gatebot", now).is_ok());
+        assert!(store.record(beat("node-2/extra"), "ci-bot", now).is_err());
+        assert!(store.record(beat("node-2/slot0"), "ci-bot", now).is_ok());
     }
 
     #[test]
@@ -845,8 +845,8 @@ mod tests {
         assert_eq!(code.repo, "acme/gate-scripts");
         assert_eq!(code.version.as_deref(), Some("gate-scripts-v1.2.0"));
         assert!(code.installed_at.is_some());
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
-        assert!(store.record(parsed, "gatebot", Utc::now()).is_ok());
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
+        assert!(store.record(parsed, "ci-bot", Utc::now()).is_ok());
         assert!(store.snapshot()[0].heartbeat.code.is_some());
 
         // Only repo and commit are required; snake_case installed_at is accepted.
@@ -855,7 +855,7 @@ mod tests {
                 "code":{"repo":"acme/gate-scripts","commit":"abc1234","installed_at":"2026-09-30T12:00:00Z"}}"#,
         )
         .expect("a minimal code parses");
-        assert!(store.record(minimal, "gatebot", Utc::now()).is_ok());
+        assert!(store.record(minimal, "ci-bot", Utc::now()).is_ok());
     }
 
     #[test]
@@ -870,7 +870,7 @@ mod tests {
         );
         assert!(missing.is_err(), "commit is required");
 
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let now = Utc::now();
         let with = |repo: &str, commit: &str, version: Option<&str>| {
             let mut beat = beat("gate-a/slot0");
@@ -930,7 +930,7 @@ mod tests {
             ),
         ];
         for (beat, expected) in cases {
-            let recorded = store.record(beat, "gatebot", now);
+            let recorded = store.record(beat, "ci-bot", now);
             assert_eq!(recorded.err().as_deref(), expected);
         }
     }
@@ -950,7 +950,7 @@ mod tests {
     /// claim another kind, and a 30-second beat keeps the flat threshold.
     #[test]
     fn audit_runner_beats_carry_audit_verdicts() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let now = Utc::now();
         let mut audit = auditor();
         assert_eq!(runner_kind(&audit), "jankurai-audit");
@@ -958,26 +958,26 @@ mod tests {
         assert_eq!(offline_after_secs(&audit), RUNNER_OFFLINE_AFTER_SECS);
         for conclusion in JANKURAI_AUDIT_CONCLUSIONS {
             audit.last.as_mut().unwrap().conclusion = (*conclusion).to_string();
-            assert!(store.record(audit.clone(), "gatebot", now).is_ok());
+            assert!(store.record(audit.clone(), "ci-bot", now).is_ok());
         }
         audit.last.as_mut().unwrap().conclusion = "success".to_string();
         assert_eq!(
-            store.record(audit.clone(), "gatebot", now).unwrap_err(),
+            store.record(audit.clone(), "ci-bot", now).unwrap_err(),
             "last.conclusion: expected scored, tool-failed, refused, failed"
         );
         let mut gate = beat("gate-a/slot0");
         gate.last.as_mut().unwrap().conclusion = "scored".to_string();
-        assert!(store.record(gate, "gatebot", now).is_err());
+        assert!(store.record(gate, "ci-bot", now).is_err());
         let mut both = auditor();
         both.labels.push(AUTOMATION_LABEL.to_string());
         assert_eq!(
-            store.record(both, "gatebot", now).unwrap_err(),
+            store.record(both, "ci-bot", now).unwrap_err(),
             "labels: automation and jankurai-audit are exclusive"
         );
         // An idle audit runner beats with no current task and no result yet.
         let mut idle = auditor();
         idle.last = None;
-        assert!(store.record(idle, "gatebot", now).is_ok());
+        assert!(store.record(idle, "ci-bot", now).is_ok());
     }
 
     #[test]
@@ -997,17 +997,17 @@ mod tests {
 
     #[test]
     fn tools_are_kept_and_optional() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let audit = auditor();
         assert_eq!(audit.tools.len(), 1);
         assert_eq!(audit.tools[0].version.as_deref(), Some("1.6.11"));
-        assert!(store.record(audit, "gatebot", Utc::now()).is_ok());
+        assert!(store.record(audit, "ci-bot", Utc::now()).is_ok());
         assert_eq!(store.snapshot()[0].heartbeat.tools[0].name, "jankurai");
         let bare: GateRunnerHeartbeat = serde_json::from_str(
             r#"{"runnerId":"gate-a/slot0","host":"gate-a","slot":0,"tools":[{"name":"jq@1"}]}"#,
         )
         .expect("only the name is required");
-        assert!(store.record(bare, "gatebot", Utc::now()).is_ok());
+        assert!(store.record(bare, "ci-bot", Utc::now()).is_ok());
         let unknown: Result<GateRunnerHeartbeat, _> = serde_json::from_str(
             r#"{"runnerId":"gate-a/slot0","host":"gate-a","slot":0,"tools":[{"name":"jq","path":"/bin/jq"}]}"#,
         );
@@ -1016,7 +1016,7 @@ mod tests {
 
     #[test]
     fn tools_are_strict_and_name_the_path() {
-        let store = GateRunnerStore::with_reporters(["gatebot"]);
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
         let now = Utc::now();
         let tool = |name: &str, version: Option<&str>, sha256: Option<&str>| RunnerTool {
             name: name.to_string(),
@@ -1101,7 +1101,7 @@ mod tests {
             ),
         ];
         for (tools, expected) in cases {
-            let recorded = store.record(with(tools), "gatebot", now);
+            let recorded = store.record(with(tools), "ci-bot", now);
             assert_eq!(recorded.err(), expected);
         }
     }

@@ -384,6 +384,7 @@ impl WebState {
     /// router tests never exercise the smart-HTTP transport.
     #[cfg(test)]
     fn new(core: ForgeCore) -> Self {
+        configure_test_site();
         Self::with_repo_manager(
             core,
             Arc::new(RepoManager::new(GitdConfig::new(
@@ -393,6 +394,7 @@ impl WebState {
             std::env::temp_dir(),
             SplitCatalog::builtin(),
         )
+        .with_reporters(TEST_REPORTERS, TEST_PR_AUTHOR)
     }
 
     /// Test-only constructor that roots the git `RepoManager` at `storage_root`
@@ -400,6 +402,7 @@ impl WebState {
     /// fixture bare repository.
     #[cfg(test)]
     fn new_with_git_storage(core: ForgeCore, storage_root: PathBuf) -> Self {
+        configure_test_site();
         Self::with_repo_manager(
             core,
             Arc::new(RepoManager::new(GitdConfig::new(storage_root))),
@@ -407,6 +410,7 @@ impl WebState {
             std::env::temp_dir(),
             SplitCatalog::builtin(),
         )
+        .with_reporters(TEST_REPORTERS, TEST_PR_AUTHOR)
     }
 
     /// Test-only constructor that roots the git `RepoManager` at `storage_root`
@@ -436,6 +440,40 @@ impl WebState {
         self.session_runtime = runtime;
         self
     }
+
+    /// Name the heartbeat and board reporter logins and the shift pull-request
+    /// author outright. Each is a site setting with no default, so a test says
+    /// which site it is standing in for instead of depending on one.
+    #[cfg(test)]
+    pub(crate) fn with_reporters(mut self, logins: &[&str], pr_author: &str) -> Self {
+        self.gate_runners = control_plane::GateRunnerStore::with_reporters(logins.iter().copied());
+        self.release_boards =
+            release_board::ReleaseBoardStore::with_reporters(logins.iter().copied());
+        self.shift.pr_author = Some(pr_author.to_owned());
+        self
+    }
+}
+
+/// The invented site the router tests stand in for. None of these capabilities
+/// has a default — they name one installation's automation logins — so the
+/// tests configure them here, once, instead of each test carrying a site.
+#[cfg(test)]
+pub(crate) const TEST_REPORTERS: &[&str] = &["ci-bot", "review-bot"];
+#[cfg(test)]
+pub(crate) const TEST_PR_AUTHOR: &str = "rel-bot";
+
+#[cfg(test)]
+fn configure_test_site() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        auth::CI_PUBLISHERS.configure_for_tests(&["ci-bot"]);
+        auth::JANKURAI_SCORERS.configure_for_tests(&["ci-bot"]);
+        auth::DEPLOYERS.configure_for_tests(&["operator", "rel-bot"]);
+        pipeline::configure_reporters_for_tests(TEST_REPORTERS);
+        auth::REVIEW_IDENTITY.configure_for_tests("review-bot");
+        auth::MERGE_IDENTITY.configure_for_tests("merge-bot");
+        auth::AUTOMATION_IDENTITIES.configure_for_tests(&["ci-bot", "review-bot", "merge-bot"]);
+    });
 }
 
 /// Live-stream fan-out hub for the WebSocket event spine.

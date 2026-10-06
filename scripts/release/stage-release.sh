@@ -39,8 +39,9 @@
 # host or the remote did not answer), 70 build (the binary needs a newer glibc),
 # 1 anything else.
 #
-# Env: JERYU_BUILD_HOST (xbabe2), JERYU_FORGE_HOST (atomicsoul, reached through
-# the build host), JERYU_BUILD_ROOT (jeryu-release-build under the build host's
+# Env: JERYU_BUILD_HOST and JERYU_FORGE_HOST (both required, no default: this
+# source is public and a machine name is one installation's data; the forge host
+# is reached through the build host), JERYU_BUILD_ROOT (jeryu-release-build under the build host's
 # $HOME; an absolute path, or one starting with ~/ for the build host's home),
 # JERYU_BUILDER_IMAGE (jeryu-builder:rust1.95-glibc2.35-r2, built from
 # scripts/release/builder.Dockerfile on the build host when missing), JERYU_MAX_GLIBC (2.35),
@@ -74,8 +75,10 @@ set -- ${args[@]+"${args[@]}"}
 (($# <= 1)) || refuse usage "usage: stage-release.sh [--json] [--dry-run] [--prev RELEASE] [COMMIT]"
 [[ -z "$prev_override" || "$prev_override" =~ ^[A-Za-z0-9._-]+$ ]] || refuse usage "bad --prev '$prev_override'"
 [[ $json == 0 ]] || exec 1>&2
-build_host="${JERYU_BUILD_HOST:-xbabe2}"
-forge_host="${JERYU_FORGE_HOST:-atomicsoul}"
+build_host="${JERYU_BUILD_HOST:-}"
+forge_host="${JERYU_FORGE_HOST:-}"
+[[ -n "$build_host" ]] || refuse usage "JERYU_BUILD_HOST is unset: set it to this installation's release build host"
+[[ -n "$forge_host" ]] || refuse usage "JERYU_FORGE_HOST is unset: set it to this installation's forge host"
 # Expanded by the build host's shell, never here: the default and a leading ~/ become its $HOME.
 build_root="${JERYU_BUILD_ROOT:-\$HOME/jeryu-release-build}"
 [[ "$build_root" != "~/"* ]] || build_root="\$HOME/${build_root#"~/"}"

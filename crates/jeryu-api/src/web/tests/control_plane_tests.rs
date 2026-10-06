@@ -399,7 +399,7 @@ async fn runner_heartbeats_are_reporter_only_and_reach_the_fleet() {
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    core.create_account("gatebot", "gatebot-password", UserRole::User)
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
         .unwrap();
     core.create_account("mallory", "mallory-password", UserRole::User)
         .unwrap();
@@ -408,14 +408,14 @@ async fn runner_heartbeats_are_reporter_only_and_reach_the_fleet() {
             .unwrap()
             .secret
     };
-    let (admin, gatebot, mallory) = (token("alice"), token("gatebot"), token("mallory"));
+    let (admin, ci_bot, mallory) = (token("alice"), token("ci-bot"), token("mallory"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         std::path::Path::new("/tmp/jeryu-no-spa"),
     );
     let heartbeat = serde_json::json!({
-        "runnerId": "xbabe2/slot0",
-        "host": "xbabe2",
+        "runnerId": "node-2/slot0",
+        "host": "node-2",
         "slot": 0,
         "current": {
             "repo": "veox/jain-web", "pr": 13,
@@ -436,9 +436,9 @@ async fn runner_heartbeats_are_reporter_only_and_reach_the_fleet() {
     let refused = router.clone().oneshot(post(&mallory)).await.unwrap();
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 
-    let accepted = router.clone().oneshot(post(&gatebot)).await.unwrap();
+    let accepted = router.clone().oneshot(post(&ci_bot)).await.unwrap();
     assert_eq!(accepted.status(), StatusCode::OK);
-    assert_eq!(response_json(accepted).await["runnerId"], "xbabe2/slot0");
+    assert_eq!(response_json(accepted).await["runnerId"], "node-2/slot0");
 
     let fleet = router
         .oneshot(
@@ -453,7 +453,7 @@ async fn runner_heartbeats_are_reporter_only_and_reach_the_fleet() {
     assert_eq!(fleet.status(), StatusCode::OK);
     let body = response_json(fleet).await;
     assert_eq!(body["local"]["state"], "fresh");
-    assert_eq!(body["local"]["nodeDetails"][0]["runnerId"], "xbabe2/slot0");
+    assert_eq!(body["local"]["nodeDetails"][0]["runnerId"], "node-2/slot0");
     assert_eq!(
         body["local"]["nodeDetails"][0]["activeTasks"][0]["repo"],
         "veox/jain-web"
@@ -557,23 +557,23 @@ async fn jankurai_audit_runner_reaches_the_fleet_with_its_tools() {
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    core.create_account("gatebot", "gatebot-password", UserRole::User)
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
         .unwrap();
     let token = |login: &str| {
         core.create_personal_access_token(login, "test", None)
             .unwrap()
             .secret
     };
-    let (admin, gatebot) = (token("alice"), token("gatebot"));
+    let (admin, ci_bot) = (token("alice"), token("ci-bot"));
     let mut state = WebState::new(core.clone()).with_auth(true, false, false);
     state.gate_runners =
-        crate::web::control_plane::GateRunnerStore::with_reporters(["gatebot", "pragent"]);
+        crate::web::control_plane::GateRunnerStore::with_reporters(["ci-bot", "review-bot"]);
     let router = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
     let post = |beat: serde_json::Value| {
         Request::builder()
             .method(HttpMethod::POST)
             .uri("/api/v1/runners/heartbeat")
-            .header(header::AUTHORIZATION, format!("Bearer {gatebot}"))
+            .header(header::AUTHORIZATION, format!("Bearer {ci_bot}"))
             .header(header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(beat.to_string()))
             .unwrap()
@@ -648,29 +648,29 @@ async fn jankurai_audit_runner_reaches_the_fleet_with_its_tools() {
 }
 
 #[tokio::test]
-async fn redteam_heartbeats_from_pragent_reach_the_fleet_as_a_reviewer() {
+async fn redteam_heartbeats_from_the_reviewer_reach_the_fleet_as_a_reviewer() {
     use tower::ServiceExt;
 
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    core.create_account("pragent", "pragent-password", UserRole::User)
+    core.create_account("review-bot", "review-bot-password", UserRole::User)
         .unwrap();
-    core.create_account("alton", "alton-password", UserRole::User)
+    core.create_account("operator", "operator-password", UserRole::User)
         .unwrap();
     let token = |login: &str| {
         core.create_personal_access_token(login, "test", None)
             .unwrap()
             .secret
     };
-    let (admin, pragent, alton) = (token("alice"), token("pragent"), token("alton"));
+    let (admin, review_bot, operator) = (token("alice"), token("review-bot"), token("operator"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         std::path::Path::new("/tmp/jeryu-no-spa"),
     );
     let heartbeat = serde_json::json!({
-        "runnerId": "xbabe0/redteam",
-        "host": "xbabe0",
+        "runnerId": "node-0/redteam",
+        "host": "node-0",
         "slot": 0,
         "labels": ["redteam"],
         "current": {
@@ -695,13 +695,13 @@ async fn redteam_heartbeats_from_pragent_reach_the_fleet_as_a_reviewer() {
             .unwrap()
     };
 
-    let refused = router.clone().oneshot(post(&alton)).await.unwrap();
+    let refused = router.clone().oneshot(post(&operator)).await.unwrap();
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
     assert_eq!(response_json(refused).await["code"], "permission_denied");
 
-    let accepted = router.clone().oneshot(post(&pragent)).await.unwrap();
+    let accepted = router.clone().oneshot(post(&review_bot)).await.unwrap();
     assert_eq!(accepted.status(), StatusCode::OK);
-    assert_eq!(response_json(accepted).await["runnerId"], "xbabe0/redteam");
+    assert_eq!(response_json(accepted).await["runnerId"], "node-0/redteam");
 
     let fleet = router
         .oneshot(
@@ -716,7 +716,7 @@ async fn redteam_heartbeats_from_pragent_reach_the_fleet_as_a_reviewer() {
     assert_eq!(fleet.status(), StatusCode::OK);
     let body = response_json(fleet).await;
     let node = &body["local"]["nodeDetails"][0];
-    assert_eq!(node["runnerId"], "xbabe0/redteam");
+    assert_eq!(node["runnerId"], "node-0/redteam");
     assert_eq!(node["source"], "pr-redteam");
     assert_eq!(node["classes"][0], "reviewer");
     assert_eq!(node["capacity"], 0);
@@ -730,8 +730,8 @@ async fn automation_heartbeats_from_an_admin_reach_the_fleet_without_a_slot() {
     use tower::ServiceExt;
 
     let core = ForgeCore::new();
-    // alton2 is an admin and is not named in JERYU_RUNNER_REPORTERS.
-    core.create_account("alton2", "alton2-password", UserRole::Admin)
+    // rel_bot is an admin and is not named in JERYU_RUNNER_REPORTERS.
+    core.create_account("rel-bot", "rel-bot-password", UserRole::Admin)
         .unwrap();
     core.create_account("mallory", "mallory-password", UserRole::User)
         .unwrap();
@@ -740,15 +740,15 @@ async fn automation_heartbeats_from_an_admin_reach_the_fleet_without_a_slot() {
             .unwrap()
             .secret
     };
-    let (admin, mallory) = (token("alton2"), token("mallory"));
+    let (admin, mallory) = (token("rel-bot"), token("mallory"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         std::path::Path::new("/tmp/jeryu-no-spa"),
     );
     let beat = |conclusion: &str, interval: u64| {
         serde_json::json!({
-            "runnerId": "xbabe0/auto-stage",
-            "host": "xbabe0",
+            "runnerId": "node-0/auto-stage",
+            "host": "node-0",
             "slot": 0,
             "labels": ["automation"],
             "intervalSeconds": interval,
@@ -803,7 +803,7 @@ async fn automation_heartbeats_from_an_admin_reach_the_fleet_without_a_slot() {
         .unwrap();
     assert_eq!(accepted.status(), StatusCode::OK);
     let accepted = response_json(accepted).await;
-    assert_eq!(accepted["runnerId"], "xbabe0/auto-stage");
+    assert_eq!(accepted["runnerId"], "node-0/auto-stage");
     assert_eq!(accepted["offlineAfterSeconds"], 900);
 
     let fleet = router
@@ -818,7 +818,7 @@ async fn automation_heartbeats_from_an_admin_reach_the_fleet_without_a_slot() {
         .unwrap();
     let body = response_json(fleet).await;
     let node = &body["local"]["nodeDetails"][0];
-    assert_eq!(node["runnerId"], "xbabe0/auto-stage");
+    assert_eq!(node["runnerId"], "node-0/auto-stage");
     assert_eq!(node["source"], "automation");
     assert_eq!(node["classes"][0], "automation");
     assert_eq!(node["state"], "active");
@@ -852,18 +852,18 @@ async fn gate_identity_publishes_statuses_without_admin_but_cannot_protect() {
     core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
         .unwrap();
     // JERYU_CI_PUBLISHERS is unset in tests, so the default gate identity applies.
-    core.create_account("gatebot", "gatebot-password", UserRole::User)
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
         .unwrap();
     core.grant_repo_access(
         "jeryu-admin",
-        "gatebot",
+        "ci-bot",
         "alice",
         "jeryu",
         RepoAccessLevel::Write,
     )
     .unwrap();
-    let gatebot_token = core
-        .create_personal_access_token("gatebot", "test", None)
+    let ci_bot_token = core
+        .create_personal_access_token("ci-bot", "test", None)
         .unwrap()
         .secret;
     let app = app(
@@ -874,7 +874,7 @@ async fn gate_identity_publishes_statuses_without_admin_but_cannot_protect() {
         Request::builder()
             .method(method)
             .uri(path)
-            .header(header::AUTHORIZATION, format!("Bearer {gatebot_token}"))
+            .header(header::AUTHORIZATION, format!("Bearer {ci_bot_token}"))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap()
@@ -893,7 +893,7 @@ async fn gate_identity_publishes_statuses_without_admin_but_cannot_protect() {
         assert_ne!(
             status.status(),
             StatusCode::FORBIDDEN,
-            "gatebot must be able to post statuses through {prefix}"
+            "ci-bot must be able to post statuses through {prefix}"
         );
         assert!(
             status.status().is_success(),

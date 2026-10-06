@@ -176,7 +176,7 @@ fn the_seeded_decisions_are_recorded() {
     for (number, expected) in [
         (1u32, "forge-is-origin-github-is-a-downstream-mirror"),
         (2, "html-url-is-jeryu-shaped"),
-        (3, "gating-runs-on-xbabe2"),
+        (3, "gating-runs-on-a-dedicated-gate-host"),
     ] {
         let record = records
             .get(&number)

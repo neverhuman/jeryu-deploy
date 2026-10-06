@@ -82,8 +82,8 @@ fn build_commit_writes_and_deletes_on_top_of_the_parent_only() {
         (before[0].path.clone(), Some(done.dump())),
         (before[1].path.clone(), None),
     ];
-    let commit =
-        build_commit("git", &bare, &head, "alton", "move todos", &changes).expect("build commit");
+    let commit = build_commit("git", &bare, &head, "operator", "move todos", &changes)
+        .expect("build commit");
     // The commit exists but no ref moved: moving it is the caller's CAS.
     assert_eq!(
         resolve("git", &bare, "refs/heads/queue").as_deref(),
@@ -92,7 +92,7 @@ fn build_commit_writes_and_deletes_on_top_of_the_parent_only() {
     assert_eq!(run_git(&bare, &["rev-parse", &format!("{commit}^")]), head);
     assert_eq!(
         run_git(&bare, &["log", "-1", "--format=%an <%ae>|%s", &commit]),
-        "alton <alton@jeryu>|move todos"
+        "operator <operator@jeryu>|move todos"
     );
     let after = read_todos("git", &bare, &commit).unwrap();
     assert_eq!(after.len(), before.len() - 1);

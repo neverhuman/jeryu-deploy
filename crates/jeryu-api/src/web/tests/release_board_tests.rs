@@ -5,7 +5,7 @@ const EXAMPLE: &str = include_str!("../../../../../docs/release-board.example.js
 struct Board {
     router: axum::Router,
     admin: String,
-    gatebot: String,
+    ci_bot: String,
     mallory: String,
 }
 
@@ -13,7 +13,7 @@ fn board_router() -> Board {
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    core.create_account("gatebot", "gatebot-password", UserRole::User)
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
         .unwrap();
     core.create_account("mallory", "mallory-password", UserRole::User)
         .unwrap();
@@ -22,7 +22,7 @@ fn board_router() -> Board {
             .unwrap()
             .secret
     };
-    let (admin, gatebot, mallory) = (token("alice"), token("gatebot"), token("mallory"));
+    let (admin, ci_bot, mallory) = (token("alice"), token("ci-bot"), token("mallory"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         std::path::Path::new("/tmp/jeryu-no-spa"),
@@ -30,7 +30,7 @@ fn board_router() -> Board {
     Board {
         router,
         admin,
-        gatebot,
+        ci_bot,
         mallory,
     }
 }
@@ -70,7 +70,7 @@ async fn a_reporter_writes_a_board_and_an_admin_reads_it_back() {
     let accepted = board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "acme", EXAMPLE.to_string()))
+        .oneshot(put(&board.ci_bot, "acme", EXAMPLE.to_string()))
         .await
         .unwrap();
     assert_eq!(accepted.status(), StatusCode::OK);
@@ -112,13 +112,13 @@ async fn reading_a_board_is_for_admins() {
     board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "acme", EXAMPLE.to_string()))
+        .oneshot(put(&board.ci_bot, "acme", EXAMPLE.to_string()))
         .await
         .unwrap();
 
     for path in ["/api/v1/release-board", "/api/v1/release-board/acme"] {
-        // gatebot may write a board but, like any ordinary account, not read one.
-        for token in [&board.gatebot, &board.mallory] {
+        // ci_bot may write a board but, like any ordinary account, not read one.
+        for token in [&board.ci_bot, &board.mallory] {
             let answer = board
                 .router
                 .clone()
@@ -155,7 +155,7 @@ async fn a_malformed_or_mismatched_board_is_refused_with_the_reason() {
     let garbage = board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "acme", "{\"schema\":1}".to_string()))
+        .oneshot(put(&board.ci_bot, "acme", "{\"schema\":1}".to_string()))
         .await
         .unwrap();
     assert_eq!(garbage.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -164,7 +164,7 @@ async fn a_malformed_or_mismatched_board_is_refused_with_the_reason() {
     let mismatched = board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "initech", EXAMPLE.to_string()))
+        .oneshot(put(&board.ci_bot, "initech", EXAMPLE.to_string()))
         .await
         .unwrap();
     assert_eq!(mismatched.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -186,7 +186,7 @@ async fn an_oversized_board_is_refused_before_it_is_parsed() {
     let answer = board
         .router
         .clone()
-        .oneshot(put(&board.gatebot, "acme", huge))
+        .oneshot(put(&board.ci_bot, "acme", huge))
         .await
         .unwrap();
     assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE);
@@ -208,7 +208,7 @@ async fn target_runners_round_trip_and_an_empty_list_is_omitted() {
         .router
         .clone()
         .oneshot(put(
-            &board.gatebot,
+            &board.ci_bot,
             "acme",
             with_runners(serde_json::json!(["gate-a/slot0", "gate-a/slot1"])),
         ))
@@ -235,7 +235,7 @@ async fn target_runners_round_trip_and_an_empty_list_is_omitted() {
         .router
         .clone()
         .oneshot(put(
-            &board.gatebot,
+            &board.ci_bot,
             "acme",
             with_runners(serde_json::json!([])),
         ))
@@ -286,7 +286,7 @@ async fn bad_target_runners_are_refused_with_the_path() {
         let answer = board
             .router
             .clone()
-            .oneshot(put(&board.gatebot, "acme", with_runners(runners)))
+            .oneshot(put(&board.ci_bot, "acme", with_runners(runners)))
             .await
             .unwrap();
         assert_eq!(

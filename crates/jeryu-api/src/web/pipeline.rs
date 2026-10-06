@@ -47,7 +47,6 @@ pub(crate) use types::{Event, EventsQuery, NewEvent};
 /// WebSocket scope every stored event is published on (admin-only).
 pub(crate) const PIPELINE_SCOPE: &str = "pipeline";
 const REPORTERS_ENV: &str = "JERYU_EVENT_REPORTERS";
-const DEFAULT_REPORTERS: &str = "gatebot,pragent";
 const DOCS: &str = "docs/pipeline-events.md";
 
 /// A refusal of a write to the event log. Its fixes are about the event and
@@ -119,12 +118,20 @@ fn events_store_error(reason: &str) -> AxumResponse {
 }
 
 /// Logins that may post events without being a global admin
-/// (`JERYU_EVENT_REPORTERS`, comma-separated, default `gatebot,pragent`).
+/// (`JERYU_EVENT_REPORTERS`, comma-separated). No default: a reporter login is
+/// one installation's identity, and this source is public. Unset, only global
+/// admins may post.
 fn reporters() -> &'static [String] {
-    static REPORTERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    REPORTERS.get_or_init(|| {
-        reporter_list(&std::env::var(REPORTERS_ENV).unwrap_or_else(|_| DEFAULT_REPORTERS.into()))
-    })
+    EVENT_REPORTERS.get_or_init(|| reporter_list(&std::env::var(REPORTERS_ENV).unwrap_or_default()))
+}
+
+static EVENT_REPORTERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Seed the reporter list without reading the environment, so a test states
+/// the site it is testing instead of depending on one.
+#[cfg(test)]
+pub(crate) fn configure_reporters_for_tests(logins: &[&str]) {
+    let _ = EVENT_REPORTERS.set(logins.iter().map(|login| (*login).to_owned()).collect());
 }
 
 fn reporter_list(configured: &str) -> Vec<String> {

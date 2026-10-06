@@ -41,9 +41,6 @@ use super::control_plane::{
 };
 use super::*;
 
-/// The identity that reviews pull requests here, `JERYU_REVIEW_IDENTITY`.
-const DEFAULT_REVIEW_IDENTITY: &str = "pragent";
-
 /// One check name and its newest run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -346,12 +343,11 @@ fn conclusion_word(run: &CheckRun) -> String {
     }
 }
 
-fn review_identity() -> String {
-    std::env::var("JERYU_REVIEW_IDENTITY")
-        .ok()
-        .map(|login| login.trim().to_string())
-        .filter(|login| !login.is_empty())
-        .unwrap_or_else(|| DEFAULT_REVIEW_IDENTITY.to_string())
+/// The login that reviews pull requests here (`JERYU_REVIEW_IDENTITY`). An
+/// automation login belongs to one installation, so this public source carries
+/// no default: unset, no reviewer actor is described.
+fn review_identity() -> Option<&'static str> {
+    super::auth::REVIEW_IDENTITY.configured()
 }
 
 /// The grant `identity` needs to do `job`, and whether it holds it. `None` when
@@ -392,26 +388,28 @@ fn actor_grant(
 fn actors(state: &WebState, repo: &Repository) -> Vec<AutomationActor> {
     let full = format!("{}/{}", repo.owner, repo.name);
     let mut actors = Vec::new();
-    let reviewer = review_identity();
-    if let Some(grant) = actor_grant(state, repo, &reviewer, "write", "its reviews answer 403") {
+    if let Some(reviewer) = review_identity()
+        && let Some(grant) = actor_grant(state, repo, reviewer, "write", "its reviews answer 403")
+    {
         actors.push(AutomationActor {
             kind: "reviewer",
             role: "reviews pull requests and approves the head it read".to_string(),
             state: "configured",
             grant: Some(grant),
             last_run: None,
-            identity: reviewer,
+            identity: reviewer.to_owned(),
         });
     }
-    let merger = super::merge_attempts::merge_identity();
-    if let Some(grant) = actor_grant(state, repo, &merger, "write", "its merges answer 403") {
+    if let Some(merger) = super::merge_attempts::merge_identity()
+        && let Some(grant) = actor_grant(state, repo, merger, "write", "its merges answer 403")
+    {
         actors.push(AutomationActor {
             kind: "merger",
             role: "merges approved pull requests".to_string(),
             state: "configured",
             grant: Some(grant),
             last_run: None,
-            identity: merger,
+            identity: merger.to_owned(),
         });
     }
     let now = chrono::Utc::now();

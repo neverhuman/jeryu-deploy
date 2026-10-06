@@ -13,8 +13,8 @@
 //! triggered at once by a forge release. The shape is `jeryu.release_board.v1`,
 //! documented in `docs/release-board.md`.
 //!
-//! Who may write: logins named in `JERYU_BOARD_REPORTERS` (comma-separated,
-//! default `gatebot,pragent`), or any forge admin. Reads are admin-only by path
+//! Who may write: logins named in `JERYU_BOARD_REPORTERS` (comma-separated, no
+//! default — a collector login is site configuration), or any forge admin. Reads are admin-only by path
 //! (see `auth::admin_only_request`): a board names hosts, commands and pinned
 //! commits of private repositories.
 
@@ -53,7 +53,6 @@ const MAX_RUNNER_ID_CHARS: usize = 200;
 /// A collector clock may run a little ahead of the forge's; more than this is
 /// a wrong clock, and a board from the future would never be replaced.
 const MAX_CLOCK_SKEW_SECS: i64 = 300;
-const DEFAULT_REPORTERS: &str = "gatebot,pragent";
 /// Pipeline websocket kind that tells open pages to refetch. Not written to
 /// the event log: a collector posts every five minutes per family, and the
 /// log is for things that happened, not for a page being refreshed.
@@ -292,8 +291,9 @@ pub(crate) struct ReleaseBoardStore {
 
 impl ReleaseBoardStore {
     pub(crate) fn from_env() -> Self {
-        let configured = std::env::var("JERYU_BOARD_REPORTERS")
-            .unwrap_or_else(|_| DEFAULT_REPORTERS.to_string());
+        // No default: a reporter login is one installation's identity. Unset,
+        // only forge admins may report.
+        let configured = std::env::var("JERYU_BOARD_REPORTERS").unwrap_or_default();
         Self::with_reporters(configured.split(','))
     }
 
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     fn an_older_snapshot_does_not_replace_a_newer_one() {
-        let store = ReleaseBoardStore::with_reporters(["gatebot"]);
+        let store = ReleaseBoardStore::with_reporters(["ci-bot"]);
         let now = at("2026-09-28T16:00:00Z");
         let newer = board();
         let mut older = board();
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn the_list_names_each_family_once_with_its_problem_count() {
-        let store = ReleaseBoardStore::with_reporters(["gatebot"]);
+        let store = ReleaseBoardStore::with_reporters(["ci-bot"]);
         let now = at("2026-09-28T16:00:00Z");
         let mut board = board();
         board.problems.push(Problem {
@@ -877,9 +877,9 @@ mod tests {
 
     #[test]
     fn reporters_are_the_named_logins_or_admins() {
-        let store = ReleaseBoardStore::with_reporters(" gatebot , ,pragent".split(','));
-        assert!(store.may_report("gatebot", false));
-        assert!(store.may_report("pragent", false));
+        let store = ReleaseBoardStore::with_reporters(" ci-bot , ,review-bot".split(','));
+        assert!(store.may_report("ci-bot", false));
+        assert!(store.may_report("review-bot", false));
         assert!(!store.may_report("jordan", false));
         assert!(store.may_report("jordan", true));
     }

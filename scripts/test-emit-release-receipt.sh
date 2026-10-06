@@ -172,7 +172,7 @@ CHECKSUM_RECEIPT="$(jq -r '.checksum_manifest.sha256' "$RECEIPT")"
 check "receipt checksum manifest digest matches" "[ '${CHECKSUM_ACTUAL}' = '${CHECKSUM_RECEIPT}' ]"
 check "rollback.json written + valid JSON" "jq -e . '${BUNDLE}/rollback.json' >/dev/null"
 
-INITIAL_MARKER="atomicsoul-initial-install"
+INITIAL_MARKER="forge-1-initial-install"
 INITIAL="${WORK}/initial"
 make_bundle "$INITIAL/bundle" "$INITIAL/bundle/artifact-support-signrail" "$INITIAL/publish.json" "$INITIAL/bundle/artifact-support-evidence.tar.gz"
 for file in "$INITIAL/bundle/artifact-support-signrail/release.json" "$INITIAL/bundle/artifact-support-signrail/stage-receipts/"*.json; do

@@ -2,8 +2,8 @@
 //!
 //! A deployment record is a claim about what an environment runs, so writing
 //! one needs global admin AND a `JERYU_DEPLOYERS` identity (default
-//! `alton,alton2`): the automation admins (gatebot, pragent) must not, since
-//! gatebot's token is readable by the code it gates. Reading follows ordinary
+//! `operator,rel_bot`): the automation admins (ci_bot, review_bot) must not, since
+//! ci_bot's token is readable by the code it gates. Reading follows ordinary
 //! repository read access. The
 //! whole `web` module is `#[cfg(feature = "web")]`-gated, so this compiles to
 //! nothing without `--features web`.
@@ -18,9 +18,9 @@ const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 struct Forge {
     app: axum::Router,
-    /// `alton2`: admin and a default deployer.
+    /// `rel_bot`: admin and a default deployer.
     admin: String,
-    /// `gatebot`: an admin, as in production, but not a deployer.
+    /// `ci_bot`: an admin, as in production, but not a deployer.
     writer: String,
     /// `jeryu-admin`: an admin outside the deployer list.
     unlisted_admin: String,
@@ -42,8 +42,8 @@ fn forge() -> Forge {
     core.create_account("jeryu-admin", "admin-password", UserRole::Admin)
         .unwrap();
     for (login, role, level) in [
-        ("alton2", UserRole::Admin, RepoAccessLevel::Write),
-        ("gatebot", UserRole::Admin, RepoAccessLevel::Write),
+        ("rel-bot", UserRole::Admin, RepoAccessLevel::Write),
+        ("ci-bot", UserRole::Admin, RepoAccessLevel::Write),
         ("reader", UserRole::User, RepoAccessLevel::Read),
     ] {
         core.create_account(login, "user-password", role).unwrap();
@@ -56,8 +56,8 @@ fn forge() -> Forge {
             .secret
     };
     let (admin, writer, unlisted_admin, reader) = (
-        token("alton2"),
-        token("gatebot"),
+        token("rel-bot"),
+        token("ci-bot"),
         token("jeryu-admin"),
         token("reader"),
     );
@@ -125,7 +125,7 @@ async fn only_listed_deployers_record_deployments_and_the_creator_is_the_caller(
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
-        assert_eq!(created["creator"]["login"], "alton2");
+        assert_eq!(created["creator"]["login"], "rel-bot");
         let id = created["id"].as_u64().unwrap();
 
         let statuses = format!("{path}/{id}/statuses");
@@ -146,7 +146,7 @@ async fn only_listed_deployers_record_deployments_and_the_creator_is_the_caller(
         let (status, appended) =
             call(&forge, &forge.admin, HttpMethod::POST, &statuses, success).await;
         assert_eq!(status, StatusCode::CREATED, "{appended}");
-        assert_eq!(appended["creator"]["login"], "alton2");
+        assert_eq!(appended["creator"]["login"], "rel-bot");
     }
 
     // Each accepted write became a pipeline event; the refused ones did not.
@@ -173,7 +173,7 @@ async fn only_listed_deployers_record_deployments_and_the_creator_is_the_caller(
     assert_eq!(events[1]["outcome"], "success");
     assert_eq!(events[1]["sha"], SHA);
     assert_eq!(events[1]["repo"], "alice/jeryu");
-    assert_eq!(events[1]["actor"], "alton2");
+    assert_eq!(events[1]["actor"], "rel-bot");
     assert_eq!(events[1]["reporter"], "forge");
     assert_eq!(events[1]["needs_human"], false);
 }

@@ -37,8 +37,9 @@ pub(crate) fn rebase_onto(
 }
 use replay::{Git, ReplayFailure, is_sha};
 
-/// Identities whose approvals count as automation, not a person.
-const AUTOMATION_DEFAULT: &str = "gatebot,pragent,jain-merge-bot";
+/// Identities whose approvals count as automation, not a person
+/// (`JERYU_AUTOMATION_IDENTITIES`). They belong to one installation, so this
+/// public source carries no default: unset, every approval counts as a person's.
 /// A failed queue gate is rebuilt (a fresh commit, so a fresh gate) once.
 const MAX_ATTEMPTS: usize = 2;
 
@@ -138,14 +139,8 @@ fn queue_ref(base: &str, number: u64) -> String {
     format!("refs/queue/{base}/{number}")
 }
 
-fn automation_identities() -> Vec<String> {
-    std::env::var("JERYU_AUTOMATION_IDENTITIES")
-        .unwrap_or_else(|_| AUTOMATION_DEFAULT.into())
-        .split(',')
-        .map(str::trim)
-        .filter(|login| !login.is_empty())
-        .map(str::to_string)
-        .collect()
+fn automation_identities() -> &'static [String] {
+    super::auth::AUTOMATION_IDENTITIES.configured()
 }
 
 fn git_for<'a>(state: &'a WebState, path: &'a Path) -> Git<'a> {

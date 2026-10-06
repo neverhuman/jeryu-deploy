@@ -46,6 +46,21 @@ JERYU_SITE_ALLOW_FILE=~/.config/jeryu/site-allow \
   ops/site-specifics/scan.sh --ci               # CI mode: fails on a match
 ```
 
+## What legitimately stays
+
+One file in the family is a site's own declaration rather than product source:
+`jeryu-release-ops/repos.manifest.toml`, the family authority, records where
+that installation keeps its checkouts. Consumers read those paths, so they
+cannot move into an environment variable; the validator that reads the manifest
+derives every path from the root the manifest itself declares, and carries no
+site value of its own. Put that one file in `JERYU_SITE_ALLOW_FILE`:
+
+```
+repos.manifest.toml
+```
+
+Everything else is either a required setting with no default, or invented data.
+
 Each match prints as `file:line:term` — never the matched line, which can
 itself be site data — followed by a count per path scanned. `--ci` exits 1 when
 a match is not covered by the allowlist, 2 on a usage or configuration error.

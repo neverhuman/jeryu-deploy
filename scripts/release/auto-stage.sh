@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # auto-stage.sh — stage the forge's current jeryu-deploy main once its gate is green, so a
-# release "go" is only the switch. Run by a timer on the release host (xbabe0); never deploys.
+# release "go" is only the switch. Run by a timer on the release host (node-0); never deploys.
 #
 #   1. Resolve main's tip. Nothing to do when it is already live or already staged.
 #   2. Wait until the tip's combined status is `success` (the gate ran on the PR head that
@@ -23,24 +23,31 @@
 # commit whose gate is awaited, and since when), a git cache, logs/<sha12>-attempt<N>.log (the
 # staging output, newest 20 kept).
 #
-# Env: JERYU_DEPLOY_REMOTE, JERYU_BUILD_HOST, JERYU_FORGE_HOST (as stage-release.sh);
+# Env: JERYU_DEPLOY_REMOTE, JERYU_BUILD_HOST, JERYU_FORGE_HOST (as the staging
+# script; the last two required with no default);
 # JERYU_DEPLOY_REPO (owner/name on the forge; default: from the remote);
-# JERYU_BASE (https://git.neverhuman.org); JERYU_STATUS_TOKEN_FILE (the token for the
-# commit-status API and for posting events, which needs a global admin or a
-# JERYU_EVENT_REPORTERS login; default ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat);
+# JERYU_BASE (https://git.neverhuman.org); JERYU_STATUS_TOKEN_FILE (required, no
+# default: the token for the commit-status API and for posting events, which needs
+# a global admin or a JERYU_EVENT_REPORTERS login);
 # JERYU_AUTO_STAGE_MAX_FAILURES (2); JERYU_AUTO_STAGE_EVENTS=0 turns the events off;
 # JERYU_AUTO_STAGE_BEAT=0 turns the heartbeat off.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
-build_host="${JERYU_BUILD_HOST:-xbabe2}"
-forge_host="${JERYU_FORGE_HOST:-atomicsoul}"
+# A machine name and a credential path are one installation's data, so this
+# public source carries no default for either.
+build_host="${JERYU_BUILD_HOST:-}"
+forge_host="${JERYU_FORGE_HOST:-}"
 base="${JERYU_BASE:-https://git.neverhuman.org}"
-token_file="${JERYU_STATUS_TOKEN_FILE:-$HOME/.config/jeryu/credentials/git-neverhuman-org-alton2.pat}"
+token_file="${JERYU_STATUS_TOKEN_FILE:-}"
 max_failures="${JERYU_AUTO_STAGE_MAX_FAILURES:-2}"
 state="${JERYU_AUTO_STAGE_STATE:-$HOME/.local/state/jeryu-auto-stage}"
 say() { echo "[auto-stage $(date -u +%H:%M:%S)] $*" >&2; }
+die() { say "$*"; exit 64; }
+[ -n "$build_host" ] || die "JERYU_BUILD_HOST is unset: set it to this installation's release build host"
+[ -n "$forge_host" ] || die "JERYU_FORGE_HOST is unset: set it to this installation's forge host"
+[ -n "$token_file" ] || die "JERYU_STATUS_TOKEN_FILE is unset: set it to the status/events credential file"
 repo_path="${JERYU_DEPLOY_REPO:-$(sed -E 's#^https?://[^/]+/git/##; s#\.git$##' <<<"$remote")}"
 
 # emit KIND NEEDS_HUMAN EVENT_ID SUMMARY DETAIL_JSON [SECONDS] [REASON] [LOG_FILE]

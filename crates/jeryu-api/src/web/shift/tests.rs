@@ -23,7 +23,7 @@ priority = 3
 blocked_by = []
 status = "open"
 attempts = 0
-filed_by = "alton@xbabe0"
+filed_by = "operator@node-0"
 filed_at = "2026-09-19T00:41:12Z"
 claim_by = ""
 lease_until = ""
@@ -46,9 +46,9 @@ priority = 2
 blocked_by = ["20260919-004112-c52b54"]
 status = "done"
 attempts = 1
-requested_by = "alton"
+requested_by = "operator"
 filed_at = "2026-09-19T01:00:00Z"
-claim_by = "alton@xbabe0/w2"
+claim_by = "operator@node-0/w2"
 lease_until = ""
 shift = "bulletshift/2026-09-18"
 change_set = "cs-1"
@@ -56,7 +56,7 @@ commits = { "jeryu-web" = "0123456789abcdef" }
 merged = false
 note = "landed ü"
 triaged = true
-worked_by = [{ "by" = "alton@xbabe0/w2", "host" = "xbabe0", "slot" = "w2", "model" = "opus", "session" = "s-1", "started" = "2026-09-19T01:01:00Z", "ended" = "2026-09-19T01:30:00Z", "outcome" = "done", "cost_usd" = 1.25, "note" = "", "shift" = "bulletshift/2026-09-18" }]
+worked_by = [{ "by" = "operator@node-0/w2", "host" = "node-0", "slot" = "w2", "model" = "opus", "session" = "s-1", "started" = "2026-09-19T01:01:00Z", "ended" = "2026-09-19T01:30:00Z", "outcome" = "done", "cost_usd" = 1.25, "note" = "", "shift" = "bulletshift/2026-09-18" }]
 future_field = { "a" = [1, 2], "b" = true }
 +++
 Do the thing.
@@ -77,7 +77,7 @@ fn todoq_files_round_trip_byte_for_byte() {
 #[test]
 fn filed_by_reads_as_requested_by_and_dumps_in_todoq_order() {
     let todo = TodoFile::parse(PRE_SHIFT_TODO).expect("parse pre-shift todo");
-    assert_eq!(todo.requested_by, "alton@xbabe0");
+    assert_eq!(todo.requested_by, "operator@node-0");
     assert!(
         todo.triaged,
         "a todo filed before triage existed counts as triaged"
@@ -87,7 +87,7 @@ fn filed_by_reads_as_requested_by_and_dumps_in_todoq_order() {
         "Backend cleanup: stop serving fake data.\n\nSecond paragraph."
     );
     let dumped = todo.dump();
-    assert!(dumped.contains("requested_by = \"alton@xbabe0\"\n"));
+    assert!(dumped.contains("requested_by = \"operator@node-0\"\n"));
     assert!(!dumped.contains("filed_by"));
     assert!(dumped.contains("title = \"Backend: replace \\\"fake\\\" fixture\"\n"));
     let order: Vec<&str> = dumped
@@ -259,7 +259,7 @@ fn discovery_reads_family_toml_and_todos_from_the_bare_repo() {
     assert_eq!(queue.family.repos[0].name, "jeryu-deploy");
     let todos = read_todos("git", &queue.path, &queue.head).unwrap();
     assert_eq!(todos.len(), 2);
-    assert_eq!(todos[0].todo.requested_by, "alton@xbabe0");
+    assert_eq!(todos[0].todo.requested_by, "operator@node-0");
 }
 
 /// A family queue is written by todoq directly, so the startup sweep opts it
@@ -389,8 +389,8 @@ fn beat(
     StoredHeartbeat {
         received_ms: ms,
         heartbeat: Heartbeat {
-            operator: "alton".into(),
-            host: "xbabe0".into(),
+            operator: "operator".into(),
+            host: "node-0".into(),
             slot: slot.into(),
             family: "jeryu".into(),
             state: state.into(),
@@ -447,11 +447,11 @@ fn heartbeat_store_migrates_once_and_prunes_old_rows() {
     let now = Utc::now().timestamp_millis();
     let old = beat(0, "w1", "idle", None, None);
     store
-        .insert("alton", &old.heartbeat, now - 15 * 86_400_000)
+        .insert("operator", &old.heartbeat, now - 15 * 86_400_000)
         .unwrap();
     assert_eq!(store.count(), 1);
     // A write more than an hour later prunes the 15-day-old row.
-    store.insert("alton", &old.heartbeat, now).unwrap();
+    store.insert("operator", &old.heartbeat, now).unwrap();
     assert_eq!(store.count(), 1);
     drop(store);
     // Reopening re-checks the applied migration's checksum and keeps the data.
@@ -547,11 +547,14 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
     )
     .await;
     assert_eq!(todos["todos"].as_array().unwrap().len(), 1);
-    assert_eq!(todos["todos"][0]["worked_by"][0]["by"], "alton@xbabe0/w2");
+    assert_eq!(
+        todos["todos"][0]["worked_by"][0]["by"],
+        "operator@node-0/w2"
+    );
     let by_worker = body_json(
         call(
             HttpMethod::GET,
-            "/api/v1/shift/todos?worked_by=alton@xbabe0",
+            "/api/v1/shift/todos?worked_by=operator@node-0",
             &user,
             None,
         )
@@ -704,7 +707,7 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
     assert_eq!(all["todos"].as_array().unwrap().len(), 5);
 
     // Heartbeats: admin token only, then visible to any login.
-    let hb = json!({"operator": "alton", "host": "xbabe0", "slot": "w1", "family": "jeryu",
+    let hb = json!({"operator": "operator", "host": "node-0", "slot": "w1", "family": "jeryu",
                     "state": "working", "todo_id": id, "stage": "agent", "planned_slots": 3,
                     "schedule": {"always": 1, "tz": "America/Los_Angeles"}, "version": "todoq-shifts-1"});
     let refused = call(
@@ -869,7 +872,7 @@ async fn shift_routes_serve_queue_heartbeats_shifts_and_prs() {
     let created = core
         .get_pull_request("jeryu", "jeryu-deploy", number)
         .unwrap();
-    assert_eq!(created.author, "alton2");
+    assert_eq!(created.author, "rel-bot");
     assert_eq!(created.title, "nightshift/2026-09-18: 0 todos");
     let again = body_json(
         call(
@@ -1269,7 +1272,7 @@ fn a_replacement_pull_request_is_found_by_the_trailers_it_carries() {
     run_git(repo, &["checkout", "-q", "main"]);
     run_git(
         repo,
-        &["checkout", "-q", "-b", "alton/nightshift-2026-09-28-web"],
+        &["checkout", "-q", "-b", "operator/nightshift-2026-09-28-web"],
     );
     commit("a2.txt", "first todo again\n\nTodo: 20260928-000001-aaaaaa");
     commit(
@@ -1278,7 +1281,7 @@ fn a_replacement_pull_request_is_found_by_the_trailers_it_carries() {
     );
     // A third branch that carries only one of them.
     run_git(repo, &["checkout", "-q", "main"]);
-    run_git(repo, &["checkout", "-q", "-b", "alton/partial"]);
+    run_git(repo, &["checkout", "-q", "-b", "operator/partial"]);
     commit("a3.txt", "first todo only\n\nTodo: 20260928-000001-aaaaaa");
 
     let pr = |number: u64, head: &str, state: &str| {
@@ -1292,7 +1295,7 @@ fn a_replacement_pull_request_is_found_by_the_trailers_it_carries() {
             "body": null,
             "state": state,
             "draft": false,
-            "author": "alton2",
+            "author": "rel-bot",
             "head": {"label": format!("jeryu:{head}"), "ref": head, "sha": "a".repeat(40)},
             "base": {"label": "jeryu:main", "ref": "main", "sha": "b".repeat(40)},
             "mergeable": true,
@@ -1314,8 +1317,8 @@ fn a_replacement_pull_request_is_found_by_the_trailers_it_carries() {
     };
 
     let closed = pr(71, "nightshift/2026-09-28", "closed");
-    let whole = pr(78, "alton/nightshift-2026-09-28-web", "mergeable");
-    let partial = pr(79, "alton/partial", "open");
+    let whole = pr(78, "operator/nightshift-2026-09-28-web", "mergeable");
+    let partial = pr(79, "operator/partial", "open");
     let (found, carried) = find(&[closed.clone(), whole.clone()]).unwrap();
     assert_eq!(found.number, 78);
     assert_eq!(carried, todos, "the replacement carries every todo");
@@ -1328,7 +1331,11 @@ fn a_replacement_pull_request_is_found_by_the_trailers_it_carries() {
     let (found, _) = find(&[partial, whole]).unwrap();
     assert_eq!(found.number, 78);
     assert!(
-        find(&[closed, pr(80, "alton/nightshift-2026-09-28-web", "closed")]).is_none(),
+        find(&[
+            closed,
+            pr(80, "operator/nightshift-2026-09-28-web", "closed")
+        ])
+        .is_none(),
         "only an open pull request is a review"
     );
 }
@@ -1490,11 +1497,11 @@ async fn releasing_a_live_claim_needs_force_and_replaces_the_note() {
     let claim = |lease_until: &str| {
         let lease_until = lease_until.to_string();
         let id = id.clone();
-        commit_change(&manager, &queue, "alton", "claim", move |todos| {
+        commit_change(&manager, &queue, "operator", "claim", move |todos| {
             let found = todos.iter().find(|t| t.todo.id == id).expect("filed todo");
             let mut todo = found.todo.clone();
             todo.status = TodoStatus::Claimed;
-            todo.claim_by = "alton@xbabe0/w1".to_string();
+            todo.claim_by = "operator@node-0/w1".to_string();
             todo.lease_until = lease_until.clone();
             todo.attempts = 1;
             todo.note = "blocked on the design".to_string();
@@ -1513,7 +1520,7 @@ async fn releasing_a_live_claim_needs_force_and_replaces_the_note() {
         refused["message"]
             .as_str()
             .unwrap()
-            .contains("alton@xbabe0/w1"),
+            .contains("operator@node-0/w1"),
         "{refused}"
     );
     assert_eq!(

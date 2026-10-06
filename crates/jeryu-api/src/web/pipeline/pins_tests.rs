@@ -207,10 +207,13 @@ fn commit_pin_behind_with_no_bump_long_after_the_commit_asks_to_run_auto_pin() {
         item.action.command.as_deref(),
         Some("systemctl --user start jeryu-auto-pin.service")
     );
-    assert_eq!(item.action.run_in.as_deref(), Some("xbabe0, any directory"));
+    assert_eq!(
+        item.action.run_in.as_deref(),
+        Some("the release host, any directory")
+    );
     assert_eq!(
         item.next_step,
-        "Run auto-pin now: on xbabe0, any directory, run \
+        "Run auto-pin now: on the release host, any directory, run \
          `systemctl --user start jeryu-auto-pin.service`"
     );
     assert_eq!(item.repo.as_deref(), Some("jeryu/jeryu-deploy"));
@@ -316,7 +319,7 @@ fn gave_up(seq: i64, sha: &str) -> Event {
         event_id: Some(format!("auto-pin:failed:{}:2", &sha[..12])),
         source: "auto-pin".to_string(),
         kind: "pin.bump_failed".to_string(),
-        reporter: "alton".to_string(),
+        reporter: "operator".to_string(),
         actor: Some("jeryu-auto-pin".to_string()),
         family_label: None,
         family: None,
@@ -380,7 +383,10 @@ fn a_give_up_for_the_current_head_is_an_action_at_once_with_its_reason() {
              && systemctl --user start jeryu-auto-pin.service"
         )
     );
-    assert_eq!(item.action.run_in.as_deref(), Some("xbabe0, any directory"));
+    assert_eq!(
+        item.action.run_in.as_deref(),
+        Some("the release host, any directory")
+    );
     assert_eq!(item.sha.as_deref(), Some("427bebe"));
 
     // With no reason the last line of the log tail speaks.

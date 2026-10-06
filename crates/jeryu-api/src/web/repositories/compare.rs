@@ -199,13 +199,13 @@ mod tests {
 
     #[test]
     fn log_lines_parse_into_commits() {
-        let log = "aaa\u{1f}feat: one\u{1f}alton\u{1f}2026-09-18T04:00:00+00:00\nbroken line";
+        let log = "aaa\u{1f}feat: one\u{1f}operator\u{1f}2026-09-18T04:00:00+00:00\nbroken line";
         assert_eq!(
             parse_log(log),
             vec![CompareCommit {
                 sha: "aaa".into(),
                 summary: "feat: one".into(),
-                author: "alton".into(),
+                author: "operator".into(),
                 committed_at: "2026-09-18T04:00:00+00:00".into(),
             }]
         );

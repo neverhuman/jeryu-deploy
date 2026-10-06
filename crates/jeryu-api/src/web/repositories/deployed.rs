@@ -132,7 +132,7 @@ mod tests {
             .create_deployment(
                 "alice",
                 repo,
-                "alton2",
+                "rel-bot",
                 CreateDeploymentRequest {
                     sha: sha.to_string(),
                     ref_name: None,
@@ -151,7 +151,7 @@ mod tests {
                 "alice",
                 repo,
                 id,
-                "alton2",
+                "rel-bot",
                 CreateDeploymentStatusRequest {
                     state: DeploymentState::Success,
                     description: None,
@@ -256,7 +256,7 @@ mod tests {
         let svc = &body["repositories"][1];
         assert_eq!(svc["sha"], shas[1]);
         assert_eq!(svc["release"], "rel-2");
-        assert_eq!(svc["deployed_by"], "alton2");
+        assert_eq!(svc["deployed_by"], "rel-bot");
         assert_eq!(svc["commits_behind"], 2);
         assert_eq!(
             body["repositories"][0]["commits_behind"],

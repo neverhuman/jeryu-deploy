@@ -16,8 +16,11 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "${ROOT}"
 
 if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
-  expected="${JERYU_CANONICAL_ROOT:-/home/ubuntu/jain-split/jeryu-split/jeryu-deploy}"
-  if [ -d "${expected}" ]; then
+  # A checkout location is site configuration, not source: a site that keeps one
+  # canonical checkout points JERYU_CANONICAL_ROOT at it. Unset, there is nothing
+  # to compare against and the root check is skipped.
+  expected="${JERYU_CANONICAL_ROOT:-}"
+  if [ -n "${expected}" ] && [ -d "${expected}" ]; then
     actual_real="$(realpath "${ROOT}")"
     expected_real="$(realpath "${expected}")"
     if [ "${actual_real}" != "${expected_real}" ]; then
@@ -26,7 +29,7 @@ if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
     fi
   fi
   case "$(realpath "${ROOT}")" in
-    */jeryu_rust) echo "wrong Jeryu root: /home/ubuntu/jeryu_rust is not canonical" >&2; exit 1 ;;
+    */jeryu_rust) echo "wrong Jeryu root: a jeryu_rust checkout is not canonical" >&2; exit 1 ;;
   esac
 fi
 

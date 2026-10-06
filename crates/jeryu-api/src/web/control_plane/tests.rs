@@ -222,7 +222,7 @@ fn repo_graph_contains_ci_runner_and_mirror_clusters() {
 fn report(state: &Arc<WebState>, runner_id: &str, gating: bool, at: chrono::DateTime<Utc>) {
     let beat: GateRunnerHeartbeat = serde_json::from_value(json!({
         "runnerId": runner_id,
-        "host": "xbabe2",
+        "host": "node-2",
         "slot": 0,
         "current": if gating { json!({
             "repo": "veox/jain-web", "pr": 13,
@@ -236,7 +236,7 @@ fn report(state: &Arc<WebState>, runner_id: &str, gating: bool, at: chrono::Date
         }
     }))
     .unwrap();
-    state.gate_runners.record(beat, "gatebot", at).unwrap();
+    state.gate_runners.record(beat, "ci-bot", at).unwrap();
 }
 
 #[test]
@@ -253,11 +253,11 @@ fn runner_fabric_is_unknown_until_a_runner_reports() {
 fn runner_fabric_reports_live_gate_runners() {
     let state = seeded_state();
     let now = Utc::now();
-    report(&state, "xbabe2/slot0", true, now);
-    report(&state, "xbabe2/slot1", false, now);
+    report(&state, "node-2/slot0", true, now);
+    report(&state, "node-2/slot1", false, now);
     report(
         &state,
-        "xbabe2/slot2",
+        "node-2/slot2",
         false,
         now - chrono::Duration::seconds(600),
     );
@@ -273,7 +273,7 @@ fn runner_fabric_reports_live_gate_runners() {
     assert_eq!(runners.local.total_slots, 3);
 
     let slot0 = &runners.local.node_details[0];
-    assert_eq!(slot0.runner_id, "xbabe2/slot0");
+    assert_eq!(slot0.runner_id, "node-2/slot0");
     assert_eq!(slot0.state, "active");
     assert_eq!(slot0.active_tasks[0].repo.as_deref(), Some("veox/jain-web"));
     assert_eq!(slot0.last_activity.as_ref().unwrap().conclusion, "success");
@@ -287,7 +287,7 @@ fn a_five_minute_timer_stays_online_between_ticks_and_holds_no_slot() {
     let state = seeded_state();
     let then = Utc::now();
     let beat: GateRunnerHeartbeat = serde_json::from_value(json!({
-        "runnerId": "xbabe0/auto-pin", "host": "xbabe0", "slot": 0,
+        "runnerId": "node-0/auto-pin", "host": "node-0", "slot": 0,
         "labels": ["automation"], "intervalSeconds": 300,
         "last": {
             "repo": "jeryu/jeryu-deploy", "pr": 74, "sha": "ea04cac1",
@@ -296,8 +296,8 @@ fn a_five_minute_timer_stays_online_between_ticks_and_holds_no_slot() {
         }
     }))
     .unwrap();
-    state.gate_runners.record(beat, "alton2", then).unwrap();
-    report(&state, "xbabe2/slot0", false, then);
+    state.gate_runners.record(beat, "rel-bot", then).unwrap();
+    report(&state, "node-2/slot0", false, then);
 
     let at = |seconds| runner_fabric_at(&state, then + chrono::Duration::seconds(seconds));
     let timer = |fabric: &RunnerFabricResponse| fabric.local.node_details[0].clone();
@@ -349,7 +349,7 @@ fn mcp_facade_returns_limited_graph_jobs_and_blockers() {
     assert_eq!(artifacts["absenceIsSuccess"], false);
     let runners = mcp_runner_fabric_status(&state);
     assert_eq!(runners["local"]["state"], "unknown");
-    report(&state, "xbabe2/slot0", false, Utc::now());
+    report(&state, "node-2/slot0", false, Utc::now());
     let runners = mcp_runner_fabric_status(&state);
     assert_eq!(runners["local"]["state"], "fresh");
 
@@ -490,11 +490,11 @@ fn helper_branches_normalize_tty_time_and_check_states() {
 fn tui_read_model_pools_match_the_live_runner_fabric() {
     let state = seeded_state();
     let now = Utc::now();
-    report(&state, "xbabe2/slot0", true, now);
-    report(&state, "xbabe2/slot1", false, now);
+    report(&state, "node-2/slot0", true, now);
+    report(&state, "node-2/slot1", false, now);
     report(
         &state,
-        "xbabe2/slot2",
+        "node-2/slot2",
         false,
         now - chrono::Duration::seconds(600),
     );

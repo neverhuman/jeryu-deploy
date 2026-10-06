@@ -48,10 +48,12 @@
 # deployments API), it is recorded right after the switch instead; if it still
 # cannot be, the switch stands and the script says so.
 #
-# Recording needs an admin token: JERYU_DEPLOY_TOKEN_FILE (default
-# ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat). It is read into a
-# 0600 curl config, never put on argv. Env: JERYU_BUILD_HOST (xbabe2),
-# JERYU_FORGE_HOST (atomicsoul), JERYU_FORGE_URL (https://git.neverhuman.org).
+# Recording needs an admin token: JERYU_DEPLOY_TOKEN_FILE, a path to a readable
+# 0600 file. It is read into a 0600 curl config, never put on argv.
+# Env: JERYU_BUILD_HOST, JERYU_FORGE_HOST and JERYU_DEPLOY_TOKEN_FILE are
+# required site settings with no default — this source is public, and a machine
+# name and a credential path are one installation's data.
+# JERYU_FORGE_URL (https://git.neverhuman.org).
 #
 # --dry-run reads the staged metadata and prints the deployment it would record,
 # then stops: nothing is recorded, switched or logged.
@@ -97,10 +99,13 @@ set -- ${args[@]+"${args[@]}"}
 [[ $json == 0 ]] || exec 1>&2
 rel="$1"
 [[ "$rel" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+-unsigned$ ]] || refuse usage "not a release id: $rel"
-build_host="${JERYU_BUILD_HOST:-xbabe2}"
-forge_host="${JERYU_FORGE_HOST:-atomicsoul}"
+build_host="${JERYU_BUILD_HOST:-}"
+forge_host="${JERYU_FORGE_HOST:-}"
 forge="${JERYU_FORGE_URL:-https://git.neverhuman.org}"
-token_file="${JERYU_DEPLOY_TOKEN_FILE:-$HOME/.config/jeryu/credentials/git-neverhuman-org-alton2.pat}"
+token_file="${JERYU_DEPLOY_TOKEN_FILE:-}"
+[[ -n "$build_host" ]] || refuse usage "JERYU_BUILD_HOST is unset: set it to this installation's release build host"
+[[ -n "$forge_host" ]] || refuse usage "JERYU_FORGE_HOST is unset: set it to this installation's forge host"
+[[ -n "$token_file" ]] || refuse credential "JERYU_DEPLOY_TOKEN_FILE is unset: set it to the deploy admin's 0600 credential file"
 repo=/repos/jeryu/jeryu-deploy
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT

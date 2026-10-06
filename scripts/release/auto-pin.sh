@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # auto-pin.sh — when jeryu-web main is green and newer than the pin in jeryu-deploy main's
 # jeryu-split.lock.toml, open the pull request that bumps the pin. Run by a timer on the release
-# host (xbabe0). A bump is mechanical (build the dist, hash it, change two lock fields), and until
+# host (node-0). A bump is mechanical (build the dist, hash it, change two lock fields), and until
 # now it happened only when somebody remembered, so merged UI work sat unreleasable.
 #
 # It only proposes. Review and landing belong to pr-redteam and the merge queue, staging to
@@ -15,7 +15,7 @@
 #   3. Build the dist with build-web-dist.sh taken from jeryu-deploy main itself (git archive), so
 #      the recipe is always the reviewed one. It prints "<commit> <web_dist_sha256>".
 #   4. On branch auto/pin-web-<sha12> cut from main: set exactly the two lock fields, commit as
-#      alton2 with the web commits the bump ships, push, open the pull request, and post a
+#      rel-bot with the web commits the bump ships, push, open the pull request, and post a
 #      `pin.bump_opened` pipeline event (docs/pipeline-events.md).
 #   5. A head that fails is retried once; then `pin.bump_failed` asks for a human and the head is
 #      left alone. A newer head starts fresh. A branch pushed without its pull request (the API
@@ -32,9 +32,11 @@
 # Env: JERYU_DEPLOY_REMOTE, JERYU_WEB_REMOTE (git URLs; pushing uses this host's git credential);
 # JERYU_DEPLOY_REPO, JERYU_WEB_REPO (owner/name on the forge; default: from the remotes);
 # JERYU_BASE (must be https://git.neverhuman.org: the token is sent nowhere else);
-# JERYU_PIN_TOKEN_FILE (the pull request author's token, also used for the status API and the
-# events; default ~/.config/jeryu/credentials/git-neverhuman-org-alton2.pat; a regular 0600 file);
-# JERYU_PIN_GIT_NAME / JERYU_PIN_GIT_EMAIL (alton2 / alton@veox.ai);
+# JERYU_PIN_TOKEN_FILE (required, no default: the pull request author's token, also used for
+# the status API and the events; a regular 0600 file);
+# JERYU_PIN_GIT_NAME / JERYU_PIN_GIT_EMAIL (required, no default: the identity the bump is
+# committed as. A credential path and an automation identity belong to one installation, and
+# this source is public, so none of the three has a default);
 # JERYU_AUTO_PIN_MAX_FAILURES (2); JERYU_AUTO_PIN_EVENTS=0 turns the events off;
 # JERYU_AUTO_PIN_BEAT=0 turns the heartbeat off.
 # -h|--help prints this header and exits, before anything else runs.
@@ -43,8 +45,8 @@ set -euo pipefail
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
 web_remote="${JERYU_WEB_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-web.git}"
 base="${JERYU_BASE:-https://git.neverhuman.org}"; base="${base%/}"
-token_file="${JERYU_PIN_TOKEN_FILE:-$HOME/.config/jeryu/credentials/git-neverhuman-org-alton2.pat}"
-git_name="${JERYU_PIN_GIT_NAME:-alton2}" git_email="${JERYU_PIN_GIT_EMAIL:-alton@veox.ai}"
+token_file="${JERYU_PIN_TOKEN_FILE:-}"
+git_name="${JERYU_PIN_GIT_NAME:-}" git_email="${JERYU_PIN_GIT_EMAIL:-}"
 max_failures="${JERYU_AUTO_PIN_MAX_FAILURES:-2}"
 state="${JERYU_AUTO_PIN_STATE:-$HOME/.local/state/jeryu-auto-pin}"
 lock_file=jeryu-split.lock.toml
@@ -54,6 +56,9 @@ repo_path="${JERYU_DEPLOY_REPO:-$(repo_of "$remote")}"
 web_path="${JERYU_WEB_REPO:-$(repo_of "$web_remote")}"
 
 [[ "$base" == https://git.neverhuman.org ]] || { say "refusing a noncanonical credential origin"; exit 2; }
+[[ -n "$token_file" ]] || { say "JERYU_PIN_TOKEN_FILE is unset: set it to the bump author's 0600 credential file"; exit 2; }
+[[ -n "$git_name" && -n "$git_email" ]] \
+  || { say "JERYU_PIN_GIT_NAME and JERYU_PIN_GIT_EMAIL are unset: set them to the identity the bump is committed as"; exit 2; }
 for path in "$repo_path" "$web_path"; do
   [[ "$path" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { say "not an owner/name repository: $path"; exit 2; }
 done

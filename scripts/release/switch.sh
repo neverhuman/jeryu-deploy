@@ -20,8 +20,8 @@
 # Running it again for the release that is already live is a no-op: it says
 # "already live" and exits 0, without stopping the service or touching a thing.
 #
-# After starting REL it polls JERYU_HEALTH_URL (default
-# http://172.19.0.1:8787/health, the forge's local health endpoint) once a second,
+# After starting REL it polls JERYU_HEALTH_URL (required, the forge's local
+# health endpoint; this source is public, so it has no site default) once a second,
 # JERYU_HEALTH_TRIES times (default 30). If it never answers, the switch fails
 # (exit 1) with REL installed and live, so run rollback.sh.
 #
@@ -43,7 +43,10 @@ source "$here/RELEASE.env"
 J="${JERYU_HOME:-$HOME/.jeryu}"
 DATA="${JERYU_DATA:-$HOME/.local/share/jeryu}"
 SYSTEMCTL="${JERYU_SYSTEMCTL:-systemctl}"
-HEALTH="${JERYU_HEALTH_URL:-http://172.19.0.1:8787/health}"
+# No default: the address the forge answers its health endpoint on is site
+# configuration, not source.
+HEALTH="${JERYU_HEALTH_URL:-}"
+[ -n "$HEALTH" ] || { echo "JERYU_HEALTH_URL is unset: set it to the forge's health endpoint, for example http://127.0.0.1:8787/health" >&2; exit 1; }
 TRIES="${JERYU_HEALTH_TRIES:-30}"
 [[ "$TRIES" =~ ^[1-9][0-9]*$ ]] || { echo "JERYU_HEALTH_TRIES must be a positive integer, got '$TRIES'" >&2; exit 1; }
 IN="$J/incoming/$REL" OUT="$J/releases/$REL" SNAP="$J/backups/pre-$REL"

@@ -16,7 +16,7 @@
 //! reads it from `GET /api/v1/repos/:id/pulls/:number/merge-attempt`. The
 //! store is in memory: a restarted forge learns the next attempt within one
 //! merger pass. Grant gaps need no attempt at all: [`grant_gap`] asks whether
-//! the merge identity (`JERYU_MERGE_IDENTITY`, default `jain-merge-bot`) can
+//! the merge identity (`JERYU_MERGE_IDENTITY`, default `merge-bot`) can
 //! write to a repository, so the first reviewer beat naming one of its PRs
 //! flags it.
 
@@ -25,7 +25,6 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 
-const DEFAULT_MERGE_IDENTITY: &str = "jain-merge-bot";
 const MAX_RECORDS: usize = 4096;
 const MAX_MESSAGE_CHARS: usize = 300;
 /// Error bodies above this are not read back for their `code`/`message`.
@@ -113,27 +112,27 @@ impl MergeAttemptStore {
     }
 }
 
-pub(crate) fn merge_identity() -> String {
-    std::env::var("JERYU_MERGE_IDENTITY")
-        .ok()
-        .map(|login| login.trim().to_string())
-        .filter(|login| !login.is_empty())
-        .unwrap_or_else(|| DEFAULT_MERGE_IDENTITY.to_string())
+/// The login whose merges land approved pull requests
+/// (`JERYU_MERGE_IDENTITY`). An automation login belongs to one installation,
+/// so this public source carries no default: unset, there is no merger to
+/// describe or to warn about.
+pub(crate) fn merge_identity() -> Option<&'static str> {
+    super::auth::MERGE_IDENTITY.configured()
 }
 
 /// `Some` when the merge identity exists on this forge but cannot write to
 /// `owner/name`. A forge without the identity has no merger to warn about.
 pub(crate) fn grant_gap(state: &WebState, repo: &str) -> Option<MergeGrantGap> {
     let (owner, name) = repo.split_once('/')?;
-    let identity = merge_identity();
-    let account = state.core.get_account(&identity).ok()?;
-    if account.role == UserRole::Admin || state.core.user_can_write_repo(&identity, owner, name) {
+    let identity = merge_identity()?;
+    let account = state.core.get_account(identity).ok()?;
+    if account.role == UserRole::Admin || state.core.user_can_write_repo(identity, owner, name) {
         return None;
     }
     Some(MergeGrantGap {
         repo: repo.to_string(),
         message: format!("{identity} has no write grant on {repo}; its merges answer 403"),
-        identity,
+        identity: identity.to_owned(),
     })
 }
 
@@ -308,7 +307,7 @@ mod tests {
         let attempt = attempt_from_answer(
             409,
             r#"{"code":"queue_merge_commits","message":"the pull request contains merge commits; rebase it onto the base"}"#,
-            Some("jain-merge-bot"),
+            Some("merge-bot"),
             "queued",
         );
         assert!(attempt.refused());

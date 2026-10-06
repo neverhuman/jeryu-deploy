@@ -21,7 +21,7 @@
 #       JERYU_RELEASE_ROLLBACK_CERTIFICATE_SHA256
 #     For a first production install with no previous production artifact, set
 #       JERYU_RELEASE_INITIAL_DEPLOY=1
-#       JERYU_RELEASE_ROLLBACK_TAG=<operator marker, e.g. atomicsoul-initial-install>
+#       JERYU_RELEASE_ROLLBACK_TAG=<operator marker, e.g. forge-1-initial-install>
 #   * PR publication metadata at JERYU_RELEASE_PUBLICATION_FILE
 #     (default: target/ci-fast/publish.json)
 #   * artifact-support SignRail outputs at JERYU_RELEASE_SIGNRAIL_DIR

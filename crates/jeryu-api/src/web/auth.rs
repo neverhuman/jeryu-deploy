@@ -792,48 +792,119 @@ pub(crate) fn can_publish_external_ci_evidence(account: &AccountSummary) -> bool
 }
 
 /// Accounts that may post commit statuses and check runs: global admins, plus the dedicated gate
-/// identities named in JERYU_CI_PUBLISHERS (comma-separated, default `gatebot`). Gate runners
+/// identities named in `JERYU_CI_PUBLISHERS` (comma-separated). A gate identity is one
+/// installation's login, so there is no default: unset, only global admins publish. Gate runners
 /// post required contexts without holding admin, so a runner token cannot merge, administer
 /// repositories or ingest audit scores (those stay admin-only).
 pub(crate) fn can_publish_gate_statuses(account: &AccountSummary) -> bool {
-    static PUBLISHERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    let publishers = PUBLISHERS.get_or_init(|| {
-        publisher_list(&std::env::var("JERYU_CI_PUBLISHERS").unwrap_or_else(|_| "gatebot".into()))
-    });
-    account.role == UserRole::Admin || publishers.iter().any(|login| login == &account.login)
+    account.role == UserRole::Admin
+        || CI_PUBLISHERS
+            .configured()
+            .iter()
+            .any(|login| login == &account.login)
 }
 
 /// Accounts whose jankurai report the forge will treat as authoritative: the
-/// runner identities named in `JERYU_JANKURAI_SCORERS` (comma-separated,
-/// default `gatebot`), plus global admins for maintenance backfills.
+/// runner identities named in `JERYU_JANKURAI_SCORERS` (comma-separated, no
+/// default — the scoring login is site configuration), plus global admins for
+/// maintenance backfills.
 ///
 /// Scoring moved off the forge host, so an identity here is trusted to have run
 /// the governed auditor. That is why it is a short, configured list and not
 /// "anyone who can write the repository": the ticket, the head, the base and
 /// the auditor digest are all checked on top of it.
 pub(crate) fn can_submit_runner_audit(account: &AccountSummary) -> bool {
-    static SCORERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    let scorers = SCORERS.get_or_init(|| {
-        publisher_list(
-            &std::env::var("JERYU_JANKURAI_SCORERS").unwrap_or_else(|_| "gatebot".into()),
-        )
-    });
-    account.role == UserRole::Admin || scorers.iter().any(|login| login == &account.login)
+    account.role == UserRole::Admin
+        || JANKURAI_SCORERS
+            .configured()
+            .iter()
+            .any(|login| login == &account.login)
 }
 
 /// Recording a deployment (or appending one of its statuses) is a claim about
 /// what an environment runs, which the release views and rollback decisions
-/// read as fact. Global admin alone is not enough: the automation identities
-/// (gatebot, pragent) are admins, and gatebot's token is readable by the pull
-/// request code it gates. So the caller must be an admin named in
-/// `JERYU_DEPLOYERS` (comma-separated; default `alton,alton2`).
+/// read as fact. Global admin alone is not enough: the gate and reviewer
+/// identities are admins, and the gate's token is readable by the pull request
+/// code it gates. So the caller must be an admin named in `JERYU_DEPLOYERS`
+/// (comma-separated). Those logins are site configuration, so there is no
+/// default: unset, nothing may record a deployment and the surface refuses with
+/// the setting's name.
 pub(crate) fn can_record_deployments(account: &AccountSummary) -> bool {
-    static DEPLOYERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    let deployers = DEPLOYERS.get_or_init(|| {
-        publisher_list(&std::env::var("JERYU_DEPLOYERS").unwrap_or_else(|_| "alton,alton2".into()))
-    });
-    is_deployer(account, deployers)
+    is_deployer(account, DEPLOYERS.configured())
 }
+
+/// Logins a site trusts for one capability, read from its setting the first
+/// time the capability is asked about. There is no host default for any of
+/// them: an automation login belongs to one installation.
+pub(crate) struct CapabilityLogins {
+    setting: &'static str,
+    logins: std::sync::OnceLock<Vec<String>>,
+}
+
+impl CapabilityLogins {
+    const fn new(setting: &'static str) -> Self {
+        Self {
+            setting,
+            logins: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn configured(&self) -> &[String] {
+        self.logins
+            .get_or_init(|| publisher_list(&std::env::var(self.setting).unwrap_or_default()))
+    }
+
+    /// Seed the list without reading the environment, so a test states the
+    /// site it is testing instead of depending on one.
+    #[cfg(test)]
+    pub(crate) fn configure_for_tests(&self, logins: &[&str]) {
+        let _ = self
+            .logins
+            .set(logins.iter().map(|login| (*login).to_owned()).collect());
+    }
+}
+
+/// One login a site names for a role, read from its setting the first time the
+/// role is asked about. No default, for the same reason as [`CapabilityLogins`].
+pub(crate) struct RoleLogin {
+    setting: &'static str,
+    login: std::sync::OnceLock<Option<String>>,
+}
+
+impl RoleLogin {
+    const fn new(setting: &'static str) -> Self {
+        Self {
+            setting,
+            login: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn configured(&self) -> Option<&str> {
+        self.login
+            .get_or_init(|| {
+                std::env::var(self.setting)
+                    .ok()
+                    .map(|login| login.trim().to_owned())
+                    .filter(|login| !login.is_empty())
+            })
+            .as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_for_tests(&self, login: &str) {
+        let _ = self.login.set(Some(login.to_owned()));
+    }
+}
+
+pub(crate) static REVIEW_IDENTITY: RoleLogin = RoleLogin::new("JERYU_REVIEW_IDENTITY");
+pub(crate) static MERGE_IDENTITY: RoleLogin = RoleLogin::new("JERYU_MERGE_IDENTITY");
+
+pub(crate) static CI_PUBLISHERS: CapabilityLogins = CapabilityLogins::new("JERYU_CI_PUBLISHERS");
+pub(crate) static JANKURAI_SCORERS: CapabilityLogins =
+    CapabilityLogins::new("JERYU_JANKURAI_SCORERS");
+pub(crate) static DEPLOYERS: CapabilityLogins = CapabilityLogins::new("JERYU_DEPLOYERS");
+pub(crate) static AUTOMATION_IDENTITIES: CapabilityLogins =
+    CapabilityLogins::new("JERYU_AUTOMATION_IDENTITIES");
 
 fn is_deployer(account: &AccountSummary, deployers: &[String]) -> bool {
     account.role == UserRole::Admin && deployers.iter().any(|login| login == &account.login)
@@ -1221,8 +1292,8 @@ mod gate_status_publisher_tests {
     #[test]
     fn publisher_list_trims_and_drops_empty_entries() {
         assert_eq!(
-            publisher_list(" gatebot , ci-bot,,"),
-            vec!["gatebot", "ci-bot"]
+            publisher_list(" ci-bot , other-bot,,"),
+            vec!["ci-bot", "other-bot"]
         );
         assert!(publisher_list("").is_empty());
     }
@@ -1247,16 +1318,19 @@ mod deployer_tests {
 
     #[test]
     fn only_listed_admins_record_deployments() {
-        let deployers = publisher_list("alton,alton2");
-        assert!(is_deployer(&account("alton2", UserRole::Admin), &deployers));
+        let deployers = publisher_list("operator,rel-bot");
+        assert!(is_deployer(
+            &account("rel-bot", UserRole::Admin),
+            &deployers
+        ));
         assert!(
-            !is_deployer(&account("gatebot", UserRole::Admin), &deployers),
+            !is_deployer(&account("ci-bot", UserRole::Admin), &deployers),
             "an admin automation identity is not a deployer"
         );
         assert!(
-            !is_deployer(&account("alton2", UserRole::User), &deployers),
+            !is_deployer(&account("rel-bot", UserRole::User), &deployers),
             "a listed login without admin is not a deployer"
         );
-        assert!(!is_deployer(&account("alton2", UserRole::Admin), &[]));
+        assert!(!is_deployer(&account("rel-bot", UserRole::Admin), &[]));
     }
 }

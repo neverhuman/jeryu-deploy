@@ -67,7 +67,7 @@ fn event(seq: i64, kind: &str, outcome: Option<&str>) -> Event {
         event_id: None,
         source: "pr-gate".to_string(),
         kind: kind.to_string(),
-        reporter: "gatebot".to_string(),
+        reporter: "ci-bot".to_string(),
         actor: None,
         family: Some("acme".to_string()),
         family_label: Some("acme".to_string()),

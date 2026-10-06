@@ -12,7 +12,7 @@ const SHA: &str = "81dc3310aa5eadc15694dd1434d9f8f99c44a0d3";
 
 fn forge() -> (WebState, PullRequest) {
     let core = ForgeCore::new();
-    core.create_account("alton2", "alton2-password", UserRole::Admin)
+    core.create_account("rel-bot", "rel-bot-password", UserRole::Admin)
         .unwrap();
     core.create_repository(
         "jeryu",
@@ -28,7 +28,7 @@ fn forge() -> (WebState, PullRequest) {
         .create_pull_request(
             "jeryu",
             "jeryu-deploy",
-            "alton2",
+            "rel-bot",
             jeryu_core::CreatePullRequestRequest {
                 title: "Fix the header".to_string(),
                 head: "fix-header".to_string(),
@@ -58,7 +58,7 @@ fn create_deployment(state: &WebState, request: Value) -> jeryu_core::Deployment
     let request: jeryu_core::CreateDeploymentRequest = serde_json::from_value(request).unwrap();
     state
         .core
-        .create_deployment("jeryu", "jeryu-deploy", "alton2", request)
+        .create_deployment("jeryu", "jeryu-deploy", "rel-bot", request)
         .unwrap()
 }
 
@@ -67,16 +67,16 @@ fn pull_events_name_the_pr_its_head_and_who_acted() {
     let (state, pr) = forge();
     let label = format!("jeryu/jeryu-deploy#{}", pr.number);
 
-    emit::pull_opened(&state, &pr, "alton2");
-    emit::pull_approved(&state, &pr, "pragent");
+    emit::pull_opened(&state, &pr, "rel-bot");
+    emit::pull_approved(&state, &pr, "review-bot");
     emit::pull_reviewed(
         &state,
         &pr,
-        "pragent",
+        "review-bot",
         "request_changes",
         Some("  fix it  "),
     );
-    emit::pull_reviewed(&state, &pr, "pragent", "comment", Some("   "));
+    emit::pull_reviewed(&state, &pr, "review-bot", "comment", Some("   "));
 
     let all = events(&state);
     let lines: Vec<(&str, &str, Option<&str>, bool)> = all
@@ -101,19 +101,19 @@ fn pull_events_name_the_pr_its_head_and_who_acted() {
             ),
             (
                 "pr.approved",
-                &*format!("pragent approved {label}"),
+                &*format!("review-bot approved {label}"),
                 Some("approve"),
                 false
             ),
             (
                 "pr.review",
-                &*format!("pragent reviewed {label}: request_changes"),
+                &*format!("review-bot reviewed {label}: request_changes"),
                 Some("request_changes"),
                 true
             ),
             (
                 "pr.review",
-                &*format!("pragent reviewed {label}: comment"),
+                &*format!("review-bot reviewed {label}: comment"),
                 Some("comment"),
                 false
             ),
@@ -128,16 +128,16 @@ fn pull_events_name_the_pr_its_head_and_who_acted() {
         // Not a shift branch: no shift trace.
         assert_eq!(event.shift, None);
     }
-    assert_eq!(all[0].actor.as_deref(), Some("alton2"));
+    assert_eq!(all[0].actor.as_deref(), Some("rel-bot"));
     assert_eq!(
         all[0].detail,
-        Some(json!({"head": "fix-header", "base": "main", "author": "alton2"}))
+        Some(json!({"head": "fix-header", "base": "main", "author": "rel-bot"}))
     );
     assert_eq!(all[2].reason.as_deref(), Some("fix it"), "trimmed");
     assert_eq!(all[3].reason, None, "a blank body is no reason");
     assert_eq!(
         all[3].detail,
-        Some(json!({"title": "Fix the header", "author": "alton2"}))
+        Some(json!({"title": "Fix the header", "author": "rel-bot"}))
     );
 }
 
@@ -159,7 +159,7 @@ fn a_merge_carries_the_merge_commit_and_the_head_it_came_from() {
     );
     assert_eq!(
         event.detail,
-        Some(json!({"via": "queue", "head_sha": SHA, "base": "main", "author": "alton2"}))
+        Some(json!({"via": "queue", "head_sha": SHA, "base": "main", "author": "rel-bot"}))
     );
 }
 
@@ -169,11 +169,11 @@ fn archive_and_moves_are_plain_successes_whose_kind_says_which() {
     let mut repo = state.core.get_repository("jeryu", "jeryu-deploy").unwrap();
 
     repo.archived = true;
-    emit::repository_archived(&state, &repo, "alton2");
+    emit::repository_archived(&state, &repo, "rel-bot");
     repo.archived = false;
-    emit::repository_archived(&state, &repo, "alton2");
-    emit::repository_moved(&state, "jeryu/old-deploy", &repo, "alton2");
-    emit::repository_moved(&state, "elsewhere/jeryu-deploy", &repo, "alton2");
+    emit::repository_archived(&state, &repo, "rel-bot");
+    emit::repository_moved(&state, "jeryu/old-deploy", &repo, "rel-bot");
+    emit::repository_moved(&state, "elsewhere/jeryu-deploy", &repo, "rel-bot");
 
     let all = events(&state);
     let kinds: Vec<&str> = all.iter().map(|e| e.kind.as_str()).collect();
@@ -214,13 +214,13 @@ fn archive_and_moves_are_plain_successes_whose_kind_says_which() {
 fn the_github_edge_emits_only_for_successful_writes() {
     let (state, pr) = forge();
     let path = format!("/repos/jeryu/jeryu-deploy/pulls/{}/merge", pr.number);
-    emit::github_edge(&state, false, &path, "alton2", "", 200, "{}");
-    emit::github_edge(&state, true, &path, "alton2", "", 409, "{}");
+    emit::github_edge(&state, false, &path, "rel-bot", "", 200, "{}");
+    emit::github_edge(&state, true, &path, "rel-bot", "", 409, "{}");
     emit::github_edge(
         &state,
         true,
         "/repos/jeryu/jeryu-deploy/issues",
-        "alton2",
+        "rel-bot",
         "",
         201,
         "{}",
@@ -230,7 +230,7 @@ fn the_github_edge_emits_only_for_successful_writes() {
         &state,
         true,
         "/repos/jeryu/jeryu-deploy/pulls/999/merge",
-        "alton2",
+        "rel-bot",
         "",
         200,
         "{}",
@@ -240,14 +240,14 @@ fn the_github_edge_emits_only_for_successful_writes() {
         &state,
         true,
         "/repos/jeryu/jeryu-deploy",
-        "alton2",
+        "rel-bot",
         "",
         200,
         r#"{"full_name": "jeryu/jeryu-deploy"}"#,
     );
     assert!(events(&state).is_empty());
 
-    emit::github_edge(&state, true, &path, "alton2", "", 200, "{}");
+    emit::github_edge(&state, true, &path, "rel-bot", "", 200, "{}");
     let merged = only(&state);
     assert_eq!(merged.kind, "pr.merged");
     assert_eq!(merged.detail.unwrap()["via"], "merge");
@@ -260,7 +260,7 @@ fn github_edge_pull_writes_map_to_pull_events_and_review_verdicts() {
         &state,
         true,
         "/repos/jeryu/jeryu-deploy/pulls",
-        "alton2",
+        "rel-bot",
         "{}",
         201,
         &json!({"number": pr.number}).to_string(),
@@ -272,7 +272,7 @@ fn github_edge_pull_writes_map_to_pull_events_and_review_verdicts() {
         ("COMMENT", "hm"),
     ] {
         let request = json!({"event": event, "body": body}).to_string();
-        emit::github_edge(&state, true, &reviews, "pragent", &request, 200, "{}");
+        emit::github_edge(&state, true, &reviews, "review-bot", &request, 200, "{}");
     }
 
     let all = events(&state);
@@ -482,7 +482,7 @@ fn the_gh_compatible_patch_lands_on_the_same_draft_events_as_the_named_routes() 
         &state,
         true,
         &path,
-        "alton2",
+        "rel-bot",
         &json!({"title": "Fix the header again"}).to_string(),
         200,
         "{}",
@@ -506,7 +506,7 @@ fn the_gh_compatible_patch_lands_on_the_same_draft_events_as_the_named_routes() 
             &state,
             true,
             &path,
-            "alton2",
+            "rel-bot",
             &json!({"draft": draft}).to_string(),
             200,
             "{}",
@@ -524,12 +524,12 @@ fn the_gh_compatible_patch_lands_on_the_same_draft_events_as_the_named_routes() 
             (
                 "pr.draft",
                 Some("draft"),
-                "alton2 converted jeryu/jeryu-deploy#1 back to a draft"
+                "rel-bot converted jeryu/jeryu-deploy#1 back to a draft"
             ),
             (
                 "pr.ready_for_review",
                 Some("ready"),
-                "jeryu/jeryu-deploy#1 marked ready by alton2"
+                "jeryu/jeryu-deploy#1 marked ready by rel-bot"
             ),
         ]
     );

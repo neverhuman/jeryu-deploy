@@ -230,10 +230,26 @@ esac
 EOF
 chmod +x "$A/bin/ssh" "$A/bin/curl"
 echo "not-a-real-token" >"$A/token"
+# The hosts and the credential path are site settings with no default, so every
+# invocation names them; the stand-in ssh ignores which host it was given.
 auto_stage() {
   PATH="$A/bin:$PATH" JERYU_DEPLOY_REMOTE="$A/remote.git" JERYU_DEPLOY_REPO=jeryu/jeryu-deploy JERYU_AUTO_STAGE_STATE="$A/state" \
-    JERYU_STATUS_TOKEN_FILE="$A/token" JERYU_BASE="https://forge.invalid" bash "$here/auto-stage.sh"
+    JERYU_BUILD_HOST="${STAGE_BUILD_HOST-build.invalid}" JERYU_FORGE_HOST="${STAGE_FORGE_HOST-forge.invalid}" \
+    JERYU_STATUS_TOKEN_FILE="${STAGE_TOKEN_FILE-$A/token}" JERYU_BASE="https://forge.invalid" bash "$here/auto-stage.sh"
 }
+
+# Each site setting is refused by name, before anything is staged or posted.
+for unset_setting in JERYU_BUILD_HOST JERYU_FORGE_HOST JERYU_STATUS_TOKEN_FILE; do
+  rc=0
+  case "$unset_setting" in
+    JERYU_BUILD_HOST) STAGE_BUILD_HOST= auto_stage >"$A/unset.log" 2>&1 || rc=$? ;;
+    JERYU_FORGE_HOST) STAGE_FORGE_HOST= auto_stage >"$A/unset.log" 2>&1 || rc=$? ;;
+    *) STAGE_TOKEN_FILE= auto_stage >"$A/unset.log" 2>&1 || rc=$? ;;
+  esac
+  [[ $rc == 64 ]] || fail "auto-stage ran without $unset_setting"
+  grep -q "$unset_setting is unset" "$A/unset.log" || fail "the refusal does not name $unset_setting"
+done
+ok "auto-stage refuses each unset site setting by name"
 
 touch "$A/fail"
 if auto_stage >"$A/run1.log" 2>&1; then fail "auto-stage reported success for a failed staging"; fi
@@ -349,10 +365,13 @@ EOF
 chmod +x "$P/bin/curl"
 echo "not-a-real-pin-token" >"$P/token"; chmod 600 "$P/token"
 echo '[]' >"$P/pulls.json"; echo pending >"$P/gate"; : >"$P/curl-args"; : >"$P/events.jsonl"; : >"$P/prs.jsonl"; : >"$P/builds"; : >"$P/beats.jsonl"
+# The bump identity and the credential path are site settings with no default,
+# so every invocation names them. The identity below is this test's, not a site's.
 auto_pin() {
   PATH="$P/bin:$PATH" JERYU_DEPLOY_REMOTE="$P/deploy.git" JERYU_WEB_REMOTE="$P/web.git" \
     JERYU_DEPLOY_REPO=jeryu/jeryu-deploy JERYU_WEB_REPO=jeryu/jeryu-web JERYU_AUTO_PIN_STATE="${PIN_STATE:-$P/state}" \
-    JERYU_PIN_TOKEN_FILE="$P/token" JERYU_BASE="${PIN_BASE:-https://git.neverhuman.org}" bash "$here/auto-pin.sh"
+    JERYU_PIN_GIT_NAME="${PIN_GIT_NAME-pin-bot}" JERYU_PIN_GIT_EMAIL="${PIN_GIT_EMAIL-pin-bot@forge.invalid}" \
+    JERYU_PIN_TOKEN_FILE="${PIN_TOKEN_FILE-$P/token}" JERYU_BASE="${PIN_BASE:-https://git.neverhuman.org}" bash "$here/auto-pin.sh"
 }
 branches() { git -C "$P/deploy.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/*'; }
 lines() { wc -l <"$1" | tr -d ' '; }
@@ -364,6 +383,16 @@ rc=0; PIN_BASE=https://git.neverhuman.org.evil.invalid auto_pin >"$P/run.log" 2>
 chmod 644 "$P/token"; rc=0; auto_pin >"$P/run.log" 2>&1 || rc=$?; chmod 600 "$P/token"
 [[ $rc == 2 && ! -s "$P/curl-args" ]] || fail "auto-pin accepted a group-readable token file"
 ok "auto-pin refuses a foreign origin and a loose token file before any request"
+
+rc=0; PIN_TOKEN_FILE= auto_pin >"$P/run.log" 2>&1 || rc=$?
+[[ $rc == 2 ]] || fail "auto-pin ran without JERYU_PIN_TOKEN_FILE"
+grep -q "JERYU_PIN_TOKEN_FILE is unset" "$P/run.log" || fail "the refusal does not name JERYU_PIN_TOKEN_FILE"
+rc=0; PIN_GIT_NAME= auto_pin >"$P/run.log" 2>&1 || rc=$?
+[[ $rc == 2 ]] || fail "auto-pin ran without a bump identity"
+grep -q "JERYU_PIN_GIT_NAME and JERYU_PIN_GIT_EMAIL are unset" "$P/run.log" \
+  || fail "the refusal does not name the bump identity settings"
+[[ -z "$(branches)" && ! -s "$P/prs.jsonl" ]] || fail "a refused tick acted on the repository"
+ok "auto-pin refuses an unset credential path or bump identity by name"
 
 auto_pin >"$P/run.log" 2>&1 || fail "a not-green tick failed"
 grep -q "gate is pending; waiting" "$P/run.log" || fail "auto-pin did not wait for the web gate"
@@ -382,7 +411,8 @@ b1="auto/pin-web-${h1:0:12}"
 lock_now="$(git -C "$P/deploy.git" show "$b1:jeryu-split.lock.toml")"
 grep -qx "commit = \"$h1\"" <<<"$lock_now" && grep -qx "web_dist_sha256 = \"$dist_b\"" <<<"$lock_now" || fail "the lock does not carry the new pin"
 grep -q "commit = \"$(printf c%.0s {1..40})\"" <<<"$lock_now" || fail "another lock entry was edited"
-[[ "$(git -C "$P/deploy.git" log -1 --format='%an <%ae>' "$b1")" == "alton2 <alton@veox.ai>" ]] || fail "the bump is not committed as alton2"
+[[ "$(git -C "$P/deploy.git" log -1 --format='%an <%ae>' "$b1")" == "pin-bot <pin-bot@forge.invalid>" ]] \
+  || fail "the bump is not committed as the configured JERYU_PIN_GIT_NAME/EMAIL identity"
 msg="$(git -C "$P/deploy.git" log -1 --format=%B "$b1")"
 [[ "$msg" == "release: pin jeryu-web ${h1:0:7}"* ]] && grep -q "web change 3" <<<"$msg" && grep -q "web change 2" <<<"$msg" && ! grep -q "web change 1" <<<"$msg" || fail "the commit does not list what the bump ships"
 [[ "$(posted "$P/prs.jsonl")" == 1 ]] || fail "auto-pin did not open exactly one pull request"
@@ -407,7 +437,7 @@ auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "opening the pull re
 [[ "$(posted "$P/prs.jsonl")" == 2 && "$(lines "$P/builds")" == 1 ]] || fail "a pushed branch without a pull request must get one without a rebuild"
 echo 4 >"$P/web/index.html"; g "$P/web" commit -q -am "web change 4"; g "$P/web" push -q "$P/web.git" main
 h2="$(git -C "$P/web" rev-parse HEAD)"
-jq -n '[{number: 53, state: "open", title: "release: pin jeryu-web 427bebe (by hand)", head: {ref: "alton/pin-web"}}]' >"$P/pulls.json"
+jq -n '[{number: 53, state: "open", title: "release: pin jeryu-web 427bebe (by hand)", head: {ref: "operator/pin-web"}}]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick behind an open bump failed"
 grep -q "bump #53 is open" "$P/run.log" && [[ "$(branches)" == "$b1" && "$(lines "$P/builds")" == 1 ]] || fail "auto-pin opened a second bump beside an open one"
 beat_is '.last.conclusion == "waiting" and .last.pr == 53 and .last.sha == $sha' --arg sha "$h2" || fail "a head behind an open bump does not beat as waiting for it"
@@ -461,6 +491,9 @@ ok "auto-pin pins a head whose bundle is unchanged by moving the commit only"
 # curl that records every posted body. The operator's home is a throwaway directory.
 D="$T/deploy"; mkdir -p "$D/bin" "$D/home"
 D_REL=prod-20260920T135912Z-4f7d883-unsigned
+# The two hosts are site settings with no default; the stand-in ssh ignores which
+# host it was given, so these names are this test's.
+export JERYU_BUILD_HOST=build.invalid JERYU_FORGE_HOST=forge.invalid
 cat >"$D/bin/ssh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in

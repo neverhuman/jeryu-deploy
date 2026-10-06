@@ -19,7 +19,10 @@ source "$here/RELEASE.env"
 J="${JERYU_HOME:-$HOME/.jeryu}"
 DATA="${JERYU_DATA:-$HOME/.local/share/jeryu}"
 SYSTEMCTL="${JERYU_SYSTEMCTL:-systemctl}"
-HEALTH="${JERYU_HEALTH_URL:-http://172.19.0.1:8787/health}"
+# No default: the address the forge answers its health endpoint on is site
+# configuration, not source.
+HEALTH="${JERYU_HEALTH_URL:-}"
+[ -n "$HEALTH" ] || { echo "JERYU_HEALTH_URL is unset: set it to the forge's health endpoint, for example http://127.0.0.1:8787/health" >&2; exit 1; }
 SNAP="$J/backups/pre-$REL"
 
 [[ -s "$SNAP/forge.sqlite" ]] || { echo "no snapshot at $SNAP; refusing" >&2; exit 1; }

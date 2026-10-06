@@ -104,7 +104,7 @@ fn normalize_rejects_bad_identity_fields_and_clips_human_text() {
 
     let long_log = format!("{}ü-tail", "x".repeat(MAX_LOG_TAIL_BYTES + 100));
     let ok = normalize(NewEvent {
-        actor: Some(" alton@xbabe0/w1 ".to_string()),
+        actor: Some(" operator@node-0/w1 ".to_string()),
         repo: Some("jeryu/jeryu-web".to_string()),
         sha: Some("ABCDEF1".to_string()),
         outcome: Some("timed_out".to_string()),
@@ -115,7 +115,7 @@ fn normalize_rejects_bad_identity_fields_and_clips_human_text() {
         ..event("todo.attempt_finished", "")
     })
     .expect("valid event");
-    assert_eq!(ok.actor.as_deref(), Some("alton@xbabe0/w1"));
+    assert_eq!(ok.actor.as_deref(), Some("operator@node-0/w1"));
     assert_eq!(ok.sha.as_deref(), Some("abcdef1"));
     assert_eq!(ok.family, None, "blank keys become null");
     assert_eq!(ok.summary.chars().count(), 300);
@@ -156,7 +156,7 @@ fn store_assigns_increasing_seq_filters_and_prunes() {
     todo_done.todo_id = Some("t1".to_string());
     // The first write after an hour prunes the row older than 30 days.
     let a = store.insert("alice", &claimed, now).unwrap().event;
-    let b = store.insert("gatebot", &gate, now).unwrap().event;
+    let b = store.insert("ci-bot", &gate, now).unwrap().event;
     let c = store.insert("alice", &todo_done, now).unwrap().event;
     assert!(old.seq < a.seq && a.seq < b.seq && b.seq < c.seq);
     assert_eq!(store.latest_seq().unwrap(), c.seq);
@@ -167,7 +167,7 @@ fn store_assigns_increasing_seq_filters_and_prunes() {
         [c.seq, b.seq, a.seq],
         "default page is newest first and the 31-day-old row is pruned"
     );
-    assert_eq!(newest[1].reporter, "gatebot");
+    assert_eq!(newest[1].reporter, "ci-bot");
     assert_eq!(newest[1].detail, Some(json!({"exit_code": 1})));
     assert!(newest[1].needs_human);
 
@@ -281,7 +281,7 @@ fn store_assigns_increasing_seq_filters_and_prunes() {
     let again = reopened.insert("alice", &named, now + 5).unwrap();
     assert!(again.duplicate);
     assert_eq!(again.event, first.event, "the stored event comes back");
-    let other = reopened.insert("gatebot", &named, now).unwrap();
+    let other = reopened.insert("ci-bot", &named, now).unwrap();
     assert!(!other.duplicate, "ids are scoped to the reporter");
     assert_eq!(reopened.latest_seq().unwrap(), other.event.seq);
 }
@@ -318,15 +318,15 @@ async fn events_routes_enforce_reporter_and_admin_access() {
         .unwrap();
     core.create_account("bob", "bob-password", UserRole::User)
         .unwrap();
-    // gatebot is a default JERYU_EVENT_REPORTERS identity without admin.
-    core.create_account("gatebot", "gatebot-password", UserRole::User)
+    // ci_bot is a default JERYU_EVENT_REPORTERS identity without admin.
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
         .unwrap();
     let token = |login: &str| {
         core.create_personal_access_token(login, "t", None)
             .unwrap()
             .secret
     };
-    let (admin, user, reporter) = (token("alice"), token("bob"), token("gatebot"));
+    let (admin, user, reporter) = (token("alice"), token("bob"), token("ci-bot"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         Path::new("/tmp/jeryu-no-spa"),
@@ -477,7 +477,7 @@ async fn events_routes_enforce_reporter_and_admin_access() {
     assert_eq!(events[0]["event_id"], "todoq:t1:merged");
     let events = &events[1..];
     assert_eq!(events[2]["seq"], first);
-    assert_eq!(events[2]["reporter"], "gatebot", "reporter is the login");
+    assert_eq!(events[2]["reporter"], "ci-bot", "reporter is the login");
     assert_eq!(events[2]["needs_human"], true);
     assert_eq!(events[2]["log_tail"], "error: test failed");
     assert_eq!(events[0]["cost_usd"], 0.33);
@@ -523,10 +523,10 @@ async fn events_routes_enforce_reporter_and_admin_access() {
     // A git URL outside `/git/` is a plain 404 naming the working URL, not
     // the web app's HTML shell that git reports as "not a git repository".
     for uri in [
-        "/alton/jeryu.git/info/refs?service=git-upload-pack",
-        "/alton/jeryu/info/refs?service=git-receive-pack",
-        "/alton/jeryu.git/git-upload-pack",
-        "/alton/jeryu.git/git-receive-pack",
+        "/operator/jeryu.git/info/refs?service=git-upload-pack",
+        "/operator/jeryu/info/refs?service=git-receive-pack",
+        "/operator/jeryu.git/git-upload-pack",
+        "/operator/jeryu.git/git-receive-pack",
     ] {
         let missing = call(HttpMethod::GET, uri, &admin, None).await.unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{uri}");
@@ -536,7 +536,7 @@ async fn events_routes_enforce_reporter_and_admin_access() {
             .await
             .unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        assert!(body.contains("/git/alton/jeryu"), "{uri}: {body}");
+        assert!(body.contains("/git/operator/jeryu"), "{uri}: {body}");
     }
 
     // Every refusal is a typed JSON error an agent can act on, never HTML.
@@ -731,7 +731,7 @@ async fn shift_writes_and_stage_changes_become_events() {
     assert_eq!(blocked.status(), StatusCode::OK);
 
     let beat = |state: &str, stage: Option<&str>, todo: Option<&str>| {
-        json!({"operator": "alton@xbabe0", "host": "xbabe0", "slot": "w1", "family": "jeryu",
+        json!({"operator": "operator@node-0", "host": "node-0", "slot": "w1", "family": "jeryu",
                "state": state, "stage": stage, "todo_id": todo})
     };
     for body in [
@@ -783,7 +783,7 @@ async fn shift_writes_and_stage_changes_become_events() {
     assert_eq!(events[0]["reporter"], "forge");
     assert_eq!(events[0]["actor"], "alice/web");
     assert_eq!(events[1]["reason"], "needs a decision");
-    assert_eq!(events[2]["actor"], "alton@xbabe0/w1");
+    assert_eq!(events[2]["actor"], "operator@node-0/w1");
     assert_eq!(events[5]["repo"], "jeryu/jeryu-deploy");
     assert_eq!(events[5]["pr"], 1);
     assert_eq!(events[5]["shift"], "nightshift/2026-09-18");
@@ -792,8 +792,8 @@ async fn shift_writes_and_stage_changes_become_events() {
 fn runner_beat(labels: &[&str], current: Option<Value>, last: Option<Value>) -> Value {
     let reviewer = labels.contains(&"redteam");
     json!({
-        "runnerId": if reviewer { "xbabe0/pr-redteam" } else { "xbabe2/slot0" },
-        "host": if reviewer { "xbabe0" } else { "xbabe2" },
+        "runnerId": if reviewer { "node-0/pr-redteam" } else { "node-2/slot0" },
+        "host": if reviewer { "node-0" } else { "node-2" },
         "slot": 0,
         "labels": labels,
         "current": current,
@@ -806,16 +806,16 @@ async fn runner_heartbeats_emit_gate_and_review_events_only_on_change() {
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    core.create_account("gatebot", "gatebot-password", UserRole::User)
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
         .unwrap();
-    core.create_account("pragent", "pragent-password", UserRole::User)
+    core.create_account("review-bot", "review-bot-password", UserRole::User)
         .unwrap();
     let token = |login: &str| {
         core.create_personal_access_token(login, "t", None)
             .unwrap()
             .secret
     };
-    let (admin, gatebot, pragent) = (token("alice"), token("gatebot"), token("pragent"));
+    let (admin, ci_bot, review_bot) = (token("alice"), token("ci-bot"), token("review-bot"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         Path::new("/tmp/jeryu-no-spa"),
@@ -831,30 +831,30 @@ async fn runner_heartbeats_emit_gate_and_review_events_only_on_change() {
                      "conclusion": "success", "seconds": 90, "finishedAt": "2026-09-19T12:00:00Z"});
     for (who, body) in [
         // First beat after a forge restart repeats an old result: not news.
-        (&gatebot, runner_beat(&["pr-gate"], None, Some(old.clone()))),
+        (&ci_bot, runner_beat(&["pr-gate"], None, Some(old.clone()))),
         (
-            &gatebot,
+            &ci_bot,
             runner_beat(&["pr-gate"], Some(task.clone()), Some(old.clone())),
         ),
         (
-            &gatebot,
+            &ci_bot,
             runner_beat(&["pr-gate"], Some(task.clone()), Some(old.clone())),
         ),
         (
-            &gatebot,
+            &ci_bot,
             runner_beat(&["pr-gate"], None, Some(result("failure"))),
         ),
         (
-            &gatebot,
+            &ci_bot,
             runner_beat(&["pr-gate"], None, Some(result("failure"))),
         ),
-        (&pragent, runner_beat(&["redteam"], None, None)),
+        (&review_bot, runner_beat(&["redteam"], None, None)),
         (
-            &pragent,
+            &review_bot,
             runner_beat(&["redteam"], Some(task.clone()), None),
         ),
         (
-            &pragent,
+            &review_bot,
             runner_beat(&["redteam"], None, Some(result("too_large"))),
         ),
     ] {
@@ -892,10 +892,10 @@ async fn runner_heartbeats_emit_gate_and_review_events_only_on_change() {
     );
     assert_eq!(events[1]["seconds"], 114);
     assert_eq!(events[1]["pr"], 35);
-    assert_eq!(events[1]["actor"], "xbabe2/slot0");
+    assert_eq!(events[1]["actor"], "node-2/slot0");
     assert_eq!(
         events[3]["summary"],
-        "xbabe0/pr-redteam review of jeryu/jeryu-web#35: too_large in 114s"
+        "node-0/pr-redteam review of jeryu/jeryu-web#35: too_large in 114s"
     );
     // A red line without a cause sends the reader nowhere: both finished
     // events say why, the gate and the review alike.
@@ -916,14 +916,14 @@ async fn repeated_review_failures_collapse_onto_one_event_that_says_why() {
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    core.create_account("pragent", "pragent-password", UserRole::User)
+    core.create_account("review-bot", "review-bot-password", UserRole::User)
         .unwrap();
     let token = |login: &str| {
         core.create_personal_access_token(login, "t", None)
             .unwrap()
             .secret
     };
-    let (admin, pragent) = (token("alice"), token("pragent"));
+    let (admin, review_bot) = (token("alice"), token("review-bot"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         Path::new("/tmp/jeryu-no-spa"),
@@ -942,7 +942,7 @@ async fn repeated_review_failures_collapse_onto_one_event_that_says_why() {
             .oneshot(request(
                 HttpMethod::POST,
                 "/api/v1/runners/heartbeat",
-                &pragent,
+                &review_bot,
                 Some(runner_beat(&["redteam"], None, Some(last.clone()))),
             ))
             .await
@@ -973,23 +973,23 @@ async fn repeated_review_failures_collapse_onto_one_event_that_says_why() {
 #[tokio::test]
 async fn automation_heartbeats_emit_no_events_and_a_gate_without_a_pr_still_does() {
     let core = ForgeCore::new();
-    core.create_account("alton2", "alton2-password", UserRole::Admin)
+    core.create_account("rel-bot", "rel-bot-password", UserRole::Admin)
         .unwrap();
-    core.create_account("gatebot", "gatebot-password", UserRole::User)
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
         .unwrap();
     let token = |login: &str| {
         core.create_personal_access_token(login, "t", None)
             .unwrap()
             .secret
     };
-    let (admin, gatebot) = (token("alton2"), token("gatebot"));
+    let (admin, ci_bot) = (token("rel-bot"), token("ci-bot"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         Path::new("/tmp/jeryu-no-spa"),
     );
     let sha = "77dc3310aa5eadc15694dd1434d9f8f99c44a0d3";
     let timer = |last: Value| {
-        json!({"runnerId": "xbabe0/auto-pin", "host": "xbabe0", "slot": 0,
+        json!({"runnerId": "node-0/auto-pin", "host": "node-0", "slot": 0,
                "labels": ["automation"], "intervalSeconds": 300, "last": last})
     };
     let did = |conclusion: &str, pr: Option<u64>| {
@@ -1004,7 +1004,7 @@ async fn automation_heartbeats_emit_no_events_and_a_gate_without_a_pr_still_does
         (&admin, timer(did("waiting", Some(71)))),
         (&admin, timer(did("opened", Some(74)))),
         (&admin, timer(did("failed", None))),
-        (&gatebot, runner_beat(&["pr-gate"], Some(gate_task), None)),
+        (&ci_bot, runner_beat(&["pr-gate"], Some(gate_task), None)),
     ] {
         let response = router
             .clone()
@@ -1021,11 +1021,11 @@ async fn automation_heartbeats_emit_no_events_and_a_gate_without_a_pr_still_does
     let events = events_of(&router, &admin, "repo=jeryu/jeryu-deploy").await;
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["kind"], "gate.started");
-    assert_eq!(events[0]["actor"], "xbabe2/slot0");
+    assert_eq!(events[0]["actor"], "node-2/slot0");
     assert!(events[0]["pr"].is_null());
     assert_eq!(
         events[0]["summary"],
-        "xbabe2/slot0 gating jeryu/jeryu-deploy@77dc331"
+        "node-2/slot0 gating jeryu/jeryu-deploy@77dc331"
     );
 }
 
@@ -1136,9 +1136,9 @@ fn socket_replay_sends_stored_events_after_the_cursor() {
 #[tokio::test]
 async fn a_gate_started_without_a_pr_number_names_the_open_pr_at_its_head() {
     let core = ForgeCore::new();
-    core.create_account("alton2", "alton2-password", UserRole::Admin)
+    core.create_account("rel-bot", "rel-bot-password", UserRole::Admin)
         .unwrap();
-    core.create_account("gatebot", "gatebot-password", UserRole::User)
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
         .unwrap();
     core.create_repository(
         "jeryu",
@@ -1155,7 +1155,7 @@ async fn a_gate_started_without_a_pr_number_names_the_open_pr_at_its_head() {
         .create_pull_request(
             "jeryu",
             "jeryu-deploy",
-            "alton2",
+            "rel-bot",
             jeryu_core::CreatePullRequestRequest {
                 title: "shift".to_string(),
                 head: "nightshift/2026-09-20".to_string(),
@@ -1170,7 +1170,7 @@ async fn a_gate_started_without_a_pr_number_names_the_open_pr_at_its_head() {
             .unwrap()
             .secret
     };
-    let (admin, gatebot) = (token("alton2"), token("gatebot"));
+    let (admin, ci_bot) = (token("rel-bot"), token("ci-bot"));
     let router = app(
         WebState::new(core.clone()).with_auth(true, false, false),
         Path::new("/tmp/jeryu-no-spa"),
@@ -1183,7 +1183,7 @@ async fn a_gate_started_without_a_pr_number_names_the_open_pr_at_its_head() {
         .oneshot(request(
             HttpMethod::POST,
             "/api/v1/runners/heartbeat",
-            &gatebot,
+            &ci_bot,
             Some(runner_beat(&["pr-gate"], Some(task), None)),
         ))
         .await
@@ -1195,6 +1195,6 @@ async fn a_gate_started_without_a_pr_number_names_the_open_pr_at_its_head() {
     assert_eq!(events[0]["pr"], pr.number);
     assert_eq!(
         events[0]["summary"],
-        format!("xbabe2/slot0 gating jeryu/jeryu-deploy#{}", pr.number)
+        format!("node-2/slot0 gating jeryu/jeryu-deploy#{}", pr.number)
     );
 }

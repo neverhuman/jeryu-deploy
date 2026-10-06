@@ -362,7 +362,7 @@ origin_cluster = "c-1"
     #[test]
     fn approve_moves_proposed_to_building_and_keeps_the_rest() {
         let path = fixture("approve");
-        let applied = apply_decision(&path, "prop", Decision::Approve, "alton").unwrap();
+        let applied = apply_decision(&path, "prop", Decision::Approve, "operator").unwrap();
         assert_eq!(applied.receipt.status, Some("building"));
         assert!(applied.rejected_cluster.is_none());
         let text = std::fs::read_to_string(&path).unwrap();
@@ -375,7 +375,7 @@ origin_cluster = "c-1"
     #[test]
     fn reject_removes_the_entry_and_its_open_task_only() {
         let path = fixture("reject");
-        let applied = apply_decision(&path, "prop", Decision::Reject, "alton").unwrap();
+        let applied = apply_decision(&path, "prop", Decision::Reject, "operator").unwrap();
         assert_eq!(applied.receipt.status, None);
         assert_eq!(applied.receipt.removed_tasks, vec!["0001".to_string()]);
         assert_eq!(applied.rejected_cluster.as_deref(), Some("c-1"));
@@ -394,7 +394,7 @@ origin_cluster = "c-1"
         // A directory at the temp path makes the registry write fail.
         std::fs::create_dir(registry_tmp_path(&path)).unwrap();
         assert!(matches!(
-            apply_decision(&path, "prop", Decision::Reject, "alton"),
+            apply_decision(&path, "prop", Decision::Reject, "operator"),
             Err(DecisionError::Io(_))
         ));
         let tasks = path.parent().unwrap().join("tasks");
@@ -407,11 +407,11 @@ origin_cluster = "c-1"
     fn only_proposed_tools_can_be_decided() {
         let path = fixture("guard");
         assert!(matches!(
-            apply_decision(&path, "kept", Decision::Approve, "alton"),
+            apply_decision(&path, "kept", Decision::Approve, "operator"),
             Err(DecisionError::NotProposed(status)) if status == "published"
         ));
         assert!(matches!(
-            apply_decision(&path, "nope", Decision::Reject, "alton"),
+            apply_decision(&path, "nope", Decision::Reject, "operator"),
             Err(DecisionError::NotFound)
         ));
     }

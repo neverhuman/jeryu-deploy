@@ -759,8 +759,8 @@ fn a_head_with_no_commit_base_is_only_scored_by_a_full_audit() {
 
     let head = "c".repeat(40);
     let scorer = AccountSummary {
-        login: "gatebot".to_string(),
-        display_name: "gatebot".to_string(),
+        login: "ci-bot".to_string(),
+        display_name: "ci-bot".to_string(),
         role: UserRole::User,
         status: AccountStatus::Active,
         auth_epoch: 0,

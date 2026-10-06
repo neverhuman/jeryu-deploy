@@ -168,7 +168,7 @@ pub(crate) struct Action {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api: Option<ApiCall>,
     /// Where `command` is run, as a short phrase naming the machine and the
-    /// directory ("xbabe0, any directory"). Set exactly when `command` is, and
+    /// directory ("node-0, any directory"). Set exactly when `command` is, and
     /// left out of the JSON otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_in: Option<String>,

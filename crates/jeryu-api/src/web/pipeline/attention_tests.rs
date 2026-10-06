@@ -43,7 +43,7 @@ fn todo(id: &str, status: &str) -> ShiftTodo {
         blocked_by: Vec::new(),
         status: TodoStatus::parse(status).expect("known status"),
         attempts: 0,
-        requested_by: "alton".to_string(),
+        requested_by: "operator".to_string(),
         filed_at: "2026-09-19T12:00:00Z".to_string(),
         claim_by: String::new(),
         lease_until: String::new(),
@@ -170,7 +170,7 @@ fn todos_blocked_handed_off_untriaged_stuck_or_behind_a_blocker() {
     let mut untriaged = todo("t-untriaged", "open");
     untriaged.triaged = false;
     let mut stuck = todo("t-stuck", "claimed");
-    stuck.claim_by = "alton@xbabe0/w1".to_string();
+    stuck.claim_by = "operator@node-0/w1".to_string();
     stuck.lease_until = "2026-09-19T12:30:00Z".to_string();
     let mut renewing = todo("t-renewing", "claimed");
     renewing.lease_until = "2026-09-19T13:05:00Z".to_string();
@@ -232,7 +232,7 @@ fn todos_blocked_handed_off_untriaged_stuck_or_behind_a_blocker() {
     assert_eq!(items[0].todo_id.as_deref(), Some("t-blocked"));
     assert_eq!(items[2].severity, Severity::Watch);
     assert_eq!(items[3].severity, Severity::Watch);
-    assert!(items[3].reason.contains("alton@xbabe0/w1"));
+    assert!(items[3].reason.contains("operator@node-0/w1"));
     assert!(items[3].reason.contains("30 minutes ago"));
     assert!(items[4].reason.contains("which is blocked"));
     assert!(items[5].reason.contains("done but not merged"));
@@ -476,7 +476,7 @@ fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
         repo: "jeryu/jeryu-web".to_string(),
         number,
         title: format!("PR {number}"),
-        author: "alton2".to_string(),
+        author: "rel-bot".to_string(),
         head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
         updated_at: now() - Duration::minutes(minutes_old),
         posture,
@@ -699,7 +699,7 @@ fn queue_entry(number: u64, state: QueueState, hours_old: i64) -> QueueEntry {
         queue_sha: String::new(),
         state,
         enqueued_at: (now() - Duration::hours(hours_old)).to_rfc3339(),
-        enqueued_by: "jain-merge-bot".to_string(),
+        enqueued_by: "merge-bot".to_string(),
         approvers: Vec::new(),
         attempts: Vec::new(),
         reason: Some("the gate failed on abc and def".to_string()),
@@ -883,7 +883,7 @@ fn runner(
     GateRunnerRecord {
         heartbeat: GateRunnerHeartbeat {
             runner_id: id.to_string(),
-            host: "xbabe2".to_string(),
+            host: "node-2".to_string(),
             slot: 0,
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
             interval_seconds: None,
@@ -902,7 +902,7 @@ fn runner(
             code: None,
             tools: Vec::new(),
         },
-        reporter: "gatebot".to_string(),
+        reporter: "ci-bot".to_string(),
         received_at: now() - Duration::seconds(seconds_ago),
     }
 }
@@ -911,20 +911,20 @@ fn runner(
 fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     let open: BTreeSet<(String, u64)> = [("jeryu/jeryu-web".to_string(), 35)].into();
     let stuck = runner(
-        "xbabe0/pr-redteam",
+        "node-0/pr-redteam",
         &["redteam"],
         30,
         Some(("too_large", 35)),
     );
     let approved = runner(
-        "xbabe0/pr-redteam-2",
+        "node-0/pr-redteam-2",
         &["redteam"],
         30,
         Some(("approve", 35)),
     );
-    let closed_pr = runner("xbabe0/pr-redteam-3", &["redteam"], 30, Some(("hold", 99)));
-    let gate = runner("xbabe2/slot0", &["pr-gate"], 30, None);
-    let stale_gate = runner("xbabe2/slot1", &["pr-gate"], 600, None);
+    let closed_pr = runner("node-0/pr-redteam-3", &["redteam"], 30, Some(("hold", 99)));
+    let gate = runner("node-2/slot0", &["pr-gate"], 30, None);
+    let stale_gate = runner("node-2/slot1", &["pr-gate"], 600, None);
 
     let healthy = runner_items(
         &[stuck.clone(), approved, closed_pr, gate, stale_gate.clone()],
@@ -969,8 +969,8 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
 fn worker(family: &str, slot: &str, healthy: bool) -> WorkerRow {
     WorkerRow {
         heartbeat: Heartbeat {
-            operator: "alton@xbabe0".to_string(),
-            host: "xbabe0".to_string(),
+            operator: "operator@node-0".to_string(),
+            host: "node-0".to_string(),
             slot: slot.to_string(),
             family: family.to_string(),
             state: "idle".to_string(),
@@ -1012,11 +1012,11 @@ fn a_family_with_queued_work_and_no_healthy_worker() {
     // The family's own rows say which machine its supervisor is on.
     assert_eq!(
         items[0].action.run_in.as_deref(),
-        Some("xbabe0, any directory")
+        Some("node-0, any directory")
     );
     assert_eq!(
         items[0].next_step,
-        "Check the todoq supervisor on the worker host: on xbabe0, any directory, run \
+        "Check the todoq supervisor on the worker host: on node-0, any directory, run \
          `systemctl --user status todoq-supervisor@jeryu`"
     );
 
@@ -1035,7 +1035,7 @@ fn a_family_with_queued_work_and_no_healthy_worker() {
 
     // Two machines have reported for the family: the newest report wins.
     let mut moved = worker("jeryu", "supervisor", false);
-    moved.heartbeat.host = "xbabe3".to_string();
+    moved.heartbeat.host = "node-3".to_string();
     moved.last_seen = "2026-09-19T12:50:00Z".to_string();
     let items = worker_items(
         &families[..1],
@@ -1044,7 +1044,7 @@ fn a_family_with_queued_work_and_no_healthy_worker() {
     );
     assert_eq!(
         items[0].action.run_in.as_deref(),
-        Some("xbabe3, any directory")
+        Some("node-3, any directory")
     );
 }
 
@@ -1057,7 +1057,7 @@ fn exhausted(seq: i64, family: &str, shift: &str, ts: &str, waiting: i64) -> Eve
         event_id: None,
         source: "todoq".to_string(),
         kind: "shift.exhausted".to_string(),
-        reporter: "alton".to_string(),
+        reporter: "operator".to_string(),
         actor: None,
         family_label: Some(family.to_string()),
         family: Some(family.to_string()),
@@ -1238,7 +1238,7 @@ fn release_event(seq: i64, kind: &str, sha: &str, ts: &str, needs_human: bool) -
         event_id: None,
         source: "auto-stage".to_string(),
         kind: kind.to_string(),
-        reporter: "alton".to_string(),
+        reporter: "operator".to_string(),
         actor: None,
         family_label: None,
         family: None,
@@ -1601,7 +1601,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         json!({
             "label": "Deploy the staged release",
             "command": "scripts/release/deploy-release.sh prod-1",
-            "run_in": "xbabe0, in a jeryu/jeryu-deploy checkout",
+            "run_in": "the release host, in a jeryu/jeryu-deploy checkout",
         })
     );
     assert_eq!(
@@ -1956,23 +1956,25 @@ fn a_failing_mirror_is_one_item_however_many_repositories() {
 }
 
 #[test]
-fn hosts_default_to_the_three_machines_and_ignore_blank_overrides() {
-    let defaults = Hosts::default();
+fn unset_hosts_fall_back_to_their_role_and_blank_overrides_are_ignored() {
+    // No host default: a machine name is site data. An unset role is shown as
+    // the role, so the instruction is still true wherever it is read.
+    let unset = Hosts::default();
     assert_eq!(
         (
-            defaults.release.as_str(),
-            defaults.gate.as_str(),
-            defaults.forge.as_str()
+            unset.release.as_str(),
+            unset.gate.as_str(),
+            unset.forge.as_str()
         ),
-        ("xbabe0", "xbabe2", "atomicsoul")
+        ("the release host", "the gate host", "the forge host")
     );
     let blank = Hosts::from_lookup(|name| (name == "JERYU_GATE_HOST").then(|| "  ".to_string()));
-    assert_eq!(blank, defaults);
+    assert_eq!(blank, unset);
     assert_eq!(hosts().gate, "gate-box");
-    assert_eq!(Hosts::anywhere("xbabe0"), "xbabe0, any directory");
+    assert_eq!(Hosts::anywhere("node-0"), "node-0, any directory");
     assert_eq!(
-        Hosts::checkout("xbabe0", "jeryu/jeryu-deploy"),
-        "xbabe0, in a jeryu/jeryu-deploy checkout"
+        Hosts::checkout("node-0", "jeryu/jeryu-deploy"),
+        "node-0, in a jeryu/jeryu-deploy checkout"
     );
 }
 
@@ -2048,7 +2050,7 @@ fn a_blocked_todos_kind_picks_its_label() {
             blocked(
                 "t-owner",
                 BlockKind::OwnerTask,
-                "OWNER: only alton can pick the name.",
+                "OWNER: only operator can pick the name.",
             ),
             blocked(
                 "t-budget",

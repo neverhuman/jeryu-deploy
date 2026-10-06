@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use jeryu_core::{CreatePullRequestRequest, PullRequest, PullRequestState};
 
 use super::super::WebState;
+use super::PR_AUTHOR_ENV;
 use super::queue::{Queue, QueuedTodo, git, resolve};
 use super::types::{CreatedPr, ShiftBranch, ShiftPr, ShiftRepo};
 use crate::github::pulls::pull_request_web_path;
@@ -336,7 +337,12 @@ pub(crate) fn open_prs(
     let on_shift: Vec<&QueuedTodo> = todos.iter().filter(|t| t.todo.shift == branch).collect();
     let title = format!("{branch}: {} todos", on_shift.len());
     let body = pr_body(branch, &on_shift);
-    let author = &state.shift.pr_author;
+    let Some(author) = state.shift.pr_author.as_deref() else {
+        return Err(format!(
+            "{PR_AUTHOR_ENV} is unset, so there is no identity to open shift pull requests as; \
+             set it to this installation's automation login"
+        ));
+    };
     let mut out = Vec::new();
     for repo in &queue.family.repos {
         let Some(owner) = super::truth::hosted_owner(state, queue, &repo.name) else {

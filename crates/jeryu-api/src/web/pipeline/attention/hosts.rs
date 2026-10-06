@@ -1,6 +1,10 @@
 //! Where an inbox command is run. Every `action.command` comes with a
 //! `run_in` phrase naming the machine and directory, and the machine names
-//! live here and nowhere else: three roles, each overridable by environment.
+//! live here and nowhere else: three roles, each named by a site setting.
+//!
+//! A machine name is one installation's data, so there is no host default. A
+//! role whose setting is unset is shown by its role instead ("the gate host,
+//! any directory"), which is still a true instruction and names no site.
 
 const RELEASE_ENV: &str = "JERYU_RELEASE_HOST";
 const GATE_ENV: &str = "JERYU_GATE_HOST";
@@ -32,16 +36,16 @@ impl Hosts {
     /// A blank value counts as unset, so an empty line in an env file cannot
     /// produce "Run on , any directory".
     pub(crate) fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
-        let role = |name: &str, default: &str| {
+        let role = |name: &str, unset: &str| {
             lookup(name)
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| default.to_string())
+                .unwrap_or_else(|| unset.to_string())
         };
         Self {
-            release: role(RELEASE_ENV, "xbabe0"),
-            gate: role(GATE_ENV, "xbabe2"),
-            forge: role(FORGE_ENV, "atomicsoul"),
+            release: role(RELEASE_ENV, "the release host"),
+            gate: role(GATE_ENV, "the gate host"),
+            forge: role(FORGE_ENV, "the forge host"),
         }
     }
 

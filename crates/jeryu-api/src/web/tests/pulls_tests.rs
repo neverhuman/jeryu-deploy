@@ -1579,7 +1579,7 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
         "alice",
         "jeryu",
         "deadbeef",
-        "gatebot",
+        "ci-bot",
         CreateCommitStatusRequest {
             state: CommitStatusState::Failure,
             context: "jeryu/required".to_string(),

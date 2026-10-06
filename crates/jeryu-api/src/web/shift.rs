@@ -52,7 +52,6 @@ pub(crate) use visibility::{
 };
 
 const PR_AUTHOR_ENV: &str = "JERYU_SHIFT_PR_AUTHOR";
-const DEFAULT_PR_AUTHOR: &str = "alton2";
 const STAGES: &[&str] = &["prepare", "agent", "gate", "land", "record"];
 const DOCS: &str = "docs/architecture.md";
 
@@ -91,7 +90,10 @@ pub(crate) fn exempt_queues_from_default_branch_protection(state: &WebState, act
 #[derive(Clone)]
 pub(crate) struct ShiftState {
     pub(crate) heartbeats: HeartbeatStore,
-    pub(crate) pr_author: String,
+    /// Login the shift pull requests are opened as (`JERYU_SHIFT_PR_AUTHOR`).
+    /// An automation login belongs to one installation, so there is no
+    /// default: unset, opening shift pull requests refuses and says so.
+    pub(crate) pr_author: Option<String>,
     /// Derived merged/released state of done todos (see `truth.rs`).
     pub(crate) truth: truth::TruthCache,
 }
@@ -101,8 +103,7 @@ impl ShiftState {
         let pr_author = std::env::var(PR_AUTHOR_ENV)
             .ok()
             .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| DEFAULT_PR_AUTHOR.to_string());
+            .filter(|v| !v.is_empty());
         Self {
             heartbeats: HeartbeatStore::open(path).expect("open shift heartbeat store"),
             pr_author,

@@ -843,11 +843,11 @@ fn the_queue_deduplicates_supersedes_and_recovers_leases() {
     );
     assert_eq!(queue.tickets().len(), 1);
 
-    let claimed = queue.claim("xbabe2/slot0", 4);
+    let claimed = queue.claim("node-2/slot0", 4);
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].head_sha, "b".repeat(40));
     assert!(
-        queue.claim("xbabe2/slot1", 4).is_empty(),
+        queue.claim("node-2/slot1", 4).is_empty(),
         "claimed work is not handed out twice"
     );
 
@@ -863,7 +863,7 @@ fn the_queue_deduplicates_supersedes_and_recovers_leases() {
     for ticket in queue.tickets_for_test() {
         ticket.claimed_at = Some(Utc::now() - Duration::seconds(CLAIM_LEASE_SECONDS + 1));
     }
-    let reclaimed = queue.claim("xbabe2/slot1", 4);
+    let reclaimed = queue.claim("node-2/slot1", 4);
     assert_eq!(reclaimed.len(), 2);
 
     let taken = queue.take("jeryu", "demo", &"b".repeat(40)).unwrap();
