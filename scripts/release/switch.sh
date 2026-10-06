@@ -25,8 +25,13 @@
 # JERYU_HEALTH_TRIES times (default 30). If it never answers, the switch fails
 # (exit 1) with REL installed and live, so run rollback.sh.
 #
+# Before it stops anything it renders and installs the forge's systemd user unit
+# from the staged jeryu.service.in with install-forge-unit.sh, so every release
+# also refreshes the forge's memory, task and OOM limits. A site that has not set
+# those numbers is refused there, with nothing stopped and nothing changed.
+#
 # Overridable for tests: JERYU_HOME, JERYU_DATA, JERYU_SYSTEMCTL, JERYU_HEALTH_URL,
-# JERYU_HEALTH_TRIES.
+# JERYU_HEALTH_TRIES, JERYU_FORGE_LIMITS_ENV, JERYU_SYSTEMD_USER_DIR.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
@@ -54,6 +59,10 @@ LIVE="${live#jeryu-}"
 [[ "$LIVE" == "${PREV:-}" ]] || echo "[switch] replacing $LIVE (staged against ${PREV:-nothing}); rollback returns to $LIVE"
 (cd "$IN" && sha256sum --quiet -c SHA256SUMS) || { echo "staged checksums fail; refusing" >&2; exit 1; }
 [[ ! -e "$SNAP" ]] || { echo "snapshot $SNAP already exists; refusing" >&2; exit 1; }
+
+# The unit, and with it the host's limits, before anything is stopped: an
+# unconfigured site is refused while production is still up and untouched.
+bash "$here/install-forge-unit.sh" || { echo "installing jeryu.service failed; refusing" >&2; exit 1; }
 
 echo "[switch] stopping jeryu.service"
 $SYSTEMCTL --user stop jeryu.service

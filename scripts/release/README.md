@@ -25,7 +25,8 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
   and `PREV` read from the live symlink, for the record only: `switch.sh` replaces
   whatever is live when it runs; a live name not in `prod-…-unsigned` form
   is refused unless `--prev <that name>` confirms it),
-  `switch.sh`, `rollback.sh` and `SHA256SUMS` in `~/.jeryu/incoming/<release>/` on
+  `switch.sh`, `rollback.sh`, `install-forge-unit.sh`, the `jeryu.service.in` it
+  renders and `SHA256SUMS` in `~/.jeryu/incoming/<release>/` on
   the forge host. It changes nothing else there.
 - **`deploy-release.sh RELEASE`** records a `production` deployment of
   `jeryu/jeryu-deploy` (Deployments API; needs an admin token, read from
@@ -45,18 +46,72 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
   It polls `JERYU_HEALTH_URL` (default `http://172.19.0.1:8787/health`) once a
   second, `JERYU_HEALTH_TRIES` times (default 30), and fails if it never answers:
   the new release is then live but unhealthy, so run `rollback.sh`.
+- **`install-forge-unit.sh`** (on the forge host, run by `switch.sh` before it
+  stops anything) renders `systemd/jeryu.service.in` into
+  `~/.config/systemd/user/jeryu.service` and reloads the user manager, so every
+  release also refreshes the forge's limits. See "What the forge may cost the
+  host" below.
 - **`rollback.sh`** (in `~/.jeryu/releases/<release>/`) restores the release
   `switch.sh` replaced (`ROLLBACK.env`, else `RELEASE.env`'s `PREV`) and the
   pre-switch snapshot, keeping the post-switch databases in
   `~/.jeryu/backups/post-<release>-<time>/`.
 
-`test-release-scripts.sh` runs the real `switch.sh` and `rollback.sh` against a
+`test-release-scripts.sh` runs the real `switch.sh`, `install-forge-unit.sh` and `rollback.sh` against a
 throwaway forge home and is part of `ops/ci/pr-ci.sh`.
 
 Before a release that adds a database migration, run the staged binary against a
 backup copy of the databases on a spare loopback port and check the new schema and
 routes; `switch.sh` snapshots before starting, and `rollback.sh` restores that
 snapshot.
+
+## What the forge may cost the host
+
+`jeryu.service` is versioned here as `systemd/jeryu.service.in` and installed by
+every release. Its shape (`Type=simple`, `Restart=on-failure`, `NoNewPrivileges`,
+`PrivateTmp`, `ExecStart=%h/.jeryu/bin/jeryu serve`, the `EnvironmentFile`) is the
+one the forge has always run; what it adds is a ceiling, so the forge cannot take
+the host with it and leave the kernel nothing to kill.
+
+The numbers are the site's, never this repository's: the template carries
+placeholders, and `install-forge-unit.sh` fills them from the site limits file
+(`JERYU_FORGE_LIMITS_ENV`, default `~/.config/jeryu/forge-limits.env`). A site
+that has not set them is refused by name, with nothing installed and — because
+`switch.sh` installs the unit *before* it stops anything — production still up.
+
+| limits file key | becomes | bounds |
+|---|---|---|
+| `JERYU_FORGE_MEMORY_HIGH` | `MemoryHigh` | where the forge starts being throttled and reclaimed; must be below `MemoryMax` |
+| `JERYU_FORGE_MEMORY_MAX` | `MemoryMax` | where the kernel kills the forge instead of the host dying |
+| `JERYU_FORGE_TASKS_MAX` | `TasksMax` | processes and threads the forge may hold at once |
+| `JERYU_FORGE_OOM_SCORE_ADJ` | `OOMScoreAdjust` | the forge's bias when the host as a whole runs out |
+
+Budget the host for `MemoryMax`, not for an idle forge: a release, a clone and a
+migration all land inside the same cgroup.
+
+**Applying it the first time.** The owner writes the limits file on the forge
+host once — it is site configuration and stays outside this repository:
+
+```sh
+# on the forge host, as the user that runs jeryu.service
+mkdir -p ~/.config/jeryu
+cat > ~/.config/jeryu/forge-limits.env <<'EOF'
+JERYU_FORGE_MEMORY_HIGH=<size>
+JERYU_FORGE_MEMORY_MAX=<size>
+JERYU_FORGE_TASKS_MAX=<count>
+JERYU_FORGE_OOM_SCORE_ADJ=<-1000..1000>
+EOF
+```
+
+The next `deploy-release.sh` then installs the unit on its own: its `switch.sh`
+runs `install-forge-unit.sh` first, which prints the limits it installed, and the
+forge comes back up inside them. Without that file the deploy is refused before
+anything stops, so write it before the next release. Check what the running forge
+got with `systemctl --user show jeryu.service -p MemoryMax -p MemoryHigh -p TasksMax`.
+
+To change a limit without a release, edit the limits file and run
+`scripts/release/install-forge-unit.sh` on the forge host, then
+`systemctl --user restart jeryu.service`. `install-forge-unit.sh --help` lists
+every key.
 
 ## The web UI
 

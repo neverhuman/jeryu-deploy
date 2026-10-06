@@ -16,6 +16,14 @@ fail() { echo "not ok - $1" >&2; exit 1; }
 
 export JERYU_HOME="$T/home/.jeryu" JERYU_DATA="$T/home/data" JERYU_HEALTH_URL="file://$T/health.json"
 export JERYU_SYSTEMCTL="$T/systemctl"
+export JERYU_FORGE_LIMITS_ENV="$T/forge-limits.env" JERYU_SYSTEMD_USER_DIR="$T/units"
+# A site that has budgeted the forge. The numbers are this test's, not any host's.
+cat >"$JERYU_FORGE_LIMITS_ENV" <<'EOF'
+JERYU_FORGE_MEMORY_HIGH=3G
+JERYU_FORGE_MEMORY_MAX=4G
+JERYU_FORGE_TASKS_MAX=512
+JERYU_FORGE_OOM_SCORE_ADJ=-500
+EOF
 PREV=prod-20260101T000000Z-aaaaaaa-unsigned REL=prod-20260102T000000Z-bbbbbbb-unsigned
 mkdir -p "$JERYU_HOME"/{bin,share,incoming,releases,backups} "$JERYU_DATA"
 printf '{"service":"jeryu-api","status":"ok"}\n' >"$T/health.json"
@@ -46,7 +54,7 @@ stage() { # stage REL into incoming exactly as stage-release.sh lays it out
   local d="$JERYU_HOME/incoming/$REL"
   rm -rf "$d"; mkdir -p "$d/bundle" "$d/web-dist"
   cp "$(command -v sleep)" "$d/bundle/jeryu"; echo "<html>$REL</html>" >"$d/web-dist/index.html"
-  cp "$here/switch.sh" "$here/rollback.sh" "$d/"
+  cp "$here/switch.sh" "$here/rollback.sh" "$here/install-forge-unit.sh" "$here/systemd/jeryu.service.in" "$d/"
   printf 'REL=%s\nPREV=%s\n' "$REL" "$PREV" >"$d/RELEASE.env"
   (cd "$d" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >SHA256SUMS)
 }
@@ -57,6 +65,21 @@ if bash "$JERYU_HOME/incoming/$REL/switch.sh" >/dev/null 2>&1; then fail "switch
 [[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "a refused switch moved the live symlink"
 ok "switch refuses a stage whose checksums fail, and changes nothing"
 
+# A site that has not budgeted the forge is refused while production is still up:
+# an unbounded forge is what takes a host down, so it is never what gets installed.
+stage
+"$JERYU_SYSTEMCTL" --user start jeryu.service
+mv "$JERYU_FORGE_LIMITS_ENV" "$T/limits.aside"
+rc=0; bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-unbudgeted.log" 2>&1 || rc=$?
+[[ $rc != 0 ]] || fail "switch installed a release for a site with no limits file"
+grep -q "no forge limits file" "$T/switch-unbudgeted.log" || fail "switch did not name the missing limits file"
+if grep -q "stopping jeryu.service" "$T/switch-unbudgeted.log"; then fail "a refused unit install still stopped production"; fi
+[[ -s "$T/pid" ]] || fail "a refused unit install stopped the running forge"
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "a refused unit install moved the live symlink"
+[[ ! -e "$JERYU_SYSTEMD_USER_DIR/jeryu.service" ]] || fail "a refused unit install wrote a unit anyway"
+mv "$T/limits.aside" "$JERYU_FORGE_LIMITS_ENV"
+ok "switch refuses a site that has not budgeted the forge, before it stops anything"
+
 stage
 "$JERYU_SYSTEMCTL" --user start jeryu.service
 bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch.log" 2>&1 || { cat "$T/switch.log" >&2; fail "switch failed"; }
@@ -66,6 +89,48 @@ bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch.log" 2>&1 || { cat "$T/sw
 grep -q "integrity=ok" "$T/switch.log" || fail "no snapshot integrity line"
 [[ "$(readlink "/proc/$(cat "$T/pid")/exe")" == "$JERYU_HOME/bin/jeryu-$REL" ]] || fail "running exe is not REL"
 ok "switch installs REL, repoints both symlinks, snapshots every database and proves the running binary"
+
+# The unit the release just installed carries the site's limits, not the repository's.
+unit="$JERYU_SYSTEMD_USER_DIR/jeryu.service"
+[[ -f "$unit" ]] || fail "the switch did not install jeryu.service"
+if grep -q '@[A-Z_]*@' "$unit"; then fail "the installed unit still has a template placeholder"; fi
+for want in "MemoryHigh=3G" "MemoryMax=4G" "TasksMax=512" "OOMScoreAdjust=-500" \
+  "ExecStart=%h/.jeryu/bin/jeryu serve" "Restart=on-failure" "NoNewPrivileges=true" "PrivateTmp=true" "Type=simple"; do
+  grep -qxF "$want" "$unit" || fail "the installed unit lacks $want"
+done
+grep -qxF "EnvironmentFile=$JERYU_FORGE_LIMITS_ENV" "$unit" \
+  || fail "the unit does not pass the site limits file to the forge"
+ok "switch installs a jeryu.service carrying the site's memory, task and OOM limits"
+
+# Every refusal, and never a half-installed unit. Each bad site is refused by name.
+rm -f "$unit"
+install_unit() { JERYU_FORGE_LIMITS_ENV="$T/bad.env" bash "$here/install-forge-unit.sh"; }
+bad_site() { # MESSAGE-FRAGMENT LINES... — a limits file that must be refused, saying why
+  local want="$1"; shift
+  printf '%s\n' "$@" >"$T/bad.env"
+  local out rc=0
+  out="$(install_unit 2>&1)" || rc=$?
+  [[ $rc != 0 ]] || fail "install-forge-unit accepted a site whose limits are '$want'"
+  grep -q -- "$want" <<<"$out" || fail "the refusal does not mention $want: $out"
+  [[ ! -e "$unit" ]] || fail "a refused install wrote a unit"
+}
+full=(JERYU_FORGE_MEMORY_HIGH=3G JERYU_FORGE_MEMORY_MAX=4G JERYU_FORGE_TASKS_MAX=512
+  JERYU_FORGE_OOM_SCORE_ADJ=-500)
+for name in JERYU_FORGE_MEMORY_HIGH JERYU_FORGE_MEMORY_MAX JERYU_FORGE_TASKS_MAX \
+  JERYU_FORGE_OOM_SCORE_ADJ; do
+  bad_site "does not set $name" "${full[@]/#$name=*/}"
+done
+bad_site "not a size" "${full[@]/#JERYU_FORGE_MEMORY_MAX=*/JERYU_FORGE_MEMORY_MAX=plenty}"
+bad_site "not a size" "${full[@]/#JERYU_FORGE_MEMORY_HIGH=*/JERYU_FORGE_MEMORY_HIGH=2GB}"
+bad_site "not a positive count" "${full[@]/#JERYU_FORGE_TASKS_MAX=*/JERYU_FORGE_TASKS_MAX=0}"
+bad_site "not an oom_score_adj" "${full[@]/#JERYU_FORGE_OOM_SCORE_ADJ=*/JERYU_FORGE_OOM_SCORE_ADJ=-2000}"
+bad_site "must be below JERYU_FORGE_MEMORY_MAX" "${full[@]/#JERYU_FORGE_MEMORY_HIGH=*/JERYU_FORGE_MEMORY_HIGH=8G}"
+printf '%s\n' "${full[@]}" >"$T/bad.env"
+install_unit >"$T/unit-install.log" 2>&1 || { cat "$T/unit-install.log" >&2; fail "a budgeted site was refused"; }
+grep -q "installed jeryu.service" "$T/unit-install.log" || fail "the installer did not say what it installed"
+install_unit >"$T/unit-again.log" 2>&1 || fail "re-running the installer failed"
+grep -q "already the current one" "$T/unit-again.log" || fail "an unchanged unit was rewritten"
+ok "install-forge-unit refuses every unbudgeted or contradictory site by name, and is idempotent"
 
 # A live symlink that names no installed binary leaves nothing to roll back to, so refuse.
 LIVE_REL="$REL" REL=prod-20260103T000000Z-ccccccc-unsigned

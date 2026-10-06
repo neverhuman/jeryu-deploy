@@ -1,0 +1,32 @@
+# The forge's systemd user unit, rendered by install-forge-unit.sh: every
+# at-sign-delimited name below is replaced with the site's own value, read from
+# the site limits file, and a rendered unit still holding one is refused.
+# Never install this template as-is, and never edit the rendered copy by hand —
+# the next release re-renders it.
+[Unit]
+Description=jeryu forge (jeryu serve)
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/jeryu/jeryu.env
+EnvironmentFile=@LIMITS_ENV@
+ExecStart=%h/.jeryu/bin/jeryu serve
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+# What the forge may cost the host. MemoryHigh throttles and reclaims first, so
+# a forge drifting upwards slows down before MemoryMax kills it, and TasksMax
+# caps the processes and threads it can hold at once.
+MemoryHigh=@JERYU_FORGE_MEMORY_HIGH@
+MemoryMax=@JERYU_FORGE_MEMORY_MAX@
+TasksMax=@JERYU_FORGE_TASKS_MAX@
+
+# The forge's own bias when the host as a whole runs out: the site decides
+# whether the kernel reaps the forge early or late among its services.
+OOMScoreAdjust=@JERYU_FORGE_OOM_SCORE_ADJ@
+
+[Install]
+WantedBy=default.target
