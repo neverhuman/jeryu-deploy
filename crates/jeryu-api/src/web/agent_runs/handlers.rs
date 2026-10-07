@@ -70,6 +70,7 @@ fn start_request(
         base_oid: None,
         runner: None,
         agent: None,
+        control_lease: ControlLease::default(),
     });
 
     if let Some(prompt) = request.prompt.clone()

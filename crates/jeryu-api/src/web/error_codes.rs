@@ -49,6 +49,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("agent_run_finished", 409, "the agent run already finished"),
     entry(
+        "agent_run_input_invalid",
+        422,
+        "send_bytes input is not non-empty standard base64 within 64 KiB",
+    ),
+    entry(
         "agent_run_invalid_control",
         422,
         "the control message is not valid for an agent run",
@@ -336,6 +341,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "not_queued",
         409,
         "the pull request is not in the merge queue",
+    ),
+    entry(
+        "origin_denied",
+        403,
+        "a cookie-authenticated WebSocket came from another origin",
     ),
     entry(
         "password_change_required",

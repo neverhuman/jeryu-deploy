@@ -885,6 +885,9 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/agent-runs/:id/tty/stream",
             get(agent_runs::tty_stream),
         ),
+        // Bidirectional live terminal (WebSocket): replay + live output for every
+        // viewer, and single-writer input/resize/interrupt for the lease holder.
+        ("/api/v1/agent-runs/:id/attach", get(agent_runs::attach)),
         ("/api/v1/agent-runs/:id/control", post(agent_runs::control)),
         ("/api/v1/agent-runs/:id/shell", post(agent_runs::shell)),
         (

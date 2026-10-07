@@ -74,6 +74,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `agent_run_export_slice_denied` | 403 | the export touches paths outside the agent run slice |
 | `agent_run_export_source_unavailable` | 424 | the agent run workspace to export is unavailable |
 | `agent_run_finished` | 409 | the agent run already finished |
+| `agent_run_input_invalid` | 422 | send_bytes input is not non-empty standard base64 within 64 KiB |
 | `agent_run_invalid_control` | 422 | the control message is not valid for an agent run |
 | `agent_run_invalid_request` | 422 | the agent run request body failed validation |
 | `agent_run_not_finished` | 409 | the agent run has not finished yet |
@@ -143,6 +144,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `not_found` | 404 | the requested entity was not found |
 | `not_open` | 409 | the pull request is not open |
 | `not_queued` | 409 | the pull request is not in the merge queue |
+| `origin_denied` | 403 | a cookie-authenticated WebSocket came from another origin |
 | `password_change_required` | 403 | the account must change its password first |
 | `payload_too_large` | 413 | the request body is larger than this route accepts |
 | `permission_denied` | 403 | the account lacks the permission this request needs |

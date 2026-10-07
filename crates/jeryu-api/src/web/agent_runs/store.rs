@@ -92,6 +92,7 @@ impl AgentRunStore {
             base_oid: Some(init.base_oid),
             runner: Some(init.runner),
             agent: Some(init.agent),
+            control_lease: ControlLease::default(),
         });
     }
 
@@ -283,6 +284,16 @@ impl AgentRunStore {
         run_id: &str,
         command: AgentControlCommand,
     ) -> AgentRunResponseResult<AgentRunControlResponse> {
+        self.send_control_by(run_id, command, None)
+    }
+
+    /// Deliver one control command, recording which attached controller sent it.
+    pub(super) fn send_control_by(
+        &self,
+        run_id: &str,
+        command: AgentControlCommand,
+        actor: Option<&str>,
+    ) -> AgentRunResponseResult<AgentRunControlResponse> {
         let (tx, control, command_name, seq) = {
             let mut inner = self.inner.lock().expect("agent run store mutex");
             let record = inner
@@ -334,6 +345,7 @@ impl AgentRunStore {
             record.controls.push(AgentRunControlRecord {
                 seq,
                 command: command_name.clone(),
+                actor: actor.map(str::to_string),
             });
             (tx, control, command_name, seq)
         };
@@ -493,6 +505,7 @@ impl AgentRunStore {
             base_oid: Some("oid-test".to_string()),
             runner: None,
             agent: None,
+            control_lease: ControlLease::default(),
         });
     }
 

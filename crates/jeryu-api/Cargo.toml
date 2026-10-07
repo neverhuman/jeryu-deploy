@@ -56,6 +56,7 @@ sha2 = { workspace = true }
 reqwest = { version = "0.13", features = ["json"] }
 tempfile = { workspace = true }
 tower = "0.5"
+tokio-tungstenite = "0.24"
 
 [features]
 default = []

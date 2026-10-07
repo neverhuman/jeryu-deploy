@@ -863,6 +863,20 @@ pub(super) async fn gate(
         );
     }
 
+    // A WebSocket upgrade is a GET, so CSRF tokens never cover it. A browser
+    // attaches the session cookie to cross-site upgrades too: refuse any cookie
+    // upgrade whose Origin is not this host (cross-site WebSocket hijacking).
+    if auth.source == AuthSource::Session
+        && websocket_upgrade(request.headers())
+        && !same_origin(request.headers())
+    {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "origin_denied",
+            "cross-origin WebSocket upgrade refused",
+        );
+    }
+
     if admin_only_request(request.method(), request.uri().path()) && account.role != UserRole::Admin
     {
         return forbidden("admin role required");
@@ -1190,6 +1204,27 @@ fn password_change_allowed_path(path: &str) -> bool {
 
 pub(crate) fn local_dev_trusted(state: &WebState, peer: Option<SocketAddr>) -> bool {
     state.trust_local_dev && peer.is_some_and(|peer| peer.ip().is_loopback())
+}
+
+fn websocket_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+/// True when `Origin` names exactly the authority in `Host`. A missing or
+/// opaque (`null`) Origin is not same-origin.
+pub(super) fn same_origin(headers: &HeaderMap) -> bool {
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    let (Some(origin), Some(host)) = (origin, host) else {
+        return false;
+    };
+    origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
 }
 
 fn unsafe_method(method: &Method) -> bool {

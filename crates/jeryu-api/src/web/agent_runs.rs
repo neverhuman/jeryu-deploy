@@ -171,6 +171,16 @@ struct AgentRunRecord {
     runner: Option<String>,
     /// Agent identity that owns the session.
     agent: Option<String>,
+    /// Single-writer lease for interactive attach clients (see `attach`).
+    control_lease: ControlLease,
+}
+
+/// Which attached client may drive the terminal. Taking control bumps the
+/// epoch, so a displaced controller's later input is refused, never interleaved.
+#[derive(Debug, Clone, Default)]
+struct ControlLease {
+    holder: Option<String>,
+    epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -400,6 +410,9 @@ struct AgentRunExportPrResponse {
 pub(super) struct AgentRunControlRecord {
     pub seq: u64,
     pub command: String,
+    /// Attached controller that sent the command; absent for one-shot REST/MCP control.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -536,6 +549,9 @@ pub(super) fn agent_run_state_label(state: AgentRunState) -> &'static str {
 
 // Keep route orchestration, state mutation, and PR export independently
 // reviewable while preserving this module as the single public surface.
+mod attach;
+#[cfg(test)]
+mod attach_tests;
 #[cfg(test)]
 mod durability_tests;
 mod export;
@@ -545,6 +561,7 @@ mod store;
 #[cfg(test)]
 mod tail_tests;
 
+pub(super) use attach::attach;
 #[cfg(test)]
 pub(super) use handlers::AgentTtyStreamQuery;
 pub(super) use handlers::{
