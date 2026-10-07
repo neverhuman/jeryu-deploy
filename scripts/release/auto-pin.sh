@@ -21,13 +21,18 @@
 #      left alone. A newer head starts fresh. A branch pushed without its pull request (the API
 #      call failed) gets the pull request on the next tick, without rebuilding.
 #
-#   6. Every tick ends with one runner heartbeat (`<host>/auto-pin`, label `automation`), so
+#   6. Every tick, idle or not, deletes the auto/pin-web-* branches whose pull request is closed
+#      (merged, or superseded by a newer bump), except the current web head's, and only while the
+#      branch is still that pull request's head. A refused delete is logged and ignored.
+#
+#   7. Every tick ends with one runner heartbeat (`<host>/auto-pin`, label `automation`), so
 #      /runners shows the timer alive and the last thing it did: opened a bump, is waiting behind
 #      one or for the web gate, or failed on a head. Best-effort: it never fails or delays a tick.
 #
 # State in $JERYU_AUTO_PIN_STATE (~/.local/state/jeryu-auto-pin): opened.tsv (web sha, PR, time),
-# failures/<web sha>, waiting (what the newest wait is for, and since when), git caches, web-dist/
-# (build-web-dist.sh's OUT_ROOT), logs/ (newest 20).
+# failures/<web sha>, prune-seen (the bump branches the last prune pass left), waiting (what the
+# newest wait is for, and since when), git caches, web-dist/ (build-web-dist.sh's OUT_ROOT), logs/
+# (newest 20).
 #
 # Env: JERYU_DEPLOY_REMOTE, JERYU_WEB_REMOTE (git URLs; pushing uses this host's git credential);
 # JERYU_DEPLOY_REPO, JERYU_WEB_REPO (owner/name on the forge; default: from the remotes);
@@ -119,6 +124,62 @@ beat() {
     "$base/api/v1/runners/heartbeat" <<<"$body" >/dev/null 2>&1 || say "heartbeat: not accepted (ignored)"
 }
 
+api() { # METHOD PATH [JSON on stdin] -> body on stdout
+  local method="$1" path="$2"; shift 2
+  curl --silent --show-error --fail --max-time 60 --config "$cfg" -X "$method" \
+    -H 'Accept: application/json' -H 'Content-Type: application/json' "$@" "$base$path"
+}
+
+# list_pulls: every pull request of jeryu-deploy into $pulls. Every page: the forge lists oldest
+# first and ignores sort and head filters, so page 1 alone stops showing new pull requests once the
+# repo has more than 100, and every tick opened a duplicate. Returns 1, having said why, on failure.
+pulls=""
+list_pulls() {
+  local page batch all='[]'
+  for page in $(seq 1 50); do
+    batch="$(api GET "/api/v3/repos/$repo_path/pulls?state=all&per_page=100&page=$page")" \
+      || { say "could not list $repo_path pull requests"; return 1; }
+    jq -e 'type == "array"' <<<"$batch" >/dev/null || { say "the pull request list is not JSON"; return 1; }
+    all="$(jq -s 'add' <(printf '%s' "$all") <(printf '%s' "$batch"))"
+    (( $(jq length <<<"$batch") < 100 )) && { pulls="$all"; return 0; }
+  done
+  say "more than 5000 $repo_path pull requests; not guessing which exist"; return 1
+}
+
+# prune_branches: delete the auto/pin-web-* branches whose pull request is closed, merged or
+# superseded by a newer bump, so they do not pile up on the forge. A branch goes only while it
+# still points at its pull request's head (read again just before the delete), and the current web
+# head's branch always stays. An idle tick lists the pull requests only when the set of bump branches changed
+# since the last pass (prune-seen), so one that cannot go costs one ls-remote per tick, not a full
+# listing. Best-effort: logged, never fails a tick.
+bump_refs() { # the remote auto/pin-web-* branches except the current web head's, "<sha> <ref>" lines
+  git ls-remote "$remote" 'refs/heads/auto/pin-web-*' 2>/dev/null \
+    | grep -v "[[:space:]]refs/heads/auto/pin-web-${head:0:12}\$" | tr '\t' ' '
+}
+prune_branches() {
+  local refs sha ref name pr
+  refs="$(bump_refs)" || return 0
+  [ -z "$token_problem" ] || return 0
+  [ -n "$pulls" ] || [ "$refs" != "$(cat "$state/prune-seen" 2>/dev/null)" ] || return 0
+  [ -n "$pulls" ] || list_pulls || return 0
+  while read -r sha ref; do
+    name="${ref#refs/heads/}"
+    pr="$(jq -r --arg b "$name" --arg sha "$sha" \
+      '[.[] | select(.head.ref == $b and .state == "closed" and .head.sha == $sha)][0].number // empty' <<<"$pulls")"
+    [ -n "$pr" ] || continue
+    # Read again just before the delete: a branch pushed to since the listing is no longer the
+    # closed pull request's head and stays.
+    [ "$(git ls-remote "$remote" "$ref" 2>/dev/null | cut -f1)" == "$sha" ] || continue
+    # From the cache: git push needs a repository, and the timer starts outside one.
+    if git -C "$cache" push -q "$remote" --delete "$ref" 2>/dev/null; then
+      say "deleted $name (#$pr is closed)"
+    else
+      say "could not delete $name (#$pr is closed; ignored)"
+    fi
+  done <<<"$refs"
+  bump_refs >"$state/prune-seen" || : >"$state/prune-seen"
+}
+
 main="$(git ls-remote "$remote" refs/heads/main | cut -f1)"
 head="$(git ls-remote "$web_remote" refs/heads/main | cut -f1)"
 [[ "$main" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve jeryu-deploy main ($main)"; exit 1; }
@@ -133,7 +194,7 @@ pin="$(git -C "$cache" show "$main:$lock_file" | awk '
   /^name = "jeryu-web"$/ { inweb = 1 }
   inweb && $1 == "commit" && $2 == "=" { gsub(/"/, "", $3); print $3; exit }')"
 [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || { say "$lock_file at main ${main:0:12} has no 40-hex jeryu-web commit ($pin)"; exit 1; }
-[ "$pin" != "$head" ] || exit 0
+if [ "$pin" == "$head" ]; then prune_branches; exit 0; fi
 
 web_cache="$state/jeryu-web.git"
 [ -d "$web_cache" ] || git clone -q --bare "$web_remote" "$web_cache"
@@ -147,11 +208,6 @@ if (( failures >= max_failures )); then
 fi
 
 [ -z "$token_problem" ] || { say "$token_problem"; exit 2; }
-api() { # METHOD PATH [JSON on stdin] -> body on stdout
-  local method="$1" path="$2"; shift 2
-  curl --silent --show-error --fail --max-time 60 --config "$cfg" -X "$method" \
-    -H 'Accept: application/json' -H 'Content-Type: application/json' "$@" "$base$path"
-}
 
 # emit KIND NEEDS_HUMAN EVENT_ID SUMMARY DETAIL_JSON [PR] [REASON] [LOG_FILE]
 # One pipeline event; event_id makes a repeat a no-op on the forge. Best-effort: logged, ignored.
@@ -174,17 +230,8 @@ emit() {
 
 branch="auto/pin-web-${head:0:12}"
 title="release: pin jeryu-web ${head:0:7}"
-# Every page: the forge lists oldest first and ignores sort and head filters, so page 1 alone stops
-# showing new pull requests once the repo has more than 100, and every tick opened a duplicate.
-pulls='[]'
-for page in $(seq 1 50); do
-  batch="$(api GET "/api/v3/repos/$repo_path/pulls?state=all&per_page=100&page=$page")" \
-    || { say "could not list $repo_path pull requests"; exit 1; }
-  jq -e 'type == "array"' <<<"$batch" >/dev/null || { say "the pull request list is not JSON"; exit 1; }
-  pulls="$(jq -s 'add' <(printf '%s' "$pulls") <(printf '%s' "$batch"))"
-  (( $(jq length <<<"$batch") < 100 )) && break
-  (( page < 50 )) || { say "more than 5000 $repo_path pull requests; not guessing which exist"; exit 1; }
-done
+list_pulls || exit 1
+prune_branches
 mine="$(jq -r --arg b "$branch" '[.[] | select(.head.ref == $b)][0].number // empty' <<<"$pulls")"
 if [ -n "$mine" ]; then exit 0; fi # this head already has its pull request, open or decided
 other="$(jq -r '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))][0].number // empty' <<<"$pulls")"

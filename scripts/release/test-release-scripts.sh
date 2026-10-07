@@ -367,12 +367,13 @@ echo "not-a-real-pin-token" >"$P/token"; chmod 600 "$P/token"
 echo '[]' >"$P/pulls.json"; echo pending >"$P/gate"; : >"$P/curl-args"; : >"$P/events.jsonl"; : >"$P/prs.jsonl"; : >"$P/builds"; : >"$P/beats.jsonl"
 # The bump identity and the credential path are site settings with no default,
 # so every invocation names them. The identity below is this test's, not a site's.
-auto_pin() {
-  PATH="$P/bin:$PATH" JERYU_DEPLOY_REMOTE="$P/deploy.git" JERYU_WEB_REMOTE="$P/web.git" \
+# It starts in / as the timer starts outside any repository, so a bare `git push` fails here too.
+auto_pin() ( # a subshell, so the cd stays in it
+  cd / && PATH="$P/bin:$PATH" JERYU_DEPLOY_REMOTE="$P/deploy.git" JERYU_WEB_REMOTE="$P/web.git" \
     JERYU_DEPLOY_REPO=jeryu/jeryu-deploy JERYU_WEB_REPO=jeryu/jeryu-web JERYU_AUTO_PIN_STATE="${PIN_STATE:-$P/state}" \
     JERYU_PIN_GIT_NAME="${PIN_GIT_NAME-pin-bot}" JERYU_PIN_GIT_EMAIL="${PIN_GIT_EMAIL-pin-bot@forge.invalid}" \
     JERYU_PIN_TOKEN_FILE="${PIN_TOKEN_FILE-$P/token}" JERYU_BASE="${PIN_BASE:-https://git.neverhuman.org}" bash "$here/auto-pin.sh"
-}
+)
 branches() { git -C "$P/deploy.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/*'; }
 lines() { wc -l <"$1" | tr -d ' '; }
 beat_is() { newest "$P/beats.jsonl" | jq -e "${@:2}" "$1" >/dev/null; } # FILTER [jq args]: the newest heartbeat
@@ -473,6 +474,34 @@ beat_is '.runnerId == $id and (has("last") | not)' --arg id "$me/auto-pin" || fa
 auto_pin >"$P/run.log" 2>&1 || fail "an up-to-date tick failed"
 [[ "$(cat "$P/curl-args")" == *"/api/v1/runners/heartbeat" && "$(lines "$P/curl-args")" == 1 && ! -s "$P/run.log" && "$(lines "$P/builds")" == "$builds" ]] || fail "an up-to-date pin is not a silent no-op"
 ok "auto-pin is a silent no-op once the pin is the web head"
+
+# Closed bumps leave their branches behind; a tick deletes them. What stays: a branch that moved
+# past its closed pull request's head, one whose pull request is open, and the current head's.
+s1="$(git -C "$P/deploy.git" rev-parse "$b1")"; s2="$(git -C "$P/deploy.git" rev-parse "$b2")"
+moved="auto/pin-web-$(printf 1%.0s {1..12})"; open_b="auto/pin-web-$(printf 2%.0s {1..12})"
+git -C "$P/deploy.git" update-ref "refs/heads/$moved" "$s2"; git -C "$P/deploy.git" update-ref "refs/heads/$open_b" "$s2"
+jq -n --arg b1 "$b1" --arg s1 "$s1" --arg b2 "$b2" --arg s2 "$s2" --arg mv "$moved" --arg ob "$open_b" '[
+  {number: 7, state: "closed", title: "x", head: {ref: $b1, sha: $s1}},
+  {number: 8, state: "closed", title: "x", head: {ref: $mv, sha: $s1}},
+  {number: 9, state: "open", title: "x", head: {ref: $ob, sha: $s2}},
+  {number: 10, state: "closed", title: "x", head: {ref: $b2, sha: $s2}}]' >"$P/pulls.json"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a pruning tick failed"; }
+grep -qx "\[auto-pin [0-9:]*\] deleted $b1 (#7 is closed)" "$P/run.log" || { cat "$P/run.log" >&2; fail "auto-pin did not delete the closed bump's branch"; }
+[[ "$(branches | sort)" == "$(printf '%s\n' "$moved" "$open_b" "$b2" | sort)" ]] || fail "auto-pin deleted a branch that must stay: $(branches | tr '\n' ' ')"
+: >"$P/curl-args"
+auto_pin >"$P/run.log" 2>&1 || fail "an idle tick after pruning failed"
+[[ "$(lines "$P/curl-args")" == 1 && ! -s "$P/run.log" ]] || fail "an idle tick listed the pull requests again with no new bump branch"
+# A refused delete costs one log line and never fails the tick.
+# The stand-in git refuses only the delete, as a forge that protects the branch would.
+git -C "$P/deploy.git" update-ref "refs/heads/$b1" "$s1"
+real_git="$(command -v git)"
+printf '#!/usr/bin/env bash\n[[ " $* " == *" push "*" --delete "* ]] && { echo "remote: deleting is not allowed" >&2; exit 1; }\nexec "%s" "$@"\n' "$real_git" >"$P/bin/git"
+chmod +x "$P/bin/git"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a refused delete failed the tick"; }
+grep -q "could not delete $b1 (#7 is closed; ignored)" "$P/run.log" && git -C "$P/deploy.git" rev-parse -q --verify "refs/heads/$b1" >/dev/null \
+  || fail "a refused delete was not logged"
+rm "$P/bin/git"
+ok "auto-pin deletes the branches of closed bumps, keeps moved, open and current ones, and never fails on a refused delete"
 
 # A web commit that changes no shipped file (tests, docs) builds the bundle that is already pinned.
 echo "a test-only change" >"$P/web/NOTES.md"; g "$P/web" add NOTES.md; g "$P/web" commit -q -m "web tests only"; g "$P/web" push -q "$P/web.git" main
