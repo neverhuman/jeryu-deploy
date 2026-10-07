@@ -1224,6 +1224,15 @@ fn core_error(error: ForgeError, purpose: &'static str) -> AxumResponse {
             PROOF_LANE,
             None,
         ),
+        ForgeError::WaitlistFull => repair_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "waitlist_full",
+            purpose,
+            "the waitlist is not accepting new addresses",
+            &["retry once an admin has made room on the waitlist"],
+            PROOF_LANE,
+            None,
+        ),
         ForgeError::Storage(reason) => repair_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "storage_failed",

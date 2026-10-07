@@ -138,6 +138,12 @@ pub(super) fn forge_error(err: ForgeError) -> AxumResponse {
             ][..],
             "unarchive the repository, then rerun cargo test -p jeryu-api --features web",
         ),
+        ForgeError::WaitlistFull => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "waitlist_full",
+            &["retry once an admin has made room on the waitlist"][..],
+            "the waitlist is full; this request does not depend on it",
+        ),
         ForgeError::Storage(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "forge_storage",

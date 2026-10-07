@@ -679,6 +679,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the request body needs Content-Type: application/json",
     ),
     entry(
+        "waitlist_full",
+        503,
+        "the waitlist is not accepting new addresses",
+    ),
+    entry(
         "workcell_branch_budget_denied",
         409,
         "the workcell branch budget is spent",

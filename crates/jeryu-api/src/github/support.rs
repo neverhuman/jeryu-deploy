@@ -465,6 +465,11 @@ pub(super) fn error_response(err: ForgeError) -> Response {
             "jeryu.get_system_snapshot",
             "the repository is archived and read-only; unarchive it before writing",
         ),
+        ForgeError::WaitlistFull => (
+            503,
+            "jeryu.get_system_snapshot",
+            "the waitlist is full and not accepting new addresses",
+        ),
         ForgeError::Storage(_) => (
             500,
             "jeryu.get_system_snapshot",

@@ -216,6 +216,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `trace_todo_not_found` | 404 | no family queue holds that todo |
 | `unauthorized` | 401 | the request needs a login or token |
 | `unsupported_media_type` | 415 | the request body needs Content-Type: application/json |
+| `waitlist_full` | 503 | the waitlist is not accepting new addresses |
 | `workcell_branch_budget_denied` | 409 | the workcell branch budget is spent |
 | `workcell_claim_denied` | 409 | the workcell could not be claimed |
 | `workcell_delete_denied` | 403 | workcells may not delete branches |

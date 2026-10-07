@@ -583,6 +583,11 @@ pub(in crate::web) async fn repo_readme_update(
                 repair_hint: &format!("retry as a permitted identity ({reason})"),
             },
         ),
+        Err(ForgeError::WaitlistFull) => api_error(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "waitlist_full",
+            "the waitlist is not accepting new addresses",
+        ),
         Err(ForgeError::Storage(err)) => api_error_with_hint(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "storage_failed",
