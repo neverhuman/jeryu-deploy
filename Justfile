@@ -16,6 +16,14 @@ check-api:
 test-api:
   source ops/ci/hosted-git-env.sh; cargo test -p jeryu-api --locked --features web --jobs {{jobs}} -- --test-threads {{test_threads}}
 
+# Report-only managed-agent launch inventory (lane A); M6 adds --enforce.
+launch-inventory:
+  bash ops/ci/launch-inventory.sh
+
+# Test-only mock agent and mock provider used by connect-once CI.
+mocks:
+  source ops/ci/hosted-git-env.sh; cargo test -p jeryu-mock-agent -p jeryu-mock-provider --locked --jobs {{jobs}}
+
 # Focused agent-run REST/MCP/session/TTY control-surface regression loop.
 agent-runs:
   source ops/ci/hosted-git-env.sh; cargo test -p jeryu-api --locked --features web --jobs {{jobs}} agent_runs -- --test-threads {{test_threads}}

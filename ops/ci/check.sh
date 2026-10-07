@@ -31,4 +31,10 @@ for script in scripts/*.sh ops/ci/*.sh; do
   bash -n "$script"
 done
 bash scripts/check-agent-maps.sh
+# Managed-agent guards (lane A). The inventory is report-only until milestone
+# M6, when it runs with --enforce; its self-tests and the leak oracle's must
+# pass on every change. None of this proves a launch runs in a microVM.
+bash ops/ci/launch-inventory.sh --self-test
+bash ops/ci/launch-inventory.sh
+bash ops/ci/leak-oracle.sh --self-test
 printf 'check ok: %s\n' "$(pwd)"
