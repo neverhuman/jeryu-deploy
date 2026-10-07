@@ -1800,6 +1800,112 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     assert_eq!(gate["web_url_label"], "View log");
 }
 
+/// A pull request whose base branch requires one commit-status context, with
+/// nothing published for its head yet.
+fn status_gate_fixture() -> (ForgeCore, jeryu_core::Repository, jeryu_core::PullRequest) {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "veox",
+            CreateRepositoryRequest {
+                name: "jain-math".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    core.set_branch_protection(
+        "veox",
+        "jain-math",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["jain-math/required".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "veox",
+            "jain-math",
+            "veox",
+            CreatePullRequestRequest {
+                title: "ring quotients".to_string(),
+                head: "ring-quotients".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("9667497c8ea8".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    (core, repo, pr)
+}
+
+fn publish_status(core: &ForgeCore, state: CommitStatusState) {
+    core.create_commit_status(
+        "veox",
+        "jain-math",
+        "9667497c8ea8",
+        "gatebot",
+        CreateCommitStatusRequest {
+            state,
+            context: "jain-math/required".to_string(),
+            description: None,
+            target_url: None,
+        },
+    )
+    .unwrap();
+}
+
+async fn required_status_row(
+    core: ForgeCore,
+    repo_id: uuid::Uuid,
+    number: u64,
+) -> serde_json::Value {
+    let state = Arc::new(WebState::new(core));
+    let checks = response_json(
+        crate::web::pulls::checks(State(state), AxumPath((repo_id.to_string(), number))).await,
+    )
+    .await;
+    checks["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "jain-math/required")
+        .cloned()
+        .unwrap_or_else(|| panic!("the required context has a row in {checks}"))
+}
+
+/// A context that went green reports `success`, not the nothing a reader - or
+/// the merge pass - takes for "still running": a commit status has no
+/// conclusion of its own, so the row carries the state it settled in.
+#[tokio::test]
+async fn pull_checks_report_a_green_required_status_as_a_success_conclusion() {
+    let (core, repo, pr) = status_gate_fixture();
+    publish_status(&core, CommitStatusState::Pending);
+    publish_status(&core, CommitStatusState::Success);
+
+    let row = required_status_row(core, repo.id, pr.number).await;
+    assert_eq!(row["required"], true, "{row}");
+    assert_eq!(row["status"], "success", "{row}");
+    assert_eq!(row["conclusion"], "success", "{row}");
+}
+
+/// The newest status for the context wins: a green run followed by a rerun
+/// that is pending again reads as pending, with no conclusion yet.
+#[tokio::test]
+async fn pull_checks_report_a_rerun_required_status_as_pending() {
+    let (core, repo, pr) = status_gate_fixture();
+    publish_status(&core, CommitStatusState::Success);
+    publish_status(&core, CommitStatusState::Pending);
+
+    let row = required_status_row(core, repo.id, pr.number).await;
+    assert_eq!(row["required"], true, "{row}");
+    assert_eq!(row["status"], "pending", "{row}");
+    assert!(row["conclusion"].is_null(), "{row}");
+}
+
 /// A draft opened with an invented repository, so the fixture says nothing
 /// about any deployment's own repositories. The core is backed by SQLite:
 /// the in-memory one keeps no audit trail, and the transition's audit row is

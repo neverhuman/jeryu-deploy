@@ -547,7 +547,7 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
             name: status.context.clone(),
             kind: "status",
             status: bucket.to_string(),
-            conclusion: None,
+            conclusion: status_conclusion(&status.state),
             details_url: status.target_url.clone(),
             title: None,
             description: status.description.clone(),
@@ -747,6 +747,18 @@ fn latest_statuses_by_context(statuses: Vec<CommitStatus>) -> Vec<CommitStatus> 
         }
     }
     latest.into_values().collect()
+}
+
+/// How a commit status settled, in the vocabulary a check run uses: a reader
+/// of a row - or the merge pass - sees `success` on a green context instead of
+/// the nothing a check run reports while it is still running. `None` only
+/// while the context is pending, where a check run also has no conclusion.
+fn status_conclusion(state: &CommitStatusState) -> Option<String> {
+    match state {
+        CommitStatusState::Pending => None,
+        CommitStatusState::Success => Some("success".to_string()),
+        CommitStatusState::Error | CommitStatusState::Failure => Some("failure".to_string()),
+    }
 }
 
 fn status_bucket(state: &CommitStatusState) -> &'static str {
