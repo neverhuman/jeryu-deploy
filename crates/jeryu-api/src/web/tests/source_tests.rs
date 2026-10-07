@@ -202,6 +202,73 @@ async fn browser_repo_routes_serve_the_spa_shell() {
     }
 }
 
+/// The commit and pull-request tab pages are served to any browser, so the shell
+/// must be all another user gets: a private repository's commit URL answers a
+/// signed-out browser with the same static bytes as any page, and never the
+/// shell to a JSON client or on the bare-owner REST shape it overlaps.
+#[tokio::test]
+async fn browser_commit_routes_give_another_user_only_the_static_shell() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "secret".to_string(),
+            private: true,
+            description: Some("alice-private-description".to_string()),
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let spa_dir = tempdir().expect("temp SPA dir");
+    let shell = r#"<!doctype html><html><body><div id="root"></div></body></html>"#;
+    std::fs::write(spa_dir.path().join("index.html"), shell).expect("write SPA stub");
+    let app = app(WebState::new(core), spa_dir.path());
+    let get = |path: &str, accept: &str, navigate: bool| {
+        let mut request = Request::builder().uri(path).header(header::ACCEPT, accept);
+        if navigate {
+            request = request.header("sec-fetch-mode", "navigate");
+        }
+        app.clone().oneshot(request.body(Body::empty()).unwrap())
+    };
+
+    let commit = "/repos/jeryu/alice/secret/commit/0123456789abcdef0123456789abcdef01234567";
+    let response = get(commit, "text/html", true).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("shell body");
+    assert_eq!(std::str::from_utf8(&bytes).unwrap(), shell);
+
+    for (path, accept, navigate) in [
+        (commit, "application/json", false),
+        (
+            "/repos/jeryu/alice/secret/pulls/1/commits",
+            "application/json",
+            false,
+        ),
+        ("/repos/alice/secret/pulls/1/commits", "text/html", true),
+    ] {
+        let response = get(path, accept, navigate).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            !body.contains(r#"<div id="root"></div>"#),
+            "{path} ({accept}) must reach the REST edge, not the shell"
+        );
+        assert!(
+            !body.contains("alice-private-description"),
+            "{path} leaked the private repository"
+        );
+    }
+}
+
 #[tokio::test]
 async fn source_browser_rejects_unsafe_paths_before_storage_lookup() {
     let core = ForgeCore::new();
