@@ -6,8 +6,9 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Utc};
 
 use super::{
-    Draft, Hosts, Item, QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES,
-    Severity, Shell, enqueue_call, parse_time, pull_href, ready_for_review_call, regate_call,
+    Draft, Hosts, Item, MERGER_STALLED_MINUTES, QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES,
+    READY_TO_MERGE_MINUTES, Severity, Shell, enqueue_call, parse_time, pull_href,
+    ready_for_review_call, regate_call,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -252,7 +253,94 @@ pub(crate) fn pull_items(
             items.push(item);
         }
     }
+    fold_merger_stalled(&mut items, now);
     items
+}
+
+/// How long one `pr_ready_to_merge` row has been ready, from the pull request
+/// time the rule put in `since`.
+fn ready_minutes(item: &Item, now: DateTime<Utc>) -> Option<i64> {
+    item.since
+        .as_deref()
+        .and_then(parse_time)
+        .map(|at| (now - at).num_minutes())
+}
+
+/// Replace the long-ready `pr_ready_to_merge` rows with one critical row when
+/// there are two or more of them. The reviewer merges approved pull requests
+/// every five minutes, so several sitting ready for half an hour is one
+/// failure in the reviewer, not a queue of owner decisions — and as separate
+/// `action` rows it reads like routine work (live on 2026-10-06: the reviewer
+/// merged nothing for a day and the inbox showed 26 ordinary rows).
+fn fold_merger_stalled(items: &mut Vec<Item>, now: DateTime<Utc>) {
+    let mut stalled: Vec<(i64, String)> = items
+        .iter()
+        .filter(|item| item.kind == "pr_ready_to_merge")
+        .filter_map(|item| {
+            let minutes = ready_minutes(item, now)?;
+            let repo = item.repo.as_deref()?;
+            let number = item.pr?;
+            (minutes >= MERGER_STALLED_MINUTES).then(|| (minutes, format!("{repo}#{number}")))
+        })
+        .collect();
+    if stalled.len() < 2 {
+        return;
+    }
+    // Oldest first: the one that says how long merging has been stopped.
+    stalled.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let oldest = stalled[0].0;
+    let shown = stalled
+        .iter()
+        .take(6)
+        .map(|(_, label)| label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = stalled.len().saturating_sub(6);
+    items.retain(|item| {
+        item.kind != "pr_ready_to_merge"
+            || ready_minutes(item, now).is_none_or(|minutes| minutes < MERGER_STALLED_MINUTES)
+    });
+    let mut item = Draft {
+        id: "merger-stalled".to_string(),
+        kind: "merger_stalled",
+        severity: Severity::Critical,
+        title: format!(
+            "{} pull requests have been ready to merge for up to {oldest} minutes",
+            stalled.len()
+        ),
+        reason: format!(
+            "{} pull requests have passed their merge gate and nothing merged them; the              oldest has been ready for {oldest} minutes. The automated reviewer merges              approved work on every pass, so this is the reviewer having stopped rather              than {} owner decisions. Waiting: {shown}{}. What it last said:              `journalctl --user -u pr-redteam | grep \"waiting to merge\"`.",
+            stalled.len(),
+            stalled.len(),
+            if more == 0 {
+                String::new()
+            } else {
+                format!(" and {more} more")
+            },
+        ),
+        href: "/repos".to_string(),
+        label: "Read what the reviewer logged, then merge the pull requests by hand",
+        api: None,
+        command: None,
+    }
+    .build();
+    item.since = Some((now - chrono::Duration::minutes(oldest)).to_rfc3339());
+    items.push(item);
+}
+
+/// A pull request the automated reviewer gave up on, where it requested the
+/// changes it gave up over: `reviewer_stuck` names the reviewer, the verdict
+/// and the review, so the `pr_changes_requested` row for the same pull
+/// request would only repeat it one line further down.
+pub(crate) fn drop_shadowed_pull_rows(items: &mut Vec<Item>) {
+    let stuck: BTreeSet<(Option<String>, Option<u64>)> = items
+        .iter()
+        .filter(|item| item.kind == "reviewer_stuck")
+        .map(|item| (item.repo.clone(), item.pr))
+        .collect();
+    items.retain(|item| {
+        item.kind != "pr_changes_requested" || !stuck.contains(&(item.repo.clone(), item.pr))
+    });
 }
 
 /// Merge-queue entries that failed, were dropped, or were never admitted in

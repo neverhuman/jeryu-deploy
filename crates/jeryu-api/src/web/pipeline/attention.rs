@@ -49,8 +49,8 @@ mod work;
 pub(crate) use acks::AckStore;
 pub(crate) use board::{BoardFacts, BoardLane, board_items};
 pub(crate) use flow::{
-    DraftFacts, LatestDeployment, ProductionFacts, PullFacts, draft_items, pull_items, queue_items,
-    release_items, runner_items,
+    DraftFacts, LatestDeployment, ProductionFacts, PullFacts, draft_items, drop_shadowed_pull_rows,
+    pull_items, queue_items, release_items, runner_items,
 };
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
@@ -69,6 +69,10 @@ pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
 pub(super) const UNTRIAGED_MINUTES: i64 = 30;
 /// A mergeable PR left open this long is waiting on somebody to merge it.
 pub(super) const READY_TO_MERGE_MINUTES: i64 = 10;
+/// Two or more pull requests ready this long are not slow authors: the
+/// automated reviewer merges approved work every five minutes, so six of its
+/// passes with nothing landing says the reviewer itself stopped merging.
+pub(super) const MERGER_STALLED_MINUTES: i64 = 30;
 pub(super) const QUEUE_LOOKBACK_HOURS: i64 = 24;
 /// A queue entry still building after this long is no longer waiting for a
 /// gate that is about to report.
@@ -115,11 +119,12 @@ impl Severity {
 }
 
 /// Every kind the inbox can emit, sorted. The closed set `?kind=` accepts, and
-/// what `docs/attention.md` publishes: a kind absent here could only ever
+/// what `docs/pipeline-events.md` publishes: a kind absent here could only ever
 /// match nothing, so a reader who filters by it hears so.
 pub(crate) const KINDS: &[&str] = &[
     "deploy_failed",
     "gate_runner_down",
+    "merger_stalled",
     "mirror_diverged",
     "mirror_failing",
     "pin_behind",
@@ -630,6 +635,9 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         now,
         &hosts,
     ));
+    // A pull request the reviewer gave up on carries the review it posted:
+    // one row says both, so the row the posture would add is dropped.
+    drop_shadowed_pull_rows(&mut items);
     // Per repository, not the newest over all of them: two repositories with a
     // release staged are two things waiting on somebody.
     let staged = state

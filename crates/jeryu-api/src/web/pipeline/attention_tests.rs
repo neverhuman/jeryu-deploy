@@ -11,9 +11,9 @@ use tower::ServiceExt;
 use super::attention::{
     ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
     Filter, Hosts, Item, KINDS, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts,
-    PullFacts, Severity, board_items, budget_items, divergence_items, draft_items, mirror_items,
-    only_matching, order, pin_items, pull_items, queue_items, release_items, runner_items,
-    shift_items, todo_items, web_routes, worker_items,
+    PullFacts, Severity, board_items, budget_items, divergence_items, draft_items,
+    drop_shadowed_pull_rows, mirror_items, only_matching, order, pin_items, pull_items,
+    queue_items, release_items, runner_items, shift_items, todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -548,9 +548,10 @@ fn pull_requests_waiting_on_a_person() {
             },
         ),
         // The same once it can merge: merging is the step, the red check a footnote.
+        // Ready for less than half an hour, so it is still its own row.
         pull(
             8,
-            45,
+            15,
             PullPosture {
                 can_merge: true,
                 checks_green: true,
@@ -871,6 +872,140 @@ fn a_pull_request_the_merge_queue_is_holding_is_not_ready_to_merge() {
     assert_eq!(
         kinds(&pull_items(&blocked, &[queued(7, 15)], now())),
         ["pr_changes_requested"]
+    );
+}
+
+/// Several pull requests ready to merge for half an hour is the reviewer
+/// having stopped merging, which one critical row says and twenty-six
+/// ordinary action rows hide.
+#[test]
+fn pull_requests_nobody_merged_for_half_an_hour_are_one_stalled_merger() {
+    let ready = |number: u64, minutes_old: i64| {
+        pull(
+            number,
+            minutes_old,
+            PullPosture {
+                can_merge: true,
+                checks_green: true,
+                approvals: 1,
+                required_approvals: 1,
+                ..PullPosture::default()
+            },
+        )
+    };
+
+    let items = pull_items(&[ready(7, 45), ready(8, 45), ready(9, 32)], &[], now());
+    assert_eq!(kinds(&items), ["merger_stalled"]);
+    assert_eq!(items[0].severity, Severity::Critical);
+    assert_eq!(items[0].id, "merger-stalled");
+    assert!(
+        items[0].title.contains("3 pull requests"),
+        "{}",
+        items[0].title
+    );
+    assert!(
+        items[0].title.contains("up to 45 minutes"),
+        "{}",
+        items[0].title
+    );
+    // The count, the oldest age, every folded pull request and the one
+    // command that says what the reviewer last did.
+    let reason = &items[0].reason;
+    assert!(reason.contains("3 pull requests have passed"), "{reason}");
+    assert!(reason.contains("ready for 45 minutes"), "{reason}");
+    assert!(
+        reason.contains("Waiting: jeryu/jeryu-web#7, jeryu/jeryu-web#8, jeryu/jeryu-web#9."),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("journalctl --user -u pr-redteam | grep \"waiting to merge\""),
+        "{reason}"
+    );
+    assert_eq!(items[0].href, "/repos");
+    assert_eq!(api(&items[0]), None);
+
+    // One ready pull request is one owner's decision, whatever its age.
+    let one = pull_items(&[ready(7, 45)], &[], now());
+    assert_eq!(kinds(&one), ["pr_ready_to_merge"]);
+    assert_eq!(one[0].severity, Severity::Action);
+
+    // Ready for ten minutes: the window the merger is still inside.
+    let fresh = pull_items(&[ready(7, 10), ready(8, 10)], &[], now());
+    assert_eq!(kinds(&fresh), ["pr_ready_to_merge", "pr_ready_to_merge"]);
+
+    // A long-ready pair folds; one ready for ten minutes keeps its own row.
+    let mixed = pull_items(&[ready(7, 45), ready(8, 45), ready(9, 10)], &[], now());
+    assert_eq!(kinds(&mixed), ["pr_ready_to_merge", "merger_stalled"]);
+    assert_eq!(mixed[0].pr, Some(9));
+}
+
+/// A pull request the reviewer gave up on carries the changes it requested:
+/// `reviewer_stuck` says both, so the posture's row is dropped (live:
+/// veox/jain-domain#5 showed up as two rows).
+#[test]
+fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
+    let repo = "jeryu/jeryu-web".to_string();
+    let open: BTreeSet<(String, u64)> = [(repo.clone(), 35)].into();
+    let mut items = pull_items(
+        &[PullFacts {
+            number: 35,
+            ..pull(
+                35,
+                45,
+                PullPosture {
+                    changes_requested: 1,
+                    ..PullPosture::default()
+                },
+            )
+        }],
+        &[],
+        now(),
+    );
+    items.extend(runner_items(
+        &[
+            runner("xbabe0/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
+            // A live gate slot, so the inbox has nothing else to say.
+            runner("xbabe2/slot0", &["pr-gate"], 30, None),
+        ],
+        &open,
+        false,
+        now(),
+        &hosts(),
+    ));
+    assert_eq!(kinds(&items), ["pr_changes_requested", "reviewer_stuck"]);
+
+    drop_shadowed_pull_rows(&mut items);
+    assert_eq!(kinds(&items), ["reviewer_stuck"]);
+    assert_eq!(items[0].pr, Some(35));
+
+    // Changes requested on another pull request stands on its own.
+    let mut elsewhere = pull_items(
+        &[pull(
+            36,
+            45,
+            PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+        )],
+        &[],
+        now(),
+    );
+    elsewhere.extend(runner_items(
+        &[
+            runner("xbabe0/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
+            // A live gate slot, so the inbox has nothing else to say.
+            runner("xbabe2/slot0", &["pr-gate"], 30, None),
+        ],
+        &open,
+        false,
+        now(),
+        &hosts(),
+    ));
+    drop_shadowed_pull_rows(&mut elsewhere);
+    assert_eq!(
+        kinds(&elsewhere),
+        ["pr_changes_requested", "reviewer_stuck"]
     );
 }
 
@@ -2385,6 +2520,7 @@ async fn finishing_a_todo_removes_its_item() {
 const KIND_ROUTES: &[(&str, &str)] = &[
     ("deploy_failed", "/releases"),
     ("gate_runner_down", "/runners"),
+    ("merger_stalled", "/repos"),
     ("mirror_diverged", "/repos/:provider/:owner/*"),
     ("mirror_failing", "/repos"),
     // The pin's own item points at Releases; once a bump pull request is open,
@@ -2586,6 +2722,27 @@ fn one_of_every_kind() -> Vec<Item> {
                 },
                 11,
             ),
+            // A second one ready as long: the two fold into `merger_stalled`.
+            posture(
+                PullPosture {
+                    checks_green: true,
+                    can_merge: true,
+                    ..PullPosture::default()
+                },
+                16,
+            ),
+            // Ready for a quarter of an hour: its own `pr_ready_to_merge` row.
+            PullFacts {
+                updated_at: now() - Duration::minutes(15),
+                ..posture(
+                    PullPosture {
+                        checks_green: true,
+                        can_merge: true,
+                        ..PullPosture::default()
+                    },
+                    17,
+                )
+            },
             // The same, while the queue builds it: the queue is the next step.
             posture(
                 PullPosture {
