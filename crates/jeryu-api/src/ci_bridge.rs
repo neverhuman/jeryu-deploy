@@ -587,7 +587,10 @@ fn is_workflow_toolchain_bootstrap(command: &str) -> bool {
     saw_rustup
 }
 
-fn ci_mock_enabled() -> bool {
+/// Whether this forge is running with CI simulated rather than executed. A
+/// conclusion recorded under it is not the outcome of a real run, so no merge
+/// or approval decision may count it as required evidence.
+pub(crate) fn ci_mock_enabled() -> bool {
     mock_flag_set(std::env::var("JERYU_CI_MOCK").ok().as_deref())
 }
 

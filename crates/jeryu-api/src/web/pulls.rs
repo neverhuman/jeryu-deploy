@@ -777,8 +777,12 @@ fn jankurai_gate_refusal(pr: &PullRequest, verdict: &posture::JankuraiGateVerdic
     )
 }
 
+/// An approval is only independent when the reviewer is a different principal
+/// from the author. The comparison is on normalized ids (see
+/// [`crate::web::principals`]), so a differently-cased or aliased login does
+/// not buy an author their own approval.
 fn self_approval_forbidden(pr: &PullRequest, reviewer: &str) -> Option<AxumResponse> {
-    if pr.author != reviewer {
+    if !crate::web::principals::same_principal(&pr.author, reviewer) {
         return None;
     }
     Some(repair_error(
@@ -863,7 +867,19 @@ pub(super) fn detail_for_pr_with_audit_enforcement(
     pr: &PullRequest,
     audit_enforce_merge: bool,
 ) -> PullRequestDetail {
-    let required_contexts = required_contexts_with_enforcement(state, pr, audit_enforce_merge);
+    let required_contexts =
+        required_contexts_with_enforcement(state, pr, audit_enforce_merge, false);
+    detail_for_pr_with_required_contexts(state, pr, &required_contexts, None)
+}
+
+/// The PR detail as it reads on a forge running with CI simulated: the gate
+/// has no real evidence to count, whatever conclusions were recorded.
+#[cfg(test)]
+pub(super) fn detail_for_pr_with_simulated_ci(
+    state: &WebState,
+    pr: &PullRequest,
+) -> PullRequestDetail {
+    let required_contexts = required_contexts_with_enforcement(state, pr, false, true);
     detail_for_pr_with_required_contexts(state, pr, &required_contexts, None)
 }
 

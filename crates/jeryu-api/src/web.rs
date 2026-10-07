@@ -24,6 +24,7 @@ pub(crate) use merge_queue::{gate_verdict, is_queue_owned_ref, rebase_onto};
 mod mcp_backend;
 mod permissions;
 mod pipeline;
+mod principals;
 mod pulls;
 mod regate;
 mod release_board;

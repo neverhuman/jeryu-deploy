@@ -27,7 +27,9 @@ use jeryu_readmodel::contracts::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::jankurai::audits::{RunnerAuditSubmission, authorize_runner_submission};
+use super::jankurai::audits::{
+    RunnerAuditSubmission, author_produced_submission, authorize_runner_submission,
+};
 use super::markdown::render_markdown;
 use super::paging::{PageInfo, PageParams};
 use super::{WebState, api_error};
@@ -550,6 +552,17 @@ fn runner_audit_ingest(
     repo: &Repository,
     submission: &RunnerAuditSubmission,
 ) -> AxumResponse {
+    // Independence before anything else: required evidence for a change may
+    // not be produced by the change's author, whatever identities they hold.
+    if let Some(rejected) = author_produced_submission(
+        state.github.core(),
+        account,
+        &repo.owner,
+        &repo.name,
+        &submission.commit_sha,
+    ) {
+        return api_error(rejected.status, "permission_denied", &rejected.reason);
+    }
     let ticket = match authorize_runner_submission(account, &repo.owner, &repo.name, submission) {
         Ok(ticket) => ticket,
         Err(rejected) => {

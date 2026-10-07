@@ -174,6 +174,38 @@ pub(super) fn passport_blockers(
     blockers
 }
 
+/// A required context whose evidence cannot be counted, and why. Refusing
+/// reads as failing rather than missing on purpose: something was recorded for
+/// this context, and the gate is rejecting it, not waiting for it.
+fn unusable_evidence(name: String, reason: &str) -> RequiredContextPosture {
+    RequiredContextPosture {
+        details: Some(format!(
+            "required context `{name}` has no usable evidence: {reason}"
+        )),
+        name,
+        state: RequiredContextState::Failing,
+    }
+}
+
+/// Why a commit status cannot stand as required evidence for `author`'s
+/// change: nobody is named as its producer, or its producer is the author.
+/// The forge refuses to record a status with an empty creator, so the first
+/// case is a floor rather than a live path: a datum nobody can be held to is
+/// not evidence, whatever recorded it.
+/// Producers are compared as normalized principals, so a differently-cased or
+/// aliased login does not let an author self-certify a required context.
+fn status_producer_refusal(status: &CommitStatus, author: &str) -> Option<String> {
+    let Some(producer) = crate::web::principals::principal(&status.creator) else {
+        return Some("it names no producer, so it cannot be attributed to anyone".to_string());
+    };
+    crate::web::principals::same_principal(&status.creator, author).then(|| {
+        format!(
+            "it was produced by `{producer}`, the author of the change it is \
+             supposed to vouch for"
+        )
+    })
+}
+
 fn blocker(code: &str, message: &str, details: Option<&str>) -> MergePassportBlocker {
     MergePassportBlocker {
         code: code.to_string(),
@@ -183,13 +215,23 @@ fn blocker(code: &str, message: &str, details: Option<&str>) -> MergePassportBlo
 }
 
 pub(super) fn required_contexts(state: &WebState, pr: &PullRequest) -> Vec<RequiredContextPosture> {
-    required_contexts_with_enforcement(state, pr, audit_gate_enforced_for(&pr.owner, &pr.repo))
+    required_contexts_with_enforcement(
+        state,
+        pr,
+        audit_gate_enforced_for(&pr.owner, &pr.repo),
+        crate::ci_bridge::ci_mock_enabled(),
+    )
 }
 
+/// As [`required_contexts`], with the two site conditions passed in rather than
+/// read from the environment: whether the audit gate binds here, and whether
+/// this forge is running with CI simulated. Explicit so both are exercised
+/// without mutating shared process env.
 pub(super) fn required_contexts_with_enforcement(
     state: &WebState,
     pr: &PullRequest,
     audit_enforce_merge: bool,
+    simulated_ci: bool,
 ) -> Vec<RequiredContextPosture> {
     let core = state.github.core();
     let mut names = BTreeSet::new();
@@ -254,14 +296,31 @@ pub(super) fn required_contexts_with_enforcement(
         }
     };
 
+    // Evidence a decision relies on has to be real and independent of the
+    // author. Everything the gate would otherwise count is checked against
+    // those two rules first, and a context whose only evidence breaks one of
+    // them is refused rather than quietly counted. A commit status names its
+    // producer, so it is checked here; a check-run carries no producer, and
+    // the independence of the one check-run the forge completes itself
+    // (`jankurai/proof`) is enforced where a runner submits its report.
     names
         .into_iter()
         .map(|name| {
+            if simulated_ci {
+                return unusable_evidence(
+                    name,
+                    "this forge is running with CI simulated, so no recorded conclusion for \
+                     it is the outcome of a real run",
+                );
+            }
             let status = statuses
                 .iter()
                 .filter(|status| status.context == name)
                 .max_by_key(|status| status.updated_at);
             if let Some(status) = status {
+                if let Some(reason) = status_producer_refusal(status, &pr.author) {
+                    return unusable_evidence(name, &reason);
+                }
                 let state = match status.state {
                     CommitStatusState::Success => RequiredContextState::Passing,
                     CommitStatusState::Pending => RequiredContextState::Pending,
