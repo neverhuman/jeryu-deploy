@@ -360,11 +360,6 @@ pub(super) fn authorize_scope(state: &WebState, account: &AccountSummary, scope:
     if account.role == UserRole::Admin {
         return known_scope(scope);
     }
-    // Runner changes are what `GET /api/v1/control-plane/runners` shows any
-    // signed-in account.
-    if scope == super::control_plane::live::RUNNERS_SCOPE {
-        return true;
-    }
     if let Some(rest) = scope.strip_prefix("repo.") {
         let mut parts = rest.splitn(2, '.');
         if let (Some(owner), Some(repo)) = (parts.next(), parts.next()) {

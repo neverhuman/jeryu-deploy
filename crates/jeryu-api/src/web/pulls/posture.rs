@@ -502,8 +502,8 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
             running: None,
         });
     }
-    if let Some(gate) = running_gate(state, pr) {
-        let index = gate_check_index(&checks, &pr.repo);
+    if let Some((reporter, gate)) = running_gate(state, pr) {
+        let index = gate_check_index(&checks, &statuses, &reporter);
         if let Some(check) = index.and_then(|index| checks.get_mut(index)) {
             check.running = Some(gate);
         }
@@ -549,47 +549,57 @@ fn status_span(
     }
 }
 
-/// The online gate slot gating this PR's head right now, if any.
-fn running_gate(state: &WebState, pr: &PullRequest) -> Option<RunningGate> {
+/// The online gate slot gating this PR's head right now, if any, with the
+/// login it reports as (the identity that posts its required status). The
+/// answer names no runner: this route is open to anonymous readers of public
+/// repositories, and a slot's host is not theirs to learn.
+fn running_gate(state: &WebState, pr: &PullRequest) -> Option<(String, RunningGate)> {
     let repo = format!("{}/{}", pr.owner, pr.repo);
     let now = Utc::now();
     let records = state.gate_runners.snapshot();
-    let (runner_id, task) = records.iter().find_map(|record| {
+    let (reporter, task) = records.iter().find_map(|record| {
         let beat = &record.heartbeat;
         let task = beat.current.as_ref()?;
         (holds_gate_slot(beat)
             && is_online(record, now)
             && task.repo == repo
             && task.sha == pr.head.sha)
-            .then(|| (beat.runner_id.clone(), task.clone()))
+            .then(|| (record.reporter.clone(), task.clone()))
     })?;
     let estimate = crate::web::pipeline::estimate::for_pass(state, "gate", &repo, &task.recipe);
-    Some(RunningGate {
-        runner_id,
-        started_at: task.started_at.to_rfc3339(),
-        typical_seconds: estimate.map(|e| e.typical_seconds),
-        slow_seconds: estimate.map(|e| e.slow_seconds),
-        samples: estimate.map_or(0, |e| e.samples),
-        recipe: task.recipe,
-    })
+    Some((
+        reporter,
+        RunningGate {
+            started_at: task.started_at.to_rfc3339(),
+            typical_seconds: estimate.map(|e| e.typical_seconds),
+            slow_seconds: estimate.map(|e| e.slow_seconds),
+            samples: estimate.map_or(0, |e| e.samples),
+            recipe: task.recipe,
+        },
+    ))
 }
 
-/// The pending required status the gate runner posts: `<repo>/required` when
-/// present, otherwise the only pending required status there is. A gate that
+/// The pending required status the running gate posted: one whose newest row
+/// is `pending` and was written by the login the runner reports as. A status
+/// some other reporter posted is never credited to the gate, and a gate that
 /// re-verifies a green head posts no `pending`, so it has no row to ride on.
-fn gate_check_index(checks: &[PullRequestCheck], repo: &str) -> Option<usize> {
-    let candidates: Vec<usize> = checks
+fn gate_check_index(
+    checks: &[PullRequestCheck],
+    statuses: &[CommitStatus],
+    reporter: &str,
+) -> Option<usize> {
+    let posted: Vec<String> = statuses
         .iter()
-        .enumerate()
-        .filter(|(_, check)| check.kind == "status" && check.required && check.status == "pending")
-        .map(|(index, _)| index)
+        .filter(|status| status.state == CommitStatusState::Pending && status.creator == reporter)
+        .map(|status| status.id.to_string())
         .collect();
-    let named = format!("{repo}/required");
-    candidates
-        .iter()
-        .copied()
-        .find(|&index| checks[index].name == named)
-        .or_else(|| (candidates.len() == 1).then(|| candidates[0]))
+    let mut matches = checks.iter().enumerate().filter(|(_, check)| {
+        check.kind == "status" && check.required && posted.contains(&check.id)
+    });
+    match (matches.next(), matches.next()) {
+        (Some((index, _)), None) => Some(index),
+        _ => None,
+    }
 }
 
 /// The contexts the base branch waits for: its protection rule's required

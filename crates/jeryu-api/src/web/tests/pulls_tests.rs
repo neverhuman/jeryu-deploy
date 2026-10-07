@@ -2022,7 +2022,10 @@ async fn a_running_gate_check_says_when_it_started_and_what_to_expect() {
     assert_eq!(gate["status"], "pending", "{checks}");
     assert_eq!(gate["started_at"], pending.created_at.to_rfc3339());
     assert!(gate["completed_at"].is_null());
-    assert_eq!(gate["running"]["runner_id"], "build-1/slot1");
+    assert!(
+        gate["running"].get("runner_id").is_none(),
+        "anonymous readers of a public repository learn no runner name: {gate}"
+    );
     assert_eq!(gate["running"]["started_at"], "2026-10-06T12:00:00+00:00");
     assert_eq!(
         gate["running"]["typical_seconds"], 480,
@@ -2032,9 +2035,52 @@ async fn a_running_gate_check_says_when_it_started_and_what_to_expect() {
     assert_eq!(gate["running"]["samples"], 4);
     assert!(checks["server_time"].is_string());
 
+    // A pending required status another reporter posted is never credited to
+    // the gate, even with a gate slot running the same head.
+    core.set_branch_protection(
+        "alice",
+        "widgets",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["widgets/required".to_string(), "mirror/ci".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_commit_status(
+        "alice",
+        "widgets",
+        "deadbeef",
+        "mirror-bot",
+        CreateCommitStatusRequest {
+            state: CommitStatusState::Pending,
+            context: "mirror/ci".to_string(),
+            description: None,
+            target_url: None,
+        },
+    )
+    .unwrap();
+    let checks = read().await;
+    let row = |name: &str| {
+        checks["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == name)
+            .cloned()
+            .unwrap()
+    };
+    assert!(row("mirror/ci").get("running").is_none(), "{checks}");
+    assert!(row("widgets/required")["running"].is_object(), "{checks}");
+
     let done = status(CommitStatusState::Success);
     let checks = read().await;
-    let gate = &checks["checks"][0];
+    let gate = checks["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "widgets/required")
+        .unwrap();
     assert_eq!(gate["status"], "success");
     assert_eq!(gate["started_at"], pending.created_at.to_rfc3339());
     assert_eq!(gate["completed_at"], done.updated_at.to_rfc3339());

@@ -1,20 +1,24 @@
 //! Live pushes for runner heartbeats.
 //!
-//! A heartbeat that starts or finishes a pass is pushed as one `runner.changed`
-//! frame on the [`RUNNERS_SCOPE`] scope, and, for gate slots and the reviewer,
-//! on the `repo.<owner>.<name>` scope of every repository the pass touches. A
-//! page treats the frame as a nudge to refetch; it never carries more than the
-//! heartbeat said, and a beat that changes nothing pushes nothing.
+//! A gate slot's or the reviewer's heartbeat that starts or finishes a pass is
+//! pushed as `runner.changed` frames. The admin-only [`RUNNERS_SCOPE`] gets
+//! the whole beat, the same facts `GET /api/v1/control-plane/runners` shows
+//! admins. Each repository the beat touches gets one frame on its
+//! `repo.<owner>.<name>` scope that names only that repository, so a reader
+//! who may see one repository learns nothing about another, and no runner
+//! names. A page treats a frame like a nudge to refetch; a beat that changes
+//! nothing pushes nothing. Background timers, deployers and the audit runner
+//! push nothing: their beats are not passes.
 
 use chrono::Utc;
 use jeryu_readmodel::contracts::WebEvent;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::{GateRunnerHeartbeat, runner_kind, work_label};
 use crate::web::WebState;
 
-/// Every runner change, for `/runners`. Readable by any signed-in account,
-/// like `GET /api/v1/control-plane/runners`.
+/// Every gate and review change, for `/runners`. Admin-only, like
+/// `GET /api/v1/control-plane/runners`.
 pub(crate) const RUNNERS_SCOPE: &str = "runners";
 
 /// Push `current` if it started or finished a pass since `previous`.
@@ -23,13 +27,16 @@ pub(crate) fn runner_changed(
     previous: Option<&GateRunnerHeartbeat>,
     current: &GateRunnerHeartbeat,
 ) {
+    let kind = runner_kind(current);
+    if !matches!(kind, "gate" | "reviewer") {
+        return;
+    }
     let changed = previous.is_none_or(|previous| {
         previous.current != current.current || previous.last != current.last
     });
     if !changed {
         return;
     }
-    let kind = runner_kind(current);
     let task = current.current.as_ref();
     let summary = match (task, current.last.as_ref()) {
         (Some(task), _) => format!(
@@ -64,35 +71,42 @@ pub(crate) fn runner_changed(
             "seconds": last.seconds,
         })),
     });
-    let frame = |scope: &str| {
-        let (scope, summary, payload) = (scope.to_string(), summary.clone(), payload.clone());
-        let entity = current.runner_id.clone();
-        move |seq| WebEvent {
-            seq,
-            timestamp: Utc::now().to_rfc3339(),
-            scope,
-            kind: "runner.changed".to_string(),
-            entity,
+    publish(state, RUNNERS_SCOPE, &current.runner_id, summary, payload);
+    for repo in touched_repos(previous, current) {
+        let Some((owner, name)) = repo.split_once('/') else {
+            continue;
+        };
+        let (summary, payload) = repo_frame(kind, previous, current, repo);
+        publish(
+            state,
+            &format!("repo.{owner}.{name}"),
+            repo,
             summary,
             payload,
-        }
-    };
-    state.ws.publish(RUNNERS_SCOPE, frame(RUNNERS_SCOPE));
-    if !matches!(kind, "gate" | "reviewer") {
-        return;
-    }
-    for scope in repo_scopes(previous, current) {
-        state.ws.publish(&scope, frame(&scope));
+        );
     }
 }
 
-/// `repo.<owner>.<name>` for each repository whose page shows this change: the
-/// one being worked on now, the one just finished, and the one the previous
-/// beat was working on (its bar has to go away).
-fn repo_scopes(
-    previous: Option<&GateRunnerHeartbeat>,
-    current: &GateRunnerHeartbeat,
-) -> Vec<String> {
+fn publish(state: &WebState, scope: &str, entity: &str, summary: String, payload: Value) {
+    let (scope_name, entity) = (scope.to_string(), entity.to_string());
+    state.ws.publish(scope, move |seq| WebEvent {
+        seq,
+        timestamp: Utc::now().to_rfc3339(),
+        scope: scope_name,
+        kind: "runner.changed".to_string(),
+        entity,
+        summary,
+        payload,
+    });
+}
+
+/// Each repository whose page shows this change: the one being worked on now,
+/// the one just finished, and the one the previous beat was working on (its
+/// bar has to go away).
+fn touched_repos<'a>(
+    previous: Option<&'a GateRunnerHeartbeat>,
+    current: &'a GateRunnerHeartbeat,
+) -> Vec<&'a str> {
     let mut repos: Vec<&str> = Vec::new();
     repos.extend(current.current.as_ref().map(|task| task.repo.as_str()));
     repos.extend(current.last.as_ref().map(|last| last.repo.as_str()));
@@ -104,10 +118,44 @@ fn repo_scopes(
     repos.sort_unstable();
     repos.dedup();
     repos
-        .into_iter()
-        .filter_map(|repo| repo.split_once('/'))
-        .map(|(owner, name)| format!("repo.{owner}.{name}"))
-        .collect()
+}
+
+/// What `repo`'s own page may learn from this beat: whether a gate or review
+/// started, finished or stopped on it, and its own pull request and sha.
+/// Nothing about any other repository, and no runner name.
+fn repo_frame(
+    kind: &str,
+    previous: Option<&GateRunnerHeartbeat>,
+    current: &GateRunnerHeartbeat,
+    repo: &str,
+) -> (String, Value) {
+    let noun = if kind == "reviewer" { "review" } else { "gate" };
+    if let Some(task) = current.current.as_ref().filter(|task| task.repo == repo) {
+        let label = work_label(repo, task.pr, &task.sha);
+        return (
+            format!("{noun} started on {label}"),
+            json!({ "repo": repo, "pass": noun, "phase": "started", "pr": task.pr, "sha": task.sha }),
+        );
+    }
+    let newly_finished = current
+        .last
+        .as_ref()
+        .filter(|last| last.repo == repo)
+        .filter(|last| previous.and_then(|p| p.last.as_ref()) != Some(*last));
+    if let Some(last) = newly_finished {
+        let label = work_label(repo, last.pr, &last.sha);
+        return (
+            format!("{noun} finished on {label}: {}", last.conclusion),
+            json!({
+                "repo": repo, "pass": noun, "phase": "finished", "pr": last.pr,
+                "sha": last.sha, "conclusion": last.conclusion,
+            }),
+        );
+    }
+    (
+        format!("{noun} on {repo} is no longer running"),
+        json!({ "repo": repo, "pass": noun, "phase": "stopped" }),
+    )
 }
 
 #[cfg(test)]
@@ -152,14 +200,71 @@ mod tests {
         let previous = beat(Some("acme/api"), None);
         let current = beat(None, Some("globex/web"));
         assert_eq!(
-            repo_scopes(Some(&previous), &current),
-            vec!["repo.acme.api", "repo.globex.web"]
+            touched_repos(Some(&previous), &current),
+            vec!["acme/api", "globex/web"]
         );
     }
 
     #[test]
     fn one_repository_is_one_scope() {
         let current = beat(Some("acme/api"), Some("acme/api"));
-        assert_eq!(repo_scopes(None, &current), vec!["repo.acme.api"]);
+        assert_eq!(touched_repos(None, &current), vec!["acme/api"]);
+    }
+
+    #[test]
+    fn a_repository_frame_names_only_its_own_repository() {
+        let previous = beat(Some("acme/api"), None);
+        let current = beat(Some("initech/app"), Some("globex/web"));
+        for repo in touched_repos(Some(&previous), &current) {
+            let (summary, payload) = repo_frame("gate", Some(&previous), &current, repo);
+            let text = format!("{summary} {payload}");
+            for other in ["acme/api", "globex/web", "initech/app"] {
+                assert_eq!(
+                    text.contains(other),
+                    other == repo,
+                    "the {repo} frame and {other}: {text}"
+                );
+            }
+            assert!(!text.contains("build-1"), "no runner name: {text}");
+        }
+        let (_, left) = repo_frame("gate", Some(&previous), &current, "acme/api");
+        assert_eq!(left["phase"], "stopped");
+        let (_, done) = repo_frame("gate", Some(&previous), &current, "globex/web");
+        assert_eq!(done["phase"], "finished");
+        assert_eq!(done["conclusion"], "success");
+        let (_, started) = repo_frame("gate", Some(&previous), &current, "initech/app");
+        assert_eq!(started["phase"], "started");
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use jeryu_core::{ForgeCore, UserRole};
+
+    use super::RUNNERS_SCOPE;
+    use crate::web::WebState;
+
+    /// The runners scope carries every repository's passes, so it is exactly
+    /// as closed as `GET /api/v1/control-plane/runners`: admins only.
+    #[test]
+    fn runners_scope_is_admin_only() {
+        let core = ForgeCore::new();
+        let admin = core
+            .create_account("alice", "alice-password", UserRole::Admin)
+            .unwrap();
+        let user = core
+            .create_account("bob", "bob-password", UserRole::User)
+            .unwrap();
+        let state = WebState::new(core);
+        assert!(crate::web::ws::authorize_scope(
+            &state,
+            &admin,
+            RUNNERS_SCOPE
+        ));
+        assert!(!crate::web::ws::authorize_scope(
+            &state,
+            &user,
+            RUNNERS_SCOPE
+        ));
     }
 }

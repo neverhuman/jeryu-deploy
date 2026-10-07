@@ -312,7 +312,8 @@ impl EventStore {
     /// first: at most `limit` values, counting only the events whose outcome is
     /// one of `outcomes` and whose `detail.recipe` is `recipe`. A pass that
     /// failed early says little about how long a whole one takes, so callers
-    /// name the outcomes that mean "ran to the end".
+    /// name the outcomes that mean "ran to the end". Every filter runs in
+    /// SQLite, so other recipes on the same repository never crowd the window.
     pub(crate) fn finished_seconds(
         &self,
         kind: &str,
@@ -321,42 +322,28 @@ impl EventStore {
         outcomes: &[&str],
         limit: usize,
     ) -> Result<Vec<u64>, String> {
-        // Other recipes on the same repository share the rows, so read a few
-        // pages' worth and keep the matching ones.
-        let scan = i64::try_from(limit.saturating_mul(5)).unwrap_or(MAX_LIMIT);
+        let outcomes = serde_json::to_string(outcomes).map_err(|err| err.to_string())?;
+        let limit = i64::try_from(limit).unwrap_or(MAX_LIMIT);
         let inner = self.inner.lock().expect("pipeline event mutex poisoned");
         let mut stmt = inner
             .conn
             .prepare_cached(
-                "SELECT outcome, seconds, detail_json FROM pipeline_events
+                "SELECT seconds FROM pipeline_events
                   WHERE kind = ?1 AND repo = ?2 AND seconds IS NOT NULL
-                  ORDER BY seq DESC LIMIT ?3",
+                    AND json_extract(detail_json, '$.recipe') = ?3
+                    AND outcome IN (SELECT value FROM json_each(?4))
+                  ORDER BY seq DESC LIMIT ?5",
             )
             .map_err(|err| err.to_string())?;
         let rows = stmt
-            .query_map(params![kind, repo, scan], |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
+            .query_map(params![kind, repo, recipe, outcomes, limit], |row| {
+                row.get::<_, i64>(0)
             })
             .map_err(|err| err.to_string())?;
         let mut seconds = Vec::new();
         for row in rows {
-            let (outcome, secs, detail) = row.map_err(|err| err.to_string())?;
-            let finished = outcome.as_deref().is_some_and(|o| outcomes.contains(&o));
-            let same_recipe = detail
-                .as_deref()
-                .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-                .is_some_and(|detail| detail["recipe"].as_str() == Some(recipe));
-            if finished && same_recipe {
-                if let Ok(secs) = u64::try_from(secs) {
-                    seconds.push(secs);
-                }
-                if seconds.len() == limit {
-                    break;
-                }
+            if let Ok(secs) = u64::try_from(row.map_err(|err| err.to_string())?) {
+                seconds.push(secs);
             }
         }
         Ok(seconds)

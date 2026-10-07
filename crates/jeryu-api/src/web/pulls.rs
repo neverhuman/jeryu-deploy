@@ -132,16 +132,15 @@ struct PullRequestCheck {
     started_at: Option<String>,
     /// When the newest run concluded; `None` while it is still pending.
     completed_at: Option<String>,
-    /// The gate runner working on this check right now, if one reports it.
+    /// The gate pass working on this check right now, if a runner reports one.
     #[serde(skip_serializing_if = "Option::is_none")]
     running: Option<RunningGate>,
 }
 
-/// A gate runner's pass on the PR head, as its heartbeat reports it, with how
-/// long passes of that recipe on this repository usually take.
+/// A gate runner's pass on the PR head, from its heartbeat, with how long
+/// passes of that recipe on this repository usually take. It names no runner.
 #[derive(Debug, Clone, Serialize)]
 struct RunningGate {
-    runner_id: String,
     recipe: String,
     started_at: String,
     /// The median of the recent passes, in seconds; absent with fewer than
