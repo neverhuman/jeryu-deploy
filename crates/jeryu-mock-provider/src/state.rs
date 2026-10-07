@@ -46,6 +46,8 @@ pub enum Refusal {
     AuthorizationPending,
     ExpiredToken,
     InvalidRequest,
+    /// A presented refresh token that is not the stored one.
+    InvalidGrant,
     ProviderNotConnected,
     ConnectionGenerationStale,
     RefreshPersistFailed,
@@ -91,6 +93,7 @@ pub struct DeviceGrant {
 pub struct TokenGrant {
     pub connection_id: String,
     pub connection_generation: u64,
+    pub secret_version: u64,
     pub access_token: String,
     pub refresh_token: String,
     pub expires_in: u64,
@@ -127,6 +130,8 @@ enum ConnectionState {
 struct Connection {
     state: ConnectionState,
     generation: u64,
+    /// Refresh rotations within the generation; never moves the generation.
+    secret_version: u64,
     refresh_token: Option<String>,
     refresh_expires: Instant,
     /// When the last refresh minted access; sessions may lease until then.
@@ -231,6 +236,7 @@ impl MockState {
         let connection = Connection {
             state: ConnectionState::Connected,
             generation: 1,
+            secret_version: 0,
             refresh_token: Some(refresh_token.clone()),
             refresh_expires: now + self.config.refresh_ttl,
             access_expires: now + self.config.access_ttl,
@@ -239,6 +245,7 @@ impl MockState {
         self.persist(&connection_id, &refresh_token)
             .map_err(|()| Refusal::RefreshPersistFailed)?;
         inner.event(EventKind::RefreshPersisted);
+        inner.event(EventKind::GenerationBumped);
         inner.counters.connections_issued += 1;
         inner
             .connections
@@ -247,14 +254,16 @@ impl MockState {
         Ok(TokenGrant {
             connection_id,
             connection_generation: 1,
+            secret_version: 0,
             access_token,
             refresh_token,
             expires_in: self.config.access_ttl.as_secs(),
         })
     }
 
-    /// Refresh grant. Serialized per connection; the rotated refresh token and
-    /// the new generation are durable before any access token exists.
+    /// Refresh grant. Serialized per connection; the rotated refresh token is
+    /// durable before any access token exists. The generation does not move:
+    /// sessions bound to it keep working across a refresh.
     pub fn refresh(&self, connection_id: &str, presented: &str) -> Result<TokenGrant, Refusal> {
         let connection = self.connection(connection_id)?;
         let mut connection = connection.lock();
@@ -262,7 +271,7 @@ impl MockState {
             return Err(Refusal::ProviderNotConnected);
         }
         if connection.refresh_token.as_deref() != Some(presented) {
-            return Err(Refusal::ConnectionGenerationStale);
+            return Err(Refusal::InvalidGrant);
         }
         if connection.refresh_expires <= Instant::now() {
             return Err(Refusal::ExpiredToken);
@@ -277,19 +286,19 @@ impl MockState {
             return Err(Refusal::RefreshPersistFailed);
         }
         connection.refresh_token = Some(rotated.clone());
-        connection.generation += 1;
+        connection.secret_version += 1;
         connection.refresh_expires = Instant::now() + self.config.refresh_ttl;
         connection.access_expires = Instant::now() + self.config.access_ttl;
-        let generation = connection.generation;
+        let (generation, secret_version) = (connection.generation, connection.secret_version);
         let mut inner = self.inner.lock();
         inner.event(EventKind::RefreshPersisted);
-        inner.event(EventKind::GenerationBumped);
         inner.counters.refreshes_persisted += 1;
         let access_token = inner.mint_access(connection_id, generation, self.config.access_ttl);
         inner.counters.refresh_before_lease_ok += 1;
         Ok(TokenGrant {
             connection_id: connection_id.to_string(),
             connection_generation: generation,
+            secret_version,
             access_token,
             refresh_token: rotated,
             expires_in: self.config.access_ttl.as_secs(),
@@ -305,11 +314,15 @@ impl MockState {
     ) -> Result<SessionLease, Refusal> {
         let connection = self.connection(connection_id)?;
         let mut connection = connection.lock();
+        // Count every stale use; a disconnected connection still answers
+        // provider_not_connected first (connection-v1 §4 precedence).
+        if connection.generation != generation {
+            self.inner.lock().counters.stale_generation_refusals += 1;
+        }
         if connection.state == ConnectionState::Disconnected {
             return Err(Refusal::ProviderNotConnected);
         }
         if connection.generation != generation {
-            self.inner.lock().counters.stale_generation_refusals += 1;
             return Err(Refusal::ConnectionGenerationStale);
         }
         let left = connection
@@ -328,6 +341,39 @@ impl MockState {
             session_id: format!("mocksess-{}", uuid::Uuid::new_v4().simple()),
             access_token,
             expires_in: left.as_secs(),
+        })
+    }
+
+    /// Replace the credential (a fresh login onto the same connection): a new
+    /// refresh token, a new generation, and every earlier session fenced.
+    pub fn replace(&self, connection_id: &str) -> Result<TokenGrant, Refusal> {
+        let connection = self.connection(connection_id)?;
+        let mut connection = connection.lock();
+        if connection.state == ConnectionState::Disconnected {
+            return Err(Refusal::ProviderNotConnected);
+        }
+        let refresh_token = token("mock-refresh");
+        if self.persist(connection_id, &refresh_token).is_err() {
+            return Err(Refusal::RefreshPersistFailed);
+        }
+        connection.refresh_token = Some(refresh_token.clone());
+        connection.generation += 1;
+        connection.secret_version = 0;
+        connection.sessions = 0;
+        connection.refresh_expires = Instant::now() + self.config.refresh_ttl;
+        connection.access_expires = Instant::now() + self.config.access_ttl;
+        let generation = connection.generation;
+        let mut inner = self.inner.lock();
+        inner.event(EventKind::RefreshPersisted);
+        inner.event(EventKind::GenerationBumped);
+        let access_token = inner.mint_access(connection_id, generation, self.config.access_ttl);
+        Ok(TokenGrant {
+            connection_id: connection_id.to_string(),
+            connection_generation: generation,
+            secret_version: 0,
+            access_token,
+            refresh_token,
+            expires_in: self.config.access_ttl.as_secs(),
         })
     }
 

@@ -72,6 +72,7 @@ pub fn router(state: Arc<MockState>) -> Router {
         .route("/oauth/token", post(token))
         .route("/sessions", post(session))
         .route("/connections/:id/disconnect", post(disconnect))
+        .route("/connections/:id/replace", post(replace))
         .route("/v1/messages", post(chat))
         .route("/v1/chat/completions", post(chat))
         .route("/v1/responses", post(chat))
@@ -163,6 +164,7 @@ async fn token(
             "expires_in": grant.expires_in,
             "connection_id": grant.connection_id,
             "connection_generation": grant.connection_generation,
+            "secret_version": grant.secret_version,
         }))
         .into_response(),
         Err(refusal) => refused(refusal),
@@ -178,6 +180,20 @@ async fn session(
             "session_id": lease.session_id,
             "access_token": lease.access_token,
             "expires_in": lease.expires_in,
+        }))
+        .into_response(),
+        Err(refusal) => refused(refusal),
+    }
+}
+
+/// Mock-only: replace the credential on an existing connection.
+async fn replace(State(state): State<Arc<MockState>>, Path(id): Path<String>) -> Response {
+    match state.replace(&id) {
+        Ok(grant) => Json(json!({
+            "access_token": grant.access_token,
+            "refresh_token": grant.refresh_token,
+            "connection_generation": grant.connection_generation,
+            "secret_version": grant.secret_version,
         }))
         .into_response(),
         Err(refusal) => refused(refusal),
@@ -219,7 +235,8 @@ fn refused(refusal: Refusal) -> Response {
         Refusal::ProviderUnknown
         | Refusal::AuthorizationPending
         | Refusal::ExpiredToken
-        | Refusal::InvalidRequest => StatusCode::BAD_REQUEST,
+        | Refusal::InvalidRequest
+        | Refusal::InvalidGrant => StatusCode::BAD_REQUEST,
         Refusal::ProviderNotConnected
         | Refusal::ConnectionGenerationStale
         | Refusal::AccessExpired => StatusCode::CONFLICT,
