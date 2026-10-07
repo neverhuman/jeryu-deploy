@@ -431,6 +431,31 @@ async fn create_auto_run_id_skips_persisted_session_branch_after_restart() {
     assert_eq!(created["branch"], "agents/agent-7/sessions/ar-000002");
 }
 
+/// The intent store cannot be written, so New Session is refused: no run id is
+/// answered and no session run is registered. A caller is never told a session
+/// was created when nothing recorded it.
+#[tokio::test]
+async fn create_is_refused_when_the_session_cannot_be_recorded() {
+    let storage = tempfile::tempdir().expect("git storage");
+    let core = ForgeCore::new();
+    seed_repo(&core, storage.path(), "alice", "jeryu");
+    let (state, _fake) = fake_state(core, storage.path());
+
+    state.agent_runs.intents().break_for_test();
+
+    let refused = create_session(&state, "alice/jeryu", json!({ "agent_id": "agent-7" })).await;
+
+    assert_eq!(refused["code"], "session_not_recorded");
+    assert!(
+        refused["run_id"].is_null(),
+        "a refused session handed out a run id: {refused:?}"
+    );
+    assert!(
+        state.agent_runs.rows_for_repo("alice/jeryu").is_empty(),
+        "a refused session left a live run behind"
+    );
+}
+
 /// A second New Session reuses ANOTHER pre-warmed cell: across two back-to-back
 /// claims the pool depth stays pinned at target, and the only lifecycle starts
 /// are the two refills — neither claim paid a cold start.

@@ -77,6 +77,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `agent_run_invalid_control` | 422 | the control message is not valid for an agent run |
 | `agent_run_invalid_request` | 422 | the agent run request body failed validation |
 | `agent_run_not_finished` | 409 | the agent run has not finished yet |
+| `agent_run_not_recorded` | 503 | the agent run could not be recorded, so it was not started |
 | `agent_run_path_denied` | 403 | the agent run path is outside the allowed slice |
 | `agent_run_repo_source_use_sessions` | 422 | repository agent runs start through the repo sessions route |
 | `agent_run_workcell_state_denied` | 409 | the workcell state does not allow this agent run step |
@@ -165,6 +166,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `service_unavailable` | 503 | the service is temporarily unavailable |
 | `session_already_published` | 409 | the session was already published |
 | `session_invalid_request` | 422 | the session request body failed validation |
+| `session_not_recorded` | 503 | the agent session could not be recorded, so it was not launched |
 | `session_publish_source_unavailable` | 424 | the session workspace to publish is unavailable |
 | `session_ref_conflict` | 409 | the session branch update conflicts |
 | `session_ref_failed` | 500 | the session branch could not be updated |

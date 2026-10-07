@@ -140,7 +140,9 @@ pub(crate) struct WebState {
     ws: WsHub,
     /// In-memory workcell controller for claim/repair/export/release flows.
     pub(crate) workcells: Arc<Mutex<WorkcellManager>>,
-    /// Live high-level agent-run registry and control channels.
+    /// Live high-level agent-run registry and control channels, over the
+    /// durable run intents in `<data_dir>/shift.sqlite` (`agent_run_intents`)
+    /// that every acknowledged run id comes from.
     pub(crate) agent_runs: agent_runs::AgentRunStore,
     /// Live PR gate runners, fed by `POST /api/v1/runners/heartbeat`.
     pub(crate) gate_runners: control_plane::GateRunnerStore,
@@ -315,7 +317,8 @@ impl WebState {
             spa_dir,
             ws: WsHub::new(),
             workcells: Arc::new(Mutex::new(WorkcellManager::new())),
-            agent_runs: agent_runs::AgentRunStore::new(),
+            agent_runs: agent_runs::AgentRunStore::open(&shift_path)
+                .expect("open agent run intent store"),
             gate_runners: control_plane::GateRunnerStore::from_env(),
             release_boards: release_board::ReleaseBoardStore::from_env(),
             merge_queue: Arc::default(),

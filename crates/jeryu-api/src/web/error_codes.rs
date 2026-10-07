@@ -64,6 +64,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the agent run has not finished yet",
     ),
     entry(
+        "agent_run_not_recorded",
+        503,
+        "the agent run could not be recorded, so it was not started",
+    ),
+    entry(
         "agent_run_path_denied",
         403,
         "the agent run path is outside the allowed slice",
@@ -438,6 +443,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "session_invalid_request",
         422,
         "the session request body failed validation",
+    ),
+    entry(
+        "session_not_recorded",
+        503,
+        "the agent session could not be recorded, so it was not launched",
     ),
     entry(
         "session_publish_source_unavailable",

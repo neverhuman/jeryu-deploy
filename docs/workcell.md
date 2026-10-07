@@ -130,6 +130,17 @@ claimed repo-root slice return typed repair bodies. The launch remains
 fail-closed on cgroup-v2 resource caps, so a host without the required delegated
 subtree refuses the run instead of falling back to an unbounded process.
 
+A start is acknowledged only after the run is recorded. The run's intent — what
+it was asked to run, for which repository, in which workspace — and the run id
+itself come from `<data_dir>/shift.sqlite` (`agent_run_intents` and
+`agent_run_id_sequence`, `db/migrations/0008_agent_run_intents.sql`) before the
+answer is written, so an id a caller holds exists on disk and is never handed
+out to a second run, not even after a restart. A store that cannot be written
+refuses the start with `agent_run_not_recorded` (503), and
+`POST /api/v1/repos/{id}/sessions` with `session_not_recorded` (503), rather
+than answering with a run that nothing recorded. The run's live state (its TTY
+ring, its control channel) stays in the process that drives it.
+
 Workcell-sourced runs inject failure context when the held snapshot has it:
 `JERYU_WORKCELL_ID`, `JERYU_RUNNER_EPOCH`, `JERYU_CI_RUN_ID`,
 `JERYU_FAILED_RUN_ID`, `JERYU_FAILED_RECEIPT_ID`, and

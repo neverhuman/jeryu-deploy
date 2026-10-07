@@ -21,7 +21,21 @@ fn start_request(
 ) -> AgentRunResponseResult<AgentRunStartResponse> {
     let resolved = resolve_agent_run_source(&state, &request)?;
 
-    let agent_run_id = state.agent_runs.allocate_id();
+    // Record what this run is for, and take its id, before anything is
+    // acknowledged: the caller is answered with an id that is already on disk,
+    // and a store that cannot be written refuses the start instead of handing
+    // out an id only this process knows about.
+    let agent_run_id = state
+        .agent_runs
+        .record_intent(&AgentRunIntent {
+            run_id: None,
+            kind: "agent_run",
+            repo: None,
+            program: resolved.program.to_string_lossy().to_string(),
+            args: request.args.clone(),
+            workspace: Some(resolved.repo_root.to_string_lossy().to_string()),
+        })
+        .map_err(|reason| agent_run_not_recorded("start an agent run", &reason))?;
     let (control_tx, control_rx) = mpsc::channel::<AgentControl>();
     let control = if request.io_mode == AgentRunIoMode::Pty {
         Some(control_tx)
@@ -471,10 +485,6 @@ pub(in crate::web) async fn shell(
         ).into_response();
     };
 
-    // Allocate a new run for the companion shell.
-    let shell_id = state.agent_runs.allocate_id();
-    let (control_tx, control_rx) = std::sync::mpsc::channel();
-
     let repo_name = {
         let inner = state.agent_runs.inner.lock().expect("runs mutex");
         inner
@@ -483,6 +493,23 @@ pub(in crate::web) async fn shell(
             .and_then(|r| r.repo.clone())
             .unwrap_or_default()
     };
+
+    // Record the companion shell's intent and take its id from the durable
+    // sequence before the shell is acknowledged.
+    let shell_id = match state.agent_runs.record_intent(&AgentRunIntent {
+        run_id: None,
+        kind: "shell",
+        repo: Some(repo_name.clone()).filter(|repo| !repo.is_empty()),
+        program: "/bin/bash".to_string(),
+        args: vec!["--login".to_string()],
+        workspace: Some(workspace.to_string_lossy().to_string()),
+    }) {
+        Ok(shell_id) => shell_id,
+        Err(reason) => {
+            return *agent_run_not_recorded("start a companion shell for an agent run", &reason);
+        }
+    };
+    let (control_tx, control_rx) = std::sync::mpsc::channel();
 
     state.agent_runs.insert_session(SessionRecordInit {
         run_id: shell_id.clone(),

@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -125,10 +124,12 @@ impl TtyRing {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct AgentRunStore {
     inner: Arc<Mutex<AgentRunStoreInner>>,
-    next_id: Arc<AtomicU64>,
+    /// Where a run's intent and its id are recorded before the forge
+    /// acknowledges the run. The id never comes from this process.
+    intents: AgentRunIntentStore,
 }
 
 #[derive(Default)]
@@ -535,8 +536,11 @@ pub(super) fn agent_run_state_label(state: AgentRunState) -> &'static str {
 
 // Keep route orchestration, state mutation, and PR export independently
 // reviewable while preserving this module as the single public surface.
+#[cfg(test)]
+mod durability_tests;
 mod export;
 mod handlers;
+mod intents;
 mod store;
 #[cfg(test)]
 mod tail_tests;
@@ -548,6 +552,8 @@ pub(super) use handlers::{
     mcp_export_pr, mcp_start, mcp_status, mcp_tail, shell, spawn_session_agent, start, status,
     tty_stream,
 };
+pub(super) use intents::AgentRunIntent;
+use intents::AgentRunIntentStore;
 #[cfg(test)]
 pub(super) use store::{test_raw_tty_event, tty_broadcast_capacity};
 
@@ -860,6 +866,24 @@ fn agent_run_path_denied(reason: &'static str) -> Box<AxumResponse> {
             "reclaim the workcell with a lease that covers the requested path",
         ],
         "rerun cargo test -p jeryu-api --features web --jobs 40 agent_runs",
+    )
+}
+
+/// The run's intent could not be recorded, so nothing was started and no id is
+/// handed out. A caller that retries after the store is writable again gets a
+/// run; a caller that does not is left with no run rather than with an id that
+/// names nothing.
+fn agent_run_not_recorded(purpose: &'static str, reason: &str) -> Box<AxumResponse> {
+    boxed_agent_run_typed_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "agent_run_not_recorded",
+        purpose,
+        reason,
+        &[
+            "check the shift store is writable and has free space",
+            "retry the start once the store accepts writes again",
+        ],
+        AGENT_RUN_RERUN,
     )
 }
 

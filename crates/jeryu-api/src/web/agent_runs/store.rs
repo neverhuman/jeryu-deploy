@@ -1,5 +1,7 @@
 //! Bounded run, event, control, and live-TTY state.
 
+use chrono::Utc;
+
 use super::*;
 
 impl AgentRunRecord {
@@ -14,13 +16,44 @@ impl AgentRunRecord {
 }
 
 impl AgentRunStore {
-    pub(in crate::web) fn new() -> Self {
-        Self::default()
+    /// Open the live registry over the durable intent store in `path` (the
+    /// shift store), which is where run ids come from.
+    pub(in crate::web) fn open(path: &Path) -> Result<Self, String> {
+        Ok(Self {
+            inner: Arc::default(),
+            intents: AgentRunIntentStore::open(path)?,
+        })
     }
 
-    pub(in crate::web) fn allocate_id(&self) -> String {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        format!("ar-{id:06}")
+    /// A registry whose intents live in an in-memory store, for a test that
+    /// drives the ring and the tail and wants no file.
+    #[cfg(test)]
+    pub(in crate::web) fn new() -> Self {
+        Self {
+            inner: Arc::default(),
+            intents: AgentRunIntentStore::in_memory(),
+        }
+    }
+
+    /// Record what a run was asked to do and take its id from the durable
+    /// sequence, before anything is acknowledged. An error means the intent is
+    /// not on disk, so the caller must refuse the start rather than answer with
+    /// an id only this process knows.
+    pub(in crate::web) fn record_intent(&self, intent: &AgentRunIntent) -> Result<String, String> {
+        self.intents.record(intent, Utc::now().timestamp_millis())
+    }
+
+    /// Take the next run id from the durable sequence, for a caller that has
+    /// to look at the id (the session route checks its branch) before it can
+    /// record what the run is for.
+    pub(in crate::web) fn allocate_id(&self) -> Result<String, String> {
+        self.intents.allocate_id()
+    }
+
+    /// The durable intents behind the acknowledged runs.
+    #[cfg(test)]
+    pub(in crate::web) fn intents(&self) -> &AgentRunIntentStore {
+        &self.intents
     }
 
     pub(super) fn insert(&self, record: AgentRunRecord) {

@@ -36,6 +36,7 @@ use jeryu_runnerd::{SessionClaim, StartupSync, WorkcellClaimRequest};
 use serde::{Deserialize, Serialize};
 
 use super::WebState;
+use super::agent_runs::AgentRunIntent;
 use super::agent_runs::{
     AgentRunState, PtyBackend, RepoAgentRunRow, SessionAgentSpawn, SessionPublishInfo,
     SessionRecordInit, origin_base_url, spawn_session_agent,
@@ -244,19 +245,6 @@ fn create_session(
         .ok_or_else(|| Box::new(session_repo_uninitialized(&full_name, &default_branch)))?;
 
     let agent_id = request.agent_id.clone();
-    let run_id = match request.run_id.clone() {
-        Some(run_id) => run_id,
-        None => loop {
-            let candidate = state.agent_runs.allocate_id();
-            let candidate_ref = format!("refs/heads/agents/{agent_id}/sessions/{candidate}");
-            if !repo_refs
-                .iter()
-                .any(|git_ref| git_ref.name == candidate_ref)
-            {
-                break candidate;
-            }
-        },
-    };
     let runner = request
         .runner
         .clone()
@@ -267,6 +255,41 @@ fn create_session(
     // id with no override is a typed error, not a silent default.
     let agent_program = resolve_agent_program(&agent_id, request.command.as_deref());
     let command = agent_program.to_string_lossy().to_string();
+
+    // Settle the run id, then record what this session is for, before anything
+    // is acknowledged. Ids come from a durable sequence rather than a counter
+    // this process owns, so a restart never hands out an id twice; the branch
+    // scan stays because a repository can carry session branches an earlier
+    // instance (with its own store) cut. A store that cannot be written refuses
+    // the session instead of answering with an id nothing recorded.
+    let run_id = match request.run_id.clone() {
+        Some(run_id) => run_id,
+        None => loop {
+            let candidate = state
+                .agent_runs
+                .allocate_id()
+                .map_err(|reason| Box::new(session_not_recorded(&reason)))?;
+            let candidate_ref = format!("refs/heads/agents/{agent_id}/sessions/{candidate}");
+            if !repo_refs
+                .iter()
+                .any(|git_ref| git_ref.name == candidate_ref)
+            {
+                break candidate;
+            }
+        },
+    };
+    state
+        .agent_runs
+        .record_intent(&AgentRunIntent {
+            run_id: Some(run_id.clone()),
+            kind: "session",
+            repo: Some(full_name.clone()),
+            program: command.clone(),
+            args: request.args.clone(),
+            // Named after the run id, so only known once the id exists.
+            workspace: None,
+        })
+        .map_err(|reason| Box::new(session_not_recorded(&reason)))?;
 
     let workspace = std::env::temp_dir().join(format!("jeryu-session-{run_id}-{}", now_ms()));
     let origin_url = resolved.path.to_string_lossy().to_string();
@@ -443,7 +466,17 @@ fn create_session(
     // Hermetic route tests disable this long-lived process and cover the
     // production-enabled path explicitly, including termination.
     let shell_id = if state.session_runtime.spawn_companion_shell {
-        let shell_id = state.agent_runs.allocate_id();
+        let shell_id = state
+            .agent_runs
+            .record_intent(&AgentRunIntent {
+                run_id: None,
+                kind: "shell",
+                repo: Some(full_name.clone()),
+                program: "/bin/bash".to_string(),
+                args: vec!["--norc".to_string(), "--noprofile".to_string()],
+                workspace: Some(workspace.to_string_lossy().to_string()),
+            })
+            .map_err(|reason| Box::new(session_not_recorded(&reason)))?;
         let (shell_ctl_tx, shell_ctl_rx) = std::sync::mpsc::channel();
         state.agent_runs.insert_session(SessionRecordInit {
             run_id: shell_id.clone(),
@@ -831,6 +864,22 @@ fn session_repo_uninitialized(full_name: &str, default_branch: &str) -> AxumResp
             "confirm the bare repo was materialized for this repository",
         ],
         "seed the default branch, then rerun cargo test -p jeryu-api --features web --jobs 4 sessions",
+    )
+}
+
+/// The session's intent could not be recorded, so no session was launched and
+/// no run id handed out.
+fn session_not_recorded(reason: &str) -> AxumResponse {
+    session_typed_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "session_not_recorded",
+        "create an agent session for a repository",
+        reason,
+        &[
+            "check the shift store is writable and has free space",
+            "retry the session once the store accepts writes again",
+        ],
+        "make the store writable, then rerun cargo test -p jeryu-api --features web --jobs 4 sessions",
     )
 }
 

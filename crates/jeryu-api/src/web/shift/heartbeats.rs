@@ -50,6 +50,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0007_idempotency_keys",
         include_str!("../../../../../db/migrations/0007_idempotency_keys.sql"),
     ),
+    (
+        8,
+        "0008_agent_run_intents",
+        include_str!("../../../../../db/migrations/0008_agent_run_intents.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
