@@ -2,6 +2,8 @@
 
 mod agent_runs;
 pub(crate) mod auth;
+pub(crate) mod bot_token;
+pub(crate) mod bots;
 mod ci_evidence;
 mod codegraph;
 mod conditional;
@@ -52,6 +54,8 @@ mod work;
 mod workcells;
 mod workcells_support;
 mod ws;
+
+pub use bots::render_bot_setup_script;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
@@ -641,6 +645,8 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
         config.secure_cookies,
     );
     bootstrap_public_accounts(&state, &config.data_dir)?;
+    bot_token::install_signing_key(&config.data_dir)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
     // The forge core protects every repository's default branch on startup;
     // todoq pushes claims straight to a queue repo's `queue` branch, so the
     // family queues are opted back out right after that backfill.
@@ -684,7 +690,10 @@ fn router(state: Arc<WebState>) -> AxumRouter {
     AxumRouter::new().fallback_service(tower::ServiceExt::map_request(
         routed,
         move |request: Request| {
-            repo_address::rewrite(&state, request_rules::trim_trailing_slash(request))
+            repo_address::rewrite(
+                &state,
+                request_rules::trim_trailing_slash(bot_token::rewrite_bot_mcp(request)),
+            )
         },
     ))
 }
@@ -814,6 +823,13 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/work/:key", get(work::detail).patch(work::patch)),
         ("/api/v1/work/:key/comments", post(work::comment)),
         ("/api/v1/work/:key/links", post(work::link)),
+        ("/api/v1/bots", get(bots::list).post(bots::enroll)),
+        ("/api/v1/bots/:id/keys", post(bots::rotate)),
+        ("/api/v1/bots/:id/suspend", post(bots::suspend)),
+        ("/api/v1/bots/:id/revoke", post(bots::revoke)),
+        ("/api/v1/bot/token", post(bots::exchange_token)),
+        ("/api/v1/bot/token/refresh", post(bots::refresh_token)),
+        ("/api/v1/bot/whoami", get(bots::whoami)),
         ("/api/v1/auth/signup", post(auth::signup)),
         ("/api/v1/auth/login", post(auth::login)),
         ("/api/v1/auth/logout", post(auth::logout)),
@@ -910,6 +926,8 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         // Repo-scoped agent sessions: launch a hardened session, and the live
         // per-repo agent-runs list the web Active-Agents page consumes.
         ("/api/v1/repos/:id/sessions", post(sessions::create)),
+        ("/api/v1/repos/:id/bots", get(bots::roster)),
+        ("/api/v1/repos/:id/bot-activity", get(bots::activity)),
         ("/api/v1/repos/:id/agent-runs", get(sessions::list)),
         (
             "/api/v1/repos/:id/work",

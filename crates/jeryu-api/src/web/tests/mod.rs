@@ -28,6 +28,8 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 mod auth_tests;
+mod bot_setup_script;
+mod bots_tests;
 mod control_plane_tests;
 mod discovery_tests;
 mod evidence_independence_tests;

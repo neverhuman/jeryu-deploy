@@ -18,12 +18,12 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Extension, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use jeryu_agent_stream::{CONTROL_TOPIC, TTY_TOPIC};
 use jeryu_agentbridge::driver::CommandSpec;
-use jeryu_core::CreatePullRequestRequest;
+use jeryu_core::{BotOperationGate, CreatePullRequestRequest};
 use jeryu_gitd::error::GitdError;
 use jeryu_gitd::refs::RefService;
 use jeryu_runner_core::job::{JobRequest, NetworkPolicy, SecretPolicy, TokenPolicy};
@@ -34,15 +34,17 @@ use jeryu_runner_core::trust::{RunnerClass, TrustTier};
 use jeryu_runner_oci::{OciSpec, plan_agent_session};
 use jeryu_runnerd::{SessionClaim, StartupSync, WorkcellClaimRequest};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
-use super::WebState;
 use super::agent_runs::AgentRunIntent;
 use super::agent_runs::{
     AgentRunState, PtyBackend, RepoAgentRunRow, SessionAgentSpawn, SessionPublishInfo,
     SessionRecordInit, origin_base_url, spawn_session_agent,
 };
+use super::bot_token::BotPrincipal;
 use super::repositories::find_repo;
 use super::workcells_support::{TypedError, forge_error, typed_error};
+use super::{WebState, api_error, bots};
 
 const SESSION_DOCS: &str = "docs/workcell.md#agent-run-control-surface";
 
@@ -136,6 +138,9 @@ struct CreateSessionRequest {
     /// Runner / node identity executing the session.
     #[serde(default)]
     runner: Option<String>,
+    /// Optional timeout override in milliseconds. Human callers leave it unset.
+    #[serde(default)]
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,8 +199,13 @@ struct PublishResponse {
 pub(super) async fn create(
     State(state): State<Arc<WebState>>,
     AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    bot: Option<Extension<BotPrincipal>>,
     body: Bytes,
 ) -> AxumResponse {
+    if let Some(Extension(bot)) = bot {
+        return create_for_bot(state, &id, &headers, &bot, &body);
+    }
     let request: CreateSessionRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
         Err(err) => {
@@ -214,6 +224,160 @@ pub(super) async fn create(
     };
     match create_session(&state, &id, request) {
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
+        Err(response) => *response,
+    }
+}
+
+fn create_for_bot(
+    state: Arc<WebState>,
+    repo_id: &str,
+    headers: &HeaderMap,
+    bot: &BotPrincipal,
+    body: &[u8],
+) -> AxumResponse {
+    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_input",
+            "body must be a JSON object",
+        );
+    };
+    for key in [
+        "command", "args", "env", "runner", "agent_id", "base_url", "seed", "url",
+    ] {
+        if fields.get(key).is_some_and(|value| !value.is_null()) {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_input",
+                "a bot session cannot set the command, args, env, or base url",
+            );
+        }
+    }
+    let agent_id = match fields.get("provider").and_then(Value::as_str) {
+        Some("claude") => "claude",
+        Some("openai") => "codex",
+        Some("local") => "local",
+        _ => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_input",
+                "provider must be claude, openai, or local",
+            );
+        }
+    };
+    let Some(task) = fields
+        .get("task")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|task| !task.is_empty() && task.len() <= 8_000)
+    else {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_input",
+            "task text is required",
+        );
+    };
+    if let Some(model) = fields.get("model").and_then(Value::as_str) {
+        let safe = model.len() <= 80
+            && model
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-'));
+        if !safe {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_input",
+                "model must be a short token",
+            );
+        }
+    }
+    let ttl = fields.get("ttl").and_then(Value::as_u64);
+    if let Some(ttl) = ttl
+        && !(60..=SESSION_AGENT_TIMEOUT_SECS).contains(&ttl)
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_input",
+            "ttl must be between 60 and 7200 seconds",
+        );
+    }
+    let Some(request_key) = headers
+        .get(super::idempotency::IDEMPOTENCY_KEY)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    else {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_input",
+            "Idempotency-Key is required",
+        );
+    };
+    let digest = bots::body_digest(body);
+    let gate =
+        match state
+            .core
+            .reserve_bot_operation(bot.bot_id, "session.create", request_key, &digest)
+        {
+            Ok(gate) => gate,
+            Err(error) => return bots::map_bot_error(error),
+        };
+    match gate {
+        BotOperationGate::Replay { result_json } => {
+            let value = serde_json::from_str::<Value>(&result_json).unwrap_or_else(|_| json!({}));
+            return (StatusCode::OK, Json(value)).into_response();
+        }
+        BotOperationGate::InProgress => return bots::needs_reconciliation(),
+        BotOperationGate::Start => {}
+    }
+    let mut args = vec![task.to_string()];
+    if let Some(model) = fields.get("model").and_then(Value::as_str) {
+        args.push(model.to_string());
+    }
+    let request = CreateSessionRequest {
+        agent_id: agent_id.to_string(),
+        run_id: None,
+        command: None,
+        args,
+        runner: None,
+        timeout_ms: ttl.map(|seconds| seconds.saturating_mul(1_000)),
+    };
+    match create_session(&state, repo_id, request) {
+        Ok(response) => {
+            let narrow = json!({
+                "session_id": response.session_id,
+                "run_id": response.run_id,
+                "status": "accepted",
+            });
+            let _ = state.core.finish_bot_operation(
+                bot.bot_id,
+                "session.create",
+                request_key,
+                &narrow.to_string(),
+            );
+            let actor = state
+                .core
+                .authenticate_bot_access(bot.bot_id, bot.generation, &bot.key_id)
+                .map(|summary| summary.owner)
+                .unwrap_or_else(|_| format!("bot:{}", bot.bot_id));
+            let subject = find_repo(&state, repo_id)
+                .map(|repo| repo.full_name)
+                .unwrap_or_else(|| repo_id.to_string());
+            // The run already exists. A failed audit write must not turn the
+            // accepted session into an error response.
+            let _ = state.core.append_audit_as(
+                &actor,
+                "bot.session.start",
+                &subject,
+                "completed",
+                json!({
+                    "bot_id": bot.bot_id.to_string(),
+                    "key_id": bot.key_id,
+                    "run_id": response.run_id,
+                    "session_id": response.session_id,
+                }),
+            );
+            (StatusCode::CREATED, Json(narrow)).into_response()
+        }
         Err(response) => *response,
     }
 }
@@ -307,7 +471,12 @@ fn create_session(
         network_policy: NetworkPolicy::Deny,
         secret_policy: SecretPolicy::None,
         token_policy: TokenPolicy::None,
-        timeout_ms: 7_200_000,
+        // Never longer than the agent's own limit, and never unbounded.
+        timeout_ms: request
+            .timeout_ms
+            .map_or(SESSION_AGENT_TIMEOUT_SECS * 1_000, |ms| {
+                ms.clamp(60_000, SESSION_AGENT_TIMEOUT_SECS * 1_000)
+            }),
         fork: true,
     };
     let decision = select_runner(&job).map_err(|err| Box::new(runner_error(err)))?;

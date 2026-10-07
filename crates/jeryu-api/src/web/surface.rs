@@ -44,14 +44,17 @@ pub(super) async fn graphql(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
-    let account =
-        match github_account_from_headers(&state, peer.as_ref(), &HttpMethod::POST, &headers) {
-            Ok(account) => account,
-            Err(response) => return *response,
-        };
+    let auth = match github_account_from_headers(&state, peer.as_ref(), &HttpMethod::POST, &headers)
+    {
+        Ok(auth) => auth,
+        Err(response) => return *response,
+    };
+    if auth.bot.is_some() {
+        return github_forbidden("insufficient_scope");
+    }
     let body = std::str::from_utf8(&body).unwrap_or_default();
-    let body = bind_authenticated_actor(body, &account.login);
-    github_response(state.github.graphql_for_account(&body, &account))
+    let body = bind_authenticated_actor(body, &auth.account.login);
+    github_response(state.github.graphql_for_account(&body, &auth.account))
 }
 
 /// Accept-aware `/repos` entrypoint that serves the SPA shell to browser
@@ -178,15 +181,15 @@ async fn github_forward_request(
             uri.path(),
         );
     };
-    let account = match github_account_from_headers(&state, peer.as_ref(), &http_method, &headers) {
-        Ok(account) => account,
+    let auth = match github_account_from_headers(&state, peer.as_ref(), &http_method, &headers) {
+        Ok(auth) => auth,
         Err(response) => return *response,
     };
+    let account = auth.account.clone();
     let path_and_query = uri
         .path_and_query()
         .map_or_else(|| uri.path().to_string(), ToString::to_string);
-    if let Some(response) = authorize_github_repo_request(&state, method, &path_and_query, &account)
-    {
+    if let Some(response) = authorize_github_repo_request(&state, method, &path_and_query, &auth) {
         super::merge_attempts::record_edge(
             &state,
             method != Method::Get,
@@ -198,6 +201,9 @@ async fn github_forward_request(
         return response;
     }
     if github_repo_list_path(&path_and_query) && method == Method::Get {
+        if let Some(bot) = &auth.bot {
+            return github_response(state.github.list_repos_for_bot(&path_and_query, bot));
+        }
         return github_response(
             state
                 .github
@@ -337,10 +343,14 @@ fn github_account_from_headers(
     peer: Option<&ConnectInfo<SocketAddr>>,
     method: &HttpMethod,
     headers: &HeaderMap,
-) -> Result<AccountSummary, Box<AxumResponse>> {
+) -> Result<super::auth::HeaderAuth, Box<AxumResponse>> {
     if !state.auth_required || super::auth::local_dev_trusted(state, peer.map(|connect| connect.0))
     {
-        return Ok(super::auth::trusted_local_account(state));
+        return Ok(super::auth::HeaderAuth {
+            account: super::auth::trusted_local_account(state),
+            source: super::auth::AuthSource::LocalDev,
+            bot: None,
+        });
     }
     super::auth::authenticate_headers(state, headers)
         .map(|auth| {
@@ -348,7 +358,7 @@ fn github_account_from_headers(
             // password-change and CSRF policies itself.
             match super::auth::account_state_refusal(state, &auth, method, headers) {
                 Some(message) => Err(Box::new(github_forbidden(message))),
-                None => Ok(auth.account),
+                None => Ok(auth),
             }
         })
         .unwrap_or_else(|| {
@@ -370,8 +380,9 @@ fn authorize_github_repo_request(
     state: &super::WebState,
     method: Method,
     path_and_query: &str,
-    account: &AccountSummary,
+    auth: &super::auth::HeaderAuth,
 ) -> Option<AxumResponse> {
+    let account = &auth.account;
     let normalized = normalize_github_edge_path(path_and_query);
     let route_path = normalized
         .split_once('?')
@@ -381,6 +392,9 @@ fn authorize_github_repo_request(
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect();
+    if let Some(bot) = &auth.bot {
+        return authorize_bot_on_github(state, method, &segments, bot);
+    }
     match (method, segments.as_slice()) {
         (Method::Post, ["repos"]) if account.role != UserRole::Admin => Some(github_forbidden(
             "repository creation requires admin access",
@@ -439,6 +453,34 @@ fn authorize_github_repo_request(
             (!allowed).then(|| github_forbidden("repository access denied"))
         }
         _ => None,
+    }
+}
+
+fn authorize_bot_on_github(
+    state: &super::WebState,
+    method: Method,
+    segments: &[&str],
+    bot: &super::bot_token::BotPrincipal,
+) -> Option<AxumResponse> {
+    let denied = github_forbidden("insufficient_scope");
+    let write = method != Method::Get;
+    match (method, segments) {
+        (Method::Get, ["user"]) | (Method::Get, ["repos"]) => None,
+        (_, ["repos", owner, repo, rest @ ..]) => {
+            // `PATCH`/`DELETE /repos/{owner}/{repo}` archive, rename and delete
+            // the repository. The human admin-only rule below is never reached
+            // for a bot, so refuse every write to the repository itself here.
+            if super::bots::github_segment_blocked(rest) || (rest.is_empty() && write) {
+                return Some(denied);
+            }
+            let (task_kind, task_id) = super::bots::task_from_segments(rest);
+            let call = super::bots::bot_call(bot, owner, repo, write, task_kind, task_id);
+            match state.core.authorize_bot(&call) {
+                Ok(_) => None,
+                Err(error) => Some(github_forbidden(&error.to_string())),
+            }
+        }
+        _ => Some(denied),
     }
 }
 
@@ -703,6 +745,14 @@ mod authz_tests {
         crate::web::WebState::new(ForgeCore::new())
     }
 
+    fn human(account: AccountSummary) -> crate::web::auth::HeaderAuth {
+        crate::web::auth::HeaderAuth {
+            account,
+            source: crate::web::auth::AuthSource::Bearer,
+            bot: None,
+        }
+    }
+
     /// Archiving is admin-only on the GitHub-compatible edge, and is
     /// deliberately stricter than the repository-write rule that covers the
     /// other PATCH paths: it makes a repository read-only for everyone, so it
@@ -723,7 +773,7 @@ mod authz_tests {
                 &state,
                 Method::Patch,
                 path,
-                &account("bob", UserRole::User),
+                &human(account("bob", UserRole::User)),
             );
             assert!(
                 refused.is_some(),
@@ -734,7 +784,7 @@ mod authz_tests {
                 &state,
                 Method::Patch,
                 path,
-                &account("alice", UserRole::Admin),
+                &human(account("alice", UserRole::Admin)),
             );
             assert!(allowed.is_none(), "an admin may PATCH {path}");
         }
@@ -757,7 +807,7 @@ mod authz_tests {
                     &state,
                     method,
                     path,
-                    &account("bob", UserRole::User)
+                    &human(account("bob", UserRole::User))
                 )
                 .is_some(),
                 "a non-admin must be refused {method:?} {path}"
@@ -767,7 +817,7 @@ mod authz_tests {
                     &state,
                     method,
                     path,
-                    &account("alice", UserRole::Admin)
+                    &human(account("alice", UserRole::Admin))
                 )
                 .is_none(),
                 "an admin may {method:?} {path}"
@@ -786,7 +836,7 @@ mod authz_tests {
                 &state,
                 Method::Post,
                 "/repos",
-                &account("bob", UserRole::User)
+                &human(account("bob", UserRole::User))
             )
             .is_some(),
             "a non-admin must be refused repository creation"
@@ -796,7 +846,7 @@ mod authz_tests {
                 &state,
                 Method::Post,
                 "/repos",
-                &account("alice", UserRole::Admin)
+                &human(account("alice", UserRole::Admin))
             )
             .is_none(),
             "an admin may create a repository"

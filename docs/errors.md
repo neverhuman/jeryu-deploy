@@ -117,6 +117,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `idempotency_key_in_flight` | 409 | a request with this Idempotency-Key is still running |
 | `idempotency_key_reused` | 422 | the Idempotency-Key was already used for a different request |
 | `idempotency_store_failed` | 500 | the Idempotency-Key store could not be read |
+| `insufficient_scope` | 403 | the bot grant does not allow this request |
 | `internal_error` | 500 | the server failed while handling the request |
 | `invalid_branch` | 422 | the branch name is not valid |
 | `invalid_compare` | 422 | the compare range is not valid |
@@ -126,7 +127,9 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_path_parameter` | 422 | a path parameter has the wrong shape for this route |
 | `invalid_query` | 422 | the query string does not match this route |
 | `invalid_ref` | 422 | the git ref is not valid |
+| `invalid_request` | 422 | credentials must not be passed as query parameters |
 | `invalid_session_id` | 422 | an agent_id or run_id has a character a ref may not carry |
+| `invalid_token` | 401 | invalid bot credential |
 | `merge_blocked` | 409 | merge policy blocks this pull request |
 | `merge_failed` | 500 | the merge failed |
 | `merge_gate_blocked` | 409 | the merge gate has not passed for the current head |
@@ -134,6 +137,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `merge_sha_stale` | 409 | the expected head sha is no longer the pull request head |
 | `merge_unprocessable` | 422 | the merge request could not be processed |
 | `method_not_allowed` | 405 | the route exists but not for this HTTP method |
+| `needs_reconciliation` | 409 | a bot operation with this key is still in progress |
 | `not_a_file` | 422 | the path names a directory, not a file |
 | `not_acceptable` | 406 | the Accept header excludes the JSON this route answers |
 | `not_found` | 404 | the requested entity was not found |
@@ -158,6 +162,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `queue_merge_commits` | 409 | the queued branch contains merge commits |
 | `queue_mismatch` | 409 | the queue replay does not match the queued tree |
 | `rate_limited` | 429 | too many attempts; wait and retry |
+| `repo_not_granted` | 403 | the bot has no grant for this repository |
 | `repository_archived` | 409 | the repository is archived |
 | `repository_changed` | 409 | the repository the replayed request created no longer exists |
 | `request_failed` | 400 | the request failed |
@@ -185,6 +190,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `shift_queue_write_failed` | 500 | the shift queue could not be written |
 | `shift_todo_not_found` | 404 | the shift todo was not found |
 | `storage_failed` | 500 | the storage backend failed |
+| `task_not_granted` | 403 | the bot grant does not allow this task |
 | `tool_build_feedback_reason_required` | 422 | tool-build feedback needs a reason |
 | `tool_build_invalid_request` | 422 | the tool-build request failed validation |
 | `tool_build_store_unavailable` | 424 | the tool-build codegraph store is unavailable |

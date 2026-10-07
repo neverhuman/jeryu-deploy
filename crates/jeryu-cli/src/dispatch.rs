@@ -74,6 +74,7 @@ pub fn dispatch_with_api_url_env(
         }
         Commands::Serve { .. } => Ok(()),
         Commands::GhSetup(args) => commands::gh_setup::run(json, args, out),
+        Commands::Bot { args } => commands::bot::run(json, args, out),
         Commands::Autonomy(AutonomyCommands::Init(args)) => {
             commands::autonomy::run(json, args, out)
         }

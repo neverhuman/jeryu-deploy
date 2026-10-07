@@ -240,6 +240,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the Idempotency-Key store could not be read",
     ),
     entry(
+        "insufficient_scope",
+        403,
+        "the bot grant does not allow this request",
+    ),
+    entry(
         "internal_error",
         500,
         "the server failed while handling the request",
@@ -273,10 +278,16 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("invalid_ref", 422, "the git ref is not valid"),
     entry(
+        "invalid_request",
+        422,
+        "credentials must not be passed as query parameters",
+    ),
+    entry(
         "invalid_session_id",
         422,
         "an agent_id or run_id has a character a ref may not carry",
     ),
+    entry("invalid_token", 401, "invalid bot credential"),
     entry(
         "merge_blocked",
         409,
@@ -307,6 +318,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "method_not_allowed",
         405,
         "the route exists but not for this HTTP method",
+    ),
+    entry(
+        "needs_reconciliation",
+        409,
+        "a bot operation with this key is still in progress",
     ),
     entry("not_a_file", 422, "the path names a directory, not a file"),
     entry(
@@ -412,6 +428,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the queue replay does not match the queued tree",
     ),
     entry("rate_limited", 429, "too many attempts; wait and retry"),
+    entry(
+        "repo_not_granted",
+        403,
+        "the bot has no grant for this repository",
+    ),
     entry("repository_archived", 409, "the repository is archived"),
     entry(
         "repository_changed",
@@ -531,6 +552,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("shift_todo_not_found", 404, "the shift todo was not found"),
     entry("storage_failed", 500, "the storage backend failed"),
+    entry(
+        "task_not_granted",
+        403,
+        "the bot grant does not allow this task",
+    ),
     entry(
         "tool_build_feedback_reason_required",
         422,

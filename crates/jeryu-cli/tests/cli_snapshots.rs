@@ -79,6 +79,24 @@ fn group_subnames(group: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn bot_enrollment_key_is_not_a_command_argument() {
+    let parsed = Cli::try_parse_from([
+        "jeryu",
+        "bot",
+        "--kind",
+        "grok",
+        "--slug",
+        "atlas",
+        "--enrollment-key",
+        "jbk_test.secret",
+    ]);
+    assert!(
+        parsed.is_err(),
+        "an enrollment key on argv would show up in the process list"
+    );
+}
+
+#[test]
 fn help_tree_contains_no_forbidden_terms() {
     let mut cmd = Cli::command();
     cmd.build();

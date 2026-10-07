@@ -9,6 +9,30 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 
+/// `jeryu bot`: print the script a Grokbot or Musebot runs once.
+#[derive(Debug, Args)]
+pub struct BotSetupArgs {
+    /// `grok` or `muse`.
+    #[arg(long)]
+    pub kind: String,
+
+    /// Account slug for this Grokbot or Musebot.
+    #[arg(long)]
+    pub slug: String,
+
+    /// Forge base URL the script calls.
+    #[arg(long, default_value = "http://127.0.0.1:8787")]
+    pub forge: String,
+
+    /// File containing the enrollment key. The key is not a command argument.
+    #[arg(long, value_name = "PATH")]
+    pub enrollment_key_file: Option<std::path::PathBuf>,
+
+    /// Read the enrollment key from stdin. The key is not a command argument.
+    #[arg(long, default_value_t = false)]
+    pub enrollment_key_stdin: bool,
+}
+
 /// `jeryu gh-setup`: point the GitHub CLI at a jeryu server base URL.
 ///
 /// jeryu serves `GET /user` and `GET /api/v3/user`, so a `gh` host entry

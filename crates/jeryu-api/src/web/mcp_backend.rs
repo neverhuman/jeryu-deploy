@@ -6,10 +6,14 @@ use axum::response::Response as AxumResponse;
 use jeryu_core::{AccountSummary, UserRole};
 use serde_json::{Value, json};
 
+use super::bot_token::{BotMcpMount, BotPrincipal};
+use super::bots;
 use super::repositories::find_repo;
 use super::{WebState, agent_runs, codegraph, control_plane};
 
 tokio::task_local! {
+    static BOT_CALLER: BotPrincipal;
+    static BOT_MOUNT: BotMcpMount;
     /// The authenticated account of the `/mcp` request being served on this task.
     ///
     /// The MCP call context carries an `actor`, but that string is whatever the
@@ -29,10 +33,28 @@ tokio::task_local! {
 /// escapes it) runs with no caller in scope, and every tool the web backend
 /// dispatches itself refuses it.
 pub(super) async fn scope_caller(request: Request, next: Next) -> AxumResponse {
-    match request.extensions().get::<AccountSummary>().cloned() {
-        Some(account) => CALLER.scope(account, next.run(request)).await,
-        None => next.run(request).await,
+    let account = request.extensions().get::<AccountSummary>().cloned();
+    let bot = request.extensions().get::<BotPrincipal>().cloned();
+    let mount = request.extensions().get::<BotMcpMount>().copied();
+    let run = next.run(request);
+    match (account, bot, mount) {
+        (Some(account), Some(bot), Some(mount)) => {
+            CALLER
+                .scope(account, BOT_CALLER.scope(bot, BOT_MOUNT.scope(mount, run)))
+                .await
+        }
+        (Some(account), Some(bot), None) => CALLER.scope(account, BOT_CALLER.scope(bot, run)).await,
+        (Some(account), None, Some(mount)) => {
+            CALLER.scope(account, BOT_MOUNT.scope(mount, run)).await
+        }
+        (Some(account), None, None) => CALLER.scope(account, run).await,
+        (None, _, Some(mount)) => BOT_MOUNT.scope(mount, run).await,
+        (None, _, None) => run.await,
     }
+}
+
+fn bot_mcp_limited() -> bool {
+    BOT_CALLER.try_with(|_| ()).is_ok() || BOT_MOUNT.try_with(|_| ()).is_ok()
 }
 
 /// What a web-dispatched MCP tool asks of its caller.
@@ -147,12 +169,14 @@ impl jeryu_mcp::ToolBackend for WebMcpBackend {
                     .expect("owning MCP catalog descriptor must deserialize")
             })
             .filter(|descriptor| {
-                live_adapter_installed(
-                    descriptor
-                        .name
-                        .strip_prefix(jeryu_mcp::TOOL_PREFIX)
-                        .unwrap_or(&descriptor.name),
-                )
+                let name = descriptor
+                    .name
+                    .strip_prefix(jeryu_mcp::TOOL_PREFIX)
+                    .unwrap_or(&descriptor.name);
+                if bot_mcp_limited() && matches!(required_access(name), Some(Access::Admin)) {
+                    return false;
+                }
+                live_adapter_installed(name)
             })
             .collect()
     }
@@ -168,19 +192,41 @@ impl WebMcpBackend {
         let Ok(account) = CALLER.try_with(Clone::clone) else {
             return Some(format!("{tool} requires an authenticated caller"));
         };
+        let bot = BOT_CALLER.try_with(Clone::clone).ok();
+        let mount = BOT_MOUNT.try_with(|_| ()).is_ok();
         let admin = account.role == UserRole::Admin;
-        match access {
-            Access::Admin if !admin => Some(format!("{tool} requires the admin role")),
-            Access::RepoRead if !admin => {
-                let repo = args.get("repo").and_then(Value::as_str)?;
-                let found = find_repo(&self.state, repo)?;
-                (!self
-                    .state
-                    .core
-                    .user_can_read_repo(&account.login, &found.owner, &found.name))
-                .then(|| format!("{tool} requires read access to {repo}"))
-            }
-            _ => None,
+        if matches!(access, Access::Admin) && (bot.is_some() || mount || !admin) {
+            return Some(format!("{tool} requires the admin role"));
+        }
+        if !matches!(access, Access::RepoRead) {
+            return None;
+        }
+        let Some(repo) = args
+            .get("repo")
+            .and_then(Value::as_str)
+            .filter(|repo| !repo.is_empty())
+        else {
+            return Some(format!("{tool} requires repo"));
+        };
+        let Some(found) = find_repo(&self.state, repo) else {
+            return Some(format!("{tool} requires read access to {repo}"));
+        };
+        if let Some(bot) = bot {
+            let call = bots::bot_call(&bot, &found.owner, &found.name, false, None, None);
+            return match self.state.core.authorize_bot(&call) {
+                Ok(_) => None,
+                Err(_) => Some(format!("{tool} requires read access to {repo}")),
+            };
+        }
+        if admin
+            || self
+                .state
+                .core
+                .user_can_read_repo(&account.login, &found.owner, &found.name)
+        {
+            None
+        } else {
+            Some(format!("{tool} requires read access to {repo}"))
         }
     }
 
@@ -992,7 +1038,20 @@ mod tests {
 
     #[test]
     fn live_codegraph_tools_use_store_when_repo_is_supplied() {
-        let state = Arc::new(WebState::new(ForgeCore::new()));
+        let core = ForgeCore::new();
+        core.create_account("local", "local-password", UserRole::User)
+            .expect("create account");
+        core.create_repository(
+            "local",
+            CreateRepositoryRequest {
+                name: "repo".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .expect("create repository");
+        let state = Arc::new(WebState::new(core));
         state
             .codegraph_store
             .persist(&GraphSnapshot {

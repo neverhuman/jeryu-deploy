@@ -520,6 +520,13 @@ fn authorize_git_core(
                 .with_header("WWW-Authenticate", "Basic realm=\"jeryu\""),
         )));
     };
+    if let Some(bot) = auth.bot.clone() {
+        let call = crate::web::bots::bot_call(&bot, owner, logical_repo, write, None, None);
+        return match state.core.authorize_bot(&call) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(Box::new(git_bot_denied(owner, repo, write, &error))),
+        };
+    }
     let account = auth.account;
     let allowed = if write {
         state
@@ -544,6 +551,30 @@ fn authorize_git_core(
             .into_bytes(),
         ))))
     }
+}
+
+fn git_bot_denied(
+    owner: &str,
+    repo: &str,
+    write: bool,
+    error: &jeryu_core::ForgeError,
+) -> AxumResponse {
+    let (status, code) = match error {
+        jeryu_core::ForgeError::Forbidden(code) => {
+            (403, jeryu_core::ForgeError::machine_text(code))
+        }
+        jeryu_core::ForgeError::Validation(_) => (401, "invalid_token"),
+        _ => (403, "insufficient_scope"),
+    };
+    let verb = if write { "write" } else { "read" };
+    gitd_to_axum_response(&GitHttpResponse::bytes(
+        status,
+        "application/json; charset=utf-8",
+        format!(
+            "{{\"code\":\"{code}\",\"message\":\"principal not authorized to {verb} {owner}/{repo}\",\"documentation_url\":\"https://docs.jeryu/auth\"}}"
+        )
+        .into_bytes(),
+    ))
 }
 
 async fn stream_lfs_upload(

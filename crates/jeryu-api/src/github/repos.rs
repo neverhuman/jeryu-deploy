@@ -49,6 +49,40 @@ impl GithubRouter {
         })
     }
 
+    /// Repositories a bot may read. Forge admin is not a grant, and reach can
+    /// hide repositories the owner could otherwise open.
+    #[cfg(feature = "web")]
+    pub(crate) fn list_repos_for_bot(
+        &self,
+        path: &str,
+        bot: &crate::web::bot_token::BotPrincipal,
+    ) -> Response {
+        self.list_repos_filtered(path, |repo| {
+            let call = crate::web::bots::bot_call(bot, &repo.owner, &repo.name, false, None, None);
+            self.core.authorize_bot(&call).is_ok()
+        })
+    }
+
+    #[cfg(feature = "web")]
+    fn list_repos_filtered(&self, path: &str, allow: impl Fn(&Repository) -> bool) -> Response {
+        let path = super::normalize_github_path(path);
+        let (route_path, query) = path.split_once('?').unwrap_or((path, ""));
+        let page = match Pagination::from_query(query) {
+            Ok(page) => page,
+            Err(refused) => return refused,
+        };
+        let link_base = super::support::link_base(route_path, query);
+        let repos = self.core.list_repositories(None);
+        let body: Vec<Value> = repos
+            .iter()
+            .filter(|repo| allow(repo))
+            .map(repository_json)
+            .collect();
+        paginate(&link_base, page, &body, |slice, _total| {
+            Value::Array(slice.to_vec())
+        })
+    }
+
     pub(super) fn create_repo(&self, body: &str) -> Response {
         let req: CreateRepositoryRequest = match parse_body(body) {
             Ok(value) => value,
@@ -173,6 +207,78 @@ impl GithubRouter {
 
 fn validation(message: &str) -> Response {
     error_response(jeryu_core::ForgeError::Validation(message.to_string()))
+}
+
+/// HLT-022 negative proof: a non-owner must NEVER see another account's private
+/// repository, and a bot must NEVER inherit `UserRole::Admin`.
+#[cfg(all(test, feature = "web"))]
+mod isolation {
+    use jeryu_core::{BotKind, BotReach, CreateRepositoryRequest, RepoAccessLevel, UserRole};
+
+    use super::super::GithubRouter;
+    use crate::routes::Response;
+
+    #[test]
+    fn a_non_owner_and_an_admin_bot_never_see_an_ungranted_private_repo() {
+        let core = jeryu_core::ForgeCore::new();
+        core.create_account("ada", "ada-password-1", UserRole::Admin)
+            .unwrap();
+        core.create_account("bea", "bea-password-1", UserRole::User)
+            .unwrap();
+        core.create_repository("ada", repo("open", false)).unwrap();
+        core.create_repository("ada", repo("vault", true)).unwrap();
+        core.grant_repo_access("ada", "bea", "ada", "open", RepoAccessLevel::Read)
+            .unwrap();
+        let bea = core.get_account("bea").unwrap();
+        let ada = core.get_account("ada").unwrap();
+        let enrolled = core
+            .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+            .unwrap();
+        let bot = crate::web::bot_token::BotPrincipal {
+            bot_id: enrolled.bot.id,
+            generation: enrolled.bot.credential_generation,
+            key_id: enrolled.key_id,
+        };
+        let router = GithubRouter::with_core(core);
+
+        let bea_names = names(&router.list_repos_for_account("/repos", &bea));
+        assert!(bea_names.contains(&"ada/open".to_string()), "{bea_names:?}");
+        assert!(
+            !bea_names.iter().any(|name| name == "ada/vault"),
+            "non-owner must not see ada/vault: {bea_names:?}"
+        );
+        let ada_names = names(&router.list_repos_for_account("/repos", &ada));
+        assert!(
+            ada_names.iter().any(|name| name == "ada/vault"),
+            "admin account list still includes the private repository: {ada_names:?}"
+        );
+        let bot_names = names(&router.list_repos_for_bot("/repos", &bot));
+        assert!(bot_names.contains(&"ada/open".to_string()), "{bot_names:?}");
+        assert!(
+            !bot_names.iter().any(|name| name == "ada/vault"),
+            "admin bot must not see ada/vault: {bot_names:?}"
+        );
+    }
+
+    fn repo(name: &str, private: bool) -> CreateRepositoryRequest {
+        CreateRepositoryRequest {
+            name: name.to_string(),
+            private,
+            description: None,
+            default_branch: Some("main".to_string()),
+        }
+    }
+
+    fn names(response: &Response) -> Vec<String> {
+        assert_eq!(response.status, 200, "{}", response.body);
+        let value: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["full_name"].as_str().unwrap().to_string())
+            .collect()
+    }
 }
 
 pub(super) fn repository_json(repo: &Repository) -> Value {

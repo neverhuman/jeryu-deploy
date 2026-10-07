@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- A Grokbot or Musebot can never change the repository itself: a bot's
+  `PATCH`/`DELETE /api/v3/repos/{owner}/{repo}` and any write to
+  `/api/v1/repos/{id}` are refused, whatever the owner's grant. The human
+  admin-only archive and rename rule was never reached for bot tokens. A
+  branch task is read from the path only; `?branch=` no longer widens it.
+- Agent sessions are capped at the agent's own 2-hour limit: a bot `ttl` is
+  60 to 7200 seconds, and a human `timeout_ms` is clamped to 1 minute to 2 hours.
+- The bot proxy runs one token refresh at a time (thread lock plus a file lock
+  shared with `refresh-clients`), so a concurrent refresh no longer revokes
+  the family. It refreshes in the background every 10 minutes, so gh and git
+  keep a valid token without MCP traffic. `proxy.log` masks the local secret,
+  event streams end by closing the connection, and the running-broker check
+  uses `ps`, so it works on macOS.
+- The interim jeryu-core pin is `f18fade033ba3c9decc4aeb1b86510c1d7c19919`,
+  the current tip of `feat/bot-connect`. Replace that commit with the release
+  tag once it is on main. Do not merge this pull request until then.
+- `jeryu bot` prints a per-slug local proxy. Gh config and the merge token
+  stay under `~/.jeryu/bots/<slug>/` and the script does not write
+  `~/.config/gh` or `~/.jeryu/secrets/merge-token`. The proxy binds an
+  OS-assigned port, reuses a listener only when that slug's broker process is
+  still the one recorded, and accepts only loopback requests that present the
+  slug's local secret. The enrollment key comes from a file, stdin, or
+  `BOT_ENROLLMENT_KEY`, not from the command line. A session a bot starts is
+  written to the forge audit log as `bot.session.start`.
+
 - Agent discovery resolves. Every URL an error body advertises is now served
   under the `/api/v1` prefix the edge routes: `GET /api/v1/capabilities` is the
   capability manifest every `jeryu_steering` block and the `x-jeryu-fast-path`

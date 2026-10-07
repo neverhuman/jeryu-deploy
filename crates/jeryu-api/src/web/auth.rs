@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use super::bot_token::{self, BearerClass};
 use super::repositories::find_repo;
-use super::{WebState, api_error};
+use super::{WebState, api_error, bots};
 
 const HOST_SESSION_COOKIE: &str = "__Host-jeryu-session";
 const LOCAL_SESSION_COOKIE: &str = "jeryu-session";
@@ -153,6 +154,7 @@ pub(crate) enum AuthSource {
 pub(crate) struct HeaderAuth {
     pub(crate) account: AccountSummary,
     pub(crate) source: AuthSource,
+    pub(crate) bot: Option<bot_token::BotPrincipal>,
 }
 
 pub(super) async fn signup(
@@ -603,6 +605,13 @@ pub(super) async fn gate(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> AxumResponse {
+    if credential_in_query(request.uri()) {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "credentials must not be passed as query parameters",
+        );
+    }
     if !auth_applies(request.uri().path()) {
         return next.run(request).await;
     }
@@ -615,6 +624,7 @@ pub(super) async fn gate(
         HeaderAuth {
             account: trusted_local_account(&state),
             source: AuthSource::LocalDev,
+            bot: None,
         }
     } else {
         let ip = client_ip(peer, request.headers());
@@ -677,6 +687,9 @@ pub(super) async fn gate(
                     request.extensions_mut().insert(anonymous_account());
                     return next.run(request).await;
                 }
+                if bot_credential_presented(request.headers()) {
+                    return bot_token::invalid_credential();
+                }
                 return api_error(StatusCode::UNAUTHORIZED, "unauthorized", "login required");
             }
         }
@@ -702,42 +715,91 @@ pub(super) async fn gate(
         );
     }
 
+    if auth.bot.is_some()
+        && (!bot_path_allowed(request.method(), request.uri().path())
+            || bot_repo_admin_denied(request.method(), request.uri().path()))
+    {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "insufficient_scope",
+            "the bot grant does not allow this request",
+        );
+    }
+    if request.uri().path() == "/api/v1/bot/whoami" && auth.bot.is_none() {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "insufficient_scope",
+            "the bot grant does not allow this request",
+        );
+    }
+
     if admin_only_request(request.method(), request.uri().path()) && account.role != UserRole::Admin
     {
         return forbidden("admin role required");
     }
 
+    let mut observed_repo = None;
     if let Some(repo_id) = repo_id_from_path(request.uri().path())
         && let Some(repo) = find_repo(&state, &repo_id)
     {
-        let allowed = match *request.method() {
-            Method::GET | Method::HEAD => {
-                account.role == UserRole::Admin
-                    || !repo.private
-                    || state
-                        .core
-                        .user_can_read_repo(&account.login, &repo.owner, &repo.name)
+        observed_repo = Some(repo.full_name.clone());
+        if let Some(bot) = &auth.bot {
+            let write = !matches!(*request.method(), Method::GET | Method::HEAD);
+            let (task_kind, task_id) = bots::task_from_api_path(request.uri().path());
+            let call = bots::bot_call(bot, &repo.owner, &repo.name, write, task_kind, task_id);
+            if let Err(error) = state.core.authorize_bot(&call) {
+                return bots::map_bot_error(error);
             }
-            Method::DELETE => {
-                account.role == UserRole::Admin
-                    || state
-                        .core
-                        .user_can_admin_repo(&account.login, &repo.owner, &repo.name)
+        } else {
+            let allowed = match *request.method() {
+                Method::GET | Method::HEAD => {
+                    account.role == UserRole::Admin
+                        || !repo.private
+                        || state
+                            .core
+                            .user_can_read_repo(&account.login, &repo.owner, &repo.name)
+                }
+                Method::DELETE => {
+                    account.role == UserRole::Admin
+                        || state
+                            .core
+                            .user_can_admin_repo(&account.login, &repo.owner, &repo.name)
+                }
+                _ => {
+                    account.role == UserRole::Admin
+                        || state
+                            .core
+                            .user_can_write_repo(&account.login, &repo.owner, &repo.name)
+                }
+            };
+            if !allowed {
+                return forbidden("repository access denied");
             }
-            _ => {
-                account.role == UserRole::Admin
-                    || state
-                        .core
-                        .user_can_write_repo(&account.login, &repo.owner, &repo.name)
-            }
-        };
-        if !allowed {
-            return forbidden("repository access denied");
         }
     }
 
+    let observed_bot = auth.bot.clone();
+    let observed_method = request.method().clone();
+    let observed_path = request.uri().path().to_string();
+    if let Some(bot) = auth.bot.clone() {
+        request.extensions_mut().insert(bot);
+    }
     request.extensions_mut().insert(account);
     let mut response = next.run(request).await;
+    if let Some(bot) = observed_bot
+        && (observed_path.starts_with("/api/v1/repos/")
+            || observed_path == "/mcp"
+            || observed_path.starts_with("/mcp/"))
+    {
+        bots::record_bot_http(
+            &state,
+            &bot,
+            observed_method.as_str(),
+            &observed_path,
+            observed_repo.as_deref(),
+            response.status(),
+        );
+    }
     if let Some(budget) = read_budget {
         request_limits::stamp(&mut response, &budget);
     }
@@ -749,13 +811,31 @@ pub(crate) fn authenticate_headers(state: &WebState, headers: &HeaderMap) -> Opt
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(jeryu_gitd::auth::extract_bearer_or_basic);
-    if let Some(bearer) = bearer
-        && let Some(account) = state.core.authenticate_personal_access_token(&bearer)
-    {
-        return Some(HeaderAuth {
-            account,
-            source: AuthSource::Bearer,
-        });
+    if let Some(bearer) = bearer {
+        match bot_token::classify_bearer(&bearer) {
+            BearerClass::BotAccess => {
+                if let Some((account, bot)) =
+                    bot_token::authenticate_bearer(state, headers, &bearer)
+                {
+                    return Some(HeaderAuth {
+                        account,
+                        source: AuthSource::Bearer,
+                        bot: Some(bot),
+                    });
+                }
+                return None;
+            }
+            BearerClass::Unusable => return None,
+            BearerClass::Other => {
+                if let Some(account) = state.core.authenticate_personal_access_token(&bearer) {
+                    return Some(HeaderAuth {
+                        account,
+                        source: AuthSource::Bearer,
+                        bot: None,
+                    });
+                }
+            }
+        }
     }
     if let Some(token) = session_token_from_headers(headers)
         && let Some(account) = state.core.authenticate_session(&token)
@@ -763,6 +843,7 @@ pub(crate) fn authenticate_headers(state: &WebState, headers: &HeaderMap) -> Opt
         return Some(HeaderAuth {
             account,
             source: AuthSource::Session,
+            bot: None,
         });
     }
     None
@@ -939,6 +1020,8 @@ pub(super) fn open_path(path: &str) -> bool {
         path,
         "/api/v1/auth/signup"
             | "/api/v1/auth/login"
+            | "/api/v1/bot/token"
+            | "/api/v1/bot/token/refresh"
             | "/api/v1/errors"
             | crate::discovery::CAPABILITIES_PATH
             | crate::discovery::DOCS_PATH
@@ -1059,6 +1142,19 @@ fn admin_only_path(path: &str) -> bool {
 /// private ones included, so like the event log it is for global admins only.
 fn audit_path(path: &str) -> bool {
     path == "/api/v1/audit" || path == "/api/v1/audit/"
+}
+
+pub(super) fn bot_token_rate_limit(
+    state: &WebState,
+    peer: Option<&ConnectInfo<SocketAddr>>,
+    headers: &HeaderMap,
+    action: &str,
+) -> Option<AxumResponse> {
+    if auth_rate_limit_exceeded(state, peer, headers, action, "bot") {
+        Some(rate_limited())
+    } else {
+        None
+    }
 }
 
 fn auth_rate_limit_exceeded(
@@ -1194,6 +1290,66 @@ fn anonymous_account() -> AccountSummary {
     }
 }
 
+fn bot_credential_presented(headers: &HeaderMap) -> bool {
+    let Some(raw) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Some(token) = raw
+        .strip_prefix("Bearer ")
+        .or_else(|| raw.strip_prefix("bearer "))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    else {
+        return false;
+    };
+    matches!(
+        bot_token::classify_bearer(token),
+        bot_token::BearerClass::BotAccess | bot_token::BearerClass::Unusable
+    )
+}
+
+fn credential_in_query(uri: &axum::http::Uri) -> bool {
+    let Some(query) = uri.query() else {
+        return false;
+    };
+    query.split('&').any(|pair| {
+        let key = percent_decode(pair.split('=').next().unwrap_or(""));
+        key == "access_token" || key == "bot_key"
+    })
+}
+
+fn bot_path_allowed(method: &Method, path: &str) -> bool {
+    if path == "/api/v1/bot/whoami" {
+        return matches!(*method, Method::GET | Method::HEAD);
+    }
+    path.starts_with("/api/v1/repos/") || path == "/mcp" || path.starts_with("/mcp/")
+}
+
+/// Repository deletion trusts the gate, and `repo_delete` does not look at the
+/// caller again. Branch protection, transfer, hooks, keys, and the other
+/// GitHub admin segments are the same refusal the GitHub edge already makes.
+fn bot_repo_admin_denied(method: &Method, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/v1/repos/") else {
+        return false;
+    };
+    let segments: Vec<&str> = rest
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return false;
+    }
+    // The repository itself (delete, archive, rename, settings) is the
+    // owner's decision, never a bot's, whatever the owner's grant.
+    if unsafe_method(method) && segments.len() == 1 {
+        return true;
+    }
+    segments.len() >= 2 && bots::github_segment_blocked(&segments[1..])
+}
+
 fn repo_id_from_path(path: &str) -> Option<String> {
     let rest = path.strip_prefix("/api/v1/repos/")?;
     let id = rest.split('/').next()?;
@@ -1204,7 +1360,7 @@ fn repo_id_from_path(path: &str) -> Option<String> {
     }
 }
 
-fn percent_decode(input: &str) -> String {
+pub(super) fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

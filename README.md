@@ -146,6 +146,9 @@ smart-HTTP setting required by the currently deployed server. CI sources
 own fetch does not consume its `[env]` table). Because the hosted backend
 rejects Cargo's tag-only exact-object fetch, `.cargo/hosted-pin-refs.tsv` also
 binds every immutable tag target to an advertised hosted preservation ref; the
-refs contain no bytes beyond their existing release tags. Finally,
+refs contain no bytes beyond their existing release tags. jeryu-core is the
+exception until `feat/bot-connect` is merged and tagged: that row names commit
+`f18fade033ba3c9decc4aeb1b86510c1d7c19919` and `refs/heads/feat/bot-connect`.
+Replace it with the release tag and its preserve ref once the tag exists. Finally,
 `bash ops/ci/dependency-sources.sh` rejects an unlisted source, mutable pin,
 missing mapping/ref, or non-hosted effective destination.

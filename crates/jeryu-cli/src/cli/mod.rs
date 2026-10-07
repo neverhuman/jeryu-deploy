@@ -26,7 +26,9 @@ pub use control_plane::{
     ArtifactsCommands, RepoGraphCommands, RunnersCommands, ToolFinderCommands,
 };
 pub use forge::{ForgeCommands, IssueCommands, PrCommands, RepoCommands};
-pub use operator::{AutonomyCommands, AutonomyInitArgs, AutonomyProfile, GhSetupArgs, OnboardArgs};
+pub use operator::{
+    AutonomyCommands, AutonomyInitArgs, AutonomyProfile, BotSetupArgs, GhSetupArgs, OnboardArgs,
+};
 pub use proof::ProofCommands;
 pub use runner::{RunnerCommands, RunnerExecutorArg};
 
@@ -144,6 +146,12 @@ pub enum Commands {
     /// gh-setup: point the GitHub CLI at a jeryu server base URL.
     #[command(name = "gh-setup")]
     GhSetup(GhSetupArgs),
+
+    /// Print the setup script for one Grokbot or Musebot.
+    Bot {
+        #[command(flatten)]
+        args: BotSetupArgs,
+    },
 
     /// Autonomy: lay down the canonical autonomy policy bundle.
     #[command(subcommand)]

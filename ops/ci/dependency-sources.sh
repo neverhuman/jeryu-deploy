@@ -159,11 +159,18 @@ if [[ "$(printf '%s\n' "${lock_sources[@]}")" != "$(printf '%s\n' "${expected_lo
   exit 1
 fi
 while IFS= read -r locked_source; do
-  if [[ ! "${locked_source}" =~ ^git\+[^?]+\?tag=[A-Za-z0-9._-]+#[0-9a-f]{40}$ ]]; then
-    printf 'Cargo.lock Git source is not immutable tag plus full commit: %s\n' \
-      "${locked_source}" >&2
-    exit 1
+  if [[ "${locked_source}" =~ ^git\+[^?]+\?tag=[A-Za-z0-9._-]+#[0-9a-f]{40}$ ]]; then
+    continue
   fi
+  # Core has no release tag until feat/bot-connect merges. The lock may name
+  # that one commit twice. Replace the row with the tag once it exists.
+  if [[ "${locked_source}" =~ ^git\+http://127\.0\.0\.1:8787/git/jeryu/jeryu-core\.git\?rev=([0-9a-f]{40})#([0-9a-f]{40})$ ]] \
+      && [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+    continue
+  fi
+  printf 'Cargo.lock Git source is not immutable tag plus full commit: %s\n' \
+    "${locked_source}" >&2
+  exit 1
 done < <(awk -F '"' '/^source = "git\+/ { print $2 }' Cargo.lock)
 
 mapfile -t hosted_pins < <(awk '!/^[[:space:]]*(#|$)/ { print }' "${pin_policy}")
@@ -174,7 +181,11 @@ fi
 mapfile -t lock_pin_identities < <(
   awk -F '"' '/^source = "git\+/ {
     identity = $2
-    sub(/^.*\?tag=/, "", identity)
+    if (identity ~ /\?rev=/) {
+      sub(/^.*\?rev=/, "", identity)
+    } else {
+      sub(/^.*\?tag=/, "", identity)
+    }
     sub(/#/, "|", identity)
     print identity
   }' Cargo.lock | LC_ALL=C sort -u
@@ -190,14 +201,31 @@ fi
 
 for pin in "${hosted_pins[@]}"; do
   IFS='|' read -r repo tag commit support_ref extra <<< "${pin}"
-  if [[ -n "${extra:-}" || ! "${repo}" =~ ^jeryu-[a-z0-9-]+$ ||
+  interim_commit=0
+  if [[ "${repo}" == "jeryu-core" && "${tag}" == "${commit}" &&
+        "${tag}" =~ ^[0-9a-f]{40}$ &&
+        "${support_ref}" == "refs/heads/feat/bot-connect" && -z "${extra:-}" ]]; then
+    interim_commit=1
+  fi
+  if [[ "${interim_commit}" -eq 0 && ( -n "${extra:-}" ||
+        ! "${repo}" =~ ^jeryu-[a-z0-9-]+$ ||
         ! "${tag}" =~ ^[a-z0-9][a-z0-9._-]*$ ||
         ! "${commit}" =~ ^[0-9a-f]{40}$ ||
-        "${support_ref}" != "refs/heads/preserve/hosted-cargo/${tag}" ]]; then
+        "${support_ref}" != "refs/heads/preserve/hosted-cargo/${tag}" ) ]]; then
     printf 'malformed hosted Cargo pin policy row: %s\n' "${pin}" >&2
     exit 1
   fi
   remote="https://git.neverhuman.org/git/jeryu/${repo}.git"
+  if [[ "${interim_commit}" -eq 1 ]]; then
+    remote_refs="$(git ls-remote "${remote}" "${support_ref}")"
+    advertised_commit="$(awk -v ref="${support_ref}" '$2 == ref { print $1 }' <<< "${remote_refs}")"
+    if [[ "${advertised_commit}" != "${commit}" ]]; then
+      printf 'hosted Cargo pin mismatch: repo=%s support_ref=%s expected=%s\n' \
+        "${repo}" "${advertised_commit:-absent}" "${commit}" >&2
+      exit 1
+    fi
+    continue
+  fi
   remote_refs="$(git ls-remote "${remote}" \
     "refs/tags/${tag}" "refs/tags/${tag}^{}" "${support_ref}")"
   tag_object="$(awk -v ref="refs/tags/${tag}" '$2 == ref { print $1 }' <<< "${remote_refs}")"

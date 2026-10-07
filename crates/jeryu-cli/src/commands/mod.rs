@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod api;
 pub mod autonomy;
+pub mod bot;
 pub mod cache;
 pub mod ci;
 pub mod control_plane;
