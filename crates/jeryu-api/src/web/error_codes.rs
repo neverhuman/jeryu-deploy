@@ -28,6 +28,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the agent run no longer accepts control messages",
     ),
     entry(
+        "agent_run_control_not_held",
+        409,
+        "another client holds the control lease for this terminal",
+    ),
+    entry(
         "agent_run_control_unavailable",
         409,
         "the agent run has no live control channel",

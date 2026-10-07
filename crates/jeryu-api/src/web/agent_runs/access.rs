@@ -36,16 +36,17 @@ impl AgentRunStore {
             .and_then(|record| record.owner.clone())
     }
 
-    /// Owner and repository of one run, for access decisions.
-    fn run_scope(&self, run_id: &str) -> Option<(Option<String>, Option<String>)> {
+    /// Owner, repository, and whether the run is a companion shell.
+    fn run_scope(&self, run_id: &str) -> Option<(Option<String>, Option<String>, bool)> {
         let inner = self.inner.lock().expect("agent run store mutex");
         let record = inner.runs.get(run_id)?;
-        Some((record.owner.clone(), record.repo.clone()))
+        let shell = record.agent.as_deref() == Some("shell");
+        Some((record.owner.clone(), record.repo.clone(), shell))
     }
 }
 
 /// True when `account` may watch `run_id`: an admin, the session's owner, or a
-/// writer of the session's repository. A non-admin never learns whether an
+/// writer of the session's repository. Companion shells stay admin-only. A non-admin never learns whether an
 /// unknown run exists.
 pub(in crate::web) fn may_view_run(
     state: &WebState,
@@ -56,9 +57,14 @@ pub(in crate::web) fn may_view_run(
     if account.role == UserRole::Admin {
         return true;
     }
-    let Some((owner, repo)) = state.agent_runs.run_scope(run_id) else {
+    let Some((owner, repo, shell)) = state.agent_runs.run_scope(run_id) else {
         return false;
     };
+    // A companion shell is a host bash an operator types into: what it shows
+    // (environment, files, secrets an admin prints) is not the agent's output.
+    if shell {
+        return false;
+    }
     if owner.as_deref() == Some(account.login.as_str()) {
         return true;
     }

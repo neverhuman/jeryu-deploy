@@ -65,6 +65,14 @@ impl Fixture {
             record.owner = Some("owner".into());
             record.repo = Some("alice/demo".into());
         }
+        state.agent_runs.seed_test_run("ar-shell", 8);
+        {
+            let mut inner = state.agent_runs.inner.lock().expect("store");
+            let record = inner.runs.get_mut("ar-shell").expect("run");
+            record.owner = Some("owner".into());
+            record.repo = Some("alice/demo".into());
+            record.agent = Some("shell".into());
+        }
         let app = crate::web::app(state, &root.path().join("absent-spa"));
         Self {
             _root: root,
@@ -205,4 +213,76 @@ fn production_origin_pins_websocket_upgrades() {
         &headers("https://evil.example"),
         Some("")
     ));
+}
+
+#[tokio::test]
+async fn companion_shells_stay_admin_only_to_watch() {
+    let fixture = Fixture::new();
+    let shell = "/api/v1/agent-runs/ar-shell";
+    for login in ["owner", "writer"] {
+        let status = fixture.status(Method::GET, shell, login).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{login} cannot watch a host shell"
+        );
+    }
+    assert_eq!(
+        fixture.status(Method::GET, shell, "admin").await,
+        StatusCode::OK
+    );
+}
+
+/// Local-dev trust is ambient authority for a loopback peer: a foreign page
+/// must not be able to open an attach socket with it.
+#[tokio::test]
+async fn local_dev_trust_still_refuses_cross_origin_websockets() {
+    let root = tempfile::tempdir().expect("root");
+    let core = ForgeCore::open_sqlite(root.path().join("forge.sqlite")).expect("core");
+    let state =
+        WebState::new_with_git_storage(core, root.path().join("git")).with_auth(true, true, false);
+    state.agent_runs.seed_test_run("ar-local", 8);
+    let app = crate::web::app(state, &root.path().join("absent-spa"));
+    let upgrade = |origin: Option<&str>| {
+        let mut request = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v1/agent-runs/ar-local/attach?control=true")
+            .header(header::HOST, "127.0.0.1:8787")
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==");
+        if let Some(origin) = origin {
+            request = request.header(header::ORIGIN, origin);
+        }
+        let mut request = request.body(Body::empty()).expect("request");
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:50000".parse::<SocketAddr>().expect("peer"),
+        ));
+        request
+    };
+    let evil = app
+        .clone()
+        .oneshot(upgrade(Some("https://evil.example")))
+        .await
+        .expect("response");
+    assert_eq!(evil.status(), StatusCode::FORBIDDEN);
+    let null = app
+        .clone()
+        .oneshot(upgrade(Some("null")))
+        .await
+        .expect("response");
+    assert_eq!(null.status(), StatusCode::FORBIDDEN);
+    for origin in [Some("http://127.0.0.1:8787"), None] {
+        let response = app
+            .clone()
+            .oneshot(upgrade(origin))
+            .await
+            .expect("response");
+        assert_ne!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{origin:?} is not refused"
+        );
+    }
 }

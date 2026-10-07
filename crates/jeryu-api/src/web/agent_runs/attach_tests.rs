@@ -376,3 +376,60 @@ async fn rest_send_bytes_rejects_invalid_base64() {
         .expect("ack");
     assert_eq!(ack.command, "send_bytes");
 }
+
+#[test]
+fn a_displaced_lease_is_refused_inside_the_store() {
+    let store = AgentRunStore::new();
+    let controls = seed_controllable(&store, "ar-fence");
+    let old = store.take_control("ar-fence", "alice/1").expect("lease");
+    store.take_control("ar-fence", "bob/2").expect("take over");
+    let input = AgentControlCommand::SendInput {
+        text: "late\n".into(),
+    };
+    assert!(
+        store
+            .send_control_by("ar-fence", input, Some(("alice/1", old)))
+            .is_err()
+    );
+    assert!(controls.try_recv().is_err(), "nothing reached the PTY");
+}
+
+#[test]
+fn control_history_is_capped_and_sequences_keep_counting() {
+    let store = AgentRunStore::new();
+    let _controls = seed_controllable(&store, "ar-history");
+    for _ in 0..1100 {
+        store
+            .send_control("ar-history", AgentControlCommand::Interrupt)
+            .expect("send");
+    }
+    let controls = store.record("ar-history").expect("run").controls;
+    assert_eq!(controls.len(), 1024);
+    assert_eq!(controls.last().map(|c| c.seq), Some(1100));
+}
+
+#[tokio::test]
+async fn a_run_admits_a_bounded_number_of_attached_clients() {
+    let state = Arc::new(WebState::new(ForgeCore::new()));
+    state.agent_runs.seed_test_run("ar-crowd", 8);
+    let base = serve(state.clone()).await;
+    let mut clients = Vec::new();
+    for _ in 0..32 {
+        let mut client = connect(format!("{base}/ar-crowd/attach")).await;
+        next_of(&mut client, "attached").await;
+        clients.push(client);
+    }
+    let mut extra = connect(format!("{base}/ar-crowd/attach")).await;
+    assert_eq!(next_json(&mut extra).await["code"], "attach_viewer_limit");
+    drop(clients.pop());
+    let mut retry = None;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut client = connect(format!("{base}/ar-crowd/attach")).await;
+        if next_json(&mut client).await["type"] == "attached" {
+            retry = Some(client);
+            break;
+        }
+    }
+    assert!(retry.is_some(), "a closed socket frees its slot");
+}

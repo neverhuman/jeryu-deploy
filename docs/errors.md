@@ -69,6 +69,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | code | status | summary |
 | --- | --- | --- |
 | `agent_run_control_closed` | 409 | the agent run no longer accepts control messages |
+| `agent_run_control_not_held` | 409 | another client holds the control lease for this terminal |
 | `agent_run_control_unavailable` | 409 | the agent run has no live control channel |
 | `agent_run_control_unsupported` | 422 | the agent run driver does not support this control |
 | `agent_run_export_slice_denied` | 403 | the export touches paths outside the agent run slice |
@@ -444,3 +445,22 @@ client repairs the request from the refusal alone.
 
 A `family` that names no hosted family answers `family_unknown` (422) for the
 same reason, on every route that takes one.
+
+## Agent-run attach frames
+
+`GET /api/v1/agent-runs/{id}/attach` is a WebSocket. Once it is open, problems
+arrive as `{"type": "error", "code": ..., "request_id": ...}` frames rather
+than HTTP errors:
+
+| Code | Meaning |
+| --- | --- |
+| `attach_message_invalid` | The client frame was not a recognized JSON control frame |
+| `attach_viewer_limit` | The run already has the maximum number of attached clients |
+| `control_forbidden` | Only an admin may drive a host-PTY agent run |
+| `control_not_held` | This socket does not hold the control lease; attach with `control=true` or send `take_control` |
+| `control_rejected` | The driver did not accept the command, or another client took control first |
+| `agent_run_finished` | The run has already finished |
+
+`control_lost` (another client took control) and `ended` (the run finished
+and its output drained) are status frames, not errors.
+

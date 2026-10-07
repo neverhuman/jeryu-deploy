@@ -28,6 +28,10 @@ use super::*;
 const MAX_CLIENT_FRAME_BYTES: usize = 64 * 1024;
 /// How often an attached socket rechecks its lease and the run's liveness.
 const ATTACH_TICK: Duration = Duration::from_millis(250);
+/// Attach sockets allowed at once on one run.
+const MAX_VIEWERS_PER_RUN: usize = 32;
+/// A client that stops reading for this long is disconnected.
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(in crate::web) struct AttachQuery {
@@ -76,6 +80,7 @@ pub(in crate::web) async fn attach(
                 holder: format!("{login}/{}", uuid::Uuid::new_v4().simple()),
                 epoch: None,
                 may_control,
+                counted: false,
             }
             .run(query.after_seq.unwrap_or(0), query.control.unwrap_or(false))
         })
@@ -90,16 +95,25 @@ struct AttachSession {
     epoch: Option<u64>,
     /// Host-PTY runs accept input only from an authenticated admin.
     may_control: bool,
+    /// Whether this socket holds one of the run's viewer slots.
+    counted: bool,
 }
 
 impl AttachSession {
     async fn run(mut self, after_seq: u64, want_control: bool) {
+        if !self.store.attach_viewer(&self.run_id) {
+            let reason = "this run already has the maximum number of attached clients";
+            let _ = self.error(None, "attach_viewer_limit", reason).await;
+            let _ = self.socket.send(Message::Close(None)).await;
+            return;
+        }
+        self.counted = true;
         if want_control && self.may_control {
             self.epoch = self.store.take_control(&self.run_id, &self.holder);
         }
         let Some((mut receiver, replay)) = self.store.tty_stream_start(&self.run_id, after_seq)
         else {
-            return;
+            return self.finish();
         };
         let hello = json!({
             "type": "attached",
@@ -243,10 +257,11 @@ impl AttachSession {
                 )
                 .await;
         }
-        match self
-            .store
-            .send_control_by(&self.run_id, command, Some(&self.holder))
-        {
+        match self.store.send_control_by(
+            &self.run_id,
+            command,
+            self.epoch.map(|epoch| (self.holder.as_str(), epoch)),
+        ) {
             Ok(ack) => {
                 let frame = json!({"type": "ack", "request_id": request_id,
                     "control_seq": ack.control_seq, "command": ack.command});
@@ -266,10 +281,8 @@ impl AttachSession {
     }
 
     async fn send(&mut self, frame: Value) -> bool {
-        self.socket
-            .send(Message::Text(frame.to_string()))
-            .await
-            .is_ok()
+        let send = self.socket.send(Message::Text(frame.to_string()));
+        matches!(tokio::time::timeout(SEND_TIMEOUT, send).await, Ok(Ok(())))
     }
 
     fn release(&mut self) {
@@ -281,6 +294,9 @@ impl AttachSession {
 
     fn finish(mut self) {
         self.release();
+        if self.counted {
+            self.store.detach_viewer(&self.run_id);
+        }
     }
 }
 
@@ -318,6 +334,26 @@ impl AgentRunStore {
             record.control_lease.epoch == epoch
                 && record.control_lease.holder.as_deref() == Some(holder)
         })
+    }
+
+    /// Take one of the run's attach slots; false when the run is full.
+    pub(super) fn attach_viewer(&self, run_id: &str) -> bool {
+        let mut inner = self.inner.lock().expect("agent run store mutex");
+        let Some(record) = inner.runs.get_mut(run_id) else {
+            return false;
+        };
+        if record.control_lease.viewers >= MAX_VIEWERS_PER_RUN {
+            return false;
+        }
+        record.control_lease.viewers += 1;
+        true
+    }
+
+    pub(super) fn detach_viewer(&self, run_id: &str) {
+        let mut inner = self.inner.lock().expect("agent run store mutex");
+        if let Some(record) = inner.runs.get_mut(run_id) {
+            record.control_lease.viewers = record.control_lease.viewers.saturating_sub(1);
+        }
     }
 
     /// Release only the lease this holder still owns; a newer controller keeps it.

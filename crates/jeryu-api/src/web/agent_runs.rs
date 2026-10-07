@@ -183,6 +183,8 @@ struct AgentRunRecord {
 struct ControlLease {
     holder: Option<String>,
     epoch: u64,
+    /// Attach sockets currently open on the run (capped per run).
+    viewers: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

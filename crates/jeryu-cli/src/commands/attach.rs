@@ -134,7 +134,8 @@ pub(crate) fn run(
     json_lines: bool,
     out: &mut dyn Write,
 ) -> ClientResult<()> {
-    let url = attach_url(api_url, run_id, after_seq, control)?;
+    // JSON mode never types, so it must not take the lease from a human.
+    let url = attach_url(api_url, run_id, after_seq, control && !json_lines)?;
     let mut request = url
         .into_client_request()
         .map_err(|_| ClientError::Invalid("invalid attach URL".into()))?;
@@ -149,8 +150,13 @@ pub(crate) fn run(
         .build()
         .map_err(|_| ClientError::NotWired("cannot start the attach runtime".into()))?;
     let interactive = control && !json_lines && std::io::stdin().is_terminal();
-    let _raw = interactive.then(RawMode::enter).flatten();
-    runtime.block_on(session(request, interactive, json_lines, out))
+    let raw = interactive.then(RawMode::enter).flatten();
+    let result = runtime.block_on(session(request, interactive, json_lines, out));
+    drop(raw);
+    // A pending stdin read lives on the blocking pool; do not wait for a
+    // keypress after the run has ended.
+    runtime.shutdown_background();
+    result
 }
 
 async fn session(
@@ -166,8 +172,14 @@ async fn session(
     let mut notes = std::io::stderr();
     let mut stdin = tokio::io::stdin();
     let mut keys = [0_u8; 4096];
-    let mut winch = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-        .map_err(|_| ClientError::NotWired("cannot watch terminal size".into()))?;
+    use tokio::signal::unix::{SignalKind, signal};
+    let watch = |kind| {
+        signal(kind).map_err(|_| ClientError::NotWired("cannot watch terminal signals".into()))
+    };
+    let mut winch = watch(SignalKind::window_change())?;
+    // Leave cleanly, restoring the terminal, when the shell or session ends.
+    let mut terminate = watch(SignalKind::terminate())?;
+    let mut hangup = watch(SignalKind::hangup())?;
     if interactive && let Some(resize) = resize_frame() {
         let _ = sink.send(Message::Text(resize.to_string())).await;
     }
@@ -202,6 +214,8 @@ async fn session(
                     return Ok(());
                 }
             }
+            _ = terminate.recv() => return Ok(()),
+            _ = hangup.recv() => return Ok(()),
             _ = winch.recv(), if interactive => {
                 if let Some(resize) = resize_frame() {
                     let _ = sink.send(Message::Text(resize.to_string())).await;

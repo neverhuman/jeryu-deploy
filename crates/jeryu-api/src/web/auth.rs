@@ -863,11 +863,15 @@ pub(super) async fn gate(
         );
     }
 
-    // A WebSocket upgrade is a GET, so CSRF tokens never cover it. A browser
-    // attaches the session cookie to cross-site upgrades too: refuse any cookie
-    // upgrade whose Origin is not this host (cross-site WebSocket hijacking).
-    if auth.source == AuthSource::Session
+    // A WebSocket upgrade is a GET, so CSRF tokens never cover it, and a
+    // browser sends ambient authority with a cross-site upgrade: the session
+    // cookie, or local-dev trust for a loopback peer (where a page could
+    // otherwise drive a host PTY). Refuse every upgrade that is not
+    // bearer-authenticated and carries a foreign Origin. Browsers always send
+    // Origin on an upgrade; a client without one (the CLI) is not a browser.
+    if auth.source != AuthSource::Bearer
         && websocket_upgrade(request.headers())
+        && request.headers().contains_key(header::ORIGIN)
         && !websocket_origin_allowed(
             request.headers(),
             std::env::var(PRODUCTION_ORIGIN_ENV).ok().as_deref(),

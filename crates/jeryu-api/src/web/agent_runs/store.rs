@@ -4,6 +4,9 @@ use chrono::Utc;
 
 use super::*;
 
+/// Control records kept per run for audit and status; the oldest roll off.
+const CONTROL_HISTORY_CAP: usize = 1024;
+
 impl AgentRunRecord {
     /// Single publish point for one raw TTY event: append it to the bounded ring,
     /// then fan it out to any live SSE subscriber. The ring push happens first so a
@@ -288,12 +291,14 @@ impl AgentRunStore {
         self.send_control_by(run_id, command, None)
     }
 
-    /// Deliver one control command, recording which attached controller sent it.
+    /// Deliver one control command. With `lease`, the attached controller's
+    /// `(holder, epoch)` is checked under the same lock that records and
+    /// delivers the command, so a displaced controller cannot slip one in.
     pub(super) fn send_control_by(
         &self,
         run_id: &str,
         command: AgentControlCommand,
-        actor: Option<&str>,
+        lease: Option<(&str, u64)>,
     ) -> AgentRunResponseResult<AgentRunControlResponse> {
         if let AgentControlCommand::SendBytes { bytes_b64 } = &command
             && decode_input_bytes(bytes_b64).is_none()
@@ -307,7 +312,7 @@ impl AgentRunStore {
                 "re-encode the input and resend it",
             ));
         }
-        let (tx, control, command_name, seq) = {
+        let (command_name, seq) = {
             let mut inner = self.inner.lock().expect("agent run store mutex");
             let record = inner
                 .runs
@@ -352,29 +357,50 @@ impl AgentRunStore {
                     "retry only while the run is still marked running",
                 ));
             };
+            if let Some((holder, epoch)) = lease
+                && (record.control_lease.epoch != epoch
+                    || record.control_lease.holder.as_deref() != Some(holder))
+            {
+                return Err(boxed_agent_run_typed_error(
+                    StatusCode::CONFLICT,
+                    "agent_run_control_not_held",
+                    "send control to an agent run",
+                    "another client took control of this terminal",
+                    &["take control again before sending input"],
+                    "attach with control or send take_control, then retry",
+                ));
+            }
             let control = map_control(&command);
             let command_name = command_name(&command).to_string();
-            let seq = (record.controls.len() as u64).saturating_add(1);
+            let seq = record
+                .controls
+                .last()
+                .map_or(1, |last| last.seq.saturating_add(1));
+            // The channel is unbounded, so sending under the lock never blocks;
+            // it keeps delivery in the same order the lease admitted commands.
+            tx.send(control).map_err(|_| {
+                boxed_agent_run_typed_error(
+                    StatusCode::CONFLICT,
+                    "agent_run_control_closed",
+                    "send control to an agent run",
+                    "the live driver stopped before the control command was delivered",
+                    &[
+                        "reload the run status before sending more control",
+                        "start a new run if more repair work is required",
+                    ],
+                    "send controls only while the status endpoint reports running",
+                )
+            })?;
+            if record.controls.len() >= CONTROL_HISTORY_CAP {
+                record.controls.remove(0);
+            }
             record.controls.push(AgentRunControlRecord {
                 seq,
                 command: command_name.clone(),
-                actor: actor.map(str::to_string),
+                actor: lease.map(|(holder, _)| holder.to_string()),
             });
-            (tx, control, command_name, seq)
+            (command_name, seq)
         };
-        tx.send(control).map_err(|_| {
-            boxed_agent_run_typed_error(
-                StatusCode::CONFLICT,
-                "agent_run_control_closed",
-                "send control to an agent run",
-                "the live driver stopped before the control command was delivered",
-                &[
-                    "reload the run status before sending more control",
-                    "start a new run if more repair work is required",
-                ],
-                "send controls only while the status endpoint reports running",
-            )
-        })?;
         Ok(AgentRunControlResponse {
             agent_run_id: run_id.to_string(),
             accepted: true,
