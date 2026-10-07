@@ -173,6 +173,8 @@ struct AgentRunRecord {
     agent: Option<String>,
     /// Single-writer lease for interactive attach clients (see `attach`).
     control_lease: ControlLease,
+    /// JeRyu login that started a repo session; `None` for admin workcell runs.
+    owner: Option<String>,
 }
 
 /// Which attached client may drive the terminal. Taking control bumps the
@@ -294,12 +296,25 @@ impl Default for AgentRunBudget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum AgentControlCommand {
-    SendInput { text: String },
-    InjectPrompt { text: String },
+    SendInput {
+        text: String,
+    },
+    /// Raw terminal bytes, base64-encoded, delivered without any text decoding.
+    SendBytes {
+        bytes_b64: String,
+    },
+    InjectPrompt {
+        text: String,
+    },
     Interrupt,
     Terminate,
-    ResizePty { cols: u16, rows: u16 },
-    RaiseBudget { output_bytes: usize },
+    ResizePty {
+        cols: u16,
+        rows: u16,
+    },
+    RaiseBudget {
+        output_bytes: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -469,6 +484,8 @@ pub(super) struct SessionRecordInit {
     /// Live control sender the web terminal steers the PTY agent through. The
     /// matching receiver is handed to the driver thread that supervises the agent.
     pub control_tx: Option<Sender<AgentControl>>,
+    /// JeRyu login that started the session (`None` for trusted local launches).
+    pub owner: Option<String>,
 }
 
 /// The minimal record view a mediated publish needs.
@@ -549,6 +566,9 @@ pub(super) fn agent_run_state_label(state: AgentRunState) -> &'static str {
 
 // Keep route orchestration, state mutation, and PR export independently
 // reviewable while preserving this module as the single public surface.
+mod access;
+#[cfg(test)]
+mod access_tests;
 mod attach;
 #[cfg(test)]
 mod attach_tests;
@@ -561,6 +581,7 @@ mod store;
 #[cfg(test)]
 mod tail_tests;
 
+pub(super) use access::{agent_run_viewer_id, may_view_run};
 pub(super) use attach::attach;
 #[cfg(test)]
 pub(super) use handlers::AgentTtyStreamQuery;
@@ -791,6 +812,10 @@ fn map_control(command: &AgentControlCommand) -> AgentControl {
         AgentControlCommand::SendInput { text } => {
             AgentControl::SendInput(text.clone().into_bytes())
         }
+        // `send_control_by` refuses undecodable payloads before mapping.
+        AgentControlCommand::SendBytes { bytes_b64 } => {
+            AgentControl::SendInput(decode_input_bytes(bytes_b64).unwrap_or_default())
+        }
         AgentControlCommand::InjectPrompt { text } => AgentControl::InjectPrompt(text.clone()),
         AgentControlCommand::Interrupt => AgentControl::Interrupt,
         AgentControlCommand::Terminate => AgentControl::Terminate,
@@ -804,9 +829,19 @@ fn map_control(command: &AgentControlCommand) -> AgentControl {
     }
 }
 
+/// Decode a `send_bytes` payload: standard base64, non-empty, at most 64 KiB.
+fn decode_input_bytes(encoded: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
+        .filter(|bytes| !bytes.is_empty() && bytes.len() <= 64 * 1024)
+}
+
 fn command_name(command: &AgentControlCommand) -> &'static str {
     match command {
         AgentControlCommand::SendInput { .. } => "send_input",
+        AgentControlCommand::SendBytes { .. } => "send_bytes",
         AgentControlCommand::InjectPrompt { .. } => "inject_prompt",
         AgentControlCommand::Interrupt => "interrupt",
         AgentControlCommand::Terminate => "terminate",

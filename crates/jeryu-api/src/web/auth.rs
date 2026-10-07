@@ -868,7 +868,10 @@ pub(super) async fn gate(
     // upgrade whose Origin is not this host (cross-site WebSocket hijacking).
     if auth.source == AuthSource::Session
         && websocket_upgrade(request.headers())
-        && !same_origin(request.headers())
+        && !websocket_origin_allowed(
+            request.headers(),
+            std::env::var(PRODUCTION_ORIGIN_ENV).ok().as_deref(),
+        )
     {
         return api_error(
             StatusCode::FORBIDDEN,
@@ -877,9 +880,19 @@ pub(super) async fn gate(
         );
     }
 
-    if admin_only_request(request.method(), request.uri().path()) && account.role != UserRole::Admin
+    let viewer_run = super::agent_runs::agent_run_viewer_id(request.method(), request.uri().path());
+    if viewer_run.is_none()
+        && admin_only_request(request.method(), request.uri().path())
+        && account.role != UserRole::Admin
     {
         return forbidden("admin role required");
+    }
+    // A session's owner and its repository's writers may watch the run; the
+    // run's own routes still refuse non-admin control while it is a host PTY.
+    if let Some(run_id) = viewer_run
+        && !super::agent_runs::may_view_run(&state, &account, run_id)
+    {
+        return forbidden("agent run access denied");
     }
 
     let mut observed_repo = None;
@@ -1211,6 +1224,28 @@ fn websocket_upgrade(headers: &HeaderMap) -> bool {
         .get(header::UPGRADE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+/// Configured public site origin, e.g. `https://forge.example`.
+const PRODUCTION_ORIGIN_ENV: &str = "JERYU_PRODUCTION_ORIGIN";
+
+/// A cookie WebSocket must come from the configured public origin when one is
+/// set; otherwise (local and preview deployments) from this request's Host.
+pub(super) fn websocket_origin_allowed(headers: &HeaderMap, production: Option<&str>) -> bool {
+    let production = production
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty());
+    let Some(production) = production else {
+        return same_origin(headers);
+    };
+    headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| {
+            origin
+                .trim_end_matches('/')
+                .eq_ignore_ascii_case(production.trim_end_matches('/'))
+        })
 }
 
 /// True when `Origin` names exactly the authority in `Host`. A missing or

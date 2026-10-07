@@ -211,6 +211,7 @@ async fn create_session(state: &Arc<WebState>, repo_id: &str, body: Value) -> Va
             AxumPath(repo_id.to_string()),
             axum::http::HeaderMap::new(),
             None,
+            None,
             Bytes::from(body.to_string()),
         )
         .await,
@@ -512,6 +513,7 @@ async fn create_rejects_unknown_repo_with_404() {
         State(state),
         AxumPath("nobody/ghost".to_string()),
         axum::http::HeaderMap::new(),
+        None,
         None,
         Bytes::from(json!({ "agent_id": "agent-1" }).to_string()),
     )
@@ -922,6 +924,7 @@ async fn create_session_missing_agent_records_graceful_not_available_line() {
         State(state.clone()),
         AxumPath("alice/jeryu".to_string()),
         axum::http::HeaderMap::new(),
+        None,
         None,
         Bytes::from(json!({ "agent_id": "ghost-agent", "run_id": "run-missing" }).to_string()),
     )
@@ -1420,6 +1423,7 @@ async fn create_session_docker_runtime_missing_docker_degrades_gracefully() {
         State(state.clone()),
         AxumPath("alice/jeryu".to_string()),
         axum::http::HeaderMap::new(),
+        None,
         None,
         Bytes::from(json!({ "agent_id": "codex", "run_id": "run-nodocker" }).to_string()),
     )

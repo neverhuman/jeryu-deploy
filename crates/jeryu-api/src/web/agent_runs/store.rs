@@ -93,6 +93,7 @@ impl AgentRunStore {
             runner: Some(init.runner),
             agent: Some(init.agent),
             control_lease: ControlLease::default(),
+            owner: init.owner,
         });
     }
 
@@ -294,6 +295,18 @@ impl AgentRunStore {
         command: AgentControlCommand,
         actor: Option<&str>,
     ) -> AgentRunResponseResult<AgentRunControlResponse> {
+        if let AgentControlCommand::SendBytes { bytes_b64 } = &command
+            && decode_input_bytes(bytes_b64).is_none()
+        {
+            return Err(boxed_agent_run_typed_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "agent_run_input_invalid",
+                "send control to an agent run",
+                "send_bytes needs non-empty standard base64 of at most 64 KiB",
+                &["encode the raw terminal bytes with standard base64"],
+                "re-encode the input and resend it",
+            ));
+        }
         let (tx, control, command_name, seq) = {
             let mut inner = self.inner.lock().expect("agent run store mutex");
             let record = inner
@@ -506,6 +519,7 @@ impl AgentRunStore {
             runner: None,
             agent: None,
             control_lease: ControlLease::default(),
+            owner: None,
         });
     }
 

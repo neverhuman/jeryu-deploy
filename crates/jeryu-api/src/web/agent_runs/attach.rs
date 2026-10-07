@@ -19,6 +19,7 @@
 use axum::extract::Extension;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use base64::Engine;
 use jeryu_core::AccountSummary;
 
 use super::*;
@@ -62,7 +63,9 @@ pub(in crate::web) async fn attach(
         Ok(ws) => ws,
         Err(rejection) => return rejection.into_response(),
     };
-    let login = account.map_or_else(|| "anonymous".to_string(), |Extension(a)| a.login);
+    let account = account.map(|Extension(account)| account);
+    let may_control = super::access::may_control_host_run(account.as_ref());
+    let login = account.map_or_else(|| "anonymous".to_string(), |account| account.login);
     let store = state.agent_runs.clone();
     ws.max_message_size(MAX_CLIENT_FRAME_BYTES)
         .on_upgrade(move |socket| {
@@ -72,6 +75,7 @@ pub(in crate::web) async fn attach(
                 run_id: agent_run_id,
                 holder: format!("{login}/{}", uuid::Uuid::new_v4().simple()),
                 epoch: None,
+                may_control,
             }
             .run(query.after_seq.unwrap_or(0), query.control.unwrap_or(false))
         })
@@ -84,11 +88,13 @@ struct AttachSession {
     run_id: String,
     holder: String,
     epoch: Option<u64>,
+    /// Host-PTY runs accept input only from an authenticated admin.
+    may_control: bool,
 }
 
 impl AttachSession {
     async fn run(mut self, after_seq: u64, want_control: bool) {
-        if want_control {
+        if want_control && self.may_control {
             self.epoch = self.store.take_control(&self.run_id, &self.holder);
         }
         let Some((mut receiver, replay)) = self.store.tty_stream_start(&self.run_id, after_seq)
@@ -181,12 +187,14 @@ impl AttachSession {
         let parsed = match message {
             Message::Text(text) => serde_json::from_str::<AttachClientMessage>(&text)
                 .map_err(|_| "attach_message_invalid"),
-            Message::Binary(bytes) => String::from_utf8(bytes)
-                .map(|text| AttachClientMessage::Control {
-                    request_id: None,
-                    command: AgentControlCommand::SendInput { text },
-                })
-                .map_err(|_| "attach_input_not_utf8"),
+            // Raw keystrokes stay bytes: a split multibyte sequence or a
+            // non-UTF-8 byte reaches the terminal exactly as typed.
+            Message::Binary(bytes) => Ok(AttachClientMessage::Control {
+                request_id: None,
+                command: AgentControlCommand::SendBytes {
+                    bytes_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+            }),
             Message::Close(_) => return false,
             Message::Ping(_) | Message::Pong(_) => return true,
         };
@@ -194,6 +202,10 @@ impl AttachSession {
             Err(code) => {
                 self.error(None, code, "the attach frame was not understood")
                     .await
+            }
+            Ok(AttachClientMessage::TakeControl) if !self.may_control => {
+                let reason = "only an admin may drive a host-PTY agent run";
+                self.error(None, "control_forbidden", reason).await
             }
             Ok(AttachClientMessage::TakeControl) => {
                 self.epoch = self.store.take_control(&self.run_id, &self.holder);

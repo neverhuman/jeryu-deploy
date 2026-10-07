@@ -23,7 +23,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use jeryu_agent_stream::{CONTROL_TOPIC, TTY_TOPIC};
 use jeryu_agentbridge::driver::CommandSpec;
-use jeryu_core::{BotOperationGate, CreatePullRequestRequest};
+use jeryu_core::{AccountSummary, BotOperationGate, CreatePullRequestRequest};
 use jeryu_gitd::error::GitdError;
 use jeryu_gitd::refs::RefService;
 use jeryu_runner_core::job::{JobRequest, NetworkPolicy, SecretPolicy, TokenPolicy};
@@ -201,11 +201,13 @@ pub(super) async fn create(
     AxumPath(id): AxumPath<String>,
     headers: HeaderMap,
     bot: Option<Extension<BotPrincipal>>,
+    account: Option<Extension<AccountSummary>>,
     body: Bytes,
 ) -> AxumResponse {
     if let Some(Extension(bot)) = bot {
         return create_for_bot(state, &id, &headers, &bot, &body);
     }
+    let owner = account.map(|Extension(account)| account.login);
     let request: CreateSessionRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
         Err(err) => {
@@ -222,7 +224,7 @@ pub(super) async fn create(
             );
         }
     };
-    match create_session(&state, &id, request) {
+    match create_session(&state, &id, request, owner) {
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
         Err(response) => *response,
     }
@@ -341,7 +343,13 @@ fn create_for_bot(
         runner: None,
         timeout_ms: ttl.map(|seconds| seconds.saturating_mul(1_000)),
     };
-    match create_session(&state, repo_id, request) {
+    // A bot session is owned by the account that owns the bot.
+    let owner = state
+        .core
+        .authenticate_bot_access(bot.bot_id, bot.generation, &bot.key_id)
+        .ok()
+        .map(|summary| summary.owner);
+    match create_session(&state, repo_id, request, owner) {
         Ok(response) => {
             let narrow = json!({
                 "session_id": response.session_id,
@@ -386,6 +394,7 @@ fn create_session(
     state: &Arc<WebState>,
     repo_id: &str,
     request: CreateSessionRequest,
+    session_owner: Option<String>,
 ) -> Result<CreateSessionResponse, Box<AxumResponse>> {
     let repo = find_repo(state, repo_id).ok_or_else(|| Box::new(repo_not_found(repo_id)))?;
     let owner = repo.owner.clone();
@@ -561,6 +570,7 @@ fn create_session(
         args: request.args.clone(),
         workspace: workspace.clone(),
         control_tx: Some(control_tx),
+        owner: session_owner.clone(),
     });
 
     // Materialize the session workspace into a REAL working tree before the agent
@@ -658,6 +668,7 @@ fn create_session(
             args: vec!["--norc".to_string(), "--noprofile".to_string()],
             workspace: workspace.clone(),
             control_tx: Some(shell_ctl_tx),
+            owner: session_owner.clone(),
         });
         let mut shell_env: BTreeMap<String, String> = BTreeMap::new();
         // Colorful prompt: green user@host, blue cwd, reset.

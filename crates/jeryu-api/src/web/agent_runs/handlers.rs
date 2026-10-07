@@ -71,6 +71,7 @@ fn start_request(
         runner: None,
         agent: None,
         control_lease: ControlLease::default(),
+        owner: None,
     });
 
     if let Some(prompt) = request.prompt.clone()
@@ -523,6 +524,7 @@ pub(in crate::web) async fn shell(
         args: vec!["--login".to_string()],
         workspace: workspace.clone(),
         control_tx: Some(control_tx),
+        owner: state.agent_runs.run_owner(&parent_run_id),
     });
 
     let spec = CommandSpec {

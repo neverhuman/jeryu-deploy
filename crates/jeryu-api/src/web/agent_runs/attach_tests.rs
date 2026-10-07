@@ -9,6 +9,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::*;
 use crate::web::auth::same_origin;
+use jeryu_core::AccountSummary;
 
 type Client =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -21,12 +22,31 @@ fn seed_controllable(store: &AgentRunStore, run_id: &str) -> Receiver<AgentContr
     rx
 }
 
+fn account(login: &str, role: jeryu_core::UserRole) -> AccountSummary {
+    AccountSummary {
+        login: login.into(),
+        display_name: login.into(),
+        role,
+        status: jeryu_core::AccountStatus::Active,
+        auth_epoch: 0,
+        must_change_password: false,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    }
+}
+
+/// Serve the attach route as an authenticated admin.
 async fn serve(state: Arc<WebState>) -> String {
+    serve_as(state, account("operator", jeryu_core::UserRole::Admin)).await
+}
+
+async fn serve_as(state: Arc<WebState>, account: AccountSummary) -> String {
     let app = axum::Router::new()
         .route(
             "/api/v1/agent-runs/:id/attach",
             axum::routing::get(super::attach),
         )
+        .layer(axum::Extension(account))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -146,17 +166,19 @@ async fn attach_replays_fans_out_and_enforces_single_writer() {
     assert_eq!(refused["code"], "control_not_held");
     assert_eq!(refused["request_id"], "v1");
 
-    // Raw keystrokes from the controller reach the driver byte-for-byte.
+    // Raw keystrokes reach the driver byte-for-byte, including a lone byte of
+    // a multibyte sequence split across reads and a non-UTF-8 byte.
+    let keys = [b'l', b's', 0xe2, 0x82, 0xff, b'\n'];
     driver
-        .send(WsMessage::Binary(b"ls\n".to_vec()))
+        .send(WsMessage::Binary(keys.to_vec()))
         .await
         .expect("send keys");
-    assert_eq!(next_of(&mut driver, "ack").await["command"], "send_input");
+    assert_eq!(next_of(&mut driver, "ack").await["command"], "send_bytes");
     match controls
         .recv_timeout(Duration::from_secs(5))
         .expect("control")
     {
-        AgentControl::SendInput(bytes) => assert_eq!(bytes, b"ls\n"),
+        AgentControl::SendInput(bytes) => assert_eq!(bytes, keys),
         other => panic!("unexpected control {other:?}"),
     }
     let resize = json!({"type": "control", "request_id": "r1",
@@ -308,4 +330,49 @@ async fn attach_drives_a_real_pty_agent_end_to_end() {
     );
     let status = state.agent_runs.status(&run_id).expect("status");
     assert_eq!(status.state, AgentRunState::Succeeded);
+}
+
+#[tokio::test]
+async fn non_admin_viewers_cannot_drive_a_host_pty_run() {
+    let state = Arc::new(WebState::new(ForgeCore::new()));
+    let _controls = seed_controllable(&state.agent_runs, "ar-viewer");
+    let user = account("writer", jeryu_core::UserRole::User);
+    let base = serve_as(state.clone(), user).await;
+    let mut client = connect(format!("{base}/ar-viewer/attach?control=true")).await;
+    let hello = next_of(&mut client, "attached").await;
+    assert_eq!(
+        hello["controller"], false,
+        "control=true is ignored for a non-admin"
+    );
+    send_json(&mut client, json!({"type": "take_control"})).await;
+    assert_eq!(
+        next_of(&mut client, "error").await["code"],
+        "control_forbidden"
+    );
+    client
+        .send(WsMessage::Binary(b"id\n".to_vec()))
+        .await
+        .expect("send keys");
+    assert_eq!(
+        next_of(&mut client, "error").await["code"],
+        "control_not_held"
+    );
+}
+
+#[tokio::test]
+async fn rest_send_bytes_rejects_invalid_base64() {
+    let state = Arc::new(WebState::new(ForgeCore::new()));
+    let _controls = seed_controllable(&state.agent_runs, "ar-bytes");
+    let bad = AgentControlCommand::SendBytes {
+        bytes_b64: "not base64!".into(),
+    };
+    assert!(state.agent_runs.send_control("ar-bytes", bad).is_err());
+    let good = AgentControlCommand::SendBytes {
+        bytes_b64: "/w==".into(),
+    };
+    let ack = state
+        .agent_runs
+        .send_control("ar-bytes", good)
+        .expect("ack");
+    assert_eq!(ack.command, "send_bytes");
 }
