@@ -15,6 +15,24 @@ fn bare_ref(storage_root: &std::path::Path, owner: &str, repo: &str, ref_name: &
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+fn git_in(cwd: &std::path::Path, args: &[&str]) -> String {
+    let output = crate::test_git::git_command()
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_AUTHOR_NAME", "jeryu-test")
+        .env("GIT_AUTHOR_EMAIL", "jeryu-test@example.com")
+        .env("GIT_COMMITTER_NAME", "jeryu-test")
+        .env("GIT_COMMITTER_EMAIL", "jeryu-test@example.com")
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 fn build_bare_repo_with_main_and_feature(
     storage_root: &std::path::Path,
     owner: &str,
@@ -27,23 +45,7 @@ fn build_bare_repo_with_main_and_feature(
     let work = storage_root.join(format!("{owner}-{repo}-merge-work"));
     std::fs::create_dir_all(&work).expect("create work dir");
 
-    let git = |args: &[&str], cwd: &std::path::Path| {
-        let output = crate::test_git::git_command()
-            .args(args)
-            .current_dir(cwd)
-            .env("GIT_AUTHOR_NAME", "jeryu-test")
-            .env("GIT_AUTHOR_EMAIL", "jeryu-test@example.com")
-            .env("GIT_COMMITTER_NAME", "jeryu-test")
-            .env("GIT_COMMITTER_EMAIL", "jeryu-test@example.com")
-            .output()
-            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
+    let git = |args: &[&str], cwd: &std::path::Path| git_in(cwd, args);
 
     git(&["init", "--quiet", "-b", "main"], &work);
     std::fs::write(work.join("BASE.txt"), "base\n").expect("write base file");
@@ -1178,74 +1180,169 @@ async fn pulls_mutations_allow_record_only_autonomy_advisory() {
     assert_eq!(response_json(merge).await["code"], "merge_passport_stale");
 }
 
-#[tokio::test]
-async fn web_pull_merge_advances_real_bare_main_ref() {
-    let core = ForgeCore::new();
-    let repo = core
-        .create_repository(
-            "alice",
-            CreateRepositoryRequest {
-                name: "jeryu".to_string(),
-                private: false,
-                description: None,
-                default_branch: Some("main".to_string()),
-            },
-        )
-        .unwrap();
-    let storage = tempfile::tempdir().expect("git storage dir");
-    let (base_sha, head_sha) = build_bare_repo_with_main_and_feature(
-        storage.path(),
-        "alice",
-        "jeryu",
-        "src/web_merge.rs",
-        "pub fn merged() -> bool { true }\n",
-    );
-    let pr = core
-        .create_pull_request(
+/// An approved pull request for `feature` on a real bare repository, green at
+/// its head: where the merge that lands and every merge that must be refused
+/// both start.
+struct ApprovedMerge {
+    storage: tempfile::TempDir,
+    state: Arc<WebState>,
+    repo_id: String,
+    number: u64,
+    head_sha: String,
+}
+
+impl ApprovedMerge {
+    fn seed() -> Self {
+        let core = ForgeCore::new();
+        let repo = core
+            .create_repository(
+                "alice",
+                CreateRepositoryRequest {
+                    name: "jeryu".to_string(),
+                    private: false,
+                    description: None,
+                    default_branch: Some("main".to_string()),
+                },
+            )
+            .unwrap();
+        let storage = tempfile::tempdir().expect("git storage dir");
+        let (base_sha, head_sha) = build_bare_repo_with_main_and_feature(
+            storage.path(),
             "alice",
             "jeryu",
+            "src/web_merge.rs",
+            "pub fn merged() -> bool { true }\n",
+        );
+        let pr = core
+            .create_pull_request(
+                "alice",
+                "jeryu",
+                "alice",
+                CreatePullRequestRequest {
+                    title: "real merge".to_string(),
+                    head: "feature".to_string(),
+                    base: "main".to_string(),
+                    head_sha: Some(head_sha.clone()),
+                    base_sha: Some(base_sha.clone()),
+                    changed_files: vec!["src/web_merge.rs".to_string()],
+                    ..CreatePullRequestRequest::default()
+                },
+            )
+            .unwrap();
+        core.create_check_run(
             "alice",
-            CreatePullRequestRequest {
-                title: "real merge".to_string(),
-                head: "feature".to_string(),
-                base: "main".to_string(),
-                head_sha: Some(head_sha.clone()),
-                base_sha: Some(base_sha.clone()),
-                changed_files: vec!["src/web_merge.rs".to_string()],
-                ..CreatePullRequestRequest::default()
+            "jeryu",
+            CreateCheckRunRequest {
+                name: "ci/fast".to_string(),
+                head_sha: head_sha.clone(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(CheckConclusion::Success),
+                ..CreateCheckRunRequest::default()
             },
         )
         .unwrap();
-    core.create_check_run(
-        "alice",
-        "jeryu",
-        CreateCheckRunRequest {
-            name: "ci/fast".to_string(),
-            head_sha: head_sha.clone(),
-            status: Some(jeryu_core::CheckRunStatus::Completed),
-            conclusion: Some(CheckConclusion::Success),
-            ..CreateCheckRunRequest::default()
-        },
-    )
-    .unwrap();
-    core.create_review(
-        "alice",
-        "jeryu",
-        pr.number,
-        "bob",
-        CreateReviewRequest {
-            body: None,
-            event: ReviewState::Approved,
-            comments: Vec::new(),
-            expected_head_sha: Some(head_sha.clone()),
-        },
-    )
-    .unwrap();
-    let state = Arc::new(WebState::new_with_git_storage(
-        core,
-        storage.path().to_path_buf(),
-    ));
-    let path = || AxumPath((repo.id.to_string(), pr.number));
+        core.create_review(
+            "alice",
+            "jeryu",
+            pr.number,
+            "bob",
+            CreateReviewRequest {
+                body: None,
+                event: ReviewState::Approved,
+                comments: Vec::new(),
+                expected_head_sha: Some(head_sha.clone()),
+            },
+        )
+        .unwrap();
+        let state = Arc::new(WebState::new_with_git_storage(
+            core,
+            storage.path().to_path_buf(),
+        ));
+        Self {
+            storage,
+            state,
+            repo_id: repo.id.to_string(),
+            number: pr.number,
+            head_sha,
+        }
+    }
+
+    fn path(&self) -> AxumPath<(String, u64)> {
+        AxumPath((self.repo_id.clone(), self.number))
+    }
+
+    /// The pull request detail as the reviewer loads it before merging.
+    async fn detail(&self) -> Value {
+        response_json(
+            crate::web::pulls::detail(
+                State(self.state.clone()),
+                authenticated_account("bob"),
+                self.path(),
+            )
+            .await,
+        )
+        .await
+    }
+
+    /// The passport hash the reviewer's authorization is bound to.
+    async fn passport_hash(&self) -> String {
+        let detail = self.detail().await;
+        assert_eq!(detail["merge_passport"]["status"], "pass", "{detail}");
+        detail["passport_hash"]
+            .as_str()
+            .expect("a passport hash")
+            .to_string()
+    }
+
+    async fn merge(&self, body: Value) -> axum::response::Response {
+        crate::web::pulls::merge(
+            State(self.state.clone()),
+            axum::Extension(crate::web::auth::trusted_local_account(&self.state)),
+            self.path(),
+            axum::body::Bytes::from(body.to_string()),
+        )
+        .await
+    }
+
+    fn main_ref(&self) -> String {
+        bare_ref(self.storage.path(), "alice", "jeryu", "refs/heads/main")
+    }
+
+    /// The author pushes another commit to `feature`, so the pull request head
+    /// moves off the commit the approval was for. Returns the new head.
+    fn push_to_feature(&self) -> String {
+        let work = self.storage.path().join("alice-jeryu-merge-work");
+        let bare = self.storage.path().join("alice").join("jeryu.git");
+        git_in(&work, &["checkout", "--quiet", "feature"]);
+        std::fs::write(
+            work.join("src").join("web_merge.rs"),
+            "pub fn merged() -> bool { false }\n",
+        )
+        .expect("rewrite the feature file");
+        git_in(&work, &["commit", "--quiet", "-am", "feature again"]);
+        let moved = git_in(&work, &["rev-parse", "HEAD"]);
+        git_in(
+            &work,
+            &[
+                "push",
+                "--quiet",
+                bare.to_str().expect("bare utf8"),
+                "feature",
+            ],
+        );
+        self.state
+            .core
+            .refresh_pull_request_heads_for_ref("alice", "jeryu", "feature", &moved)
+            .expect("refresh the pull request head");
+        moved
+    }
+}
+
+#[tokio::test]
+async fn web_pull_merge_advances_real_bare_main_ref() {
+    let fx = ApprovedMerge::seed();
+    let (state, head_sha) = (fx.state.clone(), fx.head_sha.clone());
+    let path = || fx.path();
     let detail = response_json(
         crate::web::pulls::detail(State(state.clone()), authenticated_account("bob"), path()).await,
     )
@@ -1287,7 +1384,7 @@ async fn web_pull_merge_advances_real_bare_main_ref() {
         "{blockers:?}"
     );
     assert_eq!(
-        bare_ref(storage.path(), "alice", "jeryu", "refs/heads/main"),
+        fx.main_ref(),
         head_sha,
         "web merge route must move the real bare main ref"
     );
@@ -1300,6 +1397,65 @@ async fn web_pull_merge_advances_real_bare_main_ref() {
     assert_eq!(events[0].repo.as_deref(), Some("alice/jeryu"));
     assert_eq!(events[0].pr, Some(1));
     assert_eq!(events[0].actor.as_deref(), Some("jeryu-admin"));
+}
+
+/// The commit that lands must be the exact 40-hex commit the reviewer
+/// authorized. Every other spelling of it is refused and main does not move:
+/// the commit abbreviated, the commit in upper case, and the commit that was
+/// approved after the author has pushed a new one over it.
+#[tokio::test]
+async fn web_pull_merge_refuses_every_head_but_the_authorized_commit() {
+    let fx = ApprovedMerge::seed();
+    let main_before = fx.main_ref();
+    let passport_hash = fx.passport_hash().await;
+
+    for spelling in [fx.head_sha[..12].to_string(), fx.head_sha.to_uppercase()] {
+        let response = fx
+            .merge(serde_json::json!({
+                "expected_head_sha": spelling,
+                "expected_passport_hash": passport_hash,
+                "merge_method": "merge"
+            }))
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{spelling}");
+        let body = response_json(response).await;
+        assert_eq!(body["code"], "merge_sha_stale", "{body}");
+        assert_eq!(body["error"]["details"]["expected_head_sha"], spelling);
+        assert_eq!(body["error"]["details"]["current_head_sha"], fx.head_sha);
+        assert_eq!(fx.main_ref(), main_before, "{spelling} must not land");
+    }
+
+    // The author pushes again. The approval and its passport were for the old
+    // commit, so neither the old commit nor the new one may land on them.
+    let moved = fx.push_to_feature();
+    assert_ne!(moved, fx.head_sha);
+    let response = fx
+        .merge(serde_json::json!({
+            "expected_head_sha": fx.head_sha,
+            "expected_passport_hash": passport_hash,
+            "merge_method": "merge"
+        }))
+        .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "merge_sha_stale", "{body}");
+    assert_eq!(
+        body["error"]["details"]["current_head_sha"], moved,
+        "{body}"
+    );
+
+    let response = fx
+        .merge(serde_json::json!({
+            "expected_head_sha": moved,
+            "expected_passport_hash": passport_hash,
+            "merge_method": "merge"
+        }))
+        .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "merge_passport_stale", "{body}");
+    assert_eq!(fx.main_ref(), main_before, "nothing landed");
+    assert_eq!(fx.detail().await["summary"]["state"], "open");
 }
 
 #[tokio::test]

@@ -432,6 +432,87 @@ async fn a_new_pr_head_dequeues() {
     assert_eq!(fx.entry().state, merge_queue::QueueState::Dequeued);
 }
 
+/// The queue gates the exact commit it builds, so it only ever starts from a
+/// head it can name exactly: a 40-hex lower-case commit id. The same commit
+/// abbreviated, or spelled in upper case, is refused before any ref is written.
+#[tokio::test]
+async fn the_queue_refuses_a_head_that_is_not_a_full_lower_case_commit_id() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let main_before = fx.main();
+    for spelling in [fx.head[..12].to_string(), fx.head.to_uppercase()] {
+        fx.state
+            .core
+            .refresh_pull_request_heads_for_ref("alice", "jeryu", "feature", &spelling)
+            .unwrap();
+        let (status, body) = fx.enqueue().await;
+        assert_eq!(status, StatusCode::CONFLICT, "{spelling}: {body}");
+        assert_eq!(body["code"], "bad_head", "{body}");
+        assert!(
+            !fx.has_ref("refs/queue/main/1"),
+            "{spelling} built a commit"
+        );
+        assert!(
+            !fx.has_ref("refs/queue-meta/main/1"),
+            "{spelling} persisted"
+        );
+        assert_eq!(fx.main(), main_before);
+    }
+}
+
+/// The lander moves the base only from the exact commit the queue gated its
+/// replay on. A base tip that moved, and the authorized tip written in any
+/// other way — abbreviated, upper case — are all "not the base I was given",
+/// so nothing lands; and the same holds for the gated head.
+#[tokio::test]
+async fn the_lander_refuses_ids_that_are_not_the_authorized_commits() {
+    use crate::github::pulls::LandRefusal;
+
+    let fx = Fixture::new("feature.txt", "feature\n");
+    fx.advance_main("other.txt", "other\n");
+    fx.enqueue().await;
+    let entry = fx.entry();
+    let main_before = fx.main();
+    assert_eq!(entry.base_sha, main_before);
+
+    let land = |pr_head: String, base: String| {
+        fx.state.github.land_queued(
+            "alice",
+            "jeryu",
+            fx.number,
+            &pr_head,
+            &entry.queue_sha,
+            &base,
+        )
+    };
+    for base in [
+        entry.base_sha[..12].to_string(),
+        entry.base_sha.to_uppercase(),
+        fx.head.clone(),
+    ] {
+        let refusal = land(fx.head.clone(), base.clone()).expect_err("must not land");
+        assert_eq!(
+            refusal,
+            LandRefusal::BaseMoved(main_before.clone()),
+            "{base}"
+        );
+        assert_eq!(fx.main(), main_before, "{base} moved the base");
+    }
+    for head in [fx.head[..12].to_string(), fx.head.to_uppercase()] {
+        let refusal = land(head.clone(), entry.base_sha.clone()).expect_err("must not land");
+        assert!(
+            matches!(refusal, LandRefusal::Blocked(_)),
+            "{head}: {refusal:?}"
+        );
+        assert_eq!(fx.main(), main_before, "{head} moved the base");
+    }
+
+    // The authorized pair is what lands: the refusals above are about the ids,
+    // not about a queue entry that could never have landed.
+    let landed = land(fx.head.clone(), entry.base_sha.clone()).expect("the gated pair lands");
+    assert_eq!(landed, entry.queue_sha);
+    assert_eq!(fx.main(), entry.queue_sha);
+}
+
 #[tokio::test]
 async fn the_queue_survives_a_restart_and_lists_building_entries() {
     let fx = Fixture::new("feature.txt", "feature\n");

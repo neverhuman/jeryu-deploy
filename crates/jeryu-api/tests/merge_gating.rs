@@ -303,6 +303,71 @@ fn gated_merge_moves_main_in_bare_repo() {
     fixture.cleanup();
 }
 
+/// The merge route lands the commit the caller named, so it must refuse every
+/// name that is not the authorized one. The approved head abbreviated, the
+/// approved head in upper case, and another real commit on the repository are
+/// each refused with the mismatch, main does not move, and the pull request
+/// stays open — then the authorized 40-hex id lands.
+#[test]
+fn merge_refuses_every_sha_but_the_authorized_head() {
+    if !git_available() {
+        return;
+    }
+    let fixture = seed_fixture("jeryu-merge-gate-sha");
+    let (router, number) = router_with_pr(&fixture);
+    router
+        .core()
+        .create_review(
+            "acme",
+            "demo",
+            number,
+            "bob",
+            CreateReviewRequest {
+                body: None,
+                event: ReviewState::Approved,
+                comments: vec![],
+                expected_head_sha: Some(fixture.head_oid.clone()),
+            },
+        )
+        .expect("approve");
+
+    for spelling in [
+        fixture.head_oid[..12].to_string(),
+        fixture.head_oid.to_uppercase(),
+        fixture.base_oid.clone(),
+    ] {
+        let merged = router.put(
+            &format!("/repos/acme/demo/pulls/{number}/merge"),
+            &format!(r#"{{"sha":"{spelling}"}}"#),
+        );
+        assert_eq!(merged.status, 405, "{spelling}: {}", merged.body);
+        let message = body(&merged)["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            message.contains("ShaMismatch") && message.contains(&fixture.head_oid),
+            "the refusal names the mismatch and the head it wanted: {message}"
+        );
+        assert_eq!(
+            fixture.main_ref(),
+            fixture.base_oid,
+            "{spelling} moved main"
+        );
+        let after = router.get(&format!("/repos/acme/demo/pulls/{number}"));
+        assert_eq!(body(&after)["merged"], false, "{spelling} merged the PR");
+    }
+
+    let merged = router.put(
+        &format!("/repos/acme/demo/pulls/{number}/merge"),
+        &format!(r#"{{"sha":"{}"}}"#, fixture.head_oid),
+    );
+    assert_eq!(merged.status, 200, "authorized merge: {}", merged.body);
+    assert_eq!(fixture.main_ref(), fixture.head_oid);
+
+    fixture.cleanup();
+}
+
 /// Bare repo where `main` has advanced one commit (the new base) and a clean,
 /// DIVERGED head exists off the original seed — so merging produces a real
 /// two-parent merge commit, NOT a fast-forward. `base_oid` is the advanced main.
