@@ -21,3 +21,18 @@ commits recorded in `Cargo.lock`. Historical source spellings remain part of
 Cargo package identity, but CI must transport them through the exact
 `git.neverhuman.org` mappings in `.cargo/hosted-gitconfig`; committed or
 release-CI sibling path patches are not permitted.
+
+## Landing a pull request
+
+- A PR is frozen once it is approved, or once its required checks are green and
+  a human has marked it ready. After that, push only to fix a failing required
+  check, answer a review comment, or make a re-pin or rebase the merge needs.
+- Other work, including extra tests and findings made while landing, goes in a
+  new PR from `main` that links back to the original.
+- One writer per branch. Before pushing, compare `git ls-remote origin <branch>`
+  with the head you last fetched. If it moved, stop and fetch. Never force-push
+  a branch someone else has pushed to: open a replacement PR from `main`
+  (`git cherry-pick -x`) and close the old one with a link to the new one.
+- Leave a human's PR state alone. Do not convert a PR they marked ready back to
+  draft. If merging it is unsafe, say why once in a comment.
+- Re-read live PR heads, merged flags, and tags before each landing step.
