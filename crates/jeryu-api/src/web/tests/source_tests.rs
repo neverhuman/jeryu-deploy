@@ -157,6 +157,14 @@ async fn browser_repo_routes_serve_the_spa_shell() {
         "/repos/jeryu/alice/jeryu/blob/main/src/lib.rs",
         "/repos/jeryu/alice/jeryu/settings/general",
         "/repos/jeryu/alice/jeryu/agents/run-1",
+        "/repos/jeryu/alice/jeryu/pulls/99/files",
+        "/repos/jeryu/alice/jeryu/pulls/99/checks",
+        "/repos/jeryu/alice/jeryu/pulls/99/commits",
+        "/repos/jeryu/alice/jeryu/commits",
+        "/repos/jeryu/alice/jeryu/commits/main",
+        "/repos/jeryu/alice/jeryu/commit/0123456789abcdef0123456789abcdef01234567",
+        "/repos/jeryu/alice/jeryu/activity",
+        "/repos/jeryu/alice/jeryu/automation",
         "/tools",
     ] {
         let response = app

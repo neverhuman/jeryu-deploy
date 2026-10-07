@@ -312,6 +312,20 @@ fn is_browser_repo_route(path: &str) -> bool {
         ["repos", _provider, _owner, _name, "pulls", number] => {
             number.chars().all(|ch| ch.is_ascii_digit())
         }
+        // A pull request's own tabs, and the commit pages the web app links to.
+        // Only the provider form: `/repos/o/r/pulls/n/commits` is the REST edge.
+        [
+            "repos",
+            _provider,
+            _owner,
+            _name,
+            "pulls",
+            number,
+            "files" | "checks" | "commits",
+        ] => number.chars().all(|ch| ch.is_ascii_digit()),
+        ["repos", _provider, _owner, _name, "commits", ..] => true,
+        ["repos", _provider, _owner, _name, "commit", _sha] => true,
+        ["repos", _provider, _owner, _name, "activity" | "automation"] => true,
         ["repos", _provider, _owner, _name, "issues", ..] => true,
         ["repos", _provider, _owner, _name, "work", ..] => true,
         _ => false,
