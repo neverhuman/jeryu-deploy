@@ -66,6 +66,9 @@ cargo fmt --all --check
 echo "[pr-ci] cargo clippy --workspace --all-targets -- -D warnings" >&2
 cargo clippy --locked --workspace --all-targets --jobs "$JOBS" -- -D warnings
 
+echo "[pr-ci] cargo clippy --workspace --all-targets --all-features -- -D warnings" >&2
+cargo clippy --locked --workspace --all-targets --all-features --jobs "$JOBS" -- -D warnings
+
 # The kernel-sandbox-runtime integration tests spawn REAL sandboxes (user/mount/pid
 # namespaces + cgroup-v2 + landlock/seccomp). They require an UNMANAGED cgroup
 # environment and fail under host-ci's systemd-managed poll cgroup

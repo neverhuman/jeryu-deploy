@@ -576,7 +576,11 @@ async fn a_pinned_repository_traces_through_the_consumer_that_releases_it() {
     assert_eq!(state_of(&open, "deployed"), "unknown");
 
     // The shift lands rebased onto main: a new sha carrying the trailer.
+    // Main moves first. The shift commit's parent is still the original tip,
+    // so the landed object cannot hash-equal it when both are created in the
+    // same second.
     run_git(&web, &["checkout", "-q", "main"]);
+    commit_file(&web, "notes.txt", "context", "notes before the landing");
     let landed = commit_file(
         &web,
         "widget.js",

@@ -145,7 +145,9 @@ async fn backend_is_ready(client: &reqwest::Client, addr: SocketAddr) -> bool {
 }
 
 async fn wait_until_listening(addr: SocketAddr, server: &mut tokio::task::JoinHandle<()>) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // A journal commit on a slow disk can hold the listener. Sixty seconds
+    // covers that stall. A server that has already exited still fails at once.
+    let deadline = Instant::now() + Duration::from_secs(60);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(1))
         .build()
