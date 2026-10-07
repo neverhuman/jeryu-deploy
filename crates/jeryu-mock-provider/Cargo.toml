@@ -20,6 +20,11 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 uuid.workspace = true
 
 [dev-dependencies]
+bytes = "1"
+futures-util = "0.3"
+jeryu-gateway = { path = "../jeryu-gateway", features = ["loopback-upstream"] }
+ring = "0.17"
+zeroize = "1"
 tempfile.workspace = true
 toml.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "form"] }

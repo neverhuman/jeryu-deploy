@@ -34,6 +34,24 @@ fn no_product_crate_depends_on_a_mock() {
                 }
             }
         }
+        // A product crate may use the gateway, but never its test-only
+        // loopback upstream.
+        for table in ["dependencies", "build-dependencies"] {
+            let gateway = manifest
+                .get(table)
+                .and_then(|deps| deps.get("jeryu-gateway"))
+                .and_then(|dep| dep.get("features"))
+                .and_then(|features| features.as_array());
+            let loopback = gateway.is_some_and(|features| {
+                features
+                    .iter()
+                    .any(|f| f.as_str() == Some("loopback-upstream"))
+            });
+            assert!(
+                !loopback,
+                "{name} [{table}] enables jeryu-gateway/loopback-upstream"
+            );
+        }
         checked += 1;
     }
     assert!(checked >= 3, "found the product crates");

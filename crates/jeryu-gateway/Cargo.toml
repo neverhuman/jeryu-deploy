@@ -1,0 +1,32 @@
+[package]
+name = "jeryu-gateway"
+description = "Control-plane provider gateway: verifies relay capabilities and adds vault credentials upstream (K3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# Test harnesses only: lets an upstream table point at a loopback HTTP mock.
+# Production code never enables this; see tests/policy in jeryu-mock-provider.
+loopback-upstream = []
+
+[dependencies]
+axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+base64 = "0.22"
+bytes = "1"
+futures-util = "0.3"
+parking_lot.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+ring = "0.17"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

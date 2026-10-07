@@ -400,6 +400,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
                 name,
                 "jeryu-api"
                     | "jeryu-cli"
+                    | "jeryu-gateway"
                     | "jeryu-mock-agent"
                     | "jeryu-mock-provider"
                     | "jeryu-split-tool"

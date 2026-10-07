@@ -155,6 +155,11 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
+    "crates/jeryu-gateway/": {
+      "command": "cargo test --locked -p jeryu-gateway -p jeryu-mock-provider",
+      "lane": "ci",
+      "purpose": "verify the K3 provider gateway: capability checks, frame rules, and the connect-once relay against the mock provider"
+    },
     "crates/jeryu-mock-agent/": {
       "command": "cargo test --locked -p jeryu-mock-agent",
       "lane": "ci",
