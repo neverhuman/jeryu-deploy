@@ -832,6 +832,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/bot/whoami", get(bots::whoami)),
         ("/api/v1/auth/signup", post(auth::signup)),
         ("/api/v1/auth/login", post(auth::login)),
+        (
+            "/api/v1/waitlist",
+            post(auth::waitlist_join).layer(DefaultBodyLimit::max(auth::WAITLIST_BODY_MAX)),
+        ),
         ("/api/v1/auth/logout", post(auth::logout)),
         ("/api/v1/auth/me", get(auth::me)),
         ("/api/v1/auth/password", post(auth::change_password)),
@@ -847,6 +851,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/admin/users",
             get(auth::admin_users).post(auth::admin_create_user),
         ),
+        ("/api/v1/admin/waitlist", get(auth::admin_waitlist)),
         (
             "/api/v1/admin/site-settings",
             get(site_settings::admin_get_site_settings).put(site_settings::admin_put_site_settings),

@@ -935,3 +935,192 @@ async fn s4_clone_by_old_url_after_rename() {
     server.abort();
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Bootstrap accounts must replace the one-time password before any other
+/// route. Login still returns a session; the replacement session is what the
+/// admin-list checks use.
+async fn session_after_password_change(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    login: &str,
+    current_password: &str,
+    new_password: &str,
+) -> String {
+    let login_response = client
+        .post(format!("http://{addr}/api/v1/auth/login"))
+        .json(&serde_json::json!({
+            "login": login,
+            "password": current_password,
+            "rememberMe": false
+        }))
+        .send()
+        .await
+        .expect("POST /api/v1/auth/login");
+    let login_status = login_response.status().as_u16();
+    let login_cookie = login_response
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let login_body = login_response.text().await.unwrap();
+    assert_eq!(login_status, 200, "{login} login: {login_body}");
+    assert!(
+        login_cookie.starts_with("jeryu-session="),
+        "{login} login must return a session cookie"
+    );
+    let csrf = serde_json::from_str::<serde_json::Value>(&login_body).unwrap()["csrfToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let changed = client
+        .post(format!("http://{addr}/api/v1/auth/password"))
+        .header(
+            reqwest::header::COOKIE,
+            login_cookie.split(';').next().unwrap(),
+        )
+        .header("x-jeryu-csrf", csrf)
+        .json(&serde_json::json!({
+            "currentPassword": current_password,
+            "newPassword": new_password
+        }))
+        .send()
+        .await
+        .expect("POST /api/v1/auth/password");
+    let changed_status = changed.status().as_u16();
+    let changed_cookie = changed
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let changed_body = changed.text().await.unwrap();
+    assert_eq!(
+        changed_status, 200,
+        "{login} password change: {changed_body}"
+    );
+    assert!(
+        changed_cookie.starts_with("jeryu-session="),
+        "{login} password change must return a session cookie"
+    );
+    changed_cookie.split(';').next().unwrap().to_string()
+}
+
+/// A public waitlist signup must not open a session, and the existing login
+/// path must still issue one. The admin list stays closed to signed-out
+/// callers and to non-admins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waitlist_signup_leaves_login_and_admin_authz_intact() {
+    let base = std::env::temp_dir().join(format!("jeryu-s4-waitlist-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let data_dir = base.join("data");
+    let spa_dir = base.join("spa");
+    write_spa_shell(&spa_dir);
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let config = WebServerConfig {
+        bind: addr,
+        spa_dir,
+        data_dir: data_dir.clone(),
+        git_storage_root: base.join("git"),
+        split_manifests: Vec::new(),
+        auth_required: true,
+        trust_local_dev: false,
+        secure_cookies: false,
+    };
+    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr, &mut server).await;
+
+    let client = reqwest::Client::new();
+    let joined = client
+        .post(format!("http://{addr}/api/v1/waitlist"))
+        .json(&serde_json::json!({
+            "email": "ada@example.com",
+            "name": "Ada"
+        }))
+        .send()
+        .await
+        .expect("POST /api/v1/waitlist");
+    let joined_status = joined.status().as_u16();
+    assert!(
+        joined.headers().get(reqwest::header::SET_COOKIE).is_none(),
+        "waitlist must not set a session cookie"
+    );
+    let joined_body = joined.text().await.unwrap();
+    assert_eq!(joined_status, 202, "waitlist: {joined_body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&joined_body).unwrap(),
+        serde_json::json!({ "result": "received" })
+    );
+
+    let signed_out = client
+        .get(format!("http://{addr}/api/v1/admin/waitlist"))
+        .send()
+        .await
+        .expect("GET admin waitlist signed out");
+    assert_eq!(signed_out.status().as_u16(), 401);
+
+    let receipt: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(data_dir.join("bootstrap-credentials.json")).unwrap(),
+    )
+    .unwrap();
+    let credentials = receipt["credentials"].as_array().unwrap();
+    let password = |login: &str| -> String {
+        credentials
+            .iter()
+            .find(|row| row["login"] == login)
+            .unwrap_or_else(|| panic!("missing bootstrap login {login}"))["password"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let reader_password = password("jordanh");
+    let admin_password = password("jeryu-admin");
+    let reader_cookie = session_after_password_change(
+        &client,
+        addr,
+        "jordanh",
+        &reader_password,
+        "jordanh-pass-ok",
+    )
+    .await;
+    let reader_list = client
+        .get(format!("http://{addr}/api/v1/admin/waitlist"))
+        .header(reqwest::header::COOKIE, &reader_cookie)
+        .send()
+        .await
+        .expect("GET admin waitlist as reader");
+    let reader_status = reader_list.status().as_u16();
+    let reader_body = reader_list.text().await.unwrap();
+    assert_eq!(reader_status, 403, "reader list: {reader_body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&reader_body).unwrap()["code"],
+        "permission_denied"
+    );
+
+    let admin_cookie = session_after_password_change(
+        &client,
+        addr,
+        "jeryu-admin",
+        &admin_password,
+        "jeryu-admin-ok",
+    )
+    .await;
+    let listed = client
+        .get(format!("http://{addr}/api/v1/admin/waitlist"))
+        .header(reqwest::header::COOKIE, &admin_cookie)
+        .send()
+        .await
+        .expect("GET admin waitlist as admin");
+    let listed_status = listed.status().as_u16();
+    let listed_body = listed.text().await.unwrap();
+    assert_eq!(listed_status, 200, "admin list: {listed_body}");
+    let listed: serde_json::Value = serde_json::from_str(&listed_body).unwrap();
+    assert_eq!(listed["signups"][0]["email"], "ada@example.com");
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}

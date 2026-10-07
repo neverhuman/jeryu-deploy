@@ -25,7 +25,16 @@
   slug's local secret. The enrollment key comes from a file, stdin, or
   `BOT_ENROLLMENT_KEY`, not from the command line. A session a bot starts is
   written to the forge audit log as `bot.session.start`.
-
+- A public waitlist stores an email, an optional name, and an optional note
+  without opening an account or a session. `POST /api/v1/waitlist` answers
+  `202 {"result":"received"}` for a new address and a repeat, with no
+  credential and no cookie. One address may join five times an hour, and the
+  route accepts thirty joins a minute. A body over 4 KiB is refused. A full
+  list answers 503 `waitlist_full`, matched on core's typed
+  `ForgeError::WaitlistFull` (the 50,000-row cap), not on error text. Behind a
+  reverse proxy, list it in `JERYU_TRUSTED_PROXIES` or every join shares the
+  proxy's per-address bucket. `GET /api/v1/admin/waitlist` pages with
+  `limit` and `offset` for an admin and writes an audit entry for the read.
 - Agent discovery resolves. Every URL an error body advertises is now served
   under the `/api/v1` prefix the edge routes: `GET /api/v1/capabilities` is the
   capability manifest every `jeryu_steering` block and the `x-jeryu-fast-path`

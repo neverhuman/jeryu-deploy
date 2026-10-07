@@ -1,10 +1,11 @@
 //! Web account/session endpoints and auth middleware.
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{ConnectInfo, Extension, Path as AxumPath, State};
+use axum::extract::{ConnectInfo, Extension, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response as AxumResponse};
@@ -25,6 +26,16 @@ const HOST_SESSION_COOKIE: &str = "__Host-jeryu-session";
 const LOCAL_SESSION_COOKIE: &str = "jeryu-session";
 const CSRF_HEADER: &str = "x-jeryu-csrf";
 const AUTH_LIMIT_MAX: u32 = 10;
+/// One client address may join the waitlist five times an hour, whatever
+/// email it sends. A separate route bucket caps the whole path.
+const WAITLIST_IP_MAX: u32 = 5;
+const WAITLIST_IP_WINDOW_SECS: i64 = 60 * 60;
+const WAITLIST_ROUTE_MAX: u32 = 30;
+const WAITLIST_ROUTE_WINDOW_SECS: i64 = 60;
+/// Reject a waitlist body larger than this before it is parsed.
+pub(super) const WAITLIST_BODY_MAX: usize = 4096;
+const WAITLIST_PAGE_DEFAULT: u32 = 100;
+const WAITLIST_PAGE_MAX: u32 = 500;
 #[cfg(test)]
 const AUTH_LIMIT_WINDOW_SECS: i64 = request_limits::LIMIT_WINDOW_SECS;
 const REMEMBER_ME_MAX_AGE_SECS: i64 = 60 * 60 * 24 * 30;
@@ -33,6 +44,21 @@ const REMEMBER_ME_MAX_AGE_SECS: i64 = 60 * 60 * 24 * 30;
 pub(super) struct SignupRequest {
     login: String,
     password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct WaitlistJoinRequest {
+    email: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct WaitlistListQuery {
+    limit: Option<u32>,
+    offset: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +231,110 @@ pub(super) async fn signup(
         response.headers_mut().append(header::SET_COOKIE, value);
     }
     response
+}
+
+/// `POST /api/v1/waitlist` — store an email for a later invitation.
+///
+/// This does not create an account, a session, or a cookie. A valid new
+/// address and a repeat of a stored address both answer `202 {"result":"received"}`.
+pub(super) async fn waitlist_join(
+    State(state): State<Arc<WebState>>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Json(request): Json<WaitlistJoinRequest>,
+) -> AxumResponse {
+    if waitlist_rate_limit_exceeded(&state, peer.as_ref(), &headers) {
+        return rate_limited();
+    }
+    match state.core.join_waitlist(
+        &request.email,
+        request.name.as_deref(),
+        request.note.as_deref(),
+    ) {
+        Ok(_) => {}
+        Err(error) => return waitlist_join_failure(error),
+    }
+    (StatusCode::ACCEPTED, Json(json!({ "result": "received" }))).into_response()
+}
+
+/// Map a failed `join_waitlist` onto the public waitlist response.
+///
+/// A full list is the typed `ForgeError::WaitlistFull` from the core cap; no
+/// display text is matched, so a storage error that happens to mention
+/// `waitlist_full` stays a 500. Any other failure keeps its detail off the wire.
+pub(super) fn waitlist_join_failure(error: ForgeError) -> AxumResponse {
+    match error {
+        ForgeError::Validation(reason) => {
+            api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_input", &reason)
+        }
+        ForgeError::WaitlistFull => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "waitlist_full",
+            "the waitlist is not accepting new addresses",
+        ),
+        _ => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_failed",
+            "could not save the waitlist signup",
+        ),
+    }
+}
+
+/// `GET /api/v1/admin/waitlist` — newest request first, one page at a time.
+pub(super) async fn admin_waitlist(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    Query(query): Query<WaitlistListQuery>,
+) -> AxumResponse {
+    if account.role != UserRole::Admin {
+        return forbidden("admin role required");
+    }
+    let limit = query.limit.unwrap_or(WAITLIST_PAGE_DEFAULT);
+    if limit == 0 || limit > WAITLIST_PAGE_MAX {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_input",
+            "limit must be from 1 to 500",
+        );
+    }
+    let offset = query.offset.unwrap_or(0);
+    let mut rows = state.core.list_waitlist();
+    rows.sort_by(|left, right| {
+        right
+            .last_requested_at
+            .cmp(&left.last_requested_at)
+            .then_with(|| left.email.cmp(&right.email))
+    });
+    let total = rows.len();
+    let signups: Vec<_> = rows
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .collect();
+    if state
+        .core
+        .append_audit_as(
+            &account.login,
+            "waitlist.list",
+            "waitlist",
+            "completed",
+            json!({ "limit": limit, "offset": offset, "total": total }),
+        )
+        .is_err()
+    {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_failed",
+            "could not record the waitlist read",
+        );
+    }
+    Json(json!({
+        "signups": signups,
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+    }))
+    .into_response()
 }
 
 pub(super) async fn login(
@@ -1022,6 +1152,7 @@ pub(super) fn open_path(path: &str) -> bool {
             | "/api/v1/auth/login"
             | "/api/v1/bot/token"
             | "/api/v1/bot/token/refresh"
+            | "/api/v1/waitlist"
             | "/api/v1/errors"
             | crate::discovery::CAPABILITIES_PATH
             | crate::discovery::DOCS_PATH
@@ -1154,6 +1285,61 @@ pub(super) fn bot_token_rate_limit(
         Some(rate_limited())
     } else {
         None
+    }
+}
+
+/// Five joins an hour from one address, and thirty a minute for the route.
+/// The address is `client_ip`, which trusts `X-Forwarded-For` only from peers
+/// in `JERYU_TRUSTED_PROXIES`: behind a reverse proxy that is not listed there,
+/// every join shares the proxy's bucket. The route bucket is a deliberate
+/// global ceiling on unauthenticated writes; a burst from many addresses can
+/// close it for the rest of the minute, which is the tradeoff for bounding
+/// growth of the table.
+/// The key does not include the email, so rotating addresses cannot multiply
+/// the budget. A closed route window is refused before a per-address key is
+/// created, so a flood of new addresses cannot grow the map for that hour.
+fn waitlist_rate_limit_exceeded(
+    state: &WebState,
+    peer: Option<&ConnectInfo<SocketAddr>>,
+    headers: &HeaderMap,
+) -> bool {
+    let ip = client_ip(peer.map(|connect| connect.0), headers);
+    let now = Utc::now();
+    let mut limits = state
+        .auth_rate_limits
+        .lock()
+        .expect("auth rate-limit mutex poisoned");
+    if waitlist_route_window_is_closed(&limits, now) {
+        return true;
+    }
+    let address_over = request_limits::hit_for(
+        &mut limits,
+        format!("waitlist:{ip}"),
+        now,
+        WAITLIST_IP_MAX,
+        WAITLIST_IP_WINDOW_SECS,
+    );
+    if address_over {
+        return true;
+    }
+    request_limits::hit_for(
+        &mut limits,
+        "waitlist:route".to_string(),
+        now,
+        WAITLIST_ROUTE_MAX,
+        WAITLIST_ROUTE_WINDOW_SECS,
+    )
+}
+
+/// The route bucket already holds its thirty joins and the minute has not
+/// elapsed. Reading it inserts nothing.
+fn waitlist_route_window_is_closed(
+    limits: &BTreeMap<String, RateLimitBucket>,
+    now: DateTime<Utc>,
+) -> bool {
+    match limits.get("waitlist:route") {
+        Some(bucket) => bucket.reset_at > now && bucket.attempts >= WAITLIST_ROUTE_MAX,
+        None => false,
     }
 }
 

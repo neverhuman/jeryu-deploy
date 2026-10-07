@@ -57,6 +57,33 @@ pub(super) fn credential_key(headers: &HeaderMap) -> Option<String> {
     Some(hex::encode(&digest[..16]))
 }
 
+/// Counts one request against `key` inside `window_secs`; true once the window
+/// holds more than `max`. A `max` of zero never limits. The window is per key,
+/// so an hourly bucket and a per-minute bucket can share one map.
+pub(super) fn hit_for(
+    limits: &mut BTreeMap<String, RateLimitBucket>,
+    key: String,
+    now: DateTime<Utc>,
+    max: u32,
+    window_secs: i64,
+) -> bool {
+    if max == 0 {
+        return false;
+    }
+    sweep(limits, now);
+    let window = chrono::Duration::seconds(window_secs);
+    let bucket = limits.entry(key).or_insert_with(|| RateLimitBucket {
+        attempts: 0,
+        reset_at: now + window,
+    });
+    if bucket.reset_at <= now {
+        bucket.attempts = 0;
+        bucket.reset_at = now + window;
+    }
+    bucket.attempts = bucket.attempts.saturating_add(1);
+    bucket.attempts > max
+}
+
 /// Counts one request against `key`; true once the window holds more than
 /// `max`. A `max` of zero never limits.
 pub(super) fn hit(

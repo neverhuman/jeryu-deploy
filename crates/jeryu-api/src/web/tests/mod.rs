@@ -47,6 +47,7 @@ mod site_settings_tests;
 mod source_tests;
 mod surface_tests;
 mod tools_tests;
+mod waitlist_tests;
 mod work_authorization;
 mod work_tests;
 mod workcells_tests;
