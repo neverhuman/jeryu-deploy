@@ -1,0 +1,28 @@
+# launch-inventory.allow — lane A. Owners review every change.
+# Six tab-separated fields: path, rule, class, owner, expires, reason.
+# debt + M6 hides a finding only while the script is report-only.
+# not-agent + permanent hides a finding in report-only and in --enforce.
+# A new finding needs a reviewed row in the same change. Milestone M6 passes --enforce.
+agent/baselines/main.repo-score.json	host_home_seed	not-agent	lane-C	permanent	Jankurai baseline names a test and does not seed a home
+agent/baselines/main.repo-score.json	managed_launch_without_connection_id	not-agent	lane-C	permanent	Jankurai baseline starts no agent and has no connection
+crates/jeryu-api/src/web/agent_runs/handlers.rs	docker_or_podman_run	debt	lane-C	M6	Host docker launch of an agent run, removed at M6
+crates/jeryu-api/src/web/agent_runs/handlers.rs	managed_launch_without_connection_id	debt	lane-C	M6	Agent-run launch has no connection_id until the vault
+crates/jeryu-api/src/web/agent_runs/handlers.rs	pty_backend_docker_host	debt	lane-C	M6	DockerHost PTY is a host agent backend, removed at M6
+crates/jeryu-api/src/web/agent_runs/handlers.rs	pty_backend_native	debt	lane-C	M6	Native PTY is a host agent backend, removed at M6
+crates/jeryu-api/src/web/sessions.rs	host_home_seed	debt	lane-C	M6	Session start calls seed_agent_auth from the host home
+crates/jeryu-api/src/web/sessions.rs	managed_launch_without_connection_id	debt	lane-C	M6	Session launch has no connection_id until the vault
+crates/jeryu-api/src/web/sessions.rs	pty_backend_docker_host	debt	lane-C	M6	Companion shell uses a host Docker PTY, removed at M6
+crates/jeryu-api/src/web/sessions/runtime.rs	dangerously_skip_permissions	debt	lane-C	M6	Default Claude flag on the host launch, removed at M6
+crates/jeryu-api/src/web/sessions/runtime.rs	docker_or_podman_run	debt	lane-C	M6	Session runtime builds a host docker run for the agent
+crates/jeryu-api/src/web/sessions/runtime.rs	host_home_seed	debt	lane-C	M6	seed_agent_auth copies host home credentials into the workspace
+crates/jeryu-api/src/web/sessions/runtime.rs	managed_launch_without_connection_id	debt	lane-C	M6	Session runtime launches an agent without connection_id
+crates/jeryu-api/src/web/sessions/runtime.rs	pty_backend_docker_host	debt	lane-C	M6	Docker session backend is a host agent launch
+crates/jeryu-api/src/web/sessions/runtime.rs	pty_backend_native	debt	lane-C	M6	Native session backend is a host agent launch
+crates/jeryu-api/src/web/sessions/runtime.rs	yolo	debt	lane-C	M6	Default Codex --yolo flag on the host launch, removed at M6
+crates/jeryu-api/src/web/sessions/tests.rs	host_home_seed	debt	lane-C	M6	Tests exercise host-home seeding and leave with that code
+crates/jeryu-api/src/web/sessions/tests.rs	managed_launch_without_connection_id	debt	lane-C	M6	Session tests launch without a connection_id
+crates/jeryu-api/src/web/workcells/run_agent.rs	managed_launch_without_connection_id	debt	lane-C	M6	run_agent accepts a caller program and has no connection_id
+crates/jeryu-cli/src/commands/agent.rs	managed_launch_without_connection_id	debt	lane-C	M6	CLI agent run is a managed launch without connection_id
+scripts/release/build-web-dist.sh	docker_or_podman_run	not-agent	lane-C	permanent	Release web-bundle build, not a coding-agent launch
+scripts/release/stage-release.sh	docker_or_podman_run	not-agent	lane-C	permanent	Release staging container, not a coding-agent launch
+tests/sandbox_escape_matrix.sh	docker_or_podman_run	not-agent	lane-C	permanent	Sandbox escape matrix, not a coding-agent launch
