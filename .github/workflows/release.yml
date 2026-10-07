@@ -43,4 +43,9 @@ jobs:
       - name: Release build + SBOM + cosign sign + publish
         env:
           GH_TOKEN: ${{ github.token }}
+          # Site values, not defaults in code: the signer identity the rollback
+          # install must verify (with {tag} for the rollback target's tag) and
+          # the issuer that may vouch for it. Unset means the receipt refuses.
+          JERYU_RELEASE_SIGNER_IDENTITY: ${{ vars.JERYU_RELEASE_SIGNER_IDENTITY }}
+          JERYU_RELEASE_OIDC_ISSUER: ${{ vars.JERYU_RELEASE_OIDC_ISSUER }}
         run: bash ops/ci/release.sh

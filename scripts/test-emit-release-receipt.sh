@@ -33,6 +33,10 @@ PREV_TAG="v0.0.0-prev"
 PREV_BIN_SHA="1111111111111111111111111111111111111111111111111111111111111111"
 PREV_SIG_SHA="2222222222222222222222222222222222222222222222222222222222222222"
 PREV_CERT_SHA="3333333333333333333333333333333333333333333333333333333333333333"
+# Invented site values: the signer identity the rollback install must verify.
+TAG_IDENTITY="https://ci.example.invalid/jeryu-releases/.gitea/workflows/release.yml@refs/tags/{tag}"
+BRANCH_IDENTITY="https://ci.example.invalid/jeryu-releases/.gitea/workflows/release.yml@refs/heads/main"
+OIDC_ISSUER="https://oidc.example.invalid"
 SUPPORT_DIGEST="sha256:4444444444444444444444444444444444444444444444444444444444444444"
 
 FAKE_BIN="${WORK}/bin"
@@ -133,6 +137,8 @@ run_emitter() {
   JERYU_RELEASE_PUBLICATION_FILE="$publish" \
   JERYU_RELEASE_SIGNRAIL_DIR="$signrail" \
   JERYU_RELEASE_ARTIFACT_SUPPORT_BUNDLE="$support_bundle" \
+  JERYU_RELEASE_SIGNER_IDENTITY="${JERYU_RELEASE_SIGNER_IDENTITY-$TAG_IDENTITY}" \
+  JERYU_RELEASE_OIDC_ISSUER="${JERYU_RELEASE_OIDC_ISSUER-$OIDC_ISSUER}" \
     bash "$EMITTER" "$bundle" >"$receipt"
 }
 
@@ -171,6 +177,7 @@ CHECKSUM_ACTUAL="$(sha256sum "${BUNDLE}/SHA256SUMS" | awk '{print $1}')"
 CHECKSUM_RECEIPT="$(jq -r '.checksum_manifest.sha256' "$RECEIPT")"
 check "receipt checksum manifest digest matches" "[ '${CHECKSUM_ACTUAL}' = '${CHECKSUM_RECEIPT}' ]"
 check "rollback.json written + valid JSON" "jq -e . '${BUNDLE}/rollback.json' >/dev/null"
+check "rollback install verifies one exact signer identity on the rollback tag" "jq -e --arg id '${TAG_IDENTITY/\{tag\}/${PREV_TAG}}' '(.rollback_command|contains(\"--certificate-identity\")) and (.rollback_command|contains(\$id)) and (.rollback_command|contains(\"identity-regexp\")|not)' '${BUNDLE}/rollback.json' >/dev/null"
 
 INITIAL_MARKER="forge-1-initial-install"
 INITIAL="${WORK}/initial"
@@ -232,6 +239,33 @@ if run_emitter "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publi
   no "missing branch/PR publication metadata is rejected"
 else
   ok "missing branch/PR publication metadata is rejected"
+fi
+
+NEG="${WORK}/neg-branch-signer"
+make_bundle "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publish.json" "$NEG/bundle/artifact-support-evidence.tar.gz"
+if JERYU_RELEASE_SIGNER_IDENTITY="$BRANCH_IDENTITY" \
+  run_emitter "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publish.json" "$NEG/bundle/artifact-support-evidence.tar.gz" "$NEG/bundle/release-receipt.json" >/dev/null 2>&1; then
+  no "a signer identity on a branch ref is rejected"
+else
+  ok "a signer identity on a branch ref is rejected"
+fi
+
+NEG="${WORK}/neg-no-signer"
+make_bundle "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publish.json" "$NEG/bundle/artifact-support-evidence.tar.gz"
+if JERYU_RELEASE_SIGNER_IDENTITY="" \
+  run_emitter "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publish.json" "$NEG/bundle/artifact-support-evidence.tar.gz" "$NEG/bundle/release-receipt.json" >/dev/null 2>&1; then
+  no "an unconfigured signer identity is rejected"
+else
+  ok "an unconfigured signer identity is rejected"
+fi
+
+NEG="${WORK}/neg-no-issuer"
+make_bundle "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publish.json" "$NEG/bundle/artifact-support-evidence.tar.gz"
+if JERYU_RELEASE_OIDC_ISSUER="" \
+  run_emitter "$NEG/bundle" "$NEG/bundle/artifact-support-signrail" "$NEG/publish.json" "$NEG/bundle/artifact-support-evidence.tar.gz" "$NEG/bundle/release-receipt.json" >/dev/null 2>&1; then
+  no "an unconfigured OIDC issuer is rejected"
+else
+  ok "an unconfigured OIDC issuer is rejected"
 fi
 
 printf '\n[test-emit-release-receipt] %d passed, %d failed\n' "$PASS" "$FAIL"

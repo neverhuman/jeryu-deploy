@@ -26,6 +26,12 @@
 #     (default: target/ci-fast/publish.json)
 #   * artifact-support SignRail outputs at JERYU_RELEASE_SIGNRAIL_DIR
 #     (default: target/artifact-support/signrail)
+#   * the signer the rollback install must verify, as configuration (no
+#     defaults here): JERYU_RELEASE_SIGNER_IDENTITY, which may carry {tag} for
+#     the rollback target's tag and has to resolve to an identity on
+#     refs/tags/<rollback target>, and JERYU_RELEASE_OIDC_ISSUER.
+#     An initial deploy has no previous artifact to install, so it needs
+#     neither.
 set -euo pipefail
 
 BUNDLE_DIR="${1:-target/release/bundle}"
@@ -265,7 +271,21 @@ write_rollback_json() {
     return
   fi
 
-  rollback_cmd="gh release download ${PREV_TAG} --repo ${REPO} --pattern jeryu --pattern jeryu.sig --pattern jeryu.pem && cosign verify-blob --signature jeryu.sig --certificate jeryu.pem --certificate-identity-regexp 'https://github.com/${REPO}/.*release.yml@.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com jeryu && install -m755 jeryu \"\$(command -v jeryu)\""
+  # The rollback install verifies one exact signer identity on the rollback
+  # target's tag. An identity pattern ending in `@.*` would also accept a
+  # signature made from a branch, which anyone with push access to that branch
+  # can produce, so the identity and its issuer are configured site values and
+  # the identity has to name refs/tags/<rollback target>.
+  local identity="${JERYU_RELEASE_SIGNER_IDENTITY:-}"
+  local issuer="${JERYU_RELEASE_OIDC_ISSUER:-}"
+  [ -n "$identity" ] || fail "JERYU_RELEASE_SIGNER_IDENTITY is required: the rollback install must name the signer that may sign a release"
+  [ -n "$issuer" ] || fail "JERYU_RELEASE_OIDC_ISSUER is required: the rollback install must name the issuer that may vouch for the signer"
+  identity="${identity//\{tag\}/${PREV_TAG}}"
+  case "$identity" in
+    *"@refs/tags/${PREV_TAG}") ;;
+    *) fail "JERYU_RELEASE_SIGNER_IDENTITY must resolve to an identity on refs/tags/${PREV_TAG}, got '$identity'; a signature made from another ref is not a release signature" ;;
+  esac
+  rollback_cmd="gh release download ${PREV_TAG} --repo ${REPO} --pattern jeryu --pattern jeryu.sig --pattern jeryu.pem && cosign verify-blob --signature jeryu.sig --certificate jeryu.pem --certificate-identity '${identity}' --certificate-oidc-issuer ${issuer} jeryu && install -m755 jeryu \"\$(command -v jeryu)\""
   jq -n \
     --arg prev "$PREV_TAG" \
     --arg cmd "$rollback_cmd" \
