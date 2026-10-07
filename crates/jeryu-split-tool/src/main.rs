@@ -312,9 +312,19 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// The one commit value that is not a commit id: the row for the repository
+/// the lock itself lives in, whose own commit id cannot be known until the
+/// lock is committed. Every other member is a full 40-hex lowercase id.
+const SELF_PIN: &str = "PENDING_SELF";
+
+/// Validate a release lock: it must list at least one `[[repo]]`, and every
+/// member must be pinned to a full 40-hex lowercase commit id. A branch, a
+/// tag, `latest`, an empty value, a short id and an uppercase id are all
+/// refused; only the lock's own repository may carry [`SELF_PIN`], once.
 fn verify_lock_value(value: &Value) -> Result<()> {
     let repos = repositories(value)?;
     let mut failures = Vec::new();
+    let mut self_pinned = 0usize;
     // jeryu-web ships as a dist pinned by commit and content hash (see
     // crates/jeryu-api/build.rs), so its entry carries no tag.
     let web_pinned = match value.get("web_artifact").and_then(Value::as_str) {
@@ -368,7 +378,15 @@ fn verify_lock_value(value: &Value) -> Result<()> {
             if !is_lower_hex(dist, 64) {
                 failures.push(format!("{name} web_dist_sha256 is not a sha256: {dist}"));
             }
-        } else if commit != "PENDING" && commit != "PENDING_SELF" && !valid_sha {
+        } else if commit == SELF_PIN {
+            self_pinned += 1;
+            if self_pinned > 1 {
+                failures.push(format!(
+                    "{name} is a second {SELF_PIN} entry: only the lock's own repository may be \
+                     unpinned"
+                ));
+            }
+        } else if !valid_sha {
             failures.push(format!("{name} commit is not a sha: {commit}"));
         }
     }

@@ -78,6 +78,86 @@ fn the_repository_lock_pins_jeryu_web() {
     assert_eq!(lock["web_artifact"].as_str(), Some("pinned"));
 }
 
+/// A one-member lock for an invented family, pinned to `commit`.
+fn member_lock(commit: &str) -> Value {
+    toml::from_str(&format!(
+        r#"
+                [[repo]]
+                name = "pelago"
+                github_slug = "pelago/pelago"
+                local_path = "/srv/pelago-split/pelago"
+                tag = "pelago-v5.0.0-split.4"
+                commit = "{commit}"
+                required_check = "pelago/required"
+            "#
+    ))
+    .unwrap()
+}
+
+#[test]
+fn lock_refuses_a_member_that_is_not_pinned_to_a_full_commit_id() {
+    // A branch, a tag, a moving alias, a short id, an uppercase id and the
+    // self sentinel on a member that is not the lock's own repository.
+    for commit in [
+        "main",
+        "pelago-v5.0.0-split.4",
+        "latest",
+        "0123456789abcdef",
+        "0123456789ABCDEF0123456789ABCDEF01234567",
+        "PENDING",
+    ] {
+        let error = verify_lock_value(&member_lock(commit))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            format!("pelago commit is not a sha: {commit}"),
+            "{commit} must not pass as a pin"
+        );
+    }
+    // An empty value is a missing pin, reported as the missing field it is.
+    let error = verify_lock_value(&member_lock("")).unwrap_err().to_string();
+    assert!(error.contains("pelago missing commit"), "{error}");
+    // The same lock passes once the member carries a full commit id.
+    verify_lock_value(&member_lock("0123456789abcdef0123456789abcdef01234567")).unwrap();
+}
+
+#[test]
+fn lock_refuses_an_empty_member_list() {
+    for source in ["web_artifact = \"pinned\"\n", "repo = []\n", ""] {
+        let value: Value = toml::from_str(source).unwrap();
+        let error = verify_lock_value(&value).unwrap_err().to_string();
+        assert_eq!(error, "lock must contain [[repo]] entries");
+    }
+}
+
+#[test]
+fn lock_allows_the_self_pin_only_once() {
+    let mut lock = member_lock(SELF_PIN);
+    verify_lock_value(&lock).unwrap();
+
+    let second = member_lock(SELF_PIN)["repo"].as_array().unwrap()[0].clone();
+    let mut second = second.as_table().unwrap().clone();
+    second.insert("name".to_string(), Value::String("pelago-tool".to_string()));
+    second.insert(
+        "local_path".to_string(),
+        Value::String("/srv/pelago-split/pelago-tool".to_string()),
+    );
+    second.insert(
+        "required_check".to_string(),
+        Value::String("pelago-tool/required".to_string()),
+    );
+    lock["repo"]
+        .as_array_mut()
+        .unwrap()
+        .push(Value::Table(second));
+    let error = verify_lock_value(&lock).unwrap_err().to_string();
+    assert!(
+        error.contains("pelago-tool is a second PENDING_SELF entry"),
+        "{error}"
+    );
+}
+
 /// An authority manifest for an invented family, in the shape
 /// `jeryu-release-ops` publishes: the control plane under `[control_plane]`
 /// with no `[[repo]]` row, every other member one `[[repo]]` row.
