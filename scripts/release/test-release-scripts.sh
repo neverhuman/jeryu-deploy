@@ -494,12 +494,14 @@ D_REL=prod-20260920T135912Z-4f7d883-unsigned
 # The two hosts are site settings with no default; the stand-in ssh ignores which
 # host it was given, so these names are this test's.
 export JERYU_BUILD_HOST=build.invalid JERYU_FORGE_HOST=forge.invalid
+export JERYU_HEALTH_URL=http://forge.invalid:8787/health
 cat >"$D/bin/ssh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
   *RELEASE.txt*) printf 'jeryu_deploy_commit=%s x\nrollback_target=%s\nbinary_sha256=%s\nlive=jeryu-%s\nlive_commit=%s\n' \
     "\$(cat "$D/staged_commit")" "$PREV" "$(printf e%.0s {1..64})" "\$(cat "$D/live")" "\$(cat "$D/live_commit")" ;;
   *)
+    printf '%s\n' "\$*" >>"$D/switch-args"
     echo "[switch] stopping jeryu.service"
     [ -e "$D/succeed" ] && { echo "[switch] rollback: bash ~/.jeryu/releases/x/rollback.sh"; exit 0; }
     printf '\033[31merror: health check timed out after 30s\033[0m\n' >&2
@@ -558,6 +560,13 @@ jq -se '.[-1] | .state == "success" and (.log_path | endswith(".log")) and (has(
 [[ -s "$(jq -sr '.[-1].log_path' "$D/statuses.jsonl")" ]] || fail "the success log is empty"
 [[ "$(find "$logs" -name '*.log' | wc -l)" == 30 ]] || fail "the switch logs are not pruned to the newest 30"
 ok "deploy-release records the log path on success and keeps the newest 30 logs"
+grep -qF "'JERYU_HEALTH_URL=http://forge.invalid:8787/health bash ~/.jeryu/incoming/$D_REL/switch.sh'" "$D/switch-args" \
+  || fail "deploy-release did not hand JERYU_HEALTH_URL to switch.sh on the forge host: $(cat "$D/switch-args")"
+rc=0; out="$(JERYU_HEALTH_URL='' deploy_release 2>&1)" || rc=$?
+[[ $rc -ne 0 && "$out" == *"JERYU_HEALTH_URL is unset"* ]] || fail "deploy-release ran without JERYU_HEALTH_URL (rc $rc): $out"
+rc=0; out="$(JERYU_HEALTH_URL="http://x/'; touch /tmp/pwn" deploy_release 2>&1)" || rc=$?
+[[ $rc -ne 0 && "$out" == *"must be a plain http(s) URL"* ]] || fail "deploy-release took a health URL that could break the remote command (rc $rc)"
+ok "deploy-release hands JERYU_HEALTH_URL to switch.sh and refuses a missing or unsafe one"
 
 # The switched forge holds no release board, so a successful deploy refreshes every family itself:
 # it waits for the forge's health endpoint before pushing, keeps the run's output beside the

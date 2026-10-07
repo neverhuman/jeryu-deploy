@@ -50,7 +50,8 @@
 #
 # Recording needs an admin token: JERYU_DEPLOY_TOKEN_FILE, a path to a readable
 # 0600 file. It is read into a 0600 curl config, never put on argv.
-# Env: JERYU_BUILD_HOST, JERYU_FORGE_HOST and JERYU_DEPLOY_TOKEN_FILE are
+# Env: JERYU_BUILD_HOST, JERYU_FORGE_HOST, JERYU_DEPLOY_TOKEN_FILE and
+# JERYU_HEALTH_URL (handed to switch.sh on the forge host) are
 # required site settings with no default — this source is public, and a machine
 # name and a credential path are one installation's data.
 # JERYU_FORGE_URL (https://git.neverhuman.org).
@@ -106,6 +107,12 @@ token_file="${JERYU_DEPLOY_TOKEN_FILE:-}"
 [[ -n "$build_host" ]] || refuse usage "JERYU_BUILD_HOST is unset: set it to this installation's release build host"
 [[ -n "$forge_host" ]] || refuse usage "JERYU_FORGE_HOST is unset: set it to this installation's forge host"
 [[ -n "$token_file" ]] || refuse credential "JERYU_DEPLOY_TOKEN_FILE is unset: set it to the deploy admin's 0600 credential file"
+# switch.sh runs on the forge host over ssh, where none of this shell's settings
+# exist, and polls the forge's local health endpoint there. Name it here, so a
+# site that has not set it is refused before anything is recorded or switched.
+health_url="${JERYU_HEALTH_URL:-}"
+[[ -n "$health_url" ]] || refuse usage "JERYU_HEALTH_URL is unset: set it to the forge's local health endpoint on the forge host (switch.sh polls it there), for example http://127.0.0.1:8787/health"
+[[ "$health_url" =~ ^https?://[A-Za-z0-9.:_/-]+$ ]] || refuse usage "JERYU_HEALTH_URL must be a plain http(s) URL, got '$health_url'"
 repo=/repos/jeryu/jeryu-deploy
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -259,7 +266,7 @@ deployment_id=""
 record
 status in_progress "switching $forge_host to $rel"
 set +e
-ssh "$build_host" "ssh $forge_host 'bash ~/.jeryu/incoming/$rel/switch.sh'" 2>&1 | tee -a "$log"
+ssh "$build_host" "ssh $forge_host 'JERYU_HEALTH_URL=$health_url bash ~/.jeryu/incoming/$rel/switch.sh'" 2>&1 | tee -a "$log"
 rc=${PIPESTATUS[0]}
 set -e
 echo "[receipt] switch output kept in $log"
