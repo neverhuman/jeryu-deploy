@@ -47,6 +47,18 @@ pub fn run(
             limit,
         } => run_follow(json, api_url, &run_id, after_seq, limit, out),
         AgentCommands::ExportPr(args) => run_export_pr(client, json, api_url, args, out),
+        AgentCommands::Attach {
+            run_id,
+            control,
+            after_seq,
+        } => {
+            let Some(api_url) = api_url else {
+                return Err(ClientError::NotWired(
+                    "agent attach requires --api-url or JERYU_API_URL".to_string(),
+                ));
+            };
+            crate::commands::attach::run(api_url, &run_id, after_seq, control, json, out)
+        }
     }
 }
 

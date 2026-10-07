@@ -17,18 +17,22 @@ pub(crate) struct ApiClient {
     token: Option<String>,
 }
 
+/// The bearer token from `JERYU_TOKEN_FILE` (preferred) or `JERYU_TOKEN`.
+pub(crate) fn api_token() -> ClientResult<Option<String>> {
+    Ok(match std::env::var_os("JERYU_TOKEN_FILE") {
+        Some(path) => Some(
+            std::fs::read_to_string(path)
+                .map_err(|_| ClientError::Invalid("cannot read JERYU_TOKEN_FILE".into()))?
+                .trim()
+                .to_owned(),
+        ),
+        None => std::env::var("JERYU_TOKEN").ok(),
+    })
+}
+
 impl ApiClient {
     pub(crate) fn new(api_url: &str) -> ClientResult<Self> {
-        let token = match std::env::var_os("JERYU_TOKEN_FILE") {
-            Some(path) => Some(
-                std::fs::read_to_string(path)
-                    .map_err(|_| ClientError::Invalid("cannot read JERYU_TOKEN_FILE".into()))?
-                    .trim()
-                    .to_owned(),
-            ),
-            None => std::env::var("JERYU_TOKEN").ok(),
-        };
-        Self::with_token(api_url, token)
+        Self::with_token(api_url, api_token()?)
     }
 
     fn with_token(api_url: &str, token: Option<String>) -> ClientResult<Self> {

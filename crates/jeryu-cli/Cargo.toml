@@ -31,7 +31,12 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros", "signal", "time"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+rustix = { version = "1", features = ["termios", "std"] }
+base64 = "0.22"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 
 [dev-dependencies]
 

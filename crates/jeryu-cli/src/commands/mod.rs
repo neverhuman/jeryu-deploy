@@ -7,6 +7,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod attach;
 pub mod autonomy;
 pub mod bot;
 pub mod cache;

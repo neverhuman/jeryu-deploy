@@ -34,6 +34,22 @@ pub enum AgentCommands {
         limit: u64,
     },
 
+    /// Attach to an agent run's live terminal over WebSocket.
+    ///
+    /// Read-only by default. `--control` takes the single-writer lease so your
+    /// keystrokes and window size reach the agent; another client can take it
+    /// back. Ctrl-] detaches without stopping the agent.
+    Attach {
+        /// Agent run id.
+        run_id: String,
+        /// Take the control lease and forward keystrokes and resizes.
+        #[arg(long, default_value_t = false)]
+        control: bool,
+        /// Replay retained output after this sequence (0 replays everything kept).
+        #[arg(long, default_value_t = 0)]
+        after_seq: u64,
+    },
+
     /// Export a completed agent-edit run as a PR.
     #[command(name = "export-pr")]
     ExportPr(AgentExportPrArgs),
