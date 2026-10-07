@@ -7,6 +7,7 @@ mod ci_bridge;
 pub mod discovery;
 #[cfg(feature = "web")]
 mod git_materializer;
+pub mod git_remote;
 #[cfg(feature = "web")]
 mod git_transport;
 pub mod github;

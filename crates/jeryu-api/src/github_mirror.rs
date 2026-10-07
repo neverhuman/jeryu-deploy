@@ -33,9 +33,15 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::git_remote::GitRemoteAllowlist;
+
 /// Hard wall-clock bound for one push; a hung network push must never wedge
 /// the merge handler (the push runs synchronously inside it).
 const PUSH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The host the mirror writes to. Which owner on it may be reached is site
+/// configuration (`MIRROR_REMOTE_ALLOWLIST_VAR`).
+const MIRROR_HOST: &str = "github.com";
 
 /// Check-run name used to record push outcomes (the relay's own convention).
 pub const MIRROR_CHECK_NAME: &str = "jeryu/github-mirror";
@@ -52,11 +58,19 @@ const MAX_NAMED_COMMITS: usize = 20;
 /// because the comparison ran.
 const COMPARE_REF: &str = "refs/github-mirror/compare";
 
+/// Site configuration naming the `host/owner` pairs the mirror may reach,
+/// e.g. `github.com/examplecorp`. Unset refuses every target: which GitHub
+/// account this forge mirrors into is a site value, never a default here.
+pub const MIRROR_REMOTE_ALLOWLIST_VAR: &str = "JERYU_MIRROR_REMOTE_ALLOWLIST";
+
 #[derive(Clone, Debug, Default)]
 pub struct GithubMirror {
     enabled: bool,
     /// Keyed by lowercased local slug `owner/name` (the manifest `jeryu_slug`).
     targets: BTreeMap<String, GithubMirrorTarget>,
+    /// Which remotes a manifest target may resolve to. `None` when the site
+    /// configured none, and then no target resolves at all.
+    remote_allowlist: Option<GitRemoteAllowlist>,
 }
 
 #[derive(Clone, Debug)]
@@ -230,6 +244,7 @@ impl GithubMirror {
         Self {
             enabled: !targets.is_empty(),
             targets,
+            remote_allowlist: GitRemoteAllowlist::from_env(MIRROR_REMOTE_ALLOWLIST_VAR),
         }
     }
 
@@ -239,7 +254,46 @@ impl GithubMirror {
         Self {
             enabled: !targets.is_empty(),
             targets,
+            remote_allowlist: GitRemoteAllowlist::from_env(MIRROR_REMOTE_ALLOWLIST_VAR),
         }
+    }
+
+    /// Embedding/test seam: the same, with the remote allowlist given directly
+    /// rather than read from the environment.
+    pub fn with_targets_and_allowlist(
+        targets: BTreeMap<String, GithubMirrorTarget>,
+        remote_allowlist: Option<GitRemoteAllowlist>,
+    ) -> Self {
+        Self {
+            enabled: !targets.is_empty(),
+            targets,
+            remote_allowlist,
+        }
+    }
+
+    /// The remote a target is mirrored to, or why it may not be reached.
+    ///
+    /// The url is parsed and allowlisted without the push credential, then the
+    /// credential is added: the check refuses userinfo, so the host's own token
+    /// is attached only once the destination is known to be the configured one.
+    fn destination(&self, target: &GithubMirrorTarget) -> Result<String, String> {
+        if let Some(seam) = &target.destination_override {
+            return Ok(seam.clone());
+        }
+        let candidate = format!("https://{MIRROR_HOST}/{}.git", target.github_slug);
+        match &self.remote_allowlist {
+            Some(allowlist) => allowlist.check(&candidate)?,
+            None => {
+                return Err(format!(
+                    "{MIRROR_REMOTE_ALLOWLIST_VAR} is not configured, so nothing says which GitHub owner {} may be mirrored to",
+                    target.github_slug
+                ));
+            }
+        }
+        Ok(format!(
+            "https://x-access-token:jeryussh@{MIRROR_HOST}/{}.git",
+            target.github_slug
+        ))
     }
 
     /// Whether this mirror has any target at all: false under the
@@ -273,6 +327,10 @@ impl GithubMirror {
                 "{owner}/{name} is not a github-mirror target"
             ));
         };
+        let dest = match self.destination(target) {
+            Ok(dest) => dest,
+            Err(why) => return MirrorPushOutcome::Failed(why),
+        };
         let tip = match run_bounded(
             git_bin,
             &["rev-parse", &format!("refs/heads/{}", target.branch)],
@@ -288,12 +346,6 @@ impl GithubMirror {
                 bare.display()
             ));
         }
-        let dest = target.destination_override.clone().unwrap_or_else(|| {
-            format!(
-                "https://x-access-token:jeryussh@github.com/{}.git",
-                target.github_slug
-            )
-        });
         let refspec = format!("{}:refs/heads/{}", tip, target.branch);
         match run_bounded(git_bin, &["push", &dest, &refspec], bare) {
             Ok(_) => MirrorPushOutcome::Pushed { tip },
@@ -319,7 +371,15 @@ impl GithubMirror {
         let Some(target) = self.target(owner, name) else {
             return MirrorTagOutcome::default();
         };
-        let dest = destination(target);
+        let dest = match self.destination(target) {
+            Ok(dest) => dest,
+            Err(why) => {
+                return MirrorTagOutcome {
+                    error: Some(why),
+                    ..MirrorTagOutcome::default()
+                };
+            }
+        };
         let remote = match remote_refs(git_bin, bare, &dest) {
             Ok(refs) => refs,
             Err(err) => {
@@ -363,7 +423,6 @@ impl GithubMirror {
         name: &str,
     ) -> Option<MirrorReconcile> {
         let target = self.target(owner, name)?;
-        let dest = destination(target);
         let branch_ref = format!("refs/heads/{}", target.branch);
         let mut report = MirrorReconcile {
             github_slug: target.github_slug.clone(),
@@ -375,6 +434,14 @@ impl GithubMirror {
             github_only_commits: Vec::new(),
             tags: MirrorTagOutcome::default(),
             error: None,
+        };
+        let dest = match self.destination(target) {
+            Ok(dest) => dest,
+            Err(why) => {
+                report.error = Some(why.clone());
+                report.tags.error = Some(why);
+                return Some(report);
+            }
         };
         let forge_head = run_bounded(git_bin, &["rev-parse", &branch_ref], bare)
             .map(|out| out.trim().to_string())
@@ -466,16 +533,6 @@ impl GithubMirror {
         };
         Some(report)
     }
-}
-
-/// The GitHub URL a target pushes to, or the test seam standing in for it.
-fn destination(target: &GithubMirrorTarget) -> String {
-    target.destination_override.clone().unwrap_or_else(|| {
-        format!(
-            "https://x-access-token:jeryussh@github.com/{}.git",
-            target.github_slug
-        )
-    })
 }
 
 /// One tag comparison pass, shared by the tag-push path and the reconcile.
@@ -700,6 +757,99 @@ mod tests {
         // we prove an empty target set always skips.
         let mirror = GithubMirror::default();
         assert!(mirror.target("jeryu", "jeryu-core").is_none());
+    }
+
+    // A mirror holding one target under the invented slug `examplecorp/app`,
+    // with the given allowlist.
+    fn mirror_for(github_slug: &str, allowlist: Option<&str>) -> GithubMirror {
+        let mut targets = BTreeMap::new();
+        targets.insert(
+            "examplecorp/app".to_string(),
+            GithubMirrorTarget {
+                github_slug: github_slug.to_string(),
+                branch: "main".to_string(),
+                destination_override: None,
+                tag_exclude: Vec::new(),
+            },
+        );
+        GithubMirror::with_targets_and_allowlist(targets, allowlist.map(GitRemoteAllowlist::parse))
+    }
+
+    // Every path below refuses before a remote is reached, so the git binary
+    // named here is one that does not exist: a case that reached git would fail
+    // with a spawn error instead of the refusal asserted.
+    const NO_GIT: &str = "/nonexistent/git-must-not-run";
+
+    // What the three mirror entry points report for a target that may not be
+    // reached. A refused destination is reported, never silently skipped.
+    fn refusals(mirror: &GithubMirror) -> Vec<String> {
+        let bare = std::path::Path::new("/nonexistent/bare.git");
+        let push = match mirror.push_branch(NO_GIT, bare, "examplecorp", "app") {
+            MirrorPushOutcome::Failed(why) => why,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        let tags = mirror
+            .push_tags(NO_GIT, bare, "examplecorp", "app", None)
+            .error
+            .expect("tags refusal");
+        let reconcile = mirror
+            .reconcile(NO_GIT, bare, "examplecorp", "app")
+            .expect("an enrolled target reconciles");
+        assert_eq!(reconcile.state, MirrorSync::Unknown);
+        assert!(!reconcile.caught_up);
+        vec![push, tags, reconcile.error.expect("reconcile refusal")]
+    }
+
+    #[test]
+    fn an_allowlisted_owner_resolves_to_the_credentialed_remote() {
+        let mirror = mirror_for("examplecorp/app", Some("github.com/examplecorp"));
+        let target = mirror.target("examplecorp", "app").expect("target");
+        assert_eq!(
+            mirror.destination(target).expect("allowlisted"),
+            "https://x-access-token:jeryussh@github.com/examplecorp/app.git"
+        );
+    }
+
+    #[test]
+    fn an_unconfigured_allowlist_mirrors_nothing() {
+        for why in refusals(&mirror_for("examplecorp/app", None)) {
+            assert!(why.contains(MIRROR_REMOTE_ALLOWLIST_VAR), "{why}");
+        }
+    }
+
+    #[test]
+    fn an_owner_outside_the_allowlist_is_refused() {
+        for why in refusals(&mirror_for("other/app", Some("github.com/examplecorp"))) {
+            assert!(why.contains("not an allowlisted host and owner"), "{why}");
+        }
+        // Matched whole: an owner the allowed one is a prefix of is another owner.
+        for why in refusals(&mirror_for(
+            "examplecorp-staging/app",
+            Some("github.com/examplecorp"),
+        )) {
+            assert!(why.contains("not an allowlisted host and owner"), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_slug_that_is_not_a_repository_path_is_refused() {
+        // A manifest slug lands inside a url and then on a git command line, so
+        // each of these would otherwise name another host, another repository,
+        // or an option.
+        for (slug, expected) in [
+            ("examplecorp/../evil/app", "dot segment"),
+            ("examplecorp/%2e%2e/evil/app", "percent-encoded"),
+            ("examplecorp@evil.example.net/app", "not a repository path"),
+            ("examplecorp/app\nexamplecorp/other", "control character"),
+            ("examplecorp/app\t", "control character"),
+            ("examplecorp/app\0", "control character"),
+            ("examplecorp//app", "empty segment"),
+            ("-upload-pack=touch /tmp/pwned", "not a repository path"),
+        ] {
+            for why in refusals(&mirror_for(slug, Some("github.com/examplecorp"))) {
+                assert!(why.contains(expected), "slug {slug:?} gave {why}");
+            }
+        }
     }
 
     #[test]

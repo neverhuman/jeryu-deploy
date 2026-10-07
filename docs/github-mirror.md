@@ -41,6 +41,25 @@ and anything git echoes is redacted before it reaches a check-run or the
 inbox. When the rewrite or the key is missing, every push fails and the
 attention inbox raises `mirror_failing` with the command to check.
 
+## Which remote may be reached
+
+A `github_slug` from a manifest ends up inside a URL and then on a git command
+line, so it is parsed and allowlisted before any target resolves
+(`crates/jeryu-api/src/git_remote.rs`). `JERYU_MIRROR_REMOTE_ALLOWLIST` lists
+the `host/owner` pairs the mirror may reach, separated by whitespace or commas:
+
+```
+JERYU_MIRROR_REMOTE_ALLOWLIST='github.com/acme-oss'
+```
+
+Which GitHub owner this forge mirrors into is a site value, so it has no default
+here: with the variable unset, every push, tag pass and reconcile reports that
+it is not configured and reaches nothing. A slug whose URL is not an `https`
+URL whose host and first path segment match an entry exactly is refused the same
+way, as is one carrying userinfo, an explicit port, a `.` or `..` or
+percent-encoded path segment, a control character, or a leading dash. The push
+credential is attached only after the credential-free URL has been allowed.
+
 ## What the mirror does
 
 | Trigger | What it pushes |
