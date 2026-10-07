@@ -3,6 +3,8 @@ resolver = "2"
 members = [
   "crates/jeryu-api",
   "crates/jeryu-cli",
+  "crates/jeryu-mock-agent",
+  "crates/jeryu-mock-provider",
   "crates/jeryu-split-tool",
 ]
 exclude = [

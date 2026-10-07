@@ -1,0 +1,28 @@
+[package]
+name = "jeryu-mock-provider"
+description = "Test-only loopback provider for connect-once CI (lane A mock-provider-v1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "jeryu-mock-provider"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", default-features = false, features = ["form", "http1", "json", "tokio"] }
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+toml.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "form"] }
+
+[lints]
+workspace = true

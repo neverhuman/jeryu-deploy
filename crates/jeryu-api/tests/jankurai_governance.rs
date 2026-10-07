@@ -396,7 +396,14 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             .and_then(toml::Value::as_str)
             .expect("lock package must have a name");
         if !name.starts_with("jeryu-")
-            || matches!(name, "jeryu-api" | "jeryu-cli" | "jeryu-split-tool")
+            || matches!(
+                name,
+                "jeryu-api"
+                    | "jeryu-cli"
+                    | "jeryu-mock-agent"
+                    | "jeryu-mock-provider"
+                    | "jeryu-split-tool"
+            )
         {
             continue;
         }

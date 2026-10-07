@@ -1,0 +1,23 @@
+[package]
+name = "jeryu-mock-agent"
+description = "Test-only stand-in for the Claude, Codex, and Grok CLIs (lane A mock-agent-v1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "jeryu-mock-agent"
+path = "src/main.rs"
+
+[dependencies]
+rustix = { version = "1", features = ["event", "process", "stdio", "termios"] }
+signal-hook = "0.3"
+
+[dev-dependencies]
+rustix = { version = "1", features = ["event", "process", "pty", "stdio", "termios"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

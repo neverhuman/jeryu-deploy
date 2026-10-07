@@ -155,6 +155,16 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
+    "crates/jeryu-mock-agent/": {
+      "command": "cargo test --locked -p jeryu-mock-agent",
+      "lane": "ci",
+      "purpose": "verify the test-only mock agent modes (lane A mock-agent-v1) on real PTYs"
+    },
+    "crates/jeryu-mock-provider/": {
+      "command": "cargo test --locked -p jeryu-mock-provider",
+      "lane": "ci",
+      "purpose": "verify the loopback mock provider (lane A mock-provider-v1) and that no product crate links a mock"
+    },
     "crates/jeryu-split-tool/": {
       "command": "cargo test --locked --offline -p jeryu-split-tool && bash ops/ci/workflow-lint.sh && just check",
       "lane": "ci",

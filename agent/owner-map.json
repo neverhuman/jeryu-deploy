@@ -23,6 +23,8 @@
     "configs/": "jeryu-deploy",
     "crates/jeryu-api/": "jeryu-deploy",
     "crates/jeryu-cli/": "jeryu-deploy",
+    "crates/jeryu-mock-agent/": "jeryu-deploy",
+    "crates/jeryu-mock-provider/": "jeryu-deploy",
     "crates/jeryu-split-tool/": "jeryu-deploy",
     "deny.toml": "workspace",
     "docs/": "jeryu-deploy",
