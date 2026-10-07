@@ -15,9 +15,8 @@
   keep a valid token without MCP traffic. `proxy.log` masks the local secret,
   event streams end by closing the connection, and the running-broker check
   uses `ps`, so it works on macOS.
-- The interim jeryu-core pin is `f18fade033ba3c9decc4aeb1b86510c1d7c19919`,
-  the current tip of `feat/bot-connect`. Replace that commit with the release
-  tag once it is on main. Do not merge this pull request until then.
+- jeryu-core is pinned to `jeryu-core-v5.0.0-split.14` (`e7a73fa`), which
+  carries account Grokbot and Musebot credentials and the waitlist store.
 - `jeryu bot` prints a per-slug local proxy. Gh config and the merge token
   stay under `~/.jeryu/bots/<slug>/` and the script does not write
   `~/.config/gh` or `~/.jeryu/secrets/merge-token`. The proxy binds an

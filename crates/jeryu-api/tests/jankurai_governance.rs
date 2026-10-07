@@ -228,13 +228,8 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             Some("http://127.0.0.1:8787/git/jeryu/jeryu-core.git")
         );
         assert_eq!(
-            source.get("rev").and_then(toml::Value::as_str),
-            Some("f18fade033ba3c9decc4aeb1b86510c1d7c19919"),
-            "{package} stays on the untagged feat/bot-connect commit until it is released"
-        );
-        assert!(
-            source.get("tag").is_none(),
-            "{package} has no release tag yet"
+            source.get("tag").and_then(toml::Value::as_str),
+            Some("jeryu-core-v5.0.0-split.14")
         );
         assert!(
             source.get("path").is_none(),
@@ -310,7 +305,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("API dependencies must be a table");
     let expected_groups = [
         (
-            "f18fade033ba3c9decc4aeb1b86510c1d7c19919",
+            "jeryu-core-v5.0.0-split.14",
             &[
                 "jeryu-core",
                 "jeryu-enterprise",
@@ -363,30 +358,18 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
                 dependency_git.is_some(),
                 "{package} must declare a Git source"
             );
-            let pinned_by_commit =
-                tag.len() == 40 && tag.bytes().all(|byte| byte.is_ascii_hexdigit());
-            if pinned_by_commit {
+            if tag == "jeryu-core-v5.0.0-split.14" {
                 assert_eq!(
                     dependency_git,
                     Some("http://127.0.0.1:8787/git/jeryu/jeryu-core.git"),
                     "{package} must resolve from the local Jeryu Core authority"
                 );
-                assert_eq!(
-                    dependency.get("rev").and_then(toml::Value::as_str),
-                    Some(tag),
-                    "{package} must declare the interim Core commit"
-                );
-                assert!(
-                    dependency.get("tag").is_none(),
-                    "{package} has no release tag yet"
-                );
-            } else {
-                assert_eq!(
-                    dependency.get("tag").and_then(toml::Value::as_str),
-                    Some(tag),
-                    "{package} must declare the governed immutable tag"
-                );
             }
+            assert_eq!(
+                dependency.get("tag").and_then(toml::Value::as_str),
+                Some(tag),
+                "{package} must declare the governed immutable tag"
+            );
             assert!(
                 dependency.get("path").is_none(),
                 "{package} must not declare a sibling path"
@@ -430,13 +413,13 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             core_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?rev=f18fade033ba3c9decc4aeb1b86510c1d7c19919#f18fade033ba3c9decc4aeb1b86510c1d7c19919"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.14#e7a73fa51080b747d19cf2a96891166e1a822054"
             );
         } else if name == "jeryu-proof" {
             proof_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?rev=f18fade033ba3c9decc4aeb1b86510c1d7c19919#f18fade033ba3c9decc4aeb1b86510c1d7c19919"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.14#e7a73fa51080b747d19cf2a96891166e1a822054"
             );
         } else if name == "jeryu-rustjet" {
             assert_eq!(

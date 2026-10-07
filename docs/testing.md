@@ -258,9 +258,7 @@ that hosted result.
   `[env]` table to the Git child that performs dependency fetches. The same
   gate checks `.cargo/hosted-pin-refs.tsv` against the lock and the live hosted
   immutable tag plus preservation ref, preventing a warm cache from hiding an
-  exact-SHA fetch that the hosted backend can no longer serve. Until
-  `feat/bot-connect` is merged and tagged, the jeryu-core row names that commit
-  and `refs/heads/feat/bot-connect` instead of a release tag.
+  exact-SHA fetch that the hosted backend can no longer serve.
 - The SBOM lane always writes a cosign transcript. Keyless signing is opt-in via
   `JERYU_COSIGN_KEYLESS=1`; default local CI records signing instructions so it
   cannot hang waiting for an OIDC/browser flow.

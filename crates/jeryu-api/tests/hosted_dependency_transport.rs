@@ -59,9 +59,9 @@ const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     ),
     (
         "jeryu-core",
-        "f18fade033ba3c9decc4aeb1b86510c1d7c19919",
-        "f18fade033ba3c9decc4aeb1b86510c1d7c19919",
-        "refs/heads/feat/bot-connect",
+        "jeryu-core-v5.0.0-split.14",
+        "e7a73fa51080b747d19cf2a96891166e1a822054",
+        "refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.14",
     ),
     (
         "jeryu-intelligence",
@@ -223,15 +223,10 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
         assert!(!tag.is_empty());
         assert_eq!(commit.len(), 40);
         assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        if tag == commit {
-            assert_eq!(*repo, "jeryu-core");
-            assert_eq!(*reference, "refs/heads/feat/bot-connect");
-        } else {
-            assert_eq!(
-                reference,
-                &format!("refs/heads/preserve/hosted-cargo/{tag}")
-            );
-        }
+        assert_eq!(
+            reference,
+            &format!("refs/heads/preserve/hosted-cargo/{tag}")
+        );
     }
 
     let scratch = tempfile::tempdir().expect("temporary non-repository directory");
@@ -254,20 +249,11 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
         let Some(git_source) = source.strip_prefix("git+") else {
             continue;
         };
-        let (base, identity) = git_source.split_once('?').expect("pinned Git source");
-        let (tag, commit) = if let Some(value) = identity.strip_prefix("tag=") {
-            value.split_once('#').expect("tag and commit identity")
-        } else if let Some(value) = identity.strip_prefix("rev=") {
-            let (rev, commit) = value.split_once('#').expect("rev and commit identity");
-            assert_eq!(rev, commit, "a rev pin must name one full commit twice");
-            assert!(
-                base.ends_with("/jeryu-core.git"),
-                "only Core may use an interim commit pin"
-            );
-            (rev, commit)
-        } else {
-            panic!("tag and commit identity: {identity}");
-        };
+        let (base, identity) = git_source.split_once('?').expect("tagged Git source");
+        let (tag, commit) = identity
+            .strip_prefix("tag=")
+            .and_then(|value| value.split_once('#'))
+            .expect("tag and commit identity");
         assert!(!tag.is_empty());
         assert_eq!(commit.len(), 40);
         assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
