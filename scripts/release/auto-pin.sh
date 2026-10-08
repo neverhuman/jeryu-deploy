@@ -21,9 +21,10 @@
 #      left alone. A newer head starts fresh. A branch pushed without its pull request (the API
 #      call failed) gets the pull request on the next tick, without rebuilding.
 #
-#   6. Every tick, idle or not, deletes the auto/pin-web-* branches whose pull request is closed
-#      (merged, or superseded by a newer bump), except the current web head's, and only while the
-#      branch is still that pull request's head. A refused delete is logged and ignored.
+#   6. Every tick that resolves both mains, idle or not, first deletes the auto/pin-web-* branches
+#      whose pull request is closed (merged, or superseded by a newer bump): only a pull request of
+#      this repository, only while the branch is still its head, never one an open pull request
+#      uses and never the current web head's. A refused delete is logged with git's reason.
 #
 #   7. Every tick ends with one runner heartbeat (`<host>/auto-pin`, label `automation`), so
 #      /runners shows the timer alive and the last thing it did: opened a bump, is waiting behind
@@ -135,6 +136,7 @@ api() { # METHOD PATH [JSON on stdin] -> body on stdout
 # repo has more than 100, and every tick opened a duplicate. Returns 1, having said why, on failure.
 pulls=""
 list_pulls() {
+  [ -z "$pulls" ] || return 0 # already listed this tick
   local page batch all='[]'
   for page in $(seq 1 50); do
     batch="$(api GET "/api/v3/repos/$repo_path/pulls?state=all&per_page=100&page=$page")" \
@@ -147,37 +149,45 @@ list_pulls() {
 }
 
 # prune_branches: delete the auto/pin-web-* branches whose pull request is closed, merged or
-# superseded by a newer bump, so they do not pile up on the forge. A branch goes only while it
-# still points at its pull request's head (read again just before the delete), and the current web
-# head's branch always stays. An idle tick lists the pull requests only when the set of bump branches changed
-# since the last pass (prune-seen), so one that cannot go costs one ls-remote per tick, not a full
-# listing. Best-effort: logged, never fails a tick.
+# superseded by a newer bump, so they do not pile up on the forge. A branch goes only when a closed
+# pull request from this repository (not a fork) has it as its head at its current commit, and no
+# open pull request uses it; the current web head's branch always stays. The pull requests are
+# listed only when the set of bump branches changed since the last clean pass (prune-seen), so a
+# branch that may not go costs one ls-remote per tick, not a full listing. Runs early, so a head
+# auto-pin gave up on still prunes. Best-effort: logged, never fails a tick.
 bump_refs() { # the remote auto/pin-web-* branches except the current web head's, "<sha> <ref>" lines
   git ls-remote "$remote" 'refs/heads/auto/pin-web-*' 2>/dev/null \
     | grep -v "[[:space:]]refs/heads/auto/pin-web-${head:0:12}\$" | tr '\t' ' '
 }
 prune_branches() {
-  local refs sha ref name pr
+  local refs sha ref name pr err refused=""
   refs="$(bump_refs)" || return 0
   [ -z "$token_problem" ] || return 0
   [ -n "$pulls" ] || [ "$refs" != "$(cat "$state/prune-seen" 2>/dev/null)" ] || return 0
   [ -n "$pulls" ] || list_pulls || return 0
   while read -r sha ref; do
     name="${ref#refs/heads/}"
-    pr="$(jq -r --arg b "$name" --arg sha "$sha" \
-      '[.[] | select(.head.ref == $b and .state == "closed" and .head.sha == $sha)][0].number // empty' <<<"$pulls")"
+    pr="$(jq -r --arg b "$name" --arg sha "$sha" --arg repo "$repo_path" '
+      [.[] | select(.head.ref == $b and .head.repo.full_name == $repo)] as $rows
+      | if any($rows[]; .state == "open") then empty
+        else [$rows[] | select(.state == "closed" and .head.sha == $sha)][0].number // empty end' <<<"$pulls")"
     [ -n "$pr" ] || continue
     # Read again just before the delete: a branch pushed to since the listing is no longer the
-    # closed pull request's head and stays.
+    # closed pull request's head and stays. This narrows the window, it does not close it: the
+    # atomic form (--force-with-lease) is a force mutation the repository's audit refuses, and
+    # these are bot branches whose commits stay reachable from their pull requests.
     [ "$(git ls-remote "$remote" "$ref" 2>/dev/null | cut -f1)" == "$sha" ] || continue
     # From the cache: git push needs a repository, and the timer starts outside one.
-    if git -C "$cache" push -q "$remote" --delete "$ref" 2>/dev/null; then
+    if err="$(git -C "$cache" push -q "$remote" --delete "$ref" 2>&1)"; then
       say "deleted $name (#$pr is closed)"
     else
-      say "could not delete $name (#$pr is closed; ignored)"
+      refused=1
+      say "could not delete $name (#$pr is closed; ignored): $(tail -n 1 <<<"$err")"
     fi
   done <<<"$refs"
-  bump_refs >"$state/prune-seen" || : >"$state/prune-seen"
+  # A refused delete is tried, and logged, again next tick rather than going quiet.
+  if [ -n "$refused" ]; then rm -f "$state/prune-seen"
+  else bump_refs >"$state/prune-seen" || : >"$state/prune-seen"; fi
 }
 
 main="$(git ls-remote "$remote" refs/heads/main | cut -f1)"
@@ -188,13 +198,14 @@ head="$(git ls-remote "$web_remote" refs/heads/main | cut -f1)"
 cache="$state/jeryu-deploy.git"
 [ -d "$cache" ] || git clone -q --bare "$remote" "$cache"
 git -C "$cache" fetch -q "$remote" "+refs/heads/main:refs/heads/main"
+prune_branches
 # The jeryu-web [[repo]] block of the lock, as build-web-dist.sh reads it.
 pin="$(git -C "$cache" show "$main:$lock_file" | awk '
   /^\[\[repo\]\]/ { inweb = 0 }
   /^name = "jeryu-web"$/ { inweb = 1 }
   inweb && $1 == "commit" && $2 == "=" { gsub(/"/, "", $3); print $3; exit }')"
 [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || { say "$lock_file at main ${main:0:12} has no 40-hex jeryu-web commit ($pin)"; exit 1; }
-if [ "$pin" == "$head" ]; then prune_branches; exit 0; fi
+[ "$pin" != "$head" ] || exit 0
 
 web_cache="$state/jeryu-web.git"
 [ -d "$web_cache" ] || git clone -q --bare "$web_remote" "$web_cache"
@@ -231,7 +242,6 @@ emit() {
 branch="auto/pin-web-${head:0:12}"
 title="release: pin jeryu-web ${head:0:7}"
 list_pulls || exit 1
-prune_branches
 mine="$(jq -r --arg b "$branch" '[.[] | select(.head.ref == $b)][0].number // empty' <<<"$pulls")"
 if [ -n "$mine" ]; then exit 0; fi # this head already has its pull request, open or decided
 other="$(jq -r '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))][0].number // empty' <<<"$pulls")"

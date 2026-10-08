@@ -476,32 +476,45 @@ auto_pin >"$P/run.log" 2>&1 || fail "an up-to-date tick failed"
 ok "auto-pin is a silent no-op once the pin is the web head"
 
 # Closed bumps leave their branches behind; a tick deletes them. What stays: a branch that moved
-# past its closed pull request's head, one whose pull request is open, and the current head's.
+# past its closed pull request's head, one an open pull request uses (also when an older closed
+# pull request names it at the same commit), one only a fork's closed pull request names, and the
+# current head's.
 s1="$(git -C "$P/deploy.git" rev-parse "$b1")"; s2="$(git -C "$P/deploy.git" rev-parse "$b2")"
 moved="auto/pin-web-$(printf 1%.0s {1..12})"; open_b="auto/pin-web-$(printf 2%.0s {1..12})"
-git -C "$P/deploy.git" update-ref "refs/heads/$moved" "$s2"; git -C "$P/deploy.git" update-ref "refs/heads/$open_b" "$s2"
-jq -n --arg b1 "$b1" --arg s1 "$s1" --arg b2 "$b2" --arg s2 "$s2" --arg mv "$moved" --arg ob "$open_b" '[
-  {number: 7, state: "closed", title: "x", head: {ref: $b1, sha: $s1}},
-  {number: 8, state: "closed", title: "x", head: {ref: $mv, sha: $s1}},
-  {number: 9, state: "open", title: "x", head: {ref: $ob, sha: $s2}},
-  {number: 10, state: "closed", title: "x", head: {ref: $b2, sha: $s2}}]' >"$P/pulls.json"
+reopened="auto/pin-web-$(printf 3%.0s {1..12})"; forked="auto/pin-web-$(printf 4%.0s {1..12})"
+for b in "$moved" "$open_b" "$reopened" "$forked"; do git -C "$P/deploy.git" update-ref "refs/heads/$b" "$s2"; done
+jq -n --arg b1 "$b1" --arg s1 "$s1" --arg b2 "$b2" --arg s2 "$s2" --arg mv "$moved" --arg ob "$open_b" \
+  --arg ro "$reopened" --arg fk "$forked" '
+  def row($n; $state; $ref; $sha; $repo): {number: $n, state: $state, title: "x", head: {ref: $ref, sha: $sha, repo: {full_name: $repo}}};
+  [row(7; "closed"; $b1; $s1; "jeryu/jeryu-deploy"),
+   row(8; "closed"; $mv; $s1; "jeryu/jeryu-deploy"),
+   row(9; "open"; $ob; $s2; "jeryu/jeryu-deploy"),
+   row(10; "closed"; $b2; $s2; "jeryu/jeryu-deploy"),
+   row(11; "closed"; $ro; $s2; "jeryu/jeryu-deploy"),
+   row(12; "open"; $ro; $s2; "jeryu/jeryu-deploy"),
+   row(13; "closed"; $fk; $s2; "someone/jeryu-deploy")]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a pruning tick failed"; }
 grep -qx "\[auto-pin [0-9:]*\] deleted $b1 (#7 is closed)" "$P/run.log" || { cat "$P/run.log" >&2; fail "auto-pin did not delete the closed bump's branch"; }
-[[ "$(branches | sort)" == "$(printf '%s\n' "$moved" "$open_b" "$b2" | sort)" ]] || fail "auto-pin deleted a branch that must stay: $(branches | tr '\n' ' ')"
+[[ "$(branches | sort)" == "$(printf '%s\n' "$moved" "$open_b" "$reopened" "$forked" "$b2" | sort)" ]] \
+  || fail "auto-pin deleted a branch that must stay: $(branches | tr '\n' ' ')"
 : >"$P/curl-args"
 auto_pin >"$P/run.log" 2>&1 || fail "an idle tick after pruning failed"
 [[ "$(lines "$P/curl-args")" == 1 && ! -s "$P/run.log" ]] || fail "an idle tick listed the pull requests again with no new bump branch"
-# A refused delete costs one log line and never fails the tick.
+# A refused delete logs git's reason, never fails the tick, and is tried (and logged) again next tick.
 # The stand-in git refuses only the delete, as a forge that protects the branch would.
 git -C "$P/deploy.git" update-ref "refs/heads/$b1" "$s1"
 real_git="$(command -v git)"
 printf '#!/usr/bin/env bash\n[[ " $* " == *" push "*" --delete "* ]] && { echo "remote: deleting is not allowed" >&2; exit 1; }\nexec "%s" "$@"\n' "$real_git" >"$P/bin/git"
 chmod +x "$P/bin/git"
-auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a refused delete failed the tick"; }
-grep -q "could not delete $b1 (#7 is closed; ignored)" "$P/run.log" && git -C "$P/deploy.git" rev-parse -q --verify "refs/heads/$b1" >/dev/null \
-  || fail "a refused delete was not logged"
+for tick in 1 2; do
+  auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a refused delete failed the tick"; }
+  grep -q "could not delete $b1 (#7 is closed; ignored): remote: deleting is not allowed" "$P/run.log" \
+    && git -C "$P/deploy.git" rev-parse -q --verify "refs/heads/$b1" >/dev/null || fail "a refused delete was not logged with its reason on tick $tick"
+done
 rm "$P/bin/git"
-ok "auto-pin deletes the branches of closed bumps, keeps moved, open and current ones, and never fails on a refused delete"
+auto_pin >"$P/run.log" 2>&1 || fail "the tick after a refusal failed"
+grep -q "deleted $b1 (#7 is closed)" "$P/run.log" || fail "a delete the forge refused once was not retried"
+ok "auto-pin deletes the branches of closed bumps, keeps moved, open, fork-named and current ones, and logs and retries a refused delete"
 
 # A web commit that changes no shipped file (tests, docs) builds the bundle that is already pinned.
 echo "a test-only change" >"$P/web/NOTES.md"; g "$P/web" add NOTES.md; g "$P/web" commit -q -m "web tests only"; g "$P/web" push -q "$P/web.git" main

@@ -152,11 +152,14 @@ a failing head once, then posts `pin.bump_failed` for a human and leaves that he
 pinned, how far behind it is and whether a bump is open: `GET /api/v1/pins` and the inbox item
 `pin_behind` (docs/pipeline-events.md).
 
-Every tick, idle or not, deletes the `auto/pin-web-*` branches whose pull request is closed, landed
-or superseded by a newer bump. A branch goes only while it is still its pull request's head (read
-again just before the delete); the current web head's branch, an open bump's and one that moved stay. An
-idle tick lists the pull requests only when the set of bump branches changed since its last pass,
-and a refused delete costs one log line, never the tick.
+Every tick that resolves both mains, idle or not, first deletes the `auto/pin-web-*` branches
+whose pull request is closed, landed or superseded by a newer bump. Only a pull request of this
+repository counts (not a fork's), and a branch goes only while it is still that pull request's head;
+the current web head's branch, any branch an open pull request uses and one that moved stay. The
+commit is read again just before the delete, which narrows a race with a new push but cannot close
+it: the atomic `--force-with-lease` is a force mutation the audit refuses. The pull requests are
+listed only when the set of bump branches changed since the last clean pass. A refused delete logs
+git's reason and is tried again next tick; it never fails the tick.
 
 Every tick also ends with one runner heartbeat (`<host>/auto-pin`, label `automation`), so
 `/runners` shows the timer alive and what it last did: `opened` a bump, `waiting` behind one or
