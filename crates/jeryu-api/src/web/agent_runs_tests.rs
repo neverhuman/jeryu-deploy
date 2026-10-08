@@ -126,24 +126,8 @@ fn seed_held_workcell_without_repo_roots(
     (held.workcell_id, held.runner_epoch)
 }
 
-async fn wait_for_terminal_status(state: Arc<WebState>, agent_run_id: &str) -> Value {
-    for _ in 0..100 {
-        let status = response_json(
-            super::agent_runs::status(State(state.clone()), AxumPath(agent_run_id.to_string()))
-                .await,
-        )
-        .await;
-        if status["state"] != "running" {
-            return status;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    response_json(super::agent_runs::status(State(state), AxumPath(agent_run_id.to_string())).await)
-        .await
-}
-
 #[tokio::test]
-async fn agent_runs_unavailable_sources_and_invalid_requests_are_typed() {
+async fn agent_run_source_component_unavailable_sources_and_invalid_requests_are_typed() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
 
     let malformed = response_json(
@@ -173,7 +157,7 @@ async fn agent_runs_unavailable_sources_and_invalid_requests_are_typed() {
     ];
     for (body, code) in cases {
         let response = response_json(
-            super::agent_runs::start(State(state.clone()), Bytes::from(body.to_string())).await,
+            source_component(State(state.clone()), Bytes::from(body.to_string())).await,
         )
         .await;
         assert_eq!(response["code"], code);
@@ -192,7 +176,7 @@ async fn agent_runs_unavailable_sources_and_invalid_requests_are_typed() {
 }
 
 #[tokio::test]
-async fn agent_runs_workcell_source_denials_are_typed() {
+async fn agent_run_source_component_workcell_source_denials_are_typed() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
     let temp = tempdir().expect("workspace");
     let repo_root = temp.path().join("repo");
@@ -200,7 +184,7 @@ async fn agent_runs_workcell_source_denials_are_typed() {
     write_agent_script(&repo_root, "agent.sh", "#!/bin/sh\nprintf ok\n");
 
     let missing = response_json(
-        super::agent_runs::start(
+        source_component(
             State(state.clone()),
             Bytes::from(
                 json!({
@@ -221,7 +205,7 @@ async fn agent_runs_workcell_source_denials_are_typed() {
 
     let (workcell_id, runner_epoch) = seed_repairing_workcell(&state, temp.path(), &repo_root);
     let stale = response_json(
-        super::agent_runs::start(
+        source_component(
             State(state.clone()),
             Bytes::from(
                 json!({
@@ -240,7 +224,7 @@ async fn agent_runs_workcell_source_denials_are_typed() {
     let outside = temp.path().join("outside.sh");
     std::fs::write(&outside, "#!/bin/sh\nprintf no\n").expect("outside script");
     let denied = response_json(
-        super::agent_runs::start(
+        source_component(
             State(state.clone()),
             Bytes::from(
                 json!({
@@ -260,7 +244,7 @@ async fn agent_runs_workcell_source_denials_are_typed() {
     );
 
     let missing_program = response_json(
-        super::agent_runs::start(
+        source_component(
             State(state.clone()),
             Bytes::from(
                 json!({
@@ -277,7 +261,7 @@ async fn agent_runs_workcell_source_denials_are_typed() {
 
     let missing_repo = temp.path().join("missing-repo");
     let missing_repo_response = response_json(
-        super::agent_runs::start(
+        source_component(
             State(state.clone()),
             Bytes::from(
                 json!({
@@ -295,7 +279,7 @@ async fn agent_runs_workcell_source_denials_are_typed() {
 
     let (claimed_id, claimed_epoch) = claim_workcell(&state, temp.path(), vec![repo_root.clone()]);
     let state_denied = response_json(
-        super::agent_runs::start(
+        source_component(
             State(state.clone()),
             Bytes::from(
                 json!({
@@ -312,7 +296,7 @@ async fn agent_runs_workcell_source_denials_are_typed() {
 
     let (empty_id, empty_epoch) = seed_held_workcell_without_repo_roots(&state, temp.path());
     let empty_slice = response_json(
-        super::agent_runs::start(
+        source_component(
             State(state),
             Bytes::from(
                 json!({
@@ -329,29 +313,21 @@ async fn agent_runs_workcell_source_denials_are_typed() {
 }
 
 #[tokio::test]
-async fn agent_runs_pty_accepts_live_input_control() {
+async fn agent_run_component_delivers_exact_input_and_replays_recorded_events() {
+    use jeryu_agentbridge::{driver::AgentEvent, pty_driver::AgentControl};
     let state = Arc::new(WebState::new(ForgeCore::new()));
-    let temp = tempdir().expect("workspace");
-    let repo_root = temp.path().join("repo");
-    std::fs::create_dir_all(&repo_root).expect("repo root");
-    write_agent_script(
-        &repo_root,
-        "agent.sh",
-        "#!/bin/sh\nread line\nprintf 'GOT:%s\\n' \"$line\"\nprintf 'CI:%s\\n' \"$JERYU_CI_RUN_ID\"\n",
-    );
-    let (workcell_id, runner_epoch) = seed_repairing_workcell(&state, temp.path(), &repo_root);
-
-    let start = response_json(
-        super::agent_runs::start(
+    let temp = tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    write_agent_script(&repo, "agent.sh", "#!/bin/sh\nexit 99\n");
+    let (workcell, epoch) = seed_repairing_workcell(&state, temp.path(), &repo);
+    let resolved = response_json(
+        source_component(
             State(state.clone()),
             Bytes::from(
                 json!({
-                    "source": {"kind": "workcell", "workcell_id": workcell_id, "runner_epoch": runner_epoch},
-                    "io_mode": "pty",
-                    "repo_root": repo_root,
-                    "program": "agent.sh",
-                    "budget": {"wall_secs": 10, "output_bytes": 65536},
-                    "require_cgroup": false
+                    "source":{"kind":"workcell","workcell_id":workcell,"runner_epoch":epoch},
+                    "io_mode":"pty","repo_root":repo,"program":"agent.sh",
                 })
                 .to_string(),
             ),
@@ -359,80 +335,61 @@ async fn agent_runs_pty_accepts_live_input_control() {
         .await,
     )
     .await;
-    let Some(agent_run_id) = start["agent_run_id"].as_str().map(ToString::to_string) else {
-        panic!("start should return an agent_run_id: {start:?}");
-    };
-
+    assert_eq!(resolved["env"]["JERYU_CI_RUN_ID"], "ci-100");
+    let run = "component-input";
+    let controls = state
+        .agent_runs
+        .seed_test_controlled_run(run, super::agent_runs::AgentRunIoMode::Pty);
     let control = response_json(
         super::agent_runs::control(
             State(state.clone()),
-            AxumPath(agent_run_id.clone()),
-            Bytes::from(json!({"kind": "send_input", "text": "hello\n"}).to_string()),
+            AxumPath(run.into()),
+            Bytes::from(json!({"kind":"send_input","text":"hello\n"}).to_string()),
         )
         .await,
     )
     .await;
-    if control["code"] == "agent_run_finished" {
-        let status = response_json(
-            super::agent_runs::status(State(state.clone()), AxumPath(agent_run_id.clone())).await,
-        )
-        .await;
-        if status["error_code"] == "agent_run_sandbox_unavailable" {
-            eprintln!("SKIP agent_runs pty route: sandbox unavailable");
-            return;
-        }
-        panic!("control closed before delivery: {status:?}");
-    }
     assert_eq!(control["accepted"], true);
     assert_eq!(control["command"], "send_input");
-
-    let mut final_status = Value::Null;
-    for _ in 0..100 {
-        let status = response_json(
-            super::agent_runs::status(State(state.clone()), AxumPath(agent_run_id.clone())).await,
-        )
-        .await;
-        if status["error_code"] == "agent_run_sandbox_unavailable" {
-            eprintln!("SKIP agent_runs pty route: sandbox unavailable");
-            return;
-        }
-        let saw_output = status["events"]
-            .as_array()
-            .map(|events| {
-                events.iter().any(|event| {
-                    event["text"]
-                        .as_str()
-                        .is_some_and(|text| text.contains("GOT:hello"))
-                })
-            })
-            .unwrap_or(false);
-        final_status = status;
-        if saw_output && final_status["state"] != "running" {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        matches!(controls.recv_timeout(Duration::from_secs(1)),Ok(AgentControl::SendInput(bytes)) if bytes==b"hello\n")
+    );
+    assert_eq!(
+        response_json(super::agent_runs::status(State(state.clone()), AxumPath(run.into())).await)
+            .await["state"],
+        "running"
+    );
+    state
+        .agent_runs
+        .push_test_event(run, AgentEvent::Stdout("GOT:hello\r\n".into()));
+    state.agent_runs.push_test_event(
+        run,
+        AgentEvent::Stdout(format!(
+            "CI:{}\r\n",
+            resolved["env"]["JERYU_CI_RUN_ID"].as_str().unwrap()
+        )),
+    );
+    state
+        .agent_runs
+        .simulate_test_completion(run, super::agent_runs::AgentRunState::Succeeded);
+    let status =
+        response_json(super::agent_runs::status(State(state.clone()), AxumPath(run.into())).await)
+            .await;
+    assert_eq!(status["state"], "succeeded", "explicit fixture completion");
+    assert_eq!(status["controls"][0]["command"], "send_input");
+    for needle in ["GOT:hello", "CI:ci-100"] {
+        assert!(
+            status["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["text"].as_str().is_some_and(|text| text.contains(needle)))
+        );
     }
-
-    assert_eq!(final_status["state"], "succeeded", "{final_status:?}");
-    let events = final_status["events"].as_array().expect("events array");
-    assert!(
-        events.iter().any(|event| event["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("GOT:hello"))),
-        "status should stream PTY output events: {final_status:?}"
-    );
-    assert!(
-        events.iter().any(|event| event["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("CI:ci-100"))),
-        "failed-CI context env should reach the agent: {final_status:?}"
-    );
-    assert_eq!(final_status["controls"][0]["command"], "send_input");
-
-    let first_page = response_json(
+    let first = response_json(
         super::agent_runs::events(
             State(state.clone()),
-            AxumPath(agent_run_id.clone()),
+            AxumPath(run.into()),
             Query(super::agent_runs::AgentRunEventsQuery {
                 after_seq: Some(0),
                 limit: Some(1),
@@ -441,14 +398,14 @@ async fn agent_runs_pty_accepts_live_input_control() {
         .await,
     )
     .await;
-    assert_eq!(first_page["agent_run_id"], agent_run_id);
-    assert_eq!(first_page["after_seq"], 0);
-    assert_eq!(first_page["events"].as_array().unwrap().len(), 1);
-    let cursor = first_page["next_after_seq"].as_u64().unwrap();
+    assert_eq!(first["agent_run_id"], run);
+    assert_eq!(first["after_seq"], 0);
+    assert_eq!(first["events"].as_array().unwrap().len(), 1);
+    let cursor = first["next_after_seq"].as_u64().unwrap();
     let resumed = response_json(
         super::agent_runs::events(
             State(state),
-            AxumPath(agent_run_id),
+            AxumPath(run.into()),
             Query(super::agent_runs::AgentRunEventsQuery {
                 after_seq: Some(cursor),
                 limit: Some(50),
@@ -457,17 +414,13 @@ async fn agent_runs_pty_accepts_live_input_control() {
         .await,
     )
     .await;
-    assert!(
-        resumed["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|event| event["seq"].as_u64().unwrap() > cursor)
-    );
+    let events = resumed["events"].as_array().unwrap();
+    assert!(!events.is_empty());
+    assert!(events.iter().all(|e| e["seq"].as_u64().unwrap() > cursor));
 }
 
 #[tokio::test]
-async fn agent_runs_control_denials_and_pipe_mode_are_typed() {
+async fn agent_run_component_control_denials_and_pipe_mode_are_typed() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
     let temp = tempdir().expect("workspace");
     let repo_root = temp.path().join("repo");
@@ -518,27 +471,16 @@ async fn agent_runs_control_denials_and_pipe_mode_are_typed() {
     .await;
     assert_eq!(unknown_control["code"], "not_found");
 
-    let start = response_json(
-        super::agent_runs::start(
-            State(state.clone()),
-            Bytes::from(
-                json!({
-                    "source": {"kind": "workcell", "workcell_id": workcell_id, "runner_epoch": runner_epoch},
-                    "io_mode": "pipe",
-                    "repo_root": repo_root,
-                    "program": "agent.sh",
-                    "prompt": "repair prompt",
-                    "budget": {"wall_secs": 10, "output_bytes": 65536},
-                    "require_cgroup": false
-                })
-                .to_string(),
-            ),
-        )
-        .await,
-    )
-    .await;
-    let agent_run_id = start["agent_run_id"].as_str().expect("agent run id");
-
+    let resolved=response_json(source_component(State(state.clone()),Bytes::from(json!({
+        "source":{"kind":"workcell","workcell_id":workcell_id,"runner_epoch":runner_epoch},
+        "io_mode":"pipe","repo_root":repo_root,"program":"agent.sh","prompt":"repair prompt",
+    }).to_string())).await).await;
+    assert_eq!(resolved["env"]["JERYU_AGENT_PROMPT"], "repair prompt");
+    assert_eq!(resolved["env"]["JERYU_FAILED_RUN_ID"], "failed-200");
+    let agent_run_id = "component-pipe";
+    let _unused = state
+        .agent_runs
+        .seed_test_controlled_run(agent_run_id, super::agent_runs::AgentRunIoMode::Pipe);
     let unfinished_export = response_json(
         super::agent_runs::export_pr(
             State(state.clone()),
@@ -572,26 +514,34 @@ async fn agent_runs_control_denials_and_pipe_mode_are_typed() {
     .await;
     assert_eq!(unsupported["code"], "agent_run_control_unsupported");
 
-    let final_status = wait_for_terminal_status(state.clone(), agent_run_id).await;
-    if final_status["error_code"] == "agent_run_sandbox_unavailable" {
-        eprintln!("SKIP agent_runs pipe route: sandbox unavailable");
-        return;
+    use jeryu_agentbridge::driver::AgentEvent;
+    state.agent_runs.push_test_event(
+        agent_run_id,
+        AgentEvent::Stdout("PROMPT:repair prompt\r\n".into()),
+    );
+    state.agent_runs.push_test_event(
+        agent_run_id,
+        AgentEvent::Stderr("ERR:failed-200\r\n".into()),
+    );
+    state
+        .agent_runs
+        .simulate_test_completion(agent_run_id, super::agent_runs::AgentRunState::Succeeded);
+    let final_status = response_json(
+        super::agent_runs::status(State(state.clone()), AxumPath(agent_run_id.into())).await,
+    )
+    .await;
+    assert_eq!(
+        final_status["state"], "succeeded",
+        "explicit component completion"
+    );
+    let events = final_status["events"].as_array().unwrap();
+    for (stream, needle) in [
+        ("stdout", "PROMPT:repair prompt"),
+        ("stderr", "ERR:failed-200"),
+    ] {
+        assert!(events.iter().any(|e| e["stream"] == stream
+            && e["text"].as_str().is_some_and(|text| text.contains(needle))));
     }
-    assert_eq!(final_status["state"], "succeeded", "{final_status:?}");
-    let events = final_status["events"].as_array().expect("events array");
-    assert!(
-        events.iter().any(|event| event["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("PROMPT:repair prompt"))),
-        "pipe prompt should reach the agent env: {final_status:?}"
-    );
-    assert!(
-        events.iter().any(|event| event["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("ERR:failed-200"))),
-        "stderr should stream into tty events: {final_status:?}"
-    );
-
     let late = response_json(
         super::agent_runs::control(
             State(state),
@@ -794,4 +744,14 @@ async fn tty_stream_unknown_run_is_denied_not_found() {
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     let body = response_json(response).await;
     assert_eq!(body["code"], "not_found");
+}
+
+async fn source_component(State(state): State<Arc<WebState>>, body: Bytes) -> AxumResponse {
+    let before = state.agent_runs.legacy_preparations();
+    let public = super::agent_runs::start(State(state.clone()), body.clone()).await;
+    assert_eq!(public.status(), axum::http::StatusCode::FAILED_DEPENDENCY);
+    assert_eq!(response_json(public).await["code"], "sandbox_unavailable");
+    assert_eq!(state.agent_runs.legacy_preparations(), before);
+    assert!(state.agent_runs.list().is_empty());
+    super::agent_runs::source_component_for_test(State(state), body).await
 }

@@ -354,7 +354,7 @@ async fn managed_launch_router_auth_and_csrf_reject_before_preparation() {
             assert_eq!(
                 stranger.status().as_u16(),
                 403,
-                "cross-user launch must be rejected"
+                "non-owner launch is forbidden before any preparation"
             );
             let cookie = format!("jeryu-session={}", browser.token);
             let missing_csrf = application

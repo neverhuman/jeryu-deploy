@@ -427,3 +427,6 @@ fn driver_error_response(err: DriverError) -> AxumResponse {
 fn is_false(value: &bool) -> bool {
     !*value
 }
+
+#[cfg(test)]
+mod tests;

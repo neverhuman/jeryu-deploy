@@ -587,6 +587,8 @@ pub(super) use access::{agent_run_viewer_id, may_view_run};
 pub(super) use attach::attach;
 #[cfg(test)]
 pub(super) use handlers::AgentTtyStreamQuery;
+#[cfg(test)]
+pub(super) use handlers::source_component_for_test;
 pub(super) use handlers::{
     PtyBackend, SessionAgentSpawn, control, events, export_pr, list, mcp_control, mcp_events,
     mcp_export_pr, mcp_start, mcp_status, mcp_tail, shell, spawn_session_agent, start, status,

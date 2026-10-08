@@ -393,6 +393,21 @@ fn create_for_bot(
     }
 }
 
+fn next_session_run_id(
+    store: &super::agent_runs::AgentRunStore,
+    agent_id: &str,
+    branch_exists: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    loop {
+        let candidate = store.allocate_id()?;
+        if !branch_exists(&format!(
+            "refs/heads/agents/{agent_id}/sessions/{candidate}"
+        )) {
+            return Ok(candidate);
+        }
+    }
+}
+
 fn create_session(
     state: &Arc<WebState>,
     repo_id: &str,
@@ -445,19 +460,12 @@ fn create_session(
     // the session instead of answering with an id nothing recorded.
     let run_id = match request.run_id.clone() {
         Some(run_id) => run_id,
-        None => loop {
-            let candidate = state
-                .agent_runs
-                .allocate_id()
-                .map_err(|reason| Box::new(session_not_recorded(&reason)))?;
-            let candidate_ref = format!("refs/heads/agents/{agent_id}/sessions/{candidate}");
-            if !repo_refs
+        None => next_session_run_id(&state.agent_runs, &agent_id, |candidate_ref| {
+            repo_refs
                 .iter()
                 .any(|git_ref| git_ref.name == candidate_ref)
-            {
-                break candidate;
-            }
-        },
+        })
+        .map_err(|reason| Box::new(session_not_recorded(&reason)))?,
     };
     state
         .agent_runs

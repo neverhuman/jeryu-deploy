@@ -187,28 +187,85 @@ async fn readiness_rejects_an_already_exited_server_task() {
 /// that is exactly the shape a broken backend behind an SPA fallback has.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn readiness_rejects_a_server_serving_only_the_spa_shell() {
+    use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
-    let shell = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let body = r#"<!doctype html><html><body><div id="root"></div></body></html>"#;
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .unwrap();
+    const BODY: &str = r#"<!doctype html><html><body><div id="root"></div></body></html>"#;
+    let shell = std::thread::spawn(move || -> Result<usize, String> {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut served = 0;
+        while served < 2 {
+            let (mut stream, _) = loop {
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "SPA fixture accept expired after {served} requests"
+                    ));
+                }
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .map_err(|e| e.to_string())?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .map_err(|e| e.to_string())?;
+            let mut head = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !head.windows(4).any(|part| part == b"\r\n\r\n") {
+                if head.len() >= 8192 || Instant::now() >= deadline {
+                    return Err("SPA fixture request header limit".into());
+                }
+                let count = stream
+                    .read(&mut buffer[..(8192 - head.len()).min(1024)])
+                    .map_err(|e| e.to_string())?;
+                if count == 0 {
+                    return Err("SPA fixture request ended early".into());
+                }
+                head.extend_from_slice(&buffer[..count]);
+            }
+            if !head.starts_with(b"GET /health HTTP/1.1\r\n") {
+                return Err("SPA fixture expected a real health request".into());
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
+                BODY.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .map_err(|e| e.to_string())?;
+            stream.flush().map_err(|e| e.to_string())?;
+            served += 1;
+        }
+        Ok(served)
     });
-
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
-    assert!(
-        !backend_is_ready(&client, addr).await,
-        "SPA shell response passed as a healthy backend"
+    let observed = client.get(format!("http://{addr}/health")).send().await;
+    let ready = backend_is_ready(&client, addr).await;
+    let served = shell.join().expect("SPA fixture thread");
+    let response =
+        observed.expect("actual SPA response; transport failure is not rejection evidence");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response.headers()[reqwest::header::CONTENT_TYPE],
+        "text/html"
     );
-    shell.join().unwrap();
+    assert_eq!(response.text().await.unwrap(), BODY);
+    assert_eq!(
+        served.expect("bounded SPA fixture served both real requests"),
+        2
+    );
+    assert!(!ready, "SPA shell response passed as a healthy backend");
 }
 
 fn assert_lfs_content_type(resp: &reqwest::Response) {

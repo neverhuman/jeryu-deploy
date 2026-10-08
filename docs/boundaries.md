@@ -101,3 +101,17 @@ unclaimed sibling repo while still allowing an in-workspace read
 (`memory_oom_kill`), the egress proxy denies the plain-HTTP forward path and an
 empty allowlist by default, and the record-only auto-merge bridge is held by a
 7-probe adversarial harness. See `docs/testing.md`.
+
+## Managed execution admission
+
+The web::managed_launch module owns the mandatory Firecracker launch decision.
+Every public managed session, agent run, workcell run, shell and MCP launch
+passes it before source resolution, durable intent creation, authentication
+copying or driver execution. Missing runner availability is a typed hard error.
+Native, Docker, Auto and unknown selections cannot authorize host execution,
+and the Native-to-Docker retry is removed. Default workcell container
+prewarming is zero. Independent direct-spawn checks retain the same boundary.
+
+Metadata-only component fixtures cannot grant execution authority. The current
+admission change denies all launches until reviewed runner dispatch is installed;
+it does not certify the retained legacy driver implementation or provider use.

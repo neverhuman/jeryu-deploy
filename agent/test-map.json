@@ -128,7 +128,7 @@
     "crates/jeryu-api/src/web/sessions/": {
       "command": "just test-api",
       "lane": "check",
-      "purpose": "verify workspace materialization, credential seeding, and runtime selection"
+      "purpose": "prove managed launch refusal plus separate session metadata, control, Git and publication components"
     },
     "crates/jeryu-api/src/web/pulls/": {
       "command": "just test-api",
@@ -249,6 +249,21 @@
       "command": "just check && just score",
       "lane": "check",
       "purpose": "verify split release lock remains routed and auditable"
+    },
+    "crates/jeryu-api/src/web/managed_launch.rs": {
+      "command": "cargo test --locked -p jeryu-api --features web --lib managed_launch",
+      "lane": "check",
+      "purpose": "prove typed Firecracker-only admission, non-owner/CSRF rejection, unchanged sentinel and zero legacy preparation"
+    },
+    "crates/jeryu-api/src/web/managed_launch/": {
+      "command": "cargo test --locked -p jeryu-api --features web --lib managed_launch",
+      "lane": "check",
+      "purpose": "prove typed Firecracker-only admission, non-owner/CSRF rejection, unchanged sentinel and zero legacy preparation"
+    },
+    "crates/jeryu-api/src/web.rs": {
+      "command": "cargo test --locked -p jeryu-api --features web --lib",
+      "lane": "check",
+      "purpose": "verify authenticated web routing and all launch admission/control components"
     }
   },
   "workspace": "jeryu-deploy"

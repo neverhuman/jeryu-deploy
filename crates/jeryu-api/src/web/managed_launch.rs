@@ -84,5 +84,4 @@ pub(super) fn require_mcp(state: &WebState, purpose: &str) -> Result<(), String>
 }
 
 #[cfg(test)]
-#[path = "managed_launch_tests.rs"]
 mod tests;

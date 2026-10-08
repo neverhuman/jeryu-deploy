@@ -1,5 +1,10 @@
 # jeryu-deploy
 
+[![Required checks: inspect the exact head](https://img.shields.io/badge/required-check%20exact%20head-lightgrey)](https://git.jeryu.ai/repos/jeryu/jeryu/jeryu-deploy/pulls)
+
+This navigation badge links to live forge checks; it does not assert a green
+head, a Jankurai score, or release readiness.
+
 Integration, end-user binary build, split lock, and release bundle logic.
 
 This repository was seeded from Jeryu source commit `cbecf7caa0e932c76a341b2521e66e911233860d`.

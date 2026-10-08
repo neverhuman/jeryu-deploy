@@ -236,100 +236,50 @@ async fn attach_to_unknown_run_is_not_found() {
 /// Real PTY driver behind the socket: injected keystrokes reach the agent and
 /// its reply comes back as live output, then the run ends cleanly.
 #[tokio::test]
-async fn attach_drives_a_real_pty_agent_end_to_end() {
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-
+async fn attach_component_delivers_input_and_drains_fixture_output_before_ended() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
-    let temp = tempfile::tempdir().expect("workspace");
-    let repo_root = temp.path().join("repo");
-    std::fs::create_dir_all(&repo_root).expect("repo root");
-    let script = repo_root.join("agent.sh");
-    std::fs::write(
-        &script,
-        "#!/bin/sh\nprintf 'READY\\n'\nread line\nprintf 'GOT:%s\\n' \"$line\"\n",
-    )
-    .expect("script");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let claim = jeryu_runnerd::WorkcellClaimRequest {
-        agent_id: "agent-attach".into(),
-        workspace_root: temp.path().to_path_buf(),
-        repo_roots: vec![repo_root.clone()],
-        branch_budget: 2,
-        runner_id: "runner-a".into(),
-        runner_epoch: 7,
-        git_status_summary: "clean".into(),
-        ci_snapshot_age_ms: None,
-        startup: jeryu_runnerd::StartupSync::Rebased {
-            main_ref: "refs/heads/main".into(),
-            base_sha: "base".into(),
-            head_sha: "head".into(),
-        },
-    };
-    let (workcell_id, runner_epoch) = {
-        let mut manager = state.workcells.lock().expect("workcells");
-        let held = manager
-            .hold_failed_tree(jeryu_runnerd::HoldFailedTreeRequest {
-                claim,
-                ci_run_id: "ci-1".into(),
-                failed_run_id: "failed-1".into(),
-                failed_receipt_id: "receipt-1".into(),
-                failure_log_digest: "sha256:abc".into(),
-            })
-            .expect("hold");
-        let repairing = manager
-            .begin_live_repair(&held.workcell_id, held.runner_epoch)
-            .expect("repair");
-        (repairing.workcell_id, repairing.runner_epoch)
-    };
-    let body = json!({
-        "source": {"kind": "workcell", "workcell_id": workcell_id, "runner_epoch": runner_epoch},
-        "io_mode": "pty", "repo_root": PathBuf::from(&repo_root), "program": "agent.sh",
-        "budget": {"wall_secs": 10, "output_bytes": 65536}, "require_cgroup": false,
-    });
-    let response = super::start(State(state.clone()), Bytes::from(body.to_string())).await;
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body");
-    let start: Value = serde_json::from_slice(&bytes).expect("json");
-    let run_id = start["agent_run_id"].as_str().expect("run id").to_string();
+    let run = "component-attach";
+    let controls = seed_controllable(&state.agent_runs, run);
+    state
+        .agent_runs
+        .push_test_tty(run, test_raw_tty_event(run, 1, b"READY\r\n"));
     let base = serve(state.clone()).await;
-    let mut client = connect(format!("{base}/{run_id}/attach?control=true")).await;
-    let hello = next_of(&mut client, "attached").await;
-    if hello["controller"] != true {
-        let status = state.agent_runs.status(&run_id).expect("status");
-        if status.error_code.as_deref() == Some("agent_run_sandbox_unavailable") {
-            eprintln!("SKIP attach pty e2e: sandbox unavailable");
-            return;
-        }
-        panic!("run ended before attach: {:?}", status.error_code);
-    }
-    let mut screen = String::new();
-    let mut sent = false;
-    loop {
-        let frame = next_json(&mut client).await;
-        match frame["type"].as_str() {
-            Some("tty") => {
-                let event = &frame["event"];
-                screen.push_str(event["text"].as_str().unwrap_or_default());
-                if !sent && screen.contains("READY") {
-                    client
-                        .send(WsMessage::Binary(b"typed-over-ws\n".to_vec()))
-                        .await
-                        .expect("keys");
-                    sent = true;
-                }
-            }
-            Some("ended") => break,
-            _ => {}
-        }
-    }
+    let mut client = connect(format!("{base}/{run}/attach?control=true")).await;
+    assert_eq!(next_of(&mut client, "attached").await["controller"], true);
+    let replay = next_of(&mut client, "tty").await;
+    assert_eq!(replay["event"]["seq"], 1);
+    client
+        .send(WsMessage::Binary(b"typed-over-ws\n".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(next_of(&mut client, "ack").await["command"], "send_bytes");
     assert!(
-        screen.contains("GOT:typed-over-ws"),
-        "agent echoed input: {screen:?}"
+        matches!(controls.recv_timeout(Duration::from_secs(1)),Ok(AgentControl::SendInput(bytes)) if bytes==b"typed-over-ws\n")
     );
-    let status = state.agent_runs.status(&run_id).expect("status");
-    assert_eq!(status.state, AgentRunState::Succeeded);
+    assert_eq!(
+        state.agent_runs.status(run).unwrap().state,
+        AgentRunState::Running
+    );
+    state
+        .agent_runs
+        .push_test_tty(run, test_raw_tty_event(run, 2, b"GOT:typed-over-ws\r\n"));
+    state
+        .agent_runs
+        .simulate_test_completion(run, AgentRunState::Succeeded);
+    let output = next_of(&mut client, "tty").await;
+    assert_eq!(output["event"]["seq"], 2);
+    use base64::Engine;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(output["event"]["bytes_b64"].as_str().unwrap())
+            .unwrap(),
+        b"GOT:typed-over-ws\r\n"
+    );
+    assert_eq!(
+        next_of(&mut client, "ended").await["state"],
+        "succeeded",
+        "explicit component completion"
+    );
 }
 
 #[tokio::test]

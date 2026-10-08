@@ -358,3 +358,24 @@ Launch-gate evidence:
   restores the previous release and its pre-switch database snapshot.
 - Abuse controls: agent, runner, and token-scope gates must pass before any
   hosted or remote deployment path is enabled.
+
+## Managed launch admission
+
+Run cargo test --locked -p jeryu-api --features web --lib managed_launch
+for the public session, agent, workcell, shell and MCP refusal matrix. The
+real router tests reject anonymous and non-owner access and missing CSRF before
+preparation. Sentinel inode and SHA-256 checks and per-store preparation
+observers verify denial before any legacy source, authentication or driver
+operation. Direct Native and Docker spawn calls are independently denied.
+
+Session, agent-store and workcell component tests seed explicit metadata,
+control receivers and recorded events without starting a process. Their names
+and fixtures distinguish accepted control messages from simulated completion;
+they do not prove guest application, VM execution or lifecycle enforcement.
+Live socket tests require a functioning loopback device. The SPA readiness
+negative test first requires an actual HTTP response and has bounded server
+accept, I/O and join behavior. A missing socket is a failure, not a pass.
+
+Actual Firecracker and client dispatch acceptance must separately show fresh
+VM identity, guest results and refusal of host writes. Provider qualification
+and production launch readiness require their independent proof lanes.

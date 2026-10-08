@@ -583,6 +583,34 @@ impl AgentRunStore {
         record.agent = agent.map(str::to_string);
     }
 
+    /// Seed a control-channel fixture without creating an execution thread.
+    pub(in crate::web) fn seed_test_controlled_run(
+        &self,
+        run_id: &str,
+        io_mode: AgentRunIoMode,
+    ) -> mpsc::Receiver<AgentControl> {
+        self.seed_test_run(run_id, 64);
+        let (tx, rx) = mpsc::channel();
+        let mut inner = self.inner.lock().expect("agent run store mutex");
+        let record = inner.runs.get_mut(run_id).expect("seeded component run");
+        record.io_mode = io_mode;
+        record.control_tx = (io_mode == AgentRunIoMode::Pty).then_some(tx);
+        rx
+    }
+
+    /// Feed a supplied component event through the production recording path.
+    pub(in crate::web) fn push_test_event(&self, run_id: &str, event: AgentEvent) {
+        self.append_event(run_id, event.into());
+    }
+
+    /// Explicit component-test completion; never evidence of guest execution.
+    pub(in crate::web) fn simulate_test_completion(&self, run_id: &str, state: AgentRunState) {
+        let mut inner = self.inner.lock().expect("agent run store mutex");
+        let record = inner.runs.get_mut(run_id).expect("seeded component run");
+        record.state = state;
+        record.control_tx = None;
+    }
+
     /// Publish one prebuilt raw TTY event through the same ring-plus-broadcast path
     /// `append_event` uses, so a test can drive both the cursor-pull replay and the
     /// live SSE fan-out from one helper.

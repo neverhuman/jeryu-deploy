@@ -41,7 +41,10 @@
     "tools/": "ops",
     "agent/tool-adoption.toml": "agent",
     "db/": "jeryu-deploy",
-    "jeryu-split.lock.toml": "jeryu-deploy"
+    "jeryu-split.lock.toml": "jeryu-deploy",
+    "crates/jeryu-api/src/web/managed_launch.rs": "jeryu-deploy",
+    "crates/jeryu-api/src/web/managed_launch/": "jeryu-deploy",
+    "crates/jeryu-api/src/web.rs": "jeryu-deploy"
   },
   "workspace": "jeryu-deploy"
 }

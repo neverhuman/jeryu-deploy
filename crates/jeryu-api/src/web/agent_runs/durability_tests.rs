@@ -105,12 +105,24 @@ async fn a_run_whose_intent_cannot_be_recorded_is_refused() {
         start_body(&workcell_id, runner_epoch, &repo_root),
     )
     .await;
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::SERVICE_UNAVAILABLE
-    );
+    assert_eq!(response.status(), axum::http::StatusCode::FAILED_DEPENDENCY);
     let body = response_json(response).await;
-    assert_eq!(body["code"], "agent_run_not_recorded");
+    assert_eq!(body["code"], "sandbox_unavailable");
+    assert!(
+        state
+            .agent_runs
+            .record_intent(&super::AgentRunIntent {
+                run_id: Some("broken-intent".into()),
+                kind: "agent_run",
+                repo: None,
+                program: "/opt/jeryu/bin/mock".into(),
+                args: vec![],
+                workspace: None,
+            })
+            .is_err()
+    );
+    assert!(state.agent_runs.legacy_preparations().is_empty());
+
     assert_eq!(body["purpose"], "start an agent run");
     assert!(
         body["agent_run_id"].is_null(),
@@ -125,29 +137,35 @@ async fn a_run_whose_intent_cannot_be_recorded_is_refused() {
 /// The id in the start answer is already on disk when the answer is written:
 /// the acknowledgement follows the durable record, never the other way round.
 #[tokio::test]
-async fn an_acknowledged_run_id_is_already_recorded() {
+async fn refused_launch_hands_out_no_id_and_explicit_intent_survives_restart() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
-    let temp = tempdir().expect("workspace");
-    let repo_root = temp.path().join("repo");
-    std::fs::create_dir_all(&repo_root).expect("repo root");
-    write_agent_script(&repo_root);
-    let (workcell_id, runner_epoch) = repairing_workcell(&state, temp.path(), &repo_root);
-
-    let body = response_json(
-        super::super::agent_runs::start(
-            State(state.clone()),
-            start_body(&workcell_id, runner_epoch, &repo_root),
-        )
-        .await,
-    )
-    .await;
-    let run_id = body["agent_run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("start should answer with a run id: {body:?}"));
-    assert!(
-        state.agent_runs.intents().is_recorded(run_id),
-        "{run_id} was acknowledged without a recorded intent"
-    );
+    let temp = tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let (workcell, epoch) = repairing_workcell(&state, temp.path(), &repo);
+    let response = super::start(State(state.clone()), start_body(&workcell, epoch, &repo)).await;
+    assert_eq!(response.status(), axum::http::StatusCode::FAILED_DEPENDENCY);
+    let refused = response_json(response).await;
+    assert_eq!(refused["code"], "sandbox_unavailable");
+    assert!(refused["agent_run_id"].is_null());
+    assert!(state.agent_runs.list().is_empty());
+    assert!(state.agent_runs.legacy_preparations().is_empty());
+    let path = temp.path().join("shift.sqlite");
+    let before = AgentRunStore::open(&path).unwrap();
+    let id = before
+        .record_intent(&super::AgentRunIntent {
+            run_id: None,
+            kind: "agent_run",
+            repo: Some("alice/jeryu".into()),
+            program: "/opt/jeryu/bin/mock".into(),
+            args: vec![],
+            workspace: None,
+        })
+        .unwrap();
+    assert!(before.intents().is_recorded(&id));
+    drop(before);
+    let after = AgentRunStore::open(&path).unwrap();
+    assert!(after.intents().is_recorded(&id));
 }
 
 /// Run ids come from the store, not from the process: a second registry over

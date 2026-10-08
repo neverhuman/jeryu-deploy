@@ -842,6 +842,25 @@ fn inject_workcell_env(env: &mut BTreeMap<String, String>, lease: &WorkcellLease
     }
 }
 
+/// Component-only source validation; no admission, intent, record, or execution.
+#[cfg(test)]
+pub(in crate::web) async fn source_component_for_test(
+    State(state): State<Arc<WebState>>,
+    body: Bytes,
+) -> AxumResponse {
+    let request: AgentRunStartRequest = match parse_agent_body(&body, "start an agent run") {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    match resolve_agent_run_source(&state, &request) {
+        Ok(resolved) => Json(json!({
+            "repo_root": resolved.repo_root, "program": resolved.program, "env": resolved.env,
+        }))
+        .into_response(),
+        Err(response) => *response,
+    }
+}
+
 #[cfg(test)]
 #[path = "managed_launch_direct_tests.rs"]
 mod managed_launch_direct_tests;
