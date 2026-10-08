@@ -1287,13 +1287,22 @@ fn csrf_valid(state: &WebState, headers: &HeaderMap) -> bool {
 /// stay open to any logged-in account).
 pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
     admin_only_path(path)
-        || (path.starts_with("/api/v1/shift/") && unsafe_method(method))
+        || (path.starts_with("/api/v1/shift/")
+            && unsafe_method(method)
+            && !shift_heartbeat_path(path))
         || (pipeline_events_path(path) && !unsafe_method(method))
         || (release_board_path(path) && !unsafe_method(method))
         || attention_path(path)
         || pins_path(path)
         || trace_path(path)
         || audit_path(path)
+}
+
+/// Reporting a worker slot is the one shift write a worker-pool host makes, so
+/// it is decided in the handler (admin or a `JERYU_SHIFT_REPORTERS` identity),
+/// like runner heartbeats. Every other shift write stays admin-only.
+fn shift_heartbeat_path(path: &str) -> bool {
+    path == "/api/v1/shift/heartbeat" || path == "/api/v1/shift/heartbeat/"
 }
 
 /// Reading the pipeline event log is admin-only: events carry todo titles,

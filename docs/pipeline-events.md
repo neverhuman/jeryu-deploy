@@ -31,6 +31,7 @@ the work trace), `crates/jeryu-api/src/web/shift/truth.rs` and
 | Route | Who |
 |---|---|
 | `POST /api/v1/events` | a global admin, or a login in `JERYU_EVENT_REPORTERS` (comma-separated site setting, e.g. `ci-bot,review-bot`) |
+| `POST /api/v1/shift/heartbeat` | a global admin, or a login in `JERYU_SHIFT_REPORTERS` (comma-separated site setting, e.g. `fleet-bot,pool-bot`) |
 | `GET /api/v1/events` | global admins |
 | `GET /api/v1/attention` | global admins |
 | `GET`, `POST /api/v1/attention/acks` | global admins |
@@ -706,6 +707,26 @@ opened its newest run and `completed_at` is `null` until it concludes; a status
 concluded with no `pending` before it (a green head re-verified in place) has
 `started_at: null`. The answer carries `server_time`.
 
+## Shift heartbeats
+
+`POST /api/v1/shift/heartbeat` is how a worker host says which slots it runs
+and what each is doing; `/shifts` is drawn from those beats. It is the one
+write under `/api/v1/shift/` that is not admin-only: a login named in
+`JERYU_SHIFT_REPORTERS` (comma-separated site setting, no default, e.g.
+`fleet-bot,pool-bot`) may post it, and so may any global admin. Anyone else
+gets `403 permission_denied` naming the setting.
+
+The grant is the heartbeat and nothing more. Filing todos, todo actions
+(`POST /api/v1/shift/todos/:family/:id/action`) and opening a shift pull
+request (`POST /api/v1/shift/shifts/:family/pr`) stay admin-only, so a
+worker-pool host that only reports slots is given a reporter token rather than
+an admin one. Reads under `/api/v1/shift/` are unchanged: any logged-in account
+may make them, and being a reporter neither widens nor narrows that.
+
+An operator's own box may keep reporting as an admin; the setting exists for a
+host outside the forge's trust, such as an external worker pool. Give that host
+a personal access token of the reporter login alone.
+
 ## Release boards
 
 `PUT /api/v1/release-board/{family}` (a `JERYU_BOARD_REPORTERS` login or an
@@ -773,7 +794,9 @@ may be older than the client.
   which holds telemetry only. `switch.sh` does not snapshot that file, and does
   not need to: an older binary checks only the migrations it knows, so a
   rollback runs against the migrated file unchanged.
-- **Environment.** `JERYU_EVENT_REPORTERS` (site setting, e.g. `ci-bot,review-bot`). todoq
+- **Environment.** `JERYU_EVENT_REPORTERS` (site setting, e.g. `ci-bot,review-bot`) and
+  `JERYU_SHIFT_REPORTERS` (site setting, e.g. `fleet-bot,pool-bot`; unset, only
+  admins may post shift heartbeats). todoq
   and `auto-stage.sh` post with an admin token and need no entry. The machine
   names the inbox sends an operator to, read on each inbox computation:
   `JERYU_RELEASE_HOST` (e.g. `node-a`; auto-pin, auto-stage,

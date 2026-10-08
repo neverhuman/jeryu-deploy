@@ -1,7 +1,10 @@
 //! Shift pages API: todoq family queues, slot heartbeats, and shift branches.
 //!
 //! Routes live under `/api/v1/shift/`. Reads need any logged-in account;
-//! every POST is admin-only (see `auth::admin_only_request`). Queues are read
+//! every POST is admin-only (see `auth::admin_only_request`) except
+//! `POST /api/v1/shift/heartbeat`, which the handler opens to the logins named
+//! in `JERYU_SHIFT_REPORTERS` as well, so a worker-pool host reports its slots
+//! without holding an admin token. Queues are read
 //! from and written to the hosted `<family>-todo` bare repos directly; see
 //! `queue.rs`. Heartbeat history is kept in `<data_dir>/shift.sqlite`.
 
@@ -52,6 +55,7 @@ pub(crate) use visibility::{
 };
 
 const PR_AUTHOR_ENV: &str = "JERYU_SHIFT_PR_AUTHOR";
+const REPORTERS_ENV: &str = "JERYU_SHIFT_REPORTERS";
 const STAGES: &[&str] = &["prepare", "agent", "gate", "land", "record"];
 const DOCS: &str = "docs/architecture.md";
 
@@ -96,6 +100,11 @@ pub(crate) struct ShiftState {
     pub(crate) pr_author: Option<String>,
     /// Derived merged/released state of done todos (see `truth.rs`).
     pub(crate) truth: truth::TruthCache,
+    /// Logins allowed to post slot heartbeats without being forge admins
+    /// (`JERYU_SHIFT_REPORTERS`, comma-separated). No default: a reporter
+    /// login is one installation's identity. The grant covers the heartbeat
+    /// and nothing else — todo actions and shift pull requests stay admin-only.
+    pub(crate) reporters: Arc<Vec<String>>,
 }
 
 impl ShiftState {
@@ -104,12 +113,31 @@ impl ShiftState {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
+        let configured = std::env::var(REPORTERS_ENV).unwrap_or_default();
         Self {
             heartbeats: HeartbeatStore::open(path).expect("open shift heartbeat store"),
             pr_author,
             truth: truth::TruthCache::default(),
+            reporters: Arc::new(reporter_list(&configured)),
         }
     }
+
+    /// A named reporter or any forge admin. The rule exists so an ordinary
+    /// account cannot paint fake slots; admins are not ordinary accounts, and
+    /// an operator's own box runs its workers as an admin.
+    pub(crate) fn may_report(&self, login: &str, admin: bool) -> bool {
+        admin || self.reporters.iter().any(|reporter| reporter == login)
+    }
+}
+
+/// Split a comma-separated reporter setting into logins, dropping blanks.
+pub(crate) fn reporter_list(configured: &str) -> Vec<String> {
+    configured
+        .split(',')
+        .map(str::trim)
+        .filter(|login| !login.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn shift_error(status: StatusCode, code: &str, reason: &str, hint: &str) -> AxumResponse {
@@ -771,12 +799,25 @@ fn heartbeat_from(request: HeartbeatRequest) -> Result<Heartbeat, String> {
     })
 }
 
-/// `POST /api/v1/shift/heartbeat`
+/// `POST /api/v1/shift/heartbeat`: the only shift write a non-admin may make,
+/// and only when the login is named in `JERYU_SHIFT_REPORTERS` (see
+/// [`ShiftState::may_report`]).
 pub(crate) async fn heartbeat(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
     body: Bytes,
 ) -> AxumResponse {
+    let admin = account.role == jeryu_core::UserRole::Admin;
+    if !state.shift.may_report(&account.login, admin) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "permission_denied",
+                "message": "this account may not report shift heartbeats: report as a forge admin or a JERYU_SHIFT_REPORTERS login",
+            })),
+        )
+            .into_response();
+    }
     let request: HeartbeatRequest = match parse(&body) {
         Ok(r) => r,
         Err(resp) => return *resp,

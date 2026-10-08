@@ -459,6 +459,7 @@ impl WebState {
         self.release_boards =
             release_board::ReleaseBoardStore::with_reporters(logins.iter().copied());
         self.shift.pr_author = Some(pr_author.to_owned());
+        self.shift.reporters = Arc::new(logins.iter().map(|login| (*login).to_owned()).collect());
         self
     }
 }

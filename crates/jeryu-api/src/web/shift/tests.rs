@@ -1552,3 +1552,111 @@ async fn releasing_a_live_claim_needs_force_and_replaces_the_note() {
     assert_eq!(released["status"], "open");
     assert_eq!(released["note"], "");
 }
+
+/// A worker-pool host reports slots without an admin token: the login named in
+/// `JERYU_SHIFT_REPORTERS` (here the router tests' `ci-bot`) may beat and do
+/// nothing else under `/api/v1/shift/`.
+#[tokio::test]
+async fn a_named_reporter_may_beat_but_may_not_act_on_todos() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    // ci-bot is a JERYU_SHIFT_REPORTERS login of the invented test site; bob is
+    // an ordinary account that is not named in it.
+    core.create_account("ci-bot", "ci-bot-password", UserRole::User)
+        .unwrap();
+    core.create_account("bob", "bob-password", UserRole::User)
+        .unwrap();
+    let token = |login: &str| {
+        core.create_personal_access_token(login, "t", None)
+            .unwrap()
+            .secret
+    };
+    let (admin, reporter, outsider) = (token("alice"), token("ci-bot"), token("bob"));
+    let router = app(
+        WebState::new_with_git_storage(core.clone(), dir.path().to_path_buf())
+            .with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let call = |method, uri: &str, token: &str, body| {
+        router.clone().oneshot(request(method, uri, token, body))
+    };
+    let beat = json!({"operator": "operator", "host": "fleet-0", "slot": "w1",
+                      "family": "jeryu", "state": "working", "planned_slots": 2});
+
+    let accepted = call(
+        HttpMethod::POST,
+        "/api/v1/shift/heartbeat",
+        &reporter,
+        Some(beat.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(body_json(accepted).await["ok"], true);
+
+    // Admins still beat, named or not.
+    let as_admin = call(
+        HttpMethod::POST,
+        "/api/v1/shift/heartbeat",
+        &admin,
+        Some(beat.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(as_admin.status(), StatusCode::OK);
+
+    // An account the setting does not name is refused, and the refusal says
+    // which setting would name it.
+    let refused = call(
+        HttpMethod::POST,
+        "/api/v1/shift/heartbeat",
+        &outsider,
+        Some(beat),
+    )
+    .await
+    .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    let body = body_json(refused).await;
+    assert_eq!(body["code"], "permission_denied");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("JERYU_SHIFT_REPORTERS"),
+        "{body}"
+    );
+
+    // The grant covers the heartbeat and nothing else: writing the queue stays
+    // admin-only for a reporter as much as for anyone else.
+    for token in [&reporter, &outsider] {
+        let action = call(
+            HttpMethod::POST,
+            "/api/v1/shift/todos/jeryu/20260919-010000-abcdef/action",
+            token,
+            Some(json!({"action": "release"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(action.status(), StatusCode::FORBIDDEN);
+        let prs = call(
+            HttpMethod::POST,
+            "/api/v1/shift/shifts/jeryu/pr",
+            token,
+            Some(json!({})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(prs.status(), StatusCode::FORBIDDEN);
+    }
+
+    // Reading slots is what every logged-in account could already do, and
+    // being a reporter neither widens nor narrows that.
+    for token in [&reporter, &outsider] {
+        let workers = call(HttpMethod::GET, "/api/v1/shift/workers", token, None)
+            .await
+            .unwrap();
+        assert_eq!(workers.status(), StatusCode::OK);
+    }
+}

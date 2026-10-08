@@ -10,6 +10,12 @@
   required` on `/mcp/bot`. Values are copied from the request or the forge's
   answer; the forge's check is unchanged. Rerun a bot's setup script to pick
   this up.
+- `POST /api/v1/shift/heartbeat` accepts the logins named in
+  `JERYU_SHIFT_REPORTERS` (comma-separated site setting, no default) as well as
+  forge admins, so a worker-pool host reports its slots without holding an admin
+  token. The grant is that one route: todo actions, shift pull requests and
+  every other write under `/api/v1/shift/` stay admin-only, and reads are
+  unchanged. Contract: `docs/pipeline-events.md#shift-heartbeats`.
 - A Grokbot or Musebot can never change the repository itself: a bot's
   `PATCH`/`DELETE /api/v3/repos/{owner}/{repo}` and any write to
   `/api/v1/repos/{id}` are refused, whatever the owner's grant. The human
