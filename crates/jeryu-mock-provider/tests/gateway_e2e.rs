@@ -192,6 +192,19 @@ async fn relay_all(harness: &Harness, lines: Vec<Bytes>) -> Vec<GatewayLine> {
         .await
 }
 
+/// Wait until the gateway holds `count` in-flight slots for the test session:
+/// a slot is taken only after `gateway-open` has been validated, so this is
+/// the deterministic "the open was accepted" signal (no timing guesses).
+async fn until_in_flight(gateway: &Gateway, count: usize) {
+    for _ in 0..500 {
+        if gateway.in_flight("sess-1") == count {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("gateway never reached {count} in-flight requests");
+}
+
 fn error_of(lines: &[GatewayLine]) -> Option<RelayError> {
     lines.iter().find_map(|line| match line {
         GatewayLine::Error { error, .. } => Some(*error),
@@ -300,7 +313,8 @@ async fn expiry_is_checked_only_at_open() {
     tx.send(Ok(open_line("r-2", &capability, None)))
         .await
         .expect("open");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // The open is accepted (it holds a slot) before the clock passes expiry.
+    until_in_flight(&harness.gateway, 1).await;
     NOW.fetch_add(10_000, Ordering::SeqCst);
     for body in body_lines("r-2", b"{}") {
         tx.send(Ok(body)).await.expect("body");
@@ -337,7 +351,7 @@ async fn a_generation_bump_mid_request_ends_it_without_more_body() {
     )))
     .await
     .expect("body 1");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    until_in_flight(&harness.gateway, 1).await;
     // The credential is replaced between request-body frames.
     harness.vault.generation.store(2, Ordering::SeqCst);
     tx.send(Ok(line(
@@ -379,7 +393,7 @@ async fn four_requests_may_be_in_flight_and_the_fifth_is_busy() {
             .expect("open");
         held.push((tx, output));
     }
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    until_in_flight(&harness.gateway, 4).await;
     let capability = harness.capability(|_| {});
     let fifth = relay_all(&harness, vec![open_line("r-5", &capability, None)]).await;
     assert_eq!(error_of(&fifth), Some(RelayError::ConnectionBusy));

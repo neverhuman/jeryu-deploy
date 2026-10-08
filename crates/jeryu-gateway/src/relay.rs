@@ -76,6 +76,12 @@ impl Gateway {
         })
     }
 
+    /// Relay requests currently holding an in-flight slot for `session_id`.
+    #[must_use]
+    pub fn in_flight(&self, session_id: &str) -> usize {
+        self.slots.lock().get(session_id).copied().unwrap_or(0)
+    }
+
     /// Replace the clock (tests).
     #[must_use]
     pub fn with_clock(mut self, clock: fn() -> u64) -> Self {
