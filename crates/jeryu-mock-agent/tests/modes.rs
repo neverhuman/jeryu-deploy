@@ -222,7 +222,12 @@ fn background_child_outlives_its_parent_in_its_own_session() {
         .and_then(|pid| pid.parse().ok())
         .expect("child pid");
     let pid = Pid::from_raw(pid).expect("pid");
-    std::thread::sleep(Duration::from_millis(200));
+    // The child calls setsid right after it starts; wait for it with a
+    // deadline rather than a fixed delay.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while rustix::process::getsid(Some(pid)).ok() != Some(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(
         rustix::process::getsid(Some(pid)).ok(),
         Some(pid),

@@ -423,7 +423,9 @@ async fn a_run_admits_a_bounded_number_of_attached_clients() {
     assert_eq!(next_json(&mut extra).await["code"], "attach_viewer_limit");
     drop(clients.pop());
     let mut retry = None;
-    for _ in 0..50 {
+    // Deadline-based: the slot frees when the server notices the close.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let mut client = connect(format!("{base}/ar-crowd/attach")).await;
         if next_json(&mut client).await["type"] == "attached" {
