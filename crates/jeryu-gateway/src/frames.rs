@@ -68,12 +68,12 @@ pub enum GatewayLine {
 }
 
 impl GatewayLine {
-    /// One NDJSON line, newline included.
-    #[must_use]
-    pub fn to_line(&self) -> Vec<u8> {
-        let mut line = serde_json::to_vec(self).unwrap_or_default();
+    /// One NDJSON line, newline included. A line that does not serialize is
+    /// `relay_stream_invalid`, never an empty frame.
+    pub fn to_line(&self) -> Result<Vec<u8>, RelayError> {
+        let mut line = serde_json::to_vec(self).map_err(|_| RelayError::RelayStreamInvalid)?;
         line.push(b'\n');
-        line
+        Ok(line)
     }
 }
 

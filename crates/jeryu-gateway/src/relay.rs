@@ -111,17 +111,13 @@ impl Gateway {
                 .run(&session_id, &provider, &mut lines, &tx, &mut request_id)
                 .await;
             if let Err(error) = outcome {
-                let id = if request_id.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    request_id
-                };
-                let line = GatewayLine::Error {
-                    request_id: id,
-                    error,
+                if request_id.is_empty() {
+                    request_id = "unknown".to_string();
                 }
-                .to_line();
-                let _ = tx.send(Bytes::from(line)).await;
+                let line = GatewayLine::Error { request_id, error };
+                if let Ok(line) = line.to_line() {
+                    let _ = tx.send(Bytes::from(line)).await;
+                }
             }
         });
         futures_util::stream::unfold(rx, |mut rx| async move {
@@ -293,7 +289,7 @@ impl Gateway {
 }
 
 async fn send(tx: &mpsc::Sender<Bytes>, line: &GatewayLine) -> Result<(), RelayError> {
-    tx.send(Bytes::from(line.to_line()))
+    tx.send(Bytes::from(line.to_line()?))
         .await
         .map_err(|_| RelayError::RelayStreamInvalid)
 }
