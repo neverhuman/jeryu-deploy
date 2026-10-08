@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The bot proxy fills the MCP routing headers a client left out: `Mcp-Method`
+  (and `Mcp-Name` for `tools/call`, `prompts/get`, `resources/read`) from the
+  JSON-RPC body, and `MCP-Protocol-Version` from the version agreed at
+  `initialize`. A standard MCP client on an older protocol version sends none of
+  them, and the forge requires them, so it got `400 Mcp-Method header is
+  required` on `/mcp/bot`. Values are copied from the request or the forge's
+  answer; the forge's check is unchanged. Rerun a bot's setup script to pick
+  this up.
 - A Grokbot or Musebot can never change the repository itself: a bot's
   `PATCH`/`DELETE /api/v3/repos/{owner}/{repo}` and any write to
   `/api/v1/repos/{id}` are refused, whatever the owner's grant. The human

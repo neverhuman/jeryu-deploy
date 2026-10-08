@@ -180,6 +180,54 @@ def whoami(access):
     line = "whoami: %s %s %s\n" % (who.get("kind"), who.get("slug"), mode)
     write_secret("whoami.line", line)
 
+# MCP routing headers. Clients that negotiate an older protocol version do
+# not send Mcp-Method or Mcp-Name, and the forge requires them, so the proxy
+# fills them from the JSON-RPC body it is forwarding. MCP-Protocol-Version is
+# filled from the version the forge agreed at initialize. Every value is copied
+# from the request or the forge's own answer, so the forge's check is unchanged.
+NAME_PARAM = {"tools/call": "name", "prompts/get": "name", "resources/read": "uri"}
+negotiated = {}
+negotiated_lock = threading.Lock()
+
+def routing_headers(payload, headers):
+    filled = {}
+    try:
+        message = json.loads(payload) if payload else None
+    except ValueError:
+        message = None
+    if not isinstance(message, dict):
+        return filled
+    method = message.get("method")
+    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+    if isinstance(method, str) and method and not headers.get("Mcp-Method"):
+        filled["Mcp-Method"] = method
+    key = NAME_PARAM.get(method)
+    if key and isinstance(params.get(key), str) and not headers.get("Mcp-Name"):
+        filled["Mcp-Name"] = params[key]
+    if not headers.get("MCP-Protocol-Version"):
+        if method == "initialize" and isinstance(params.get("protocolVersion"), str):
+            filled["MCP-Protocol-Version"] = params["protocolVersion"]
+        else:
+            with negotiated_lock:
+                version = negotiated.get(headers.get("Mcp-Session-Id") or "")
+            if version:
+                filled["MCP-Protocol-Version"] = version
+    return filled
+
+def remember_version(payload, session, data):
+    try:
+        request = json.loads(payload) if payload else None
+        answer = json.loads(data) if data else None
+    except ValueError:
+        return
+    if not (isinstance(request, dict) and request.get("method") == "initialize"):
+        return
+    result = answer.get("result") if isinstance(answer, dict) else None
+    version = result.get("protocolVersion") if isinstance(result, dict) else None
+    if session and isinstance(version, str):
+        with negotiated_lock:
+            negotiated[session] = version
+
 FORWARD_HEADERS = (
     "Content-Type",
     "Accept",
@@ -272,6 +320,8 @@ class Proxy(BaseHTTPRequestHandler):
             value = self.headers.get(name)
             if value:
                 req.add_header(name, value)
+        for name, value in routing_headers(payload, self.headers).items():
+            req.add_header(name, value)
         try:
             resp = urllib.request.urlopen(req, timeout=120)
             code = resp.status
@@ -296,6 +346,7 @@ class Proxy(BaseHTTPRequestHandler):
                     self.wfile.flush()
                 return
             data = resp.read()
+            remember_version(payload, session, data)
         except urllib.error.HTTPError as err:
             code = err.code
             out_type = err.headers.get("Content-Type", "application/octet-stream") if err.headers else "application/octet-stream"

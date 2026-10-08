@@ -137,6 +137,32 @@ fn setup_script_isolates_credentials_and_proxy_identity() {
     assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
     assert!(ok.contains("Mcp-Session-Id"), "{ok}");
 
+    // A client on an older protocol version sends no MCP routing headers. The
+    // proxy fills them from the body and from the version agreed at initialize.
+    let init = post_mcp(
+        port_atlas,
+        &secret,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"std","version":"0"}}}"#,
+        "",
+    );
+    assert!(init.starts_with("HTTP/1.1 200"), "{init}");
+    let call = post_mcp(
+        port_atlas,
+        &secret,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"jeryu.code.definition","arguments":{}}}"#,
+        "Mcp-Session-Id: sess-1\r\n",
+    );
+    assert!(call.starts_with("HTTP/1.1 200"), "{call}");
+    let forge_log = fs::read_to_string(&log_path).unwrap();
+    assert!(
+        forge_log.contains("mcp initialize 2025-11-25 None"),
+        "{forge_log}"
+    );
+    assert!(
+        forge_log.contains("mcp tools/call 2025-11-25 jeryu.code.definition"),
+        "{forge_log}"
+    );
+
     let again = run_setup(&home_path, &decoy, &forge, "grok", "atlas", Some(first_key));
     assert!(
         again.status.success(),
@@ -253,6 +279,24 @@ fn run_setup(
         .expect("bash")
 }
 
+fn post_mcp(port: u16, secret: &str, body: &str, extra: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("proxy");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let req = format!(
+        "POST /mcp/{secret} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\
+         Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n\
+         Content-Length: {}\r\n{extra}\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line);
+    line
+}
+
 fn status_line(port: u16, host: &str, path: &str, extra: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("proxy");
     stream
@@ -328,12 +372,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"access_token": "access-from-enroll", "refresh_token": "jbr_from_enroll"})
             return
         if self.path.startswith("/mcp/bot"):
-            note("mcp")
             method = self.headers.get("Mcp-Method")
-            if method != "initialize":
-                self.send_json(400, {"error": "missing method"})
+            note("mcp {} {} {}".format(method, self.headers.get("MCP-Protocol-Version"),
+                                       self.headers.get("Mcp-Name")))
+            if not method or method != payload.get("method"):
+                self.send_json(400, {"error": "Mcp-Method header is required"})
                 return
-            self.send_json(200, {"ok": True}, session="sess-1")
+            result = {"protocolVersion": "2025-11-25"} if method == "initialize" else {}
+            self.send_json(200, {"jsonrpc": "2.0", "id": payload.get("id"), "result": result},
+                           session="sess-1")
             return
         self.send_json(404, {})
 

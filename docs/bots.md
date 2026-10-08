@@ -79,6 +79,11 @@ starts a loopback-only proxy on an OS-assigned port. It does not touch
 - **gh and git, either kind:** `. ~/.jeryu/bots/<slug>/client.env` points
   `GH_CONFIG_DIR` and `JERYU_MERGE_TOKEN` at the bot's own files.
 
+Any standard MCP client works through the proxy. It fills in the MCP routing
+headers (`Mcp-Method`, `Mcp-Name`, `MCP-Protocol-Version`) that clients on older
+protocol versions leave out, copying them from the request and from the version
+agreed at `initialize`.
+
 The proxy refreshes the access token in the background, so gh and git keep
 working without MCP traffic. To refresh by hand, run
 `python3 ~/.jeryu/bots/<slug>/broker.py refresh-clients`. The proxy does not
