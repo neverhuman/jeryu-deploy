@@ -23,6 +23,7 @@ authority. Durable detail is intentionally routed rather than duplicated:
 - Audit and release controls: `agent/audit-policy.toml`, `docs/audit-rubric.md`,
   and `scripts/release/README.md` (the release procedure; run it on the release host only).
 - Tool-finder scheduled scan and proposal decisions: `docs/tool-finder.md`.
+- Account Grokbots and Musebots (enroll, reach, setup, edge): `docs/bots.md`.
 - Pipeline event log, attention inbox and their agent guide:
   `docs/pipeline-events.md`.
 - Product-wide search (`GET /api/v1/search`), what it looks in and what it
