@@ -727,6 +727,30 @@ An operator's own box may keep reporting as an admin; the setting exists for a
 host outside the forge's trust, such as an external worker pool. Give that host
 a personal access token of the reporter login alone.
 
+### Pool slots
+
+A beat is about a queue slot unless it says otherwise. An external fleet -- a
+pool of accounts, containers or browser profiles the forge does not run --
+reports each member as its own slot and adds four optional fields:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `"todoq"` (the default, and what a queue slot means) or `"pool"` |
+| `detail` | a few words behind `state`, e.g. `"sign-in needed"` for a paused member |
+| `capacity` | how many jobs the member can hold at once |
+| `active` | how many it holds now |
+
+`GET /api/v1/shift/workers` returns all four on every row (`kind` is
+`"todoq"`, the rest `null`, for a beat that left them out), so `/work` can say
+how many members of a pool are available of how many and why one is not. An
+unknown `kind` or a negative `capacity`/`active` is `422`.
+
+In `GET /api/v1/shift/workers/history` a pool member contributes the largest
+`active` it reported in the hour to that bucket's `busy`, rather than the one
+slot a queue worker contributes: a pool of four accounts running five jobs is
+five busy. A pool member that reports no `active` counts as one busy slot
+while it works.
+
 ## Release boards
 
 `PUT /api/v1/release-board/{family}` (a `JERYU_BOARD_REPORTERS` login or an

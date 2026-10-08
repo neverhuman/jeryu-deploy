@@ -331,6 +331,19 @@ pub(crate) struct HeartbeatRequest {
     pub schedule: Option<Value>,
     #[serde(default)]
     pub version: Option<String>,
+    /// What the slot is, spelled as [`WorkerKind`]: left out by a queue slot,
+    /// `"pool"` by one member of an external fleet.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// A few words behind `state`, e.g. why the slot is paused.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// How many jobs this slot can hold at once, and holds now. Only a pool
+    /// slot reports them; a queue slot carries one todo and leaves them out.
+    #[serde(default)]
+    pub capacity: Option<i64>,
+    #[serde(default)]
+    pub active: Option<i64>,
 }
 
 /// A stored heartbeat, as returned by `GET /api/v1/shift/workers`.
@@ -348,6 +361,11 @@ pub(crate) struct Heartbeat {
     pub planned_slots: Option<i64>,
     pub schedule: Option<Value>,
     pub version: Option<String>,
+    /// `"todoq"` unless the reporter said otherwise (see [`WorkerKind`]).
+    pub kind: String,
+    pub detail: Option<String>,
+    pub capacity: Option<i64>,
+    pub active: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -550,6 +568,32 @@ impl TodoStatus {
                 _,
             ) => true,
         }
+    }
+}
+
+/// What kind of slot a heartbeat is about. A queue slot runs one todo at a
+/// time and is what a reporter that says nothing means; a pool slot is one
+/// member of a fleet the forge does not run (an account, a container, a
+/// browser profile), which holds several jobs at once and reports how many.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum WorkerKind {
+    #[default]
+    Todoq,
+    Pool,
+}
+
+impl WorkerKind {
+    pub(crate) const ALL: [Self; 2] = [Self::Todoq, Self::Pool];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Todoq => "todoq",
+            Self::Pool => "pool",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == text)
     }
 }
 

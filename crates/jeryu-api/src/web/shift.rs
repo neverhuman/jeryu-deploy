@@ -19,6 +19,8 @@ mod visibility;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
+mod pool_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 use std::path::Path;
@@ -782,6 +784,21 @@ fn heartbeat_from(request: HeartbeatRequest) -> Result<Heartbeat, String> {
     {
         return Err(format!("stage must be one of {STAGES:?}"));
     }
+    let kind = match request.kind.as_deref().map(str::trim) {
+        None | Some("") => WorkerKind::default(),
+        Some(text) => match WorkerKind::parse(text) {
+            Some(kind) => kind,
+            None => {
+                let kinds = WorkerKind::ALL.map(WorkerKind::as_str);
+                return Err(format!("kind must be one of {kinds:?}"));
+            }
+        },
+    };
+    for (name, value) in [("capacity", request.capacity), ("active", request.active)] {
+        if value.is_some_and(|n| n < 0) {
+            return Err(format!("{name} must not be negative"));
+        }
+    }
     let blank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
     Ok(Heartbeat {
         operator: request.operator,
@@ -796,6 +813,10 @@ fn heartbeat_from(request: HeartbeatRequest) -> Result<Heartbeat, String> {
         planned_slots: request.planned_slots,
         schedule: request.schedule,
         version: blank(request.version),
+        kind: kind.as_str().to_string(),
+        detail: blank(request.detail),
+        capacity: request.capacity,
+        active: request.active,
     })
 }
 

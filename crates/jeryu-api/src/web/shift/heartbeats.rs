@@ -12,7 +12,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
-use super::types::{CapacityBucket, Heartbeat, HistoryResponse, Segment, SlotHistory};
+use super::types::{CapacityBucket, Heartbeat, HistoryResponse, Segment, SlotHistory, WorkerKind};
 
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (
@@ -54,6 +54,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         8,
         "0008_agent_run_intents",
         include_str!("../../../../../db/migrations/0008_agent_run_intents.sql"),
+    ),
+    (
+        9,
+        "0009_shift_pool_slots",
+        include_str!("../../../../../db/migrations/0009_shift_pool_slots.sql"),
     ),
 ];
 
@@ -105,8 +110,10 @@ impl HeartbeatStore {
             .conn
             .execute(
                 "INSERT INTO shift_heartbeats (received_ms, reporter, operator, host, slot, family,
-                   state, todo_id, stage, lease_until, shift, planned_slots, schedule_json, version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                   state, todo_id, stage, lease_until, shift, planned_slots, schedule_json, version,
+                   kind, detail, capacity, active)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                   ?15, ?16, ?17, ?18)",
                 params![
                     now_ms,
                     reporter,
@@ -122,6 +129,10 @@ impl HeartbeatStore {
                     heartbeat.planned_slots,
                     schedule,
                     heartbeat.version,
+                    heartbeat.kind,
+                    heartbeat.detail,
+                    heartbeat.capacity,
+                    heartbeat.active,
                 ],
             )
             .map_err(|err| err.to_string())?;
@@ -142,7 +153,8 @@ impl HeartbeatStore {
     pub(crate) fn latest(&self, since_ms: i64) -> Result<Vec<StoredHeartbeat>, String> {
         self.select(
             "SELECT h.received_ms, h.operator, h.host, h.slot, h.family, h.state, h.todo_id,
-                    h.stage, h.lease_until, h.shift, h.planned_slots, h.schedule_json, h.version
+                    h.stage, h.lease_until, h.shift, h.planned_slots, h.schedule_json, h.version,
+                    h.kind, h.detail, h.capacity, h.active
                FROM shift_heartbeats h
                JOIN (SELECT MAX(id) AS id FROM shift_heartbeats WHERE received_ms >= ?1
                       GROUP BY operator, host, slot, family) m ON h.id = m.id
@@ -159,7 +171,8 @@ impl HeartbeatStore {
         Ok(self
             .select(
                 "SELECT received_ms, operator, host, slot, family, state, todo_id, stage,
-                        lease_until, shift, planned_slots, schedule_json, version
+                        lease_until, shift, planned_slots, schedule_json, version,
+                        kind, detail, capacity, active
                    FROM shift_heartbeats
                   WHERE operator = ?1 AND host = ?2 AND slot = ?3 AND family = ?4
                   ORDER BY id DESC LIMIT 1",
@@ -178,7 +191,7 @@ impl HeartbeatStore {
     pub(crate) fn between(&self, from_ms: i64, to_ms: i64) -> Result<Vec<StoredHeartbeat>, String> {
         self.select(
             "SELECT received_ms, operator, host, slot, family, state, todo_id, stage, lease_until,
-                    shift, planned_slots, schedule_json, version
+                    shift, planned_slots, schedule_json, version, kind, detail, capacity, active
                FROM shift_heartbeats WHERE received_ms >= ?1 AND received_ms <= ?2
               ORDER BY received_ms, id",
             params![from_ms, to_ms],
@@ -221,6 +234,10 @@ impl HeartbeatStore {
                         planned_slots: row.get(10)?,
                         schedule: schedule.and_then(|s| serde_json::from_str(&s).ok()),
                         version: row.get(12)?,
+                        kind: row.get(13)?,
+                        detail: row.get(14)?,
+                        capacity: row.get(15)?,
+                        active: row.get(16)?,
                     },
                 })
             })
@@ -286,6 +303,11 @@ pub(crate) fn rfc3339_ms(ms: i64) -> String {
 
 type SlotKey = (String, String, String, String);
 
+/// Whether the slot belongs to an external pool rather than the queue.
+fn is_pool(hb: &Heartbeat) -> bool {
+    hb.kind == WorkerKind::Pool.as_str()
+}
+
 fn slot_key(hb: &Heartbeat) -> SlotKey {
     (
         hb.operator.clone(),
@@ -302,7 +324,9 @@ fn slot_key(hb: &Heartbeat) -> SlotKey {
 /// than [`HEALTHY_MS`] past its last one: a silent slot shows a gap.
 /// Capacity buckets are whole UTC hours: `planned` sums, per
 /// operator/host/family, the largest `planned_slots` reported in the hour;
-/// `busy` counts slots that reported `working` in the hour.
+/// `busy` counts slots that reported `working` in the hour. A pool slot holds
+/// several jobs, so it contributes the largest `active` it reported instead of
+/// one — a pool of four accounts running five jobs is five busy, not four.
 pub(crate) fn build_history(rows: &[StoredHeartbeat], from_ms: i64, to_ms: i64) -> HistoryResponse {
     let mut by_slot: BTreeMap<SlotKey, Vec<&StoredHeartbeat>> = BTreeMap::new();
     for row in rows {
@@ -364,6 +388,7 @@ pub(crate) fn build_history(rows: &[StoredHeartbeat], from_ms: i64, to_ms: i64) 
         let end = bucket + HOUR_MS;
         let mut planned: BTreeMap<(String, String, String), i64> = BTreeMap::new();
         let mut busy: BTreeSet<SlotKey> = BTreeSet::new();
+        let mut pool_active: BTreeMap<SlotKey, i64> = BTreeMap::new();
         for row in rows
             .iter()
             .filter(|r| r.received_ms >= bucket && r.received_ms < end)
@@ -374,14 +399,20 @@ pub(crate) fn build_history(rows: &[StoredHeartbeat], from_ms: i64, to_ms: i64) 
                 let entry = planned.entry(key).or_insert(0);
                 *entry = (*entry).max(n);
             }
-            if hb.state == "working" {
+            if let (true, Some(n)) = (is_pool(hb), hb.active) {
+                let entry = pool_active.entry(slot_key(hb)).or_insert(0);
+                *entry = (*entry).max(n);
+            } else if hb.state == "working" {
                 busy.insert(slot_key(hb));
             }
         }
+        // A pool slot that reported its load is counted by that load alone,
+        // including in the hours where some of its beats left `active` out.
+        busy.retain(|key| !pool_active.contains_key(key));
         capacity.push(CapacityBucket {
             at: rfc3339_ms(bucket),
             planned: planned.values().sum(),
-            busy: busy.len() as i64,
+            busy: busy.len() as i64 + pool_active.values().sum::<i64>(),
             queue_depth: None,
         });
         bucket = end;

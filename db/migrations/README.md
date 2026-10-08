@@ -14,6 +14,8 @@ file for an applied version stops the server at startup.
 | `0005_site_settings.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/site_settings.rs` |
 | `0006_attention_acks.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/attention/acks.rs` |
 | `0007_idempotency_keys.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/idempotency.rs` |
+| `0008_agent_run_intents.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/agent_runs/intents.rs` |
+| `0009_shift_pool_slots.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/shift/heartbeats.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. Every later migration must be ordered, immutable after

@@ -10,7 +10,7 @@ use tower::ServiceExt;
 use super::heartbeats::{HeartbeatStore, StoredHeartbeat, build_history};
 use super::queue::{QUEUE_REF, WriteError, commit_change, discover, read_todos, resolve};
 use super::todo_file::{TodoFile, slugify};
-use super::types::{Heartbeat, TodoStatus};
+use super::types::{Heartbeat, TodoStatus, WorkerKind};
 use crate::web::{WebState, app};
 
 const PRE_SHIFT_TODO: &str = r#"+++
@@ -401,6 +401,10 @@ fn beat(
             planned_slots: planned,
             schedule: None,
             version: None,
+            kind: WorkerKind::Todoq.as_str().into(),
+            detail: None,
+            capacity: None,
+            active: None,
         },
     }
 }
@@ -460,14 +464,14 @@ fn heartbeat_store_migrates_once_and_prunes_old_rows() {
     assert_eq!(store.latest(now - 1000).unwrap().len(), 1);
 }
 
-async fn body_json(response: axum::response::Response) -> Value {
+pub(super) async fn body_json(response: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-fn request(
+pub(super) fn request(
     method: HttpMethod,
     uri: &str,
     token: &str,
