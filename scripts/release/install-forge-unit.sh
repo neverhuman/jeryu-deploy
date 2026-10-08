@@ -22,6 +22,12 @@
 # Budget the host for MemoryMax, not for what the forge uses when it is idle: a
 # release, a clone and a migration all land inside the same cgroup.
 #
+# A site may also reshape the unit with its own drop-ins in jeryu.service.d/. A
+# drop-in that rebuilds ExecStart out of ${VAR}s is checked against everything
+# the unit and its drop-ins define through Environment= and EnvironmentFile=,
+# and a variable no source defines is refused by name: a forge started with an
+# empty --bind only crash-loops, and by then the previous release is gone.
+#
 # Overridable for tests: JERYU_FORGE_LIMITS_ENV, JERYU_SYSTEMD_USER_DIR, JERYU_SYSTEMCTL.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
@@ -83,6 +89,80 @@ sed -e "s|@LIMITS_ENV@|$limits|g" \
     -e "s|@JERYU_FORGE_OOM_SCORE_ADJ@|$JERYU_FORGE_OOM_SCORE_ADJ|g" \
     "$template" >"$rendered"
 ! grep -q '@[A-Z_]*@' "$rendered" || { echo "the rendered unit still has a placeholder; refusing" >&2; exit 1; }
+
+# A site drop-in in jeryu.service.d/ may rebuild ExecStart out of ${VAR}s. If no
+# environment source defines one of them, systemd hands the forge an empty
+# argument and it crash-loops — which is only visible once the previous release
+# is already gone. So read the unit and its drop-ins the way systemd would and
+# refuse here, by name: this runs before a release stops anything.
+dropins=()
+if [[ -d "$units/jeryu.service.d" ]]; then
+  while IFS= read -r conf; do dropins+=("$conf"); done \
+    < <(find "$units/jeryu.service.d" -maxdepth 1 -type f -name '*.conf' | LC_ALL=C sort)
+fi
+
+specifiers() { # the specifiers a site may write in an EnvironmentFile= path
+  sed -e "s|%h|$HOME|g" -e "s|%u|$(id -un)|g" -e 's|%%|%|g'
+}
+contains() { # NAME HAYSTACK...
+  local want="$1" have; shift
+  for have in "$@"; do [[ "$have" == "$want" ]] && return 0; done
+  return 1
+}
+
+used=()      # names ExecStart* lines reference, first use first
+env_files=() # EnvironmentFile= paths, keeping any '-' that marks one as optional
+env_names=() # names Environment= lines assign
+for conf in "$rendered" ${dropins[@]+"${dropins[@]}"}; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    line="${line//\$\$/}" # systemd's escape for a literal dollar
+    case "$line" in
+      ExecStart*=*)
+        for ref in $(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*' \
+          <<<"${line#*=}"); do
+          name="${ref#\$}"; name="${name#\{}"; name="${name%\}}"
+          contains "$name" ${used[@]+"${used[@]}"} || used+=("$name")
+        done ;;
+      EnvironmentFile=)  env_files=() ;; # an empty value resets the list
+      EnvironmentFile=*) env_files+=("$(specifiers <<<"${line#*=}")") ;;
+      Environment=)      env_names=() ;;
+      Environment=*)
+        for assignment in ${line#*=}; do
+          [[ "$assignment" == *=* ]] && env_names+=("${assignment%%=*}")
+        done ;;
+    esac
+  done <"$conf"
+done
+
+defined=(${env_names[@]+"${env_names[@]}"})
+for file in ${env_files[@]+"${env_files[@]}"}; do
+  optional=""
+  [[ "$file" == -* ]] && { optional=yes; file="${file#-}"; }
+  [[ -f "$file" ]] || {
+    [[ -n "$optional" ]] && continue
+    echo "jeryu.service reads EnvironmentFile=$file, which does not exist; refusing" >&2
+    exit 1
+  }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && defined+=("${line%%=*}")
+  done <"$file"
+done
+# What systemd itself puts in the forge's environment, so a drop-in may use it.
+defined+=(HOME USER LOGNAME SHELL PATH LANG TERM INVOCATION_ID JOURNAL_STREAM XDG_RUNTIME_DIR)
+
+undefined=()
+for name in ${used[@]+"${used[@]}"}; do
+  contains "$name" "${defined[@]}" || undefined+=("$name")
+done
+((${#undefined[@]} == 0)) || {
+  echo "the forge unit's ExecStart uses ${undefined[*]}, which no Environment= or" >&2
+  echo "EnvironmentFile= of jeryu.service or its drop-ins in $units/jeryu.service.d/ defines;" >&2
+  echo "refusing: the forge would start with the argument empty and crash-loop." >&2
+  echo "Define ${undefined[*]} in $limits, or in an environment file a drop-in of your own" >&2
+  echo "names with EnvironmentFile= (see scripts/release/README.md)." >&2
+  exit 1
+}
 
 if cmp -s "$rendered" "$units/jeryu.service"; then
   echo "[unit] jeryu.service is already the current one (MemoryMax=$JERYU_FORGE_MEMORY_MAX, TasksMax=$JERYU_FORGE_TASKS_MAX)"

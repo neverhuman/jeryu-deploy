@@ -80,6 +80,36 @@ if grep -q "stopping jeryu.service" "$T/switch-unbudgeted.log"; then fail "a ref
 mv "$T/limits.aside" "$JERYU_FORGE_LIMITS_ENV"
 ok "switch refuses a site that has not budgeted the forge, before it stops anything"
 
+# A site drop-in that rebuilds ExecStart from a variable nothing defines is what
+# crash-looped the forge once the old release was gone: refuse it while that
+# release is still serving, and accept it once an env file defines the variable.
+unit="$JERYU_SYSTEMD_USER_DIR/jeryu.service"
+mkdir -p "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d"
+cat >"$JERYU_SYSTEMD_USER_DIR/jeryu.service.d/10-site.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=%h/.jeryu/bin/jeryu serve --bind ${JERYU_SERVE_BIND}
+EOF
+stage
+"$JERYU_SYSTEMCTL" --user start jeryu.service
+rc=0; bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-unset-var.log" 2>&1 || rc=$?
+[[ $rc != 0 ]] || fail "switch installed a unit whose drop-in needs an undefined variable"
+grep -q "JERYU_SERVE_BIND" "$T/switch-unset-var.log" || fail "the refusal does not name JERYU_SERVE_BIND"
+if grep -q "stopping jeryu.service" "$T/switch-unset-var.log"; then fail "a refused unit install still stopped production"; fi
+[[ -s "$T/pid" ]] || fail "a refused unit install stopped the running forge"
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "a refused unit install moved the live symlink"
+[[ ! -e "$unit" ]] || fail "a refused unit install wrote a unit anyway"
+ok "install-forge-unit refuses a drop-in needing a variable no environment file defines, before any stop"
+
+# The same drop-in, plus a site env file a second drop-in names, is accepted.
+printf '# the site s own forge settings\n\nJERYU_SERVE_BIND=127.0.0.1:1\n' >"$T/site.env"
+printf '[Service]\nEnvironmentFile=%s\n' "$T/site.env" >"$JERYU_SYSTEMD_USER_DIR/jeryu.service.d/20-site-env.conf"
+bash "$here/install-forge-unit.sh" >"$T/unit-dropin.log" 2>&1 \
+  || { cat "$T/unit-dropin.log" >&2; fail "a drop-in whose variable is defined was refused"; }
+grep -q "installed jeryu.service" "$T/unit-dropin.log" || fail "the installer did not say what it installed"
+rm -rf "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d" "$unit"
+ok "install-forge-unit accepts the same drop-in once an environment file defines the variable"
+
 stage
 "$JERYU_SYSTEMCTL" --user start jeryu.service
 bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch.log" 2>&1 || { cat "$T/switch.log" >&2; fail "switch failed"; }

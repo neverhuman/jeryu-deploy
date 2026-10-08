@@ -109,6 +109,38 @@ forge comes back up inside them. Without that file the deploy is refused before
 anything stops, so write it before the next release. Check what the running forge
 got with `systemctl --user show jeryu.service -p MemoryMax -p MemoryHigh -p TasksMax`.
 
+## A site's own environment and drop-ins
+
+`jeryu.service` belongs to the release: `install-forge-unit.sh` writes
+`~/.config/systemd/user/jeryu.service` from the template on every switch and
+**replaces whatever is there**, so a hand-written unit — and any `EnvironmentFile=`
+line a site added to it — is lost at the next release. A site keeps its own
+settings in a drop-in instead, which systemd merges on top of the installed unit
+and no release touches:
+
+```sh
+# on the forge host, as the user that runs jeryu.service
+mkdir -p ~/.config/systemd/user/jeryu.service.d ~/.config/jeryu
+cat > ~/.config/jeryu/site.env <<'EOF'
+JERYU_SERVE_BIND=<address:port>
+EOF
+cat > ~/.config/systemd/user/jeryu.service.d/10-site.conf <<'EOF'
+[Service]
+EnvironmentFile=%h/.config/jeryu/site.env
+EOF
+systemctl --user daemon-reload
+```
+
+A drop-in that also rebuilds `ExecStart` from those variables has to define every
+one of them. `install-forge-unit.sh` collects the `${VAR}`/`$VAR` references on
+the `ExecStart*` lines of the installed unit and of every
+`jeryu.service.d/*.conf`, resolves them against all the `Environment=` and
+`EnvironmentFile=` sources those files name (following the drop-ins' own
+`EnvironmentFile=` lines; a `-` prefixed file may be missing), and refuses by
+name if any variable is defined nowhere — before `switch.sh` stops anything, so
+production stays up. Without that check the forge comes back with an empty
+argument and crash-loops with the previous release already gone.
+
 To change a limit without a release, edit the limits file and run
 `scripts/release/install-forge-unit.sh` on the forge host, then
 `systemctl --user restart jeryu.service`. `install-forge-unit.sh --help` lists

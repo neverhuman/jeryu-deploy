@@ -2,7 +2,9 @@
 # at-sign-delimited name below is replaced with the site's own value, read from
 # the site limits file, and a rendered unit still holding one is refused.
 # Never install this template as-is, and never edit the rendered copy by hand —
-# the next release re-renders it.
+# the next release re-renders it and replaces any hand-written unit. A site adds
+# its own settings in a jeryu.service.d/ drop-in naming its own EnvironmentFile=;
+# see "A site's own environment and drop-ins" in scripts/release/README.md.
 [Unit]
 Description=jeryu forge (jeryu serve)
 After=network-online.target
