@@ -20,6 +20,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 uuid.workspace = true
 
 [dev-dependencies]
+parking_lot.workspace = true
 bytes = "1"
 futures-util = "0.3"
 jeryu-gateway = { path = "../jeryu-gateway", features = ["loopback-upstream"] }

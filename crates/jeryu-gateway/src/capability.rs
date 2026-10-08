@@ -50,81 +50,41 @@ pub struct Capability {
     pub signature: String,
 }
 
-/// Public keys of the nodes enrolled to call the gateway.
-#[derive(Clone, Default)]
-pub struct Verifier {
-    keys: Vec<[u8; 32]>,
+/// Whether `capability` is signed by `key`, the capability key enrolled for
+/// the mTLS peer that presented it. No other enrolled key is tried.
+#[must_use]
+pub fn signed_by(capability: &Capability, key: &[u8; 32]) -> bool {
+    let (Some(signature), Some(message)) = (
+        decode_hex_signature(&capability.signature),
+        signing_bytes(capability),
+    ) else {
+        return false;
+    };
+    UnparsedPublicKey::new(&ED25519, key)
+        .verify(&message, &signature)
+        .is_ok()
 }
 
-impl Verifier {
-    #[must_use]
-    pub fn new(keys: Vec<[u8; 32]>) -> Self {
-        Self { keys }
+/// After phase 0 and the vault checks (connection-v1 §4 precedence 9 and
+/// 10): the lifetime is at most 60 s, `gateway-open` arrives before expiry,
+/// and the audience is the gateway. Later lines of an accepted request are
+/// not re-checked against `expires_at`.
+pub fn verify_validity(capability: &Capability, now_unix_millis: u64) -> Result<(), RelayError> {
+    let lifetime = capability
+        .expires_at_unix_millis
+        .checked_sub(capability.issued_at_unix_millis);
+    if !matches!(lifetime, Some(1..=MAX_LIFETIME_MILLIS))
+        || now_unix_millis >= capability.expires_at_unix_millis
+    {
+        return Err(RelayError::CapabilityExpired);
     }
-
-    /// Phase 1, before anything else: the node's signature, the route's
-    /// `session_id` and `provider`, and the owner kind. No field of an
-    /// unverified capability reaches the vault.
-    pub fn verify_binding(
-        &self,
-        capability: &Capability,
-        session_id: &str,
-        provider: &str,
-    ) -> Result<(), RelayError> {
-        let signature =
-            decode_hex_signature(&capability.signature).ok_or(RelayError::LeaseBindingMismatch)?;
-        let message = signing_bytes(capability).ok_or(RelayError::LeaseBindingMismatch)?;
-        let trusted = self.keys.iter().any(|key| {
-            UnparsedPublicKey::new(&ED25519, key)
-                .verify(&message, &signature)
-                .is_ok()
-        });
-        if !trusted || capability.session_id != session_id || capability.provider != provider {
-            return Err(RelayError::LeaseBindingMismatch);
-        }
-        if !owner_matches_kind(capability) {
-            return Err(RelayError::ConnectionOwnerMismatch);
-        }
-        Ok(())
+    if capability.audience != AUDIENCE {
+        return Err(RelayError::CapabilityAudienceMismatch);
     }
-
-    /// Phase 2, after the vault checks (connection-v1 §4 precedence): the
-    /// lifetime is at most 60 s, `gateway-open` arrives before expiry, and
-    /// the audience is the gateway. Later lines of an accepted request are
-    /// not re-checked against `expires_at` (§34).
-    pub fn verify_validity(
-        &self,
-        capability: &Capability,
-        now_unix_millis: u64,
-    ) -> Result<(), RelayError> {
-        let lifetime = capability
-            .expires_at_unix_millis
-            .checked_sub(capability.issued_at_unix_millis);
-        if !matches!(lifetime, Some(1..=MAX_LIFETIME_MILLIS))
-            || now_unix_millis >= capability.expires_at_unix_millis
-        {
-            return Err(RelayError::CapabilityExpired);
-        }
-        if capability.audience != AUDIENCE {
-            return Err(RelayError::CapabilityAudienceMismatch);
-        }
-        Ok(())
-    }
-
-    /// Both phases, for callers that have no vault step between them.
-    pub fn verify(
-        &self,
-        capability: &Capability,
-        session_id: &str,
-        provider: &str,
-        now_unix_millis: u64,
-    ) -> Result<(), RelayError> {
-        self.verify_binding(capability, session_id, provider)?;
-        self.verify_validity(capability, now_unix_millis)
-    }
+    Ok(())
 }
 
-fn owner_matches_kind(capability: &Capability) -> bool {
+pub(crate) fn owner_matches_kind(capability: &Capability) -> bool {
     match capability.owner_kind {
         OwnerKind::User => capability.owner_id.starts_with("user/"),
         OwnerKind::ServiceAccount => capability.owner_id.starts_with("service/"),
@@ -201,7 +161,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// A test node key and a capability it signed.
-    pub(crate) fn signed(now: u64, edit: impl FnOnce(&mut Capability)) -> (Verifier, Capability) {
+    pub(crate) fn signed(now: u64, edit: impl FnOnce(&mut Capability)) -> ([u8; 32], Capability) {
         let rng = ring::rand::SystemRandom::new();
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("key");
         let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("pair");
@@ -231,57 +191,47 @@ pub(crate) mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         let public: [u8; 32] = pair.public_key().as_ref().try_into().expect("32 bytes");
-        (Verifier::new(vec![public]), capability)
+        (public, capability)
     }
 
     #[test]
-    fn a_signed_capability_verifies_and_tampering_does_not() {
-        let (verifier, capability) = signed(1_000, |_| {});
-        assert_eq!(
-            verifier.verify(&capability, "sess-1", "claude", 2_000),
-            Ok(())
-        );
+    fn only_the_signing_key_verifies_and_tampering_does_not() {
+        let (key, capability) = signed(1_000, |_| {});
+        assert!(signed_by(&capability, &key));
         let mut forged = capability.clone();
         forged.connection_generation = 2;
-        assert_eq!(
-            verifier.verify(&forged, "sess-1", "claude", 2_000),
-            Err(RelayError::LeaseBindingMismatch),
-            "an unsigned change is refused before any field is trusted"
+        assert!(!signed_by(&forged, &key), "an unsigned change is refused");
+        let (other_key, _) = signed(1_000, |_| {});
+        assert!(
+            !signed_by(&capability, &other_key),
+            "another enrolled node's key does not verify"
         );
-        assert_eq!(
-            Verifier::default().verify(&capability, "sess-1", "claude", 2_000),
-            Err(RelayError::LeaseBindingMismatch),
-            "no enrolled key, no relay"
-        );
-        assert_eq!(
-            verifier.verify(&capability, "sess-2", "claude", 2_000),
-            Err(RelayError::LeaseBindingMismatch)
-        );
+        let mut garbled = capability.clone();
+        garbled.signature = "zz".repeat(64);
+        assert!(!signed_by(&garbled, &key));
     }
 
     #[test]
-    fn expiry_lifetime_audience_and_owner_kind_are_enforced() {
-        let (verifier, capability) = signed(1_000, |_| {});
+    fn expiry_lifetime_and_audience_are_enforced() {
+        let (_, capability) = signed(1_000, |_| {});
+        assert_eq!(verify_validity(&capability, 2_000), Ok(()));
         assert_eq!(
-            verifier.verify(&capability, "sess-1", "claude", 31_000),
+            verify_validity(&capability, 31_000),
             Err(RelayError::CapabilityExpired)
         );
-        let (verifier, long) = signed(1_000, |c| c.expires_at_unix_millis = 1_000 + 60_001);
+        let (_, long) = signed(1_000, |c| c.expires_at_unix_millis = 1_000 + 60_001);
         assert_eq!(
-            verifier.verify(&long, "sess-1", "claude", 2_000),
+            verify_validity(&long, 2_000),
             Err(RelayError::CapabilityExpired),
             "lifetime above 60 s"
         );
-        let (verifier, audience) = signed(1_000, |c| c.audience = "jeryu.other".into());
+        let (_, audience) = signed(1_000, |c| c.audience = "jeryu.other".into());
         assert_eq!(
-            verifier.verify(&audience, "sess-1", "claude", 2_000),
+            verify_validity(&audience, 2_000),
             Err(RelayError::CapabilityAudienceMismatch)
         );
-        let (verifier, kind) = signed(1_000, |c| c.owner_kind = OwnerKind::ServiceAccount);
-        assert_eq!(
-            verifier.verify(&kind, "sess-1", "claude", 2_000),
-            Err(RelayError::ConnectionOwnerMismatch)
-        );
+        let (_, kind) = signed(1_000, |c| c.owner_kind = OwnerKind::ServiceAccount);
+        assert!(!owner_matches_kind(&kind));
     }
 
     #[test]

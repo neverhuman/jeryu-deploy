@@ -212,12 +212,18 @@ async fn disconnect(State(state): State<Arc<MockState>>, Path(id): Path<String>)
 
 /// The mock never adds a credential: a 200 here proves the caller injected a
 /// live access token.
-async fn chat(State(state): State<Arc<MockState>>, headers: HeaderMap) -> Response {
+/// Like a real provider, the mock reads the whole request body before it
+/// answers, so a relay that fences mid-body never gets a response.
+async fn chat(
+    State(state): State<Arc<MockState>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
     match state.authorize_chat(authorization) {
-        Ok(()) => Json(json!({"injected": true})).into_response(),
+        Ok(()) => Json(json!({"injected": true, "request_bytes": body.len()})).into_response(),
         Err(refusal) => refused(refusal),
     }
 }

@@ -49,10 +49,14 @@ impl Drop for Slot {
     }
 }
 
-/// Splits a byte stream into NDJSON lines, bounded and idle-timed.
+/// Splits a byte stream into NDJSON lines, bounded and idle-timed. A
+/// transport chunk is never copied whole: only the part up to the next
+/// newline joins the line buffer, and a line past the limit is refused before
+/// its bytes are copied.
 pub(crate) struct LineReader<S> {
     input: S,
     buffer: Vec<u8>,
+    pending: Bytes,
 }
 
 impl<S, E> LineReader<S>
@@ -63,22 +67,27 @@ where
         Self {
             input,
             buffer: Vec::new(),
+            pending: Bytes::new(),
         }
     }
 
     pub(crate) async fn next_line(&mut self) -> Result<NodeLine, RelayError> {
         loop {
-            if let Some(end) = self.buffer.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = self.buffer.drain(..=end).collect();
-                return crate::frames::parse_node_line(&line[..line.len() - 1]);
-            }
-            if self.buffer.len() > MAX_LINE_BYTES {
+            let newline = self.pending.iter().position(|&b| b == b'\n');
+            let take = newline.map_or(self.pending.len(), |end| end + 1);
+            if self.buffer.len() + take > MAX_LINE_BYTES + 1 {
                 return Err(RelayError::RelayStreamInvalid);
+            }
+            let piece = self.pending.split_to(take);
+            self.buffer.extend_from_slice(&piece);
+            if newline.is_some() {
+                let line = std::mem::take(&mut self.buffer);
+                return crate::frames::parse_node_line(&line[..line.len() - 1]);
             }
             match tokio::time::timeout(IDLE_TIMEOUT, self.input.next()).await {
                 Err(_) => return Err(RelayError::RelayIdleTimeout),
                 Ok(None) | Ok(Some(Err(_))) => return Err(RelayError::RelayStreamInvalid),
-                Ok(Some(Ok(bytes))) => self.buffer.extend_from_slice(&bytes),
+                Ok(Some(Ok(bytes))) => self.pending = bytes,
             }
         }
     }

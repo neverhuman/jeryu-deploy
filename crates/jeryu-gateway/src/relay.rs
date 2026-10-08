@@ -1,7 +1,8 @@
-//! One relay request through the gateway: `gateway-open`, request body,
-//! upstream call with the vault credential, response streamed back. The live
-//! connection generation is re-checked before every body line in both
-//! directions, so a disconnect or credential replacement cuts the response.
+//! One relay request through the gateway: `gateway-open`, phase 0, the
+//! connection-v1 §4 checks in order, then the upstream call with the vault
+//! credential, streaming both bodies. The credential is retrieved once, after
+//! every open precondition. Every later line re-checks the assignment and the
+//! connection metadata without retrieving it again.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,19 +13,22 @@ use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 use crate::RelayError;
-use crate::capability::{Mode, Verifier};
+use crate::authority::{self, NodeRegistry, PeerIdentity, SessionAuthority};
+use crate::body::{Accepted, request_body};
+use crate::capability::{Capability, Mode, verify_validity};
 use crate::frames::{GatewayLine, Header, MAX_CHUNK_BYTES, NodeLine};
 use crate::policy::{UpstreamTable, check_headers};
 use crate::stream::{LineReader, Slot, now_unix_millis};
 
 /// Relay requests in flight per session; the next `gateway-open` is busy.
 pub const MAX_IN_FLIGHT: usize = 4;
-/// No frame on a request for this long ends it with `relay_idle_timeout`.
+/// No frame on a request for this long, in either direction, ends it with
+/// `relay_idle_timeout`. That includes a node that stops reading the response.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-/// Request bodies are buffered before the upstream call; this bounds them.
+/// A request body streams upstream; this bounds its total size.
 pub const MAX_REQUEST_BODY: usize = 8 * 1024 * 1024;
 
-/// What the gateway asks the vault about, on every line.
+/// What the gateway asks the vault about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
     pub owner_id: String,
@@ -33,31 +37,49 @@ pub struct Binding {
     pub connection_generation: u64,
 }
 
+impl Binding {
+    fn of(capability: &Capability) -> Self {
+        Self {
+            owner_id: capability.owner_id.clone(),
+            provider: capability.provider.clone(),
+            connection_id: capability.connection_id.clone(),
+            connection_generation: capability.connection_generation,
+        }
+    }
+}
+
 /// The header the gateway adds upstream. The value never leaves the gateway.
 pub struct UpstreamAuth {
     pub header: String,
     pub value: Zeroizing<String>,
 }
 
-/// The vault side of the gateway: confirms a binding is the live connection
-/// generation and yields the credential to inject. Implemented over the core
-/// vault in the control plane; tests use an in-memory source.
+/// The vault side of the gateway. Implemented over the core vault in the
+/// control plane; tests use an in-memory source.
 pub trait CredentialSource: Send + Sync + 'static {
-    fn authorize(&self, binding: &Binding) -> Result<UpstreamAuth, RelayError>;
+    /// Metadata only (connection-v1 §4 precedence 2 to 5): the owner holds
+    /// the connection, it is connected at this generation, and its mode is
+    /// enabled. Never reads, unseals, or refreshes secret material.
+    fn check(&self, binding: &Binding) -> Result<(), RelayError>;
+    /// The credential for one accepted request. Called once per request,
+    /// after every open precondition has passed.
+    fn credential(&self, binding: &Binding) -> Result<UpstreamAuth, RelayError>;
 }
 
 pub struct Gateway {
-    verifier: Verifier,
+    pub(crate) registry: NodeRegistry,
+    pub(crate) authority: Arc<dyn SessionAuthority>,
     table: UpstreamTable,
-    credentials: Arc<dyn CredentialSource>,
+    pub(crate) credentials: Arc<dyn CredentialSource>,
     client: reqwest::Client,
     slots: crate::stream::Slots,
-    clock: fn() -> u64,
+    pub(crate) clock: fn() -> u64,
 }
 
 impl Gateway {
     pub fn new(
-        verifier: Verifier,
+        registry: NodeRegistry,
+        authority: Arc<dyn SessionAuthority>,
         table: UpstreamTable,
         credentials: Arc<dyn CredentialSource>,
     ) -> Result<Self, RelayError> {
@@ -67,7 +89,8 @@ impl Gateway {
             .build()
             .map_err(|_| RelayError::UpstreamHostDenied)?;
         Ok(Self {
-            verifier,
+            registry,
+            authority,
             table,
             credentials,
             client,
@@ -89,10 +112,11 @@ impl Gateway {
         self
     }
 
-    /// Relay one request. `input` is the node's NDJSON body; the returned
-    /// stream is the NDJSON response, one line per item.
+    /// Relay one request from the mTLS `peer`. `input` is the node's NDJSON
+    /// body; the returned stream is the NDJSON response, one line per item.
     pub fn relay<S, E>(
         self: &Arc<Self>,
+        peer: Option<PeerIdentity>,
         session_id: &str,
         provider: &str,
         input: S,
@@ -105,19 +129,16 @@ impl Gateway {
         let gateway = self.clone();
         let (session_id, provider) = (session_id.to_string(), provider.to_string());
         tokio::spawn(async move {
-            let mut lines = LineReader::new(input);
             let mut request_id = String::new();
+            let lines = LineReader::new(input);
             let outcome = gateway
-                .run(&session_id, &provider, &mut lines, &tx, &mut request_id)
+                .run(peer, &session_id, &provider, lines, &tx, &mut request_id)
                 .await;
             if let Err(error) = outcome {
                 if request_id.is_empty() {
                     request_id = "unknown".to_string();
                 }
-                let line = GatewayLine::Error { request_id, error };
-                if let Ok(line) = line.to_line() {
-                    let _ = tx.send(Bytes::from(line)).await;
-                }
+                let _ = send(&tx, &GatewayLine::Error { request_id, error }).await;
             }
         });
         futures_util::stream::unfold(rx, |mut rx| async move {
@@ -126,15 +147,17 @@ impl Gateway {
     }
 
     async fn run<S, E>(
-        &self,
+        self: &Arc<Self>,
+        peer: Option<PeerIdentity>,
         session_id: &str,
         provider: &str,
-        lines: &mut LineReader<S>,
+        mut lines: LineReader<S>,
         tx: &mpsc::Sender<Bytes>,
         request_id_out: &mut String,
     ) -> Result<(), RelayError>
     where
-        S: Stream<Item = Result<Bytes, E>> + Unpin,
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+        E: Send + 'static,
     {
         if !matches!(provider, "claude" | "codex" | "grok") {
             return Err(RelayError::ProviderUnknown);
@@ -153,25 +176,29 @@ impl Gateway {
         };
         *request_id_out = request_id.clone();
         if line_provider != provider {
-            return Err(RelayError::LeaseBindingMismatch);
+            return Err(RelayError::RelayStreamInvalid);
         }
-        // Signature first: nothing from an unverified capability is trusted.
-        self.verifier
-            .verify_binding(&capability, session_id, provider)?;
-        let binding = Binding {
-            owner_id: capability.owner_id.clone(),
-            provider: provider.to_string(),
-            connection_id: capability.connection_id.clone(),
-            connection_generation: capability.connection_generation,
-        };
-        let auth = self.credentials.authorize(&binding)?;
+        let now = (self.clock)();
+        // Phase 0: nothing below runs, and the vault is not asked, unless the
+        // peer, its key, the assignment, and the stored lease all match.
+        let runner_id = authority::verify(
+            &self.registry,
+            self.authority.as_ref(),
+            peer.as_ref(),
+            &capability,
+            (session_id, provider),
+            now,
+        )?;
+        let binding = Binding::of(&capability);
+        // Precedence 2 to 5, metadata only.
+        self.credentials.check(&binding)?;
         if capability.mode == Mode::QualifiedRamToken {
             return Err(RelayError::ProviderModeUnqualified);
         }
         if authorization.is_some() {
             return Err(RelayError::GuestAuthorizationRejected);
         }
-        self.verifier.verify_validity(&capability, (self.clock)())?;
+        verify_validity(&capability, now)?;
         let (url, upstream) = self.table.resolve(provider, &path)?;
         check_headers(&headers)?;
         let method = match method.as_str() {
@@ -180,9 +207,21 @@ impl Gateway {
             _ => return Err(RelayError::RelayStreamInvalid),
         };
         let _slot = Slot::take(&self.slots, session_id)?;
+        // Every open precondition has passed: retrieve the credential, once.
+        let auth = self.credentials.credential(&binding)?;
 
-        let body = self.read_body(&request_id, &binding, lines).await?;
-        let mut request = self.client.request(method, url).body(body);
+        let accepted = Arc::new(Accepted::new(self.clone(), runner_id, *capability, binding));
+        let failure = Arc::default();
+        let body = request_body(
+            lines,
+            request_id.clone(),
+            accepted.clone(),
+            Arc::clone(&failure),
+        );
+        let mut request = self
+            .client
+            .request(method, url)
+            .body(reqwest::Body::wrap_stream(body));
         for Header { name, value } in &headers {
             request = request.header(name.as_str(), value.as_str());
         }
@@ -191,10 +230,15 @@ impl Gateway {
         }
         request = request.header(auth.header.as_str(), auth.value.as_str());
         drop(auth);
-        let response = tokio::time::timeout(IDLE_TIMEOUT, request.send())
-            .await
-            .map_err(|_| RelayError::RelayIdleTimeout)?
-            .map_err(|_| RelayError::UpstreamHostDenied)?;
+        let body_failure = || failure.lock().take();
+        let response = match tokio::time::timeout(IDLE_TIMEOUT, request.send()).await {
+            Err(_) => return Err(RelayError::RelayIdleTimeout),
+            Ok(Err(_)) => return Err(body_failure().unwrap_or(RelayError::UpstreamHostDenied)),
+            Ok(Ok(response)) => response,
+        };
+        if let Some(error) = body_failure() {
+            return Err(error);
+        }
         if response.status().is_redirection() {
             return Err(RelayError::UpstreamHostDenied);
         }
@@ -223,8 +267,8 @@ impl Gateway {
                 Ok(Some(Ok(chunk))) => chunk,
             };
             for piece in chunk.chunks(MAX_CHUNK_BYTES) {
-                // A disconnect or replacement mid-response stops the body here.
-                self.credentials.authorize(&binding).map(drop)?;
+                // A disconnect, replacement, or lease change stops the body here.
+                accepted.recheck()?;
                 seq += 1;
                 let line = GatewayLine::ResponseBody {
                     request_id: request_id.clone(),
@@ -234,62 +278,21 @@ impl Gateway {
                 send(tx, &line).await?;
             }
         }
-        send(
-            tx,
-            &GatewayLine::ResponseEnd {
-                request_id,
-                seq_end: seq,
-            },
-        )
-        .await
-    }
-
-    async fn read_body<S, E>(
-        &self,
-        request_id: &str,
-        binding: &Binding,
-        lines: &mut LineReader<S>,
-    ) -> Result<Vec<u8>, RelayError>
-    where
-        S: Stream<Item = Result<Bytes, E>> + Unpin,
-    {
-        let mut body = Vec::new();
-        let mut expected = 1_u64;
-        loop {
-            match lines.next_line().await? {
-                NodeLine::RequestBody {
-                    request_id: id,
-                    seq,
-                    bytes_b64,
-                } => {
-                    if id != request_id || seq != expected {
-                        return Err(RelayError::RelayStreamInvalid);
-                    }
-                    self.credentials.authorize(binding).map(drop)?;
-                    let chunk = crate::frames::decode_chunk(&bytes_b64)?;
-                    if body.len() + chunk.len() > MAX_REQUEST_BODY {
-                        return Err(RelayError::RelayStreamInvalid);
-                    }
-                    body.extend_from_slice(&chunk);
-                    expected += 1;
-                }
-                NodeLine::RequestEnd {
-                    request_id: id,
-                    seq_end,
-                } => {
-                    if id != request_id || seq_end != expected - 1 {
-                        return Err(RelayError::RelayStreamInvalid);
-                    }
-                    return Ok(body);
-                }
-                NodeLine::GatewayOpen { .. } => return Err(RelayError::RelayStreamInvalid),
-            }
-        }
+        let end = GatewayLine::ResponseEnd {
+            request_id,
+            seq_end: seq,
+        };
+        send(tx, &end).await
     }
 }
 
+/// One response line to the node. A node that stops reading for the idle
+/// timeout ends the request instead of holding it open forever.
 async fn send(tx: &mpsc::Sender<Bytes>, line: &GatewayLine) -> Result<(), RelayError> {
-    tx.send(Bytes::from(line.to_line()?))
-        .await
-        .map_err(|_| RelayError::RelayStreamInvalid)
+    let bytes = Bytes::from(line.to_line()?);
+    match tokio::time::timeout(IDLE_TIMEOUT, tx.send(bytes)).await {
+        Err(_) => Err(RelayError::RelayIdleTimeout),
+        Ok(Err(_)) => Err(RelayError::RelayStreamInvalid),
+        Ok(Ok(())) => Ok(()),
+    }
 }

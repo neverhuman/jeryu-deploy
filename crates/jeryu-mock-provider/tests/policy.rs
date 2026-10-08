@@ -66,10 +66,17 @@ fn mock_provider_source_names_no_real_provider_host() {
         ["api.", "x.ai"].concat(),
     ];
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for dir in ["src", "tests"] {
-        for entry in std::fs::read_dir(root.join(dir)).expect("source dir") {
+    let mut dirs = vec![root.join("src"), root.join("tests")];
+    let mut scanned = 0;
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("source dir") {
             let path = entry.expect("entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
             let source = std::fs::read_to_string(&path).expect("source");
+            scanned += 1;
             for host in &hosts {
                 assert!(
                     !source.contains(host.as_str()),
@@ -79,6 +86,10 @@ fn mock_provider_source_names_no_real_provider_host() {
             }
         }
     }
+    assert!(
+        scanned >= 5,
+        "scanned the mock's sources, including tests/common"
+    );
 }
 
 #[tokio::test]

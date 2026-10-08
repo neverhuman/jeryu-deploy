@@ -1,8 +1,8 @@
 //! The node-facing mTLS listener (connection-v1 §6). Only a client presenting
 //! a certificate from the enrolled node CA completes the handshake, and only
-//! TLS 1.3 is offered. The capability signature is still checked on every
-//! request: mTLS decides who may talk to the gateway, the capability decides
-//! what one request may do.
+//! TLS 1.3 is offered. The leaf certificate's digest becomes the request's
+//! [`PeerIdentity`], which phase 0 maps to one enrolled node and that node's
+//! capability key. This is the only place the gateway router is mounted.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +16,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 
-use crate::Gateway;
+use crate::{Gateway, PeerIdentity};
 
 /// Connections served at once; the next one waits in the kernel backlog.
 pub const MAX_CONNECTIONS: usize = 64;
@@ -100,6 +100,18 @@ pub async fn serve(
             else {
                 return;
             };
+            // The verifier required a client certificate; the relay maps its
+            // digest to exactly one enrolled node.
+            let Some(peer) = tls
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .map(|leaf| PeerIdentity::from_certificate_der(leaf.as_ref()))
+            else {
+                return;
+            };
+            let app = app.layer(axum::Extension(peer));
             let service = hyper_util::service::TowerToHyperService::new(app);
             // The relay bounds each request with its own idle timeout, so a
             // streaming response may outlive any fixed connection deadline.
