@@ -140,6 +140,31 @@ pub(crate) fn draft_items(drafts: &[DraftFacts], idle_days: i64, now: DateTime<U
     items
 }
 
+/// The one posture a pull request is listed for: kind, title, reason and the
+/// label of its step. The step is a `String` because a failing gate names the
+/// cause the runner published in it.
+type Verdict = Option<(&'static str, String, String, String)>;
+
+/// Where the attempt that failed left its evidence: the gate runner keeps one
+/// directory per attempt under its home on the gate host
+/// (`gate_lock`/`gate_begin` in jeryu-ci-runner's `pr-gate-state.sh`, keyed by
+/// `<owner>-<repo>-<sha>`). The directory is mode 0700, so this names the path
+/// rather than linking it: whoever can read it knows where to look, and the
+/// inbox repeats no line of the log.
+fn gate_evidence(attempt: Option<&str>, pull: &PullFacts, hosts: &Hosts) -> String {
+    match attempt {
+        Some(attempt) => format!(
+            " Attempt {attempt}: its log is \
+             `~/gate-runner/attempts/{}-{}/{attempt}/build.log` on {}, readable by the \
+             runner's own user.",
+            pull.repo.replace('/', "-"),
+            pull.head_sha,
+            hosts.gate
+        ),
+        None => String::new(),
+    }
+}
+
 /// Open pull requests waiting on a person: changes requested, red checks,
 /// missing approvals, or mergeable and simply not merged.
 /// `entries` is the merge queue: a pull request the queue is holding is not
@@ -148,6 +173,7 @@ pub(crate) fn pull_items(
     pulls: &[PullFacts],
     entries: &[QueueEntry],
     now: DateTime<Utc>,
+    hosts: &Hosts,
 ) -> Vec<Item> {
     let mut items = Vec::new();
     for pull in pulls {
@@ -223,8 +249,7 @@ pub(crate) fn pull_items(
             item.sha = Some(pull.head_sha.clone());
             items.push(item);
         }
-        let verdict: Option<(&'static str, String, String, &str)> = if posture.changes_requested > 0
-        {
+        let verdict: Verdict = if posture.changes_requested > 0 {
             Some((
                 "pr_changes_requested",
                 format!("Changes requested on {label}"),
@@ -234,20 +259,39 @@ pub(crate) fn pull_items(
                      or the request is withdrawn.",
                     pull.title, pull.author
                 ),
-                "Read the review and push a fix, or dismiss it",
+                "Read the review and push a fix, or dismiss it".to_string(),
             ))
         } else if !posture.failing.is_empty() {
+            // The gate runner's own check run has no details_url and its log
+            // is unreadable off the gate host, so "open the failing check"
+            // sent a reader nowhere. When the runner published a cause, that
+            // cause and the attempt holding the log are the next step.
+            let (cause, step) = match &posture.gate_failure {
+                Some(failure) => (
+                    format!(
+                        " The `pr-gate-runner` check run on this head says: {}.{}",
+                        failure.title.trim_end_matches('.'),
+                        gate_evidence(failure.attempt.as_deref(), pull, hosts)
+                    ),
+                    format!("Fix {}, then re-run the gate", failure.cause()),
+                ),
+                None => (
+                    " The checks panel on the pull request page links each failing check's \
+                     details."
+                        .to_string(),
+                    "Open the failing check and fix or re-run it".to_string(),
+                ),
+            };
             Some((
                 "pr_checks_failing",
                 format!("Checks failing on {label}"),
                 format!(
-                    "{} failed on \"{}\" by {}, so it cannot merge. The checks panel on the \
-                     pull request page links each failing check's details.",
+                    "{} failed on \"{}\" by {}, so it cannot merge.{cause}",
                     posture.failing.join(", "),
                     pull.title,
                     pull.author
                 ),
-                "Open the failing check and fix or re-run it",
+                step,
             ))
         } else if posture.checks_green && posture.approvals < posture.required_approvals {
             Some((
@@ -258,7 +302,7 @@ pub(crate) fn pull_items(
                      reviewer other than the author has to approve the current head.",
                     posture.approvals, posture.required_approvals, pull.title, pull.author
                 ),
-                "Review and approve the pull request",
+                "Review and approve the pull request".to_string(),
             ))
         } else if posture.can_merge
             && building.is_none()
@@ -282,7 +326,7 @@ pub(crate) fn pull_items(
                         )
                     }
                 ),
-                "Queue the pull request to merge it",
+                "Queue the pull request to merge it".to_string(),
             ))
         } else if !posture.failing_optional.is_empty() {
             // Red, but not what the base branch requires: the pull request can
@@ -297,7 +341,7 @@ pub(crate) fn pull_items(
                     pull.title,
                     pull.author
                 ),
-                "Open the failing check",
+                "Open the failing check".to_string(),
             ))
         } else {
             None
@@ -328,7 +372,7 @@ pub(crate) fn pull_items(
                 title,
                 reason,
                 href: pull_href(&pull.repo, pull.number),
-                label: step,
+                label: &step,
                 api,
                 command: None,
             }

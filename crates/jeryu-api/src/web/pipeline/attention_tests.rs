@@ -21,7 +21,7 @@ use super::tests::{body_json, request, shift_forge};
 use super::types::Event;
 use crate::web::control_plane::{GateRunnerHeartbeat, GateRunnerRecord, GateRunnerResult};
 use crate::web::merge_queue::{QueueEntry, QueueState};
-use crate::web::pulls::PullPosture;
+use crate::web::pulls::{GateFailure, PullPosture};
 use crate::web::shift::{
     BlockKind, Heartbeat, ShiftBranch, ShiftPr, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow,
 };
@@ -572,7 +572,7 @@ fn pull_requests_waiting_on_a_person() {
             },
         ),
     ];
-    let items = pull_items(&pulls, &[], now());
+    let items = pull_items(&pulls, &[], now(), &hosts());
     assert_eq!(
         kinds(&items),
         [
@@ -632,6 +632,80 @@ fn pull_requests_waiting_on_a_person() {
     // A check the base does not require is not the gate's context, so
     // re-gating would not re-run it: items[4] is that posture.
     assert_eq!(api(&items[4]), None);
+}
+
+/// The gate runner's check run has no details_url and its log is in a
+/// mode-0700 directory on the gate host, so "open the failing check" sent a
+/// reader nowhere. When the runner published a cause, the row says the cause,
+/// the attempt and where that attempt's log is.
+#[test]
+fn a_failing_gate_row_says_what_the_runner_published() {
+    let attempt = "5f1d1b3e-2a0c-4f5e-9f2a-7c1d0b8e4a61";
+    let pulls = [pull(
+        2,
+        5,
+        PullPosture {
+            failing: vec!["jeryu-web/required".to_string()],
+            gate_failure: Some(GateFailure {
+                title: "Operator gate failure (exit 101): step failed (exit 1): ops/ci/check.sh"
+                    .to_string(),
+                attempt: Some(attempt.to_string()),
+            }),
+            ..PullPosture::default()
+        },
+    )];
+    let items = pull_items(&pulls, &[], now(), &hosts());
+    assert_eq!(kinds(&items), ["pr_checks_failing"]);
+    let item = &items[0];
+    assert!(
+        item.reason.contains(
+            "The `pr-gate-runner` check run on this head says: Operator gate failure \
+             (exit 101): step failed (exit 1): ops/ci/check.sh."
+        ),
+        "{}",
+        item.reason
+    );
+    assert!(
+        item.reason.contains(&format!(
+            "Attempt {attempt}: its log is \
+             `~/gate-runner/attempts/jeryu-jeryu-web-{}/{attempt}/build.log` on gate-box",
+            pulls[0].head_sha
+        )),
+        "{}",
+        item.reason
+    );
+    assert!(
+        !item.reason.contains("checks panel"),
+        "the panel links nothing for this check: {}",
+        item.reason
+    );
+    assert_eq!(
+        item.action.label,
+        "Fix step failed (exit 1): ops/ci/check.sh, then re-run the gate"
+    );
+    assert!(
+        item.next_step
+            .starts_with("Fix step failed (exit 1): ops/ci/check.sh, then re-run the gate: open "),
+        "{}",
+        item.next_step
+    );
+
+    // A failure the runner published no cause for keeps the panel as the way
+    // in: there is nothing truer to say.
+    let quiet = [pull(
+        3,
+        5,
+        PullPosture {
+            failing: vec!["jeryu-web/required".to_string()],
+            ..PullPosture::default()
+        },
+    )];
+    let items = pull_items(&quiet, &[], now(), &hosts());
+    assert!(items[0].reason.contains("checks panel"), "{:?}", items[0]);
+    assert_eq!(
+        items[0].action.label,
+        "Open the failing check and fix or re-run it"
+    );
 }
 
 fn draft(number: u64, days_old: i64, base_ref: &str) -> DraftFacts {
@@ -741,6 +815,7 @@ fn a_pull_request_that_changes_its_own_gate_waits_on_a_person() {
         }],
         &[],
         now(),
+        &hosts(),
     );
     assert_eq!(kinds(&items), ["pr_changes_own_gate", "pr_ready_to_merge"]);
     let item = &items[0];
@@ -776,6 +851,7 @@ fn a_pull_request_that_changes_its_own_gate_waits_on_a_person() {
         }],
         &[],
         now(),
+        &hosts(),
     );
     assert_eq!(kinds(&items), ["pr_changes_own_gate"]);
     assert!(
@@ -930,21 +1006,21 @@ fn a_pull_request_the_merge_queue_is_holding_is_not_ready_to_merge() {
     // Nothing queued: the PR has been mergeable for 45 minutes and waits on a
     // person, which is the rule this one qualifies.
     assert_eq!(
-        kinds(&pull_items(&pulls, &[], now())),
+        kinds(&pull_items(&pulls, &[], now(), &hosts())),
         ["pr_ready_to_merge"]
     );
 
     // Building, and still inside the window a queue gate normally takes.
-    assert!(pull_items(&pulls, &[queued(7, 15)], now()).is_empty());
+    assert!(pull_items(&pulls, &[queued(7, 15)], now(), &hosts()).is_empty());
 
     // Another pull request's entry says nothing about this one.
     assert_eq!(
-        kinds(&pull_items(&pulls, &[queued(8, 15)], now())),
+        kinds(&pull_items(&pulls, &[queued(8, 15)], now(), &hosts())),
         ["pr_ready_to_merge"]
     );
 
     // Building far longer than a gate takes: worth a look, waiting on nobody.
-    let items = pull_items(&pulls, &[queued(7, 95)], now());
+    let items = pull_items(&pulls, &[queued(7, 95)], now(), &hosts());
     assert_eq!(kinds(&items), ["queue_stuck"]);
     assert_eq!(items[0].severity, Severity::Watch);
     assert_eq!(items[0].pr, Some(7));
@@ -966,7 +1042,7 @@ fn a_pull_request_the_merge_queue_is_holding_is_not_ready_to_merge() {
         },
     )];
     assert_eq!(
-        kinds(&pull_items(&blocked, &[queued(7, 15)], now())),
+        kinds(&pull_items(&blocked, &[queued(7, 15)], now(), &hosts())),
         ["pr_changes_requested"]
     );
 }
@@ -990,7 +1066,12 @@ fn pull_requests_nobody_merged_for_half_an_hour_are_one_stalled_merger() {
         )
     };
 
-    let items = pull_items(&[ready(7, 45), ready(8, 45), ready(9, 32)], &[], now());
+    let items = pull_items(
+        &[ready(7, 45), ready(8, 45), ready(9, 32)],
+        &[],
+        now(),
+        &hosts(),
+    );
     assert_eq!(kinds(&items), ["merger_stalled"]);
     assert_eq!(items[0].severity, Severity::Critical);
     assert_eq!(items[0].id, "merger-stalled");
@@ -1021,16 +1102,21 @@ fn pull_requests_nobody_merged_for_half_an_hour_are_one_stalled_merger() {
     assert_eq!(api(&items[0]), None);
 
     // One ready pull request is one owner's decision, whatever its age.
-    let one = pull_items(&[ready(7, 45)], &[], now());
+    let one = pull_items(&[ready(7, 45)], &[], now(), &hosts());
     assert_eq!(kinds(&one), ["pr_ready_to_merge"]);
     assert_eq!(one[0].severity, Severity::Action);
 
     // Ready for ten minutes: the window the merger is still inside.
-    let fresh = pull_items(&[ready(7, 10), ready(8, 10)], &[], now());
+    let fresh = pull_items(&[ready(7, 10), ready(8, 10)], &[], now(), &hosts());
     assert_eq!(kinds(&fresh), ["pr_ready_to_merge", "pr_ready_to_merge"]);
 
     // A long-ready pair folds; one ready for ten minutes keeps its own row.
-    let mixed = pull_items(&[ready(7, 45), ready(8, 45), ready(9, 10)], &[], now());
+    let mixed = pull_items(
+        &[ready(7, 45), ready(8, 45), ready(9, 10)],
+        &[],
+        now(),
+        &hosts(),
+    );
     assert_eq!(kinds(&mixed), ["pr_ready_to_merge", "merger_stalled"]);
     assert_eq!(mixed[0].pr, Some(9));
 }
@@ -1056,6 +1142,7 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
         }],
         &[],
         now(),
+        &hosts(),
     );
     items.extend(runner_items(
         &[
@@ -1086,6 +1173,7 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
         )],
         &[],
         now(),
+        &hosts(),
     );
     elsewhere.extend(runner_items(
         &[
@@ -2909,6 +2997,7 @@ fn one_of_every_kind() -> Vec<Item> {
         ],
         std::slice::from_ref(&building),
         now(),
+        &hosts(),
     ));
     items.extend(draft_items(&[draft(12, 9, "main")], 3, now()));
 

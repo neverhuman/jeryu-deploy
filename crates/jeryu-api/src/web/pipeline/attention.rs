@@ -631,7 +631,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
     let entries = state.merge_queue.entries(state, |_| true);
     let building = entries.iter().any(|e| e.state == QueueState::Building);
-    items.extend(pull_items(&pulls, &entries, now));
+    items.extend(pull_items(&pulls, &entries, now, &hosts));
     items.extend(draft_items(&draft_facts(state), draft_idle_days(), now));
     items.extend(queue_items(&entries, &open, now));
     items.extend(runner_items(

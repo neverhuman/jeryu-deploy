@@ -1057,6 +1057,34 @@ fn available_actions(pr: &PullRequest, state: &WebPullRequestState) -> Vec<Avail
     actions
 }
 
+/// What the gate runner published about a failed gate attempt on this head.
+/// The `pr-gate-runner` check run carries no `details_url` and its build log
+/// sits in a mode-0700 directory on the gate host, so the title (a vetted
+/// cause: `gate_failure_cause` in jeryu-ci-runner's `pr-gate-state.sh` prints
+/// one only for a few known failure shapes, rebuilt from allowlisted tokens)
+/// and the attempt id from the summary are all a reader gets without an
+/// account on that host. The inbox repeats them and nothing else: no log.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GateFailure {
+    /// The check run's `output.title`, for example `Operator gate failure
+    /// (exit 101): test panicked: pulls::green at src/web/pulls.rs:12`.
+    pub title: String,
+    /// The attempt id out of the summary (`Attempt <id>; log sha256 ...`): it
+    /// names the directory the attempt's evidence, including its log, is in.
+    pub attempt: Option<String>,
+}
+
+impl GateFailure {
+    /// The cause alone, without the `Operator gate failure (exit N): ` the
+    /// runner puts in front of it, for a sentence that already says the gate
+    /// failed. The whole title when the runner published no cause.
+    pub(crate) fn cause(&self) -> &str {
+        self.title
+            .split_once("): ")
+            .map_or(self.title.as_str(), |(_, cause)| cause)
+    }
+}
+
 /// Where an open pull request's merge gate stands, for the attention inbox.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PullPosture {
@@ -1071,6 +1099,42 @@ pub(crate) struct PullPosture {
     pub failing_optional: Vec<String>,
     /// Something was checked, nothing failed and nothing is still running.
     pub checks_green: bool,
+    /// The failure cause the gate runner published for this head, if the
+    /// `pr-gate-runner` check run failed and named one.
+    pub gate_failure: Option<GateFailure>,
+}
+
+/// The check run the gate runner publishes on every head it gates.
+const GATE_CHECK: &str = "pr-gate-runner";
+
+/// What the gate runner said about a failed attempt on this head, out of the
+/// check run it published. Nothing is read from the log itself.
+fn gate_failure(checks: &[PullRequestCheck]) -> Option<GateFailure> {
+    let run = checks
+        .iter()
+        .find(|check| check.name == GATE_CHECK && check.status == "failure")?;
+    let title = run
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())?;
+    Some(GateFailure {
+        title: title.to_string(),
+        attempt: run.description.as_deref().and_then(attempt_id),
+    })
+}
+
+/// The attempt id out of a `pr-gate-runner` summary (`Attempt <id>; log sha256
+/// <digest>; ...`). Only a uuid-shaped token is taken: the id goes into a path
+/// an operator is told to list, so a summary in any other shape yields none.
+fn attempt_id(summary: &str) -> Option<String> {
+    let token = summary.strip_prefix("Attempt ")?;
+    let token = token.split(';').next().unwrap_or(token).trim();
+    let shaped = token.len() == 36
+        && token
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-');
+    shaped.then(|| token.to_string())
 }
 
 /// The posture of an open, non-draft pull request; `None` for any other.
@@ -1087,11 +1151,11 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
         .map(|context| context.name.clone())
         .collect();
     failing.sort();
-    let mut failing_optional: Vec<String> = checks_for_pr(state, pr)
-        .checks
-        .into_iter()
+    let checks = checks_for_pr(state, pr).checks;
+    let mut failing_optional: Vec<String> = checks
+        .iter()
         .filter(|check| check.status == "failure")
-        .map(|check| check.name)
+        .map(|check| check.name.clone())
         .filter(|name| !required.iter().any(|context| &context.name == name))
         .collect();
     failing_optional.sort();
@@ -1111,6 +1175,7 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
             && required_passing
             && summary.checks.pending == 0
             && (!required.is_empty() || summary.checks.total > 0),
+        gate_failure: gate_failure(&checks),
         failing,
         failing_optional,
     })

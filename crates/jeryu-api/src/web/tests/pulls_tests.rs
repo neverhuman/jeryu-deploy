@@ -1672,6 +1672,86 @@ async fn attention_posture_separates_required_from_optional_failing_checks() {
     assert_eq!(posture.failing_optional, ["jankurai/proof"]);
 }
 
+/// The gate runner's check run carries the only account of why a gate failed
+/// that leaves the gate host: its title. The posture carries that title and
+/// the attempt id from the summary, so `/needs-you` can name both.
+#[tokio::test]
+async fn attention_posture_carries_the_gate_runners_failure_cause() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "jeryu",
+            "alice",
+            CreatePullRequestRequest {
+                title: "feature".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("deadbeef".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let publish = |title: &str, summary: &str| {
+        core.create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: "pr-gate-runner".to_string(),
+                head_sha: "deadbeef".to_string(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(CheckConclusion::Failure),
+                output: Some(jeryu_core::CheckRunOutput {
+                    title: title.to_string(),
+                    summary: summary.to_string(),
+                    text: None,
+                }),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    };
+    let attempt = "5f1d1b3e-2a0c-4f5e-9f2a-7c1d0b8e4a61";
+    publish(
+        "Operator gate failure (exit 101): test panicked: pulls::green at src/web/pulls.rs:12",
+        &format!("Attempt {attempt}; log sha256 abc123; operator-unsealed"),
+    );
+    let state = WebState::new(core.clone());
+    let failure = crate::web::pulls::attention_posture(&state, &pr)
+        .expect("an open pull request")
+        .gate_failure
+        .expect("the gate runner's failure");
+    assert_eq!(
+        failure.title,
+        "Operator gate failure (exit 101): test panicked: pulls::green at src/web/pulls.rs:12"
+    );
+    assert_eq!(
+        failure.cause(),
+        "test panicked: pulls::green at src/web/pulls.rs:12"
+    );
+    assert_eq!(failure.attempt.as_deref(), Some(attempt));
+
+    // A summary in any other shape names no attempt: the id goes into a path
+    // an operator is told to list, so only a uuid-shaped token is taken.
+    publish("Operator gate failure (exit 1)", "re-published by hand");
+    let failure = crate::web::pulls::attention_posture(&state, &pr)
+        .expect("an open pull request")
+        .gate_failure
+        .expect("the gate runner's failure");
+    assert_eq!(failure.attempt, None, "{failure:?}");
+    assert_eq!(failure.cause(), "Operator gate failure (exit 1)");
+}
+
 #[tokio::test]
 async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     let core = ForgeCore::new();
