@@ -662,10 +662,8 @@ fn is_codegraph_tool(tool: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use jeryu_codegraph::{
         CrateDepRow, GraphSnapshot, SymbolRefRow, SymbolRow, ToolBuildScanConfig,
@@ -745,34 +743,6 @@ mod tests {
         );
     }
 
-    fn write_script(root: &Path, name: &str, body: &str) -> PathBuf {
-        let script = root.join(name);
-        std::fs::write(&script, body).expect("write script");
-        let mut permissions = std::fs::metadata(&script)
-            .expect("script metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&script, permissions).expect("chmod script");
-        // Under a loaded parallel test run, a sibling test that forks while this file is still
-        // open for writing keeps a writable descriptor until its exec, so executing the new
-        // script can fail with ETXTBSY and the agent run ends "failed" before it starts (the same
-        // race ci_bridge/tests.rs stabilizes). Wait, bounded, until the fixture is executable.
-        for attempt in 0..50 {
-            match std::process::Command::new(&script)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-            {
-                Ok(_) => return script,
-                Err(error) if error.raw_os_error() == Some(26) && attempt < 49 => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("test script did not become executable: {error}"),
-            }
-        }
-        unreachable!("bounded fixture readiness loop must return or panic")
-    }
-
     fn write_file(root: &Path, relative: &str, contents: &str) {
         let path = root.join(relative);
         if let Some(parent) = path.parent() {
@@ -849,147 +819,167 @@ mod tests {
         }
     }
 
+    /// `agent_work.start` never launches on the host: every runtime selector
+    /// answers with the typed managed-launch refusal before the workcell, the
+    /// repo root or the program is touched, and no run, preparation or process
+    /// exists afterwards.
     #[test]
-    fn live_agent_work_tools_route_to_agent_run_store() {
+    fn agent_work_start_is_refused_with_the_typed_launch_denial() {
+        use super::super::sessions::{SessionRuntime, SessionRuntimeConfig};
+
+        for (runtime, code) in [
+            (SessionRuntime::Firecracker, "sandbox_unavailable"),
+            (SessionRuntime::Invalid, "managed_runtime_invalid"),
+            (SessionRuntime::Auto, "host_launch_denied"),
+            (SessionRuntime::Docker, "host_launch_denied"),
+            (SessionRuntime::Native, "host_launch_denied"),
+        ] {
+            let state = Arc::new(WebState::new(ForgeCore::new()).with_session_runtime(
+                SessionRuntimeConfig {
+                    runtime,
+                    docker_bin: Some("/bin/sh".to_string()),
+                    spawn_companion_shell: false,
+                },
+            ));
+            let workspace = tempdir().expect("workspace");
+            let repo_root = workspace.path().join("repo");
+            std::fs::create_dir_all(&repo_root).expect("repo root");
+            // The program would leave a marker if anything ever ran it. It is
+            // written, never executed: not by the test and not by the backend.
+            let marker = repo_root.join("launched");
+            let program = repo_root.join("agent.sh");
+            std::fs::write(
+                &program,
+                format!("#!/bin/sh\necho launched > {}\n", marker.display()),
+            )
+            .expect("program fixture");
+            let (workcell_id, runner_epoch) =
+                seed_repairing_workcell(&state, workspace.path(), &repo_root);
+            let backend = WebMcpBackend::new(state.clone());
+
+            let started = call(
+                &backend,
+                "agent_work.start",
+                json!({
+                    "source": {
+                        "kind": "workcell",
+                        "workcell_id": workcell_id,
+                        "runner_epoch": runner_epoch
+                    },
+                    "io_mode": "pipe",
+                    "repo_root": repo_root,
+                    "program": program,
+                    "budget": { "wall_secs": 5, "output_bytes": 4096 }
+                }),
+            );
+            assert!(!started.success, "{runtime:?} launched: {started:?}");
+            let denial: Value =
+                serde_json::from_str(&started.message).expect("typed launch denial");
+            assert_eq!(denial["code"], code, "{runtime:?}: {denial}");
+            assert_eq!(denial["purpose"], "start an agent run via MCP");
+            assert_eq!(
+                denial["docs_url"],
+                "docs/workcell.md#managed-firecracker-admission"
+            );
+            assert!(
+                started.data.is_none(),
+                "a refusal carries no run: {started:?}"
+            );
+            assert!(
+                state.agent_runs.list().is_empty(),
+                "{runtime:?} recorded a run"
+            );
+            assert!(
+                state.agent_runs.legacy_preparations().is_empty(),
+                "{runtime:?} prepared a host driver"
+            );
+            assert!(!marker.exists(), "{runtime:?} executed the program");
+        }
+    }
+
+    /// The read and control tools answer from the agent-run store whatever
+    /// produced the run. An explicitly seeded store fixture stands in for a
+    /// VM-backed run: its status, the refused control of a run with no driver,
+    /// the terminal state and recorded event, and the refused export. Raw TTY
+    /// bytes through `agent_work.tail` are covered by the test below.
+    #[test]
+    fn agent_work_status_events_and_control_route_to_a_seeded_store_fixture() {
         let state = Arc::new(WebState::new(ForgeCore::new()));
-        let workspace = tempdir().expect("workspace");
-        let repo_root = workspace.path().join("repo");
-        std::fs::create_dir_all(&repo_root).expect("repo root");
-        let script = write_script(
-            &repo_root,
-            "agent.sh",
-            "#!/bin/sh\necho mcp-agent-out\nsleep 0.1\necho mcp-agent-err >&2\n",
-        );
-        let (workcell_id, runner_epoch) =
-            seed_repairing_workcell(&state, workspace.path(), &repo_root);
-        let backend = WebMcpBackend::new(state);
+        let fixture_run = "ar-mcp-store-fixture";
+        state.agent_runs.seed_test_run(fixture_run, 16);
+        let backend = WebMcpBackend::new(state.clone());
 
-        let started = call(
+        let status = call(
             &backend,
-            "agent_work.start",
-            json!({
-                "source": {
-                    "kind": "workcell",
-                    "workcell_id": workcell_id,
-                    "runner_epoch": runner_epoch
-                },
-                "io_mode": "pipe",
-                "repo_root": repo_root,
-                "program": script,
-                "budget": {
-                    "wall_secs": 5,
-                    "output_bytes": 4096
-                },
-                "require_cgroup": false
-            }),
+            "agent_work.status",
+            json!({ "agent_run_id": fixture_run }),
         );
-        assert!(started.success, "{started:?}");
-        let agent_run_id = started.data.as_ref().unwrap()["agent_run_id"]
-            .as_str()
-            .expect("agent run id")
-            .to_string();
-
-        let status = (0..100)
-            .map(|_| {
-                let response = call(
-                    &backend,
-                    "agent_work.status",
-                    json!({ "agent_run_id": agent_run_id }),
-                );
-                if response.data.as_ref().unwrap()["state"] == "running" {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                response
-            })
-            .find(|response| response.data.as_ref().unwrap()["state"] != "running")
-            .expect("terminal agent status");
         assert!(status.success, "{status:?}");
-        assert_eq!(
-            status.data.as_ref().unwrap()["state"],
-            "succeeded",
-            "agent run did not succeed: {:#}",
-            status.data.as_ref().unwrap()
-        );
+        let data = status.data.as_ref().expect("status data");
+        assert_eq!(data["agent_run_id"], fixture_run);
+        assert_eq!(data["state"], "running");
 
-        let events = (0..100)
-            .map(|_| {
-                let response = call(
-                    &backend,
-                    "agent_work.events",
-                    json!({
-                        "agent_run_id": agent_run_id,
-                        "after_seq": 0,
-                        "limit": 20
-                    }),
-                );
-                let has_stdout = response
-                    .data
-                    .as_ref()
-                    .and_then(|data| data["events"].as_array())
-                    .is_some_and(|events| {
-                        events.iter().any(|event| {
-                            event["stream"] == "stdout"
-                                && event["text"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .contains("mcp-agent-out")
-                        })
-                    });
-                if !has_stdout {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                response
-            })
-            .find(|response| {
-                response
-                    .data
-                    .as_ref()
-                    .and_then(|data| data["events"].as_array())
-                    .is_some_and(|events| {
-                        events.iter().any(|event| {
-                            event["stream"] == "stdout"
-                                && event["text"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .contains("mcp-agent-out")
-                        })
-                    })
-            })
-            .expect("agent stdout event");
-        assert!(events.success, "{events:?}");
-        let event_rows = events.data.as_ref().unwrap()["events"]
-            .as_array()
-            .expect("events");
-        assert!(event_rows.iter().any(|event| {
-            event["stream"] == "stdout"
-                && event["text"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .contains("mcp-agent-out")
-        }));
-
+        // The fixture has no driver behind it, so control is refused, not queued.
         let control = call(
             &backend,
             "agent_work.control",
-            json!({
-                "agent_run_id": agent_run_id,
-                "command": { "kind": "terminate" }
-            }),
+            json!({ "agent_run_id": fixture_run, "command": { "kind": "terminate" } }),
         );
-        assert!(!control.success);
+        assert!(!control.success, "{control:?}");
+
+        // Finish the fixture through the store's own failure path, which
+        // records one stderr event and its paired TTY line.
+        state.agent_runs.note_agent_unavailable(fixture_run);
+        let finished = call(
+            &backend,
+            "agent_work.status",
+            json!({ "agent_run_id": fixture_run }),
+        );
+        assert!(finished.success, "{finished:?}");
+        assert_eq!(
+            finished.data.as_ref().expect("status data")["state"],
+            "failed"
+        );
+        let events = call(
+            &backend,
+            "agent_work.events",
+            json!({ "agent_run_id": fixture_run, "after_seq": 0, "limit": 20 }),
+        );
+        assert!(events.success, "{events:?}");
+        let data = events.data.as_ref().expect("events data");
+        let rows = data["events"].as_array().expect("events");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["stream"], "stderr");
+        assert!(
+            rows[0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not available"),
+            "{rows:?}"
+        );
+        assert_eq!(data["next_after_seq"], 1);
+        assert_eq!(data["tty_events"].as_array().expect("tty events").len(), 1);
 
         let export = call(
             &backend,
             "agent_work.export_pr",
             json!({
-                "agent_run_id": agent_run_id,
+                "agent_run_id": fixture_run,
                 "owner": "missing",
                 "repo": "missing",
                 "author": "tester",
                 "title": "Export MCP run"
             }),
         );
-        assert!(!export.success);
+        assert!(!export.success, "{export:?}");
+
+        let missing = call(
+            &backend,
+            "agent_work.status",
+            json!({ "agent_run_id": "ar-never-started" }),
+        );
+        assert!(!missing.success);
+        assert!(missing.message.contains("ar-never-started"), "{missing:?}");
     }
 
     #[test]
