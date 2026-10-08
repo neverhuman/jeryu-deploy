@@ -479,6 +479,7 @@ fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
         title: format!("PR {number}"),
         author: "rel-bot".to_string(),
         head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
+        head_ref: format!("work/pr-{number}"),
         updated_at: now() - Duration::minutes(minutes_old),
         posture,
         changed_paths: vec!["crates/jeryu-api/src/web/pulls.rs".to_string()],
@@ -1119,6 +1120,155 @@ fn pull_requests_nobody_merged_for_half_an_hour_are_one_stalled_merger() {
     );
     assert_eq!(kinds(&mixed), ["pr_ready_to_merge", "merger_stalled"]);
     assert_eq!(mixed[0].pr, Some(9));
+}
+
+/// A campaign is one change pushed to one branch in many repositories, and
+/// the same review on each of its pull requests is one decision: one row names
+/// the branch, the count and the repositories and links every pull request.
+#[test]
+fn pull_requests_on_one_branch_with_one_verdict_are_one_row() {
+    let blocked = |repo: &str, number: u64| PullFacts {
+        repo: repo.to_string(),
+        head_ref: "alton/jankurai-v3-receipts".to_string(),
+        ..pull(
+            number,
+            20,
+            PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+        )
+    };
+
+    let items = pull_items(
+        &[
+            blocked("jeryu/jeryu-web", 41),
+            blocked("jeryu/jeryu-core", 42),
+            blocked("jeryu/jeryu-api", 43),
+            blocked("jeryu/jeryu-tool", 44),
+        ],
+        &[],
+        now(),
+        &hosts(),
+    );
+    assert_eq!(kinds(&items), ["pr_branch_campaign"]);
+    let row = &items[0];
+    assert_eq!(row.severity, Severity::Action);
+    assert_eq!(
+        row.id,
+        "pr-branch-campaign:pr-changes-requested:alton/jankurai-v3-receipts"
+    );
+    assert!(
+        row.title
+            .contains("4 pull requests on alton/jankurai-v3-receipts"),
+        "{}",
+        row.title
+    );
+    // The branch, the count, the number of repositories and every pull
+    // request, so the row says what it stands for.
+    let reason = &row.reason;
+    assert!(reason.contains("4 open pull requests"), "{reason}");
+    assert!(reason.contains("across 4 repositories"), "{reason}");
+    assert!(
+        reason.contains("the branch alton/jankurai-v3-receipts"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains(
+            "jeryu/jeryu-api#43, jeryu/jeryu-core#42, jeryu/jeryu-tool#44, jeryu/jeryu-web#41"
+        ),
+        "{reason}"
+    );
+    // Each pull request is linked, so a reader opens them without the prose.
+    let links = row.pulls.as_ref().expect("the pull requests it stands for");
+    assert_eq!(
+        links
+            .iter()
+            .map(|link| link.href.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "/repos/jeryu/jeryu/jeryu-api/pulls/43",
+            "/repos/jeryu/jeryu/jeryu-core/pulls/42",
+            "/repos/jeryu/jeryu/jeryu-tool/pulls/44",
+            "/repos/jeryu/jeryu/jeryu-web/pulls/41",
+        ]
+    );
+    assert_eq!(row.href, "/search?q=alton/jankurai-v3-receipts");
+    assert_eq!(api(row), None);
+    // One step, the one every folded row asked for.
+    assert_eq!(
+        row.action.label,
+        "Read the review and push a fix, or dismiss it"
+    );
+
+    // Two pull requests on the branch are two rows: nothing to collapse.
+    let two = pull_items(
+        &[
+            blocked("jeryu/jeryu-web", 41),
+            blocked("jeryu/jeryu-core", 42),
+        ],
+        &[],
+        now(),
+        &hosts(),
+    );
+    assert_eq!(
+        kinds(&two),
+        ["pr_changes_requested", "pr_changes_requested"]
+    );
+    assert_eq!(two[0].pr, Some(41));
+
+    // Four pull requests on one branch with different verdicts are not one
+    // decision: only the three sharing a verdict fold.
+    let mut mixed = vec![
+        blocked("jeryu/jeryu-web", 41),
+        blocked("jeryu/jeryu-core", 42),
+        blocked("jeryu/jeryu-api", 43),
+    ];
+    mixed.push(PullFacts {
+        posture: PullPosture {
+            checks_green: true,
+            required_approvals: 1,
+            ..PullPosture::default()
+        },
+        ..blocked("jeryu/jeryu-tool", 44)
+    });
+    assert_eq!(
+        kinds(&pull_items(&mixed, &[], now(), &hosts())),
+        ["pr_awaiting_approval", "pr_branch_campaign"]
+    );
+
+    // The same verdict on three different branches stays three rows.
+    let spread = [
+        pull(
+            41,
+            20,
+            PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+        ),
+        pull(
+            42,
+            20,
+            PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+        ),
+        pull(
+            43,
+            20,
+            PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+        ),
+    ];
+    assert_eq!(
+        kinds(&pull_items(&spread, &[], now(), &hosts())).len(),
+        3,
+        "three branches are three decisions"
+    );
 }
 
 /// A pull request the reviewer gave up on carries the changes it requested:
@@ -1892,7 +2042,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["schema_version"], "jeryu.attention/v1.2");
+    assert_eq!(body["schema_version"], "jeryu.attention/v1.3");
     let items = body["items"].as_array().unwrap();
     let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
     // Critical first (open todos and no worker has ever reported), then the
@@ -2768,6 +2918,9 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("pin_behind", "/releases"),
     ("pin_behind", "/repos/:provider/:owner/*"),
     ("pr_awaiting_approval", "/repos/:provider/:owner/*"),
+    // One row for a whole branch opens the search that lists exactly the pull
+    // requests it stands for, in every repository they are in.
+    ("pr_branch_campaign", "/search"),
     ("pr_changes_own_gate", "/repos/:provider/:owner/*"),
     ("pr_changes_requested", "/repos/:provider/:owner/*"),
     ("pr_checks_failing", "/repos/:provider/:owner/*"),
@@ -3000,6 +3153,29 @@ fn one_of_every_kind() -> Vec<Item> {
             },
         ],
         std::slice::from_ref(&building),
+        now(),
+        &hosts(),
+    ));
+    // One change pushed to one branch in three repositories, each pull
+    // request blocked by the same review: one campaign row.
+    let campaign = |name: &str, number: u64| PullFacts {
+        repo: format!("acme/{name}"),
+        head_ref: "acme/basket-once".to_string(),
+        ..posture(
+            PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+            number,
+        )
+    };
+    items.extend(pull_items(
+        &[
+            campaign("widget-shop", 21),
+            campaign("widget-api", 22),
+            campaign("widget-web", 23),
+        ],
+        &[],
         now(),
         &hosts(),
     ));

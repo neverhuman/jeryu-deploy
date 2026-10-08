@@ -61,10 +61,10 @@ pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_ite
 pub(crate) use pins::pin_items;
 pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
-/// `v1.1` added `action.api` and `v1.2` the optional `budget`: every earlier
-/// field is unchanged, so a client written against `v1` reads a `v1.2` answer
-/// as it always did.
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.2";
+/// `v1.1` added `action.api`, `v1.2` the optional `budget` and `v1.3` the
+/// optional `pulls`: every earlier field is unchanged, so a client written
+/// against `v1` reads a `v1.3` answer as it always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.3";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -81,6 +81,12 @@ pub(super) const QUEUE_LOOKBACK_HOURS: i64 = 24;
 /// A queue entry still building after this long is no longer waiting for a
 /// gate that is about to report.
 pub(super) const QUEUE_STUCK_MINUTES: i64 = 30;
+/// This many open pull requests on one branch with the same verdict are one
+/// decision rather than that many: the same review on every pull request of a
+/// campaign is answered on the branch once (live on 2026-10-06:
+/// `alton/jankurai-v3-receipts` filled the inbox with about twenty
+/// `pr_changes_requested` rows saying the same thing).
+pub(super) const BRANCH_CAMPAIGN_PRS: usize = 3;
 /// A draft with no push for this many days is waiting on somebody to mark it
 /// ready for review; `JERYU_DRAFT_IDLE_DAYS` overrides it per deployment.
 pub(super) const DRAFT_IDLE_DAYS: i64 = 3;
@@ -133,6 +139,7 @@ pub(crate) const KINDS: &[&str] = &[
     "mirror_failing",
     "pin_behind",
     "pr_awaiting_approval",
+    "pr_branch_campaign",
     "pr_changes_own_gate",
     "pr_changes_requested",
     "pr_checks_failing",
@@ -192,6 +199,16 @@ pub(super) struct Shell {
     pub(super) run_in: String,
 }
 
+/// One pull request a folded row stands for, and where to open it, so a
+/// reader reaches every pull request of a campaign without parsing `reason`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct PullLink {
+    /// `owner/name`.
+    pub repo: String,
+    pub number: u64,
+    pub href: String,
+}
+
 /// The money behind a `shift_budget_spent` item, as numbers rather than
 /// prose, so a surface showing the spend never parses `reason` back apart.
 /// A number the event did not carry is left out of the JSON.
@@ -226,6 +243,10 @@ pub(crate) struct Item {
     /// Set on `shift_budget_spent` only; the key is absent on every other item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget: Option<BudgetSpend>,
+    /// Set on `pr_branch_campaign` only, where one row stands for several pull
+    /// requests; the key is absent on every other item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pulls: Option<Vec<PullLink>>,
     pub href: String,
     pub action: Action,
     pub next_step: String,
@@ -282,6 +303,7 @@ impl Draft<'_> {
             sha: None,
             shift: None,
             budget: None,
+            pulls: None,
             href: self.href,
             action: match self.command {
                 Some(shell) => Action {
@@ -426,6 +448,7 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
                 title: pr.title.clone(),
                 author: pr.author.clone(),
                 head_sha: pr.head.sha.clone(),
+                head_ref: pr.head.ref_name.clone(),
                 updated_at: pr.updated_at,
                 posture,
                 changed_paths: super::super::pulls::diff::changed_paths(state, &pr),

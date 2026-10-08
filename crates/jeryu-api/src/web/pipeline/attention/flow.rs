@@ -1,14 +1,14 @@
 //! Attention rules for the flow to production: pull requests, the merge
 //! queue, runners and releases.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 
 use super::{
-    Draft, Hosts, Item, MERGER_STALLED_MINUTES, QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES,
-    READY_TO_MERGE_MINUTES, Severity, Shell, enqueue_call, parse_time, pull_href,
-    ready_for_review_call, regate_call,
+    BRANCH_CAMPAIGN_PRS, Draft, Hosts, Item, MERGER_STALLED_MINUTES, PullLink,
+    QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES, Severity, Shell,
+    enqueue_call, parse_time, pull_href, ready_for_review_call, regate_call,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -24,6 +24,9 @@ pub(crate) struct PullFacts {
     pub title: String,
     pub author: String,
     pub head_sha: String,
+    /// The branch the pull request merges from, which is what a campaign of
+    /// pull requests shares; see [`fold_branch_campaigns`].
+    pub head_ref: String,
     pub updated_at: DateTime<Utc>,
     pub posture: PullPosture,
     /// Every path `base...head` touches, for [`gate_definition_paths`].
@@ -385,7 +388,139 @@ pub(crate) fn pull_items(
         }
     }
     fold_merger_stalled(&mut items, now);
+    fold_branch_campaigns(&mut items, pulls);
     items
+}
+
+/// What every pull request of a campaign is waiting on, as a phrase for the
+/// folded row's title and reason.
+fn campaign_verdict(kind: &str) -> &'static str {
+    match kind {
+        "pr_changes_requested" => "blocked by a review asking for changes",
+        "pr_checks_failing" => "failing a check",
+        "pr_awaiting_approval" => "waiting for approval",
+        "pr_ready_to_merge" => "ready to merge",
+        "pr_changes_own_gate" => "changing the gate that judges it",
+        "queue_stuck" => "stuck building in the merge queue",
+        _ => "waiting on the same thing",
+    }
+}
+
+/// Replace the rows of one campaign — [`BRANCH_CAMPAIGN_PRS`] or more open
+/// pull requests that merge from the same branch and got the same verdict,
+/// whatever repositories they are in — with one row per branch and verdict.
+///
+/// A campaign is one change pushed to one branch in many repositories, so the
+/// same review on each of them is one decision for the owner: answer the
+/// branch, and every pull request on it follows. As a row apiece it reads like
+/// that many decisions and buries everything else in the inbox (live on
+/// 2026-10-06: about twenty `pr_changes_requested` rows for
+/// `alton/jankurai-v3-receipts`). A single pull request, or two, keeps its own
+/// row: there is nothing to collapse.
+fn fold_branch_campaigns(items: &mut Vec<Item>, pulls: &[PullFacts]) {
+    let branch_of: BTreeMap<(&str, u64), &str> = pulls
+        .iter()
+        .map(|pull| ((pull.repo.as_str(), pull.number), pull.head_ref.as_str()))
+        .collect();
+    let mut groups: BTreeMap<(&str, &'static str), Vec<usize>> = BTreeMap::new();
+    for (index, item) in items.iter().enumerate() {
+        let Some((repo, number)) = item.repo.as_deref().zip(item.pr) else {
+            continue;
+        };
+        let Some(branch) = branch_of.get(&(repo, number)) else {
+            continue;
+        };
+        groups.entry((branch, item.kind)).or_default().push(index);
+    }
+    let mut folded: BTreeSet<usize> = BTreeSet::new();
+    let mut rows: Vec<Item> = Vec::new();
+    for ((branch, kind), members) in groups {
+        if members.len() < BRANCH_CAMPAIGN_PRS {
+            continue;
+        }
+        rows.push(campaign_item(
+            branch,
+            kind,
+            &members
+                .iter()
+                .map(|index| &items[*index])
+                .collect::<Vec<_>>(),
+        ));
+        folded.extend(members);
+    }
+    if rows.is_empty() {
+        return;
+    }
+    let mut index = 0;
+    items.retain(|_| {
+        let keep = !folded.contains(&index);
+        index += 1;
+        keep
+    });
+    items.extend(rows);
+}
+
+/// The one row a campaign's rows fold into. Every pull request it stands for
+/// is in `pulls` as well as in the reason, so a reader opens each one without
+/// reading prose, and `href` is the search for the branch: the one page that
+/// lists exactly these pull requests across repositories.
+fn campaign_item(branch: &str, kind: &'static str, members: &[&Item]) -> Item {
+    let mut links: Vec<PullLink> = members
+        .iter()
+        .filter_map(|item| {
+            let (repo, number) = item.repo.clone().zip(item.pr)?;
+            Some(PullLink {
+                href: pull_href(&repo, number),
+                repo,
+                number,
+            })
+        })
+        .collect();
+    links.sort_by(|a, b| a.repo.cmp(&b.repo).then(a.number.cmp(&b.number)));
+    let repos: BTreeSet<&str> = links.iter().map(|link| link.repo.as_str()).collect();
+    let listed = links
+        .iter()
+        .map(|link| format!("{}#{}", link.repo, link.number))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let verdict = campaign_verdict(kind);
+    // `Severity` orders the most severe first, so the whole campaign is as
+    // severe as its worst row: folding never makes the inbox quieter.
+    let severity = members
+        .iter()
+        .map(|item| item.severity)
+        .min()
+        .unwrap_or(Severity::Action);
+    // Every row of a campaign asks for the same step, so the first one's is
+    // the campaign's; the folded row keeps no `api`, because one call would
+    // only perform the step on one of them.
+    let label = members
+        .first()
+        .map(|item| item.action.label.clone())
+        .unwrap_or_default();
+    let mut item = Draft {
+        id: format!("pr-branch-campaign:{}:{branch}", kind.replace('_', "-")),
+        kind: "pr_branch_campaign",
+        severity,
+        title: format!("{} pull requests on {branch} are {verdict}", links.len()),
+        reason: format!(
+            "{} open pull requests across {} repositories merge from the branch {branch} \
+             and every one of them is {verdict}. That is one branch answered once, not \
+             {} separate decisions: {listed}.",
+            links.len(),
+            repos.len(),
+            links.len()
+        ),
+        href: format!("/search?q={branch}"),
+        label: &label,
+        api: None,
+        command: None,
+    }
+    .build();
+    // The oldest row's time: how long the campaign has been waiting.
+    item.since = members.iter().filter_map(|row| row.since.clone()).min();
+    item.pulls = Some(links);
+    item
 }
 
 /// How long one `pr_ready_to_merge` row has been ready, from the pull request

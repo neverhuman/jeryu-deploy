@@ -220,7 +220,7 @@ for 10 seconds), never from old events, so an item disappears when its cause
 is fixed.
 
 ```json
-{"schema_version": "jeryu.attention/v1.2", "generated_at": "...",
+{"schema_version": "jeryu.attention/v1.3", "generated_at": "...",
  "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1},
  "total": 4, "page": {"limit": 100, "page": 1, "total": 4, "has_more": false}}
 ```
@@ -294,9 +294,12 @@ that wants linear history, deciding a title.
 | `queue_failed` | the same: the entry is retried by queueing it again once the reason is fixed |
 | `queue_refused` (a code with no step of its own) | the same |
 
-The schema version says `v1.2` because `action.api` (`v1.1`) and `budget`
-(`v1.2`) are additive: every field of `v1` is unchanged, so a client written
-against `v1` reads a `v1.2` answer as it always did.
+The schema version says `v1.3` because `action.api` (`v1.1`), `budget`
+(`v1.2`) and `pulls` (`v1.3`) are additive: every field of `v1` is unchanged,
+so a client written against `v1` reads a `v1.3` answer as it always did.
+`pulls` is set on `pr_branch_campaign` only, where one row stands for several
+pull requests, and each entry is `{"repo": "owner/name", "number": 7, "href":
+"..."}`.
 
 The machine in `run_in` is one of three roles, each named by an environment
 variable of the server (see [Operations](#operations)): the release host
@@ -331,6 +334,7 @@ pushes leave from there).
 | `queue_failed` | action | a merge-queue entry failed or was dropped in the last 24 hours and its PR is still open |
 | `queue_refused` | action | an enqueue the queue refused in the last 24 hours (stored as a dequeued entry carrying the forge code) while its PR is still open. The entry never built a commit, so queueing or merging it again is refused again: the step is per code — a replacement PR from the base with the commits cherry-picked for `queue_conflict` and `queue_merge_commits`, a new head for `queue_mismatch`, and for a code with no step of its own, reading what the queue reported and queueing again |
 | `queue_stuck` | watch | an entry has been `building` for 30 minutes or more while its PR is open: a queue commit normally gates in a few minutes, so either no runner picked it up or its gate never reported |
+| `pr_branch_campaign` | the worst of the rows it folds | three or more open pull requests that merge from the same branch, in any repositories, got the same verdict (the same `pr_*` or `queue_stuck` kind). A campaign is one change pushed to one branch in many repositories, so the same review on each of them is one decision for the owner: the branch is answered once and every pull request on it follows, where a row apiece reads like that many decisions and buries the rest of the inbox (live on 2026-10-06: about twenty `pr_changes_requested` rows for `alton/jankurai-v3-receipts`). The folded rows are replaced by this one, whose reason names the branch, the count and how many repositories, lists every `owner/name#number`, and whose `pulls` links each pull request; `href` is the search for the branch, which lists exactly them. The step is the one every folded row asked for, and no `action.api` is carried, because one call would perform it on one pull request only. Two pull requests on a branch, or three with different verdicts, keep their own rows. `pr_ready_to_merge` rows are folded into `merger_stalled` first, so a stalled merger is still reported as one |
 | `merger_stalled` | critical | two or more pull requests have been `pr_ready_to_merge` for 30 minutes or more. The reviewer merges approved work on every pass, so half an hour of several ready and none merged is the reviewer having stopped, not a queue of owner decisions; the individual ready rows are folded into this one (it lists up to six `owner/name#number` and counts the rest, and no `pr_ready_to_merge` row is emitted for them), and its reason names the command that says what the reviewer last did (`journalctl --user -u pr-redteam | grep "waiting to merge"`). A single ready pull request, or one ready for less than 30 minutes, stays an ordinary `pr_ready_to_merge` row |
 | `reviewer_stuck` | action | the automated reviewer's last verdict on a still-open PR is `hold`, `too_large`, `publication_rejected` or `failed`. When the same pull request also has changes requested — the usual case for a `hold` — only this row is emitted: it names the reviewer, the verdict and the review, so a `pr_changes_requested` row beside it would only repeat it |
 | `gate_runner_down` | critical | no gate runner slot is online while a PR is open or the merge queue is building |
