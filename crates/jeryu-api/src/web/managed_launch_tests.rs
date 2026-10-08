@@ -176,6 +176,10 @@ async fn managed_launch_entrypoints_fail_before_host_paths_and_preserve_sentinel
             state.agent_runs.list().is_empty(),
             "no run accepted on denial"
         );
+        assert!(
+            state.agent_runs.legacy_preparations().is_empty(),
+            "no legacy source, credential or driver preparation"
+        );
         assert_eq!(std::fs::metadata(&sentinel).expect("metadata").ino(), inode);
         assert_eq!(
             Sha256::digest(std::fs::read(&sentinel).expect("bytes")),
@@ -194,4 +198,190 @@ async fn managed_launch_invalid_json_still_returns_schema_guidance() {
     )
     .await;
     assert_eq!(body["code"], "agent_run_invalid_request");
+}
+
+#[tokio::test]
+async fn managed_launch_bot_rejection_leaves_no_pending_operation() {
+    let core = ForgeCore::new();
+    core.create_account("guard-owner", "test-password-1", jeryu_core::UserRole::User)
+        .expect("fixture owner");
+    let enrolled = core
+        .enroll_bot(
+            "guard-owner",
+            "guard",
+            "Guard",
+            jeryu_core::BotKind::Grok,
+            jeryu_core::BotReach::General,
+        )
+        .expect("fixture enrollment");
+    let session = core
+        .exchange_bot_enrollment_key(&enrolled.enrollment_key)
+        .expect("fixture access");
+    let principal = crate::web::bot_token::BotPrincipal {
+        bot_id: session.bot.id,
+        generation: session.generation,
+        key_id: session.key_id.clone(),
+    };
+    let state = Arc::new(
+        WebState::new(core.clone()).with_session_runtime(SessionRuntimeConfig {
+            runtime: SessionRuntime::Firecracker,
+            docker_bin: None,
+            spawn_companion_shell: true,
+        }),
+    );
+    let body = json!({"provider":"claude","task":"guard regression"}).to_string();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        crate::web::idempotency::IDEMPOTENCY_KEY,
+        axum::http::HeaderValue::from_static("guard-repeat-1"),
+    );
+    for _ in 0..2 {
+        let response = value(
+            sessions::create(
+                State(state.clone()),
+                Path("missing/repository".to_string()),
+                headers.clone(),
+                Some(axum::extract::Extension(principal.clone())),
+                None,
+                Bytes::from(body.clone()),
+            )
+            .await,
+            424,
+        )
+        .await;
+        assert_eq!(response["code"], "sandbox_unavailable");
+    }
+    assert!(state.agent_runs.list().is_empty());
+    assert!(state.agent_runs.legacy_preparations().is_empty());
+    assert!(matches!(
+        core.reserve_bot_operation(
+            principal.bot_id,
+            "session.create",
+            "guard-repeat-1",
+            &crate::web::bots::body_digest(body.as_bytes())
+        )
+        .expect("reserve only after both denied attempts"),
+        jeryu_core::BotOperationGate::Start
+    ));
+}
+
+#[tokio::test]
+async fn managed_launch_router_auth_and_csrf_reject_before_preparation() {
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use jeryu_core::{CreateRepositoryRequest, UserRole};
+    use tower::ServiceExt;
+    let temporary = tempfile::tempdir().expect("router fixture");
+    let core = ForgeCore::new();
+    for (login, role) in [
+        ("guard-admin", UserRole::Admin),
+        ("guard-stranger", UserRole::User),
+    ] {
+        core.create_account(login, "router-test-password", role)
+            .expect("account");
+    }
+    core.create_repository(
+        "guard-admin",
+        CreateRepositoryRequest {
+            name: "private".to_string(),
+            private: true,
+            default_branch: Some("main".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("metadata-only repository");
+    let bearer = core
+        .create_personal_access_token("guard-stranger", "negative fixture", None)
+        .expect("test-only token")
+        .secret;
+    let browser = core
+        .create_session("guard-admin")
+        .expect("test-only browser session");
+    for (runtime, status, code) in [
+        (SessionRuntime::Firecracker, 424, "sandbox_unavailable"),
+        (SessionRuntime::Native, 403, "host_launch_denied"),
+        (SessionRuntime::Docker, 403, "host_launch_denied"),
+        (SessionRuntime::Auto, 403, "host_launch_denied"),
+    ] {
+        let state = Arc::new(
+            WebState::new_with_git_storage(core.clone(), temporary.path().join("git"))
+                .with_auth(true, false, false)
+                .with_session_runtime(SessionRuntimeConfig {
+                    runtime,
+                    docker_bin: Some("/bin/sh".to_string()),
+                    spawn_companion_shell: true,
+                }),
+        );
+        let application = crate::web::router(state.clone());
+        for (path, body) in [
+            (
+                "/api/v1/repos/guard-admin/private/sessions",
+                json!({"agent_id":"claude"}),
+            ),
+            (
+                "/api/v1/agent-runs",
+                json!({"source":{"kind":"local_path","local_path":temporary.path()},
+                "program":"/bin/sh","args":["-c","exit 0"]}),
+            ),
+            ("/api/v1/agent-runs/missing-parent/shell", json!({})),
+        ] {
+            let request = || {
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header(header::CONTENT_TYPE, "application/json")
+            };
+            let anonymous = application
+                .clone()
+                .oneshot(
+                    request()
+                        .body(Body::from(body.to_string()))
+                        .expect("anonymous request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(anonymous.status().as_u16(), 401);
+            let stranger = application
+                .clone()
+                .oneshot(
+                    request()
+                        .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                        .body(Body::from(body.to_string()))
+                        .expect("stranger request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(
+                stranger.status().as_u16(),
+                403,
+                "cross-user launch must be rejected"
+            );
+            let cookie = format!("jeryu-session={}", browser.token);
+            let missing_csrf = application
+                .clone()
+                .oneshot(
+                    request()
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::from(body.to_string()))
+                        .expect("browser request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(value(missing_csrf, 403).await["code"], "csrf_required");
+            let allowed_identity = application
+                .clone()
+                .oneshot(
+                    request()
+                        .header(header::COOKIE, &cookie)
+                        .header("x-jeryu-csrf", &browser.session.csrf_token)
+                        .body(Body::from(body.to_string()))
+                        .expect("authenticated request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(value(allowed_identity, status).await["code"], code);
+            assert!(state.agent_runs.legacy_preparations().is_empty());
+            assert!(state.agent_runs.list().is_empty());
+        }
+    }
 }

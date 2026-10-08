@@ -177,6 +177,8 @@ fn spawn_driver_thread(init: DriverThreadInit) {
         control_rx,
         purge_seeded_auth,
     } = init;
+    #[cfg(test)]
+    store.observe_legacy_preparation("driver_thread");
     std::thread::spawn(move || {
         let sink = RecordingSink {
             store: store.clone(),
@@ -470,6 +472,10 @@ pub(in crate::web) async fn shell(
     if let Err(denial) = crate::web::managed_launch::require(&state, "start a companion shell") {
         return *denial;
     }
+    #[cfg(test)]
+    state
+        .agent_runs
+        .observe_legacy_preparation("shell_workspace");
     // Look up the parent run's workspace.
     let workspace = {
         let inner = state.agent_runs.inner.lock().expect("runs mutex");
@@ -643,6 +649,10 @@ fn resolve_agent_run_source(
     state: &Arc<WebState>,
     request: &AgentRunStartRequest,
 ) -> AgentRunResponseResult<ResolvedAgentRun> {
+    #[cfg(test)]
+    state
+        .agent_runs
+        .observe_legacy_preparation("source_resolution");
     match &request.source {
         AgentRunSource::Workcell {
             workcell_id,
@@ -831,3 +841,7 @@ fn inject_workcell_env(env: &mut BTreeMap<String, String>, lease: &WorkcellLease
             .or_insert_with(|| digest.clone());
     }
 }
+
+#[cfg(test)]
+#[path = "managed_launch_direct_tests.rs"]
+mod managed_launch_direct_tests;

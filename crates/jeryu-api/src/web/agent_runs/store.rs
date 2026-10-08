@@ -19,12 +19,28 @@ impl AgentRunRecord {
 }
 
 impl AgentRunStore {
+    #[cfg(test)]
+    pub(in crate::web) fn observe_legacy_preparation(&self, operation: &'static str) {
+        self.legacy_preparations
+            .lock()
+            .expect("test preparation observer")
+            .push(operation);
+    }
+    #[cfg(test)]
+    pub(in crate::web) fn legacy_preparations(&self) -> Vec<&'static str> {
+        self.legacy_preparations
+            .lock()
+            .expect("test preparation observer")
+            .clone()
+    }
     /// Open the live registry over the durable intent store in `path` (the
     /// shift store), which is where run ids come from.
     pub(in crate::web) fn open(path: &Path) -> Result<Self, String> {
         Ok(Self {
             inner: Arc::default(),
             intents: AgentRunIntentStore::open(path)?,
+            #[cfg(test)]
+            legacy_preparations: Arc::default(),
         })
     }
 
@@ -35,6 +51,7 @@ impl AgentRunStore {
         Self {
             inner: Arc::default(),
             intents: AgentRunIntentStore::in_memory(),
+            legacy_preparations: Arc::default(),
         }
     }
 

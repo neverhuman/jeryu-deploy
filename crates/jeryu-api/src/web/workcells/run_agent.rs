@@ -149,6 +149,10 @@ pub(in crate::web) async fn run_agent(
     if let Err(denial) = crate::web::managed_launch::require(&state, "run an agent in a workcell") {
         return *denial;
     }
+    #[cfg(test)]
+    state
+        .agent_runs
+        .observe_legacy_preparation("workcell_source_resolution");
     let run_root = match selected_run_root(&lease, request.repo_root.as_deref()) {
         Ok(run_root) => run_root,
         Err(response) => return *response,
@@ -162,6 +166,10 @@ pub(in crate::web) async fn run_agent(
         .output_budget_bytes
         .unwrap_or(jeryu_agentbridge::driver::DEFAULT_OUTPUT_BUDGET_BYTES)
         .clamp(1, 1024 * 1024);
+    #[cfg(test)]
+    state
+        .agent_runs
+        .observe_legacy_preparation("workcell_driver");
     let driver =
         AgentDriver::new(timeout, output_budget).with_require_cgroup(request.require_cgroup);
     let spec = CommandSpec {

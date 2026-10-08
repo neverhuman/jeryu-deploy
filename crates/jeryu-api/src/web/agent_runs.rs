@@ -130,6 +130,8 @@ pub(crate) struct AgentRunStore {
     /// Where a run's intent and its id are recorded before the forge
     /// acknowledges the run. The id never comes from this process.
     intents: AgentRunIntentStore,
+    #[cfg(test)]
+    legacy_preparations: Arc<Mutex<Vec<&'static str>>>,
 }
 
 #[derive(Default)]

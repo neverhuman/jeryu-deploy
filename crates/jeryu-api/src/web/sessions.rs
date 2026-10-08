@@ -314,6 +314,9 @@ fn create_for_bot(
             "Idempotency-Key is required",
         );
     };
+    if let Err(denial) = super::managed_launch::require(&state, "create a bot agent session") {
+        return *denial;
+    }
     let digest = bots::body_digest(body);
     let gate =
         match state
@@ -397,6 +400,10 @@ fn create_session(
     session_owner: Option<String>,
 ) -> Result<CreateSessionResponse, Box<AxumResponse>> {
     super::managed_launch::require(state, "create an agent session for a repository")?;
+    #[cfg(test)]
+    state
+        .agent_runs
+        .observe_legacy_preparation("session_source_resolution");
     let repo = find_repo(state, repo_id).ok_or_else(|| Box::new(repo_not_found(repo_id)))?;
     let owner = repo.owner.clone();
     let name = repo.name.clone();
@@ -601,6 +608,10 @@ fn create_session(
     let auth_home = Some(state.session_auth_home.path());
     #[cfg(not(test))]
     let auth_home = None;
+    #[cfg(test)]
+    state
+        .agent_runs
+        .observe_legacy_preparation("operator_auth_seeding");
     seed_agent_auth(&workspace, &agent_id, auth_home);
 
     // Pick the PTY execution backend. The native in-process kernel sandbox cannot be
