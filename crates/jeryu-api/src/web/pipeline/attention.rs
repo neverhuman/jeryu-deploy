@@ -84,7 +84,7 @@ pub(super) const QUEUE_STUCK_MINUTES: i64 = 30;
 /// This many open pull requests on one branch with the same verdict are one
 /// decision rather than that many: the same review on every pull request of a
 /// campaign is answered on the branch once (live on 2026-10-06:
-/// `alton/jankurai-v3-receipts` filled the inbox with about twenty
+/// `dev/jankurai-v3-receipts` filled the inbox with about twenty
 /// `pr_changes_requested` rows saying the same thing).
 pub(super) const BRANCH_CAMPAIGN_PRS: usize = 3;
 /// A draft with no push for this many days is waiting on somebody to mark it

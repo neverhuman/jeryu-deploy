@@ -1129,7 +1129,7 @@ fn pull_requests_nobody_merged_for_half_an_hour_are_one_stalled_merger() {
 fn pull_requests_on_one_branch_with_one_verdict_are_one_row() {
     let blocked = |repo: &str, number: u64| PullFacts {
         repo: repo.to_string(),
-        head_ref: "alton/jankurai-v3-receipts".to_string(),
+        head_ref: "dev/jankurai-v3-receipts".to_string(),
         ..pull(
             number,
             20,
@@ -1156,11 +1156,11 @@ fn pull_requests_on_one_branch_with_one_verdict_are_one_row() {
     assert_eq!(row.severity, Severity::Action);
     assert_eq!(
         row.id,
-        "pr-branch-campaign:pr-changes-requested:alton/jankurai-v3-receipts"
+        "pr-branch-campaign:pr-changes-requested:dev/jankurai-v3-receipts"
     );
     assert!(
         row.title
-            .contains("4 pull requests on alton/jankurai-v3-receipts"),
+            .contains("4 pull requests on dev/jankurai-v3-receipts"),
         "{}",
         row.title
     );
@@ -1170,7 +1170,7 @@ fn pull_requests_on_one_branch_with_one_verdict_are_one_row() {
     assert!(reason.contains("4 open pull requests"), "{reason}");
     assert!(reason.contains("across 4 repositories"), "{reason}");
     assert!(
-        reason.contains("the branch alton/jankurai-v3-receipts"),
+        reason.contains("the branch dev/jankurai-v3-receipts"),
         "{reason}"
     );
     assert!(
@@ -1193,7 +1193,7 @@ fn pull_requests_on_one_branch_with_one_verdict_are_one_row() {
             "/repos/jeryu/jeryu/jeryu-web/pulls/41",
         ]
     );
-    assert_eq!(row.href, "/search?q=alton/jankurai-v3-receipts");
+    assert_eq!(row.href, "/search?q=dev/jankurai-v3-receipts");
     assert_eq!(api(row), None);
     // One step, the one every folded row asked for.
     assert_eq!(

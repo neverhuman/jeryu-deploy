@@ -415,7 +415,7 @@ fn campaign_verdict(kind: &str) -> &'static str {
 /// branch, and every pull request on it follows. As a row apiece it reads like
 /// that many decisions and buries everything else in the inbox (live on
 /// 2026-10-06: about twenty `pr_changes_requested` rows for
-/// `alton/jankurai-v3-receipts`). A single pull request, or two, keeps its own
+/// `dev/jankurai-v3-receipts`). A single pull request, or two, keeps its own
 /// row: there is nothing to collapse.
 fn fold_branch_campaigns(items: &mut Vec<Item>, pulls: &[PullFacts]) {
     let branch_of: BTreeMap<(&str, u64), &str> = pulls
