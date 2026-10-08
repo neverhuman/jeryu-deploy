@@ -96,7 +96,7 @@ where
                 request_id,
                 seq_end,
             } => {
-                if request_id != self.request_id || seq_end + 1 != self.expected {
+                if request_id != self.request_id || seq_end.checked_add(1) != Some(self.expected) {
                     return Err(RelayError::RelayStreamInvalid);
                 }
                 self.accepted.recheck()?;

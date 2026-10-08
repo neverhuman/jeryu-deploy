@@ -12,7 +12,6 @@ use crate::RelayError;
 use crate::body::{Accepted, Failure};
 use crate::frames::{GatewayLine, Header, MAX_CHUNK_BYTES};
 use crate::relay::{IDLE_TIMEOUT, UpstreamAuth};
-use crate::stream::MAX_TRANSPORT_CHUNK;
 
 /// What the open phase decided about the upstream call.
 pub(crate) struct Prepared {
@@ -87,11 +86,11 @@ where
             Err(_) => return Err(RelayError::RelayIdleTimeout),
             Ok(None) => break,
             Ok(Some(Err(_))) => return Err(RelayError::RelayStreamInvalid),
-            Ok(Some(Ok(chunk))) if chunk.len() > MAX_TRANSPORT_CHUNK => {
-                return Err(RelayError::RelayStreamInvalid);
-            }
             Ok(Some(Ok(chunk))) => chunk,
         };
+        // No size cap here: a provider chunk is re-split into 32 KiB lines at
+        // once and nothing accumulates. The 1 MiB transport budget bounds the
+        // node-side line reader, which does buffer.
         for piece in chunk.chunks(MAX_CHUNK_BYTES) {
             // A disconnect, replacement, or lease change stops the body here.
             accepted.recheck()?;

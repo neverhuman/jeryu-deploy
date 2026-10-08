@@ -265,7 +265,9 @@ impl Harness {
     }
 
     pub async fn counters(&self) -> Value {
-        reqwest::get(format!("{}/counters", self.provider_url))
+        http()
+            .get(format!("{}/counters", self.provider_url))
+            .send()
             .await
             .expect("counters")
             .json()
@@ -287,8 +289,17 @@ impl Harness {
     }
 }
 
+/// The harness's own client never uses a proxy, so a test that sets proxy
+/// variables only changes what the gateway sees.
+pub fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("client")
+}
+
 async fn mint_access_token(provider: &MockProvider) -> String {
-    let http = reqwest::Client::new();
+    let http = http();
     let post = |path: &str, body: Value| http.post(provider.url(path)).json(&body).send();
     let device: Value = post("/oauth/device", json!({"provider": "claude"}))
         .await

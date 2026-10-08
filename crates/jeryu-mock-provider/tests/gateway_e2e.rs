@@ -89,6 +89,22 @@ async fn bad_frames_are_refused() {
     );
 }
 
+/// A `request-end` at the largest sequence is refused as a bad frame. The
+/// check uses `checked_add`, so it cannot overflow (a panic in a debug
+/// build, a wrap to 0 in release).
+#[tokio::test]
+async fn a_request_end_at_the_largest_sequence_is_refused_without_overflow() {
+    let harness = Harness::new().await;
+    let capability = harness.capability(|_| {});
+    let lines = vec![
+        open_line("r-1", &capability, None),
+        end_line("r-1", u64::MAX),
+    ];
+    let answer = harness.relay_all(lines).await;
+    assert_eq!(error_of(&answer), Some(RelayError::RelayStreamInvalid));
+    assert!(!has_body(&answer));
+}
+
 #[tokio::test]
 async fn expiry_is_checked_only_at_open() {
     let harness = Harness::new().await;

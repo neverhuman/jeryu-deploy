@@ -39,8 +39,8 @@ impl CertificateFingerprint {
 /// The caller, as the TLS handshake proved it: the fingerprint of the client
 /// certificate that chained to the node CA. Only the node-facing listener
 /// mints one, so nothing outside this crate can claim to be a node. Test
-/// harnesses build one through the `test-harness` feature, which product
-/// crates never enable.
+/// harnesses build one through the `test-harness` feature, which only
+/// dev-dependencies may enable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerIdentity(CertificateFingerprint);
 

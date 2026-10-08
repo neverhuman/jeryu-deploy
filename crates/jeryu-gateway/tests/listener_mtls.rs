@@ -173,7 +173,9 @@ async fn start(
 fn client(server_ca: &Ca, identity: Option<(String, String)>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .tls_certs_only([reqwest::Certificate::from_pem(server_ca.pem.as_bytes()).expect("root")])
-        .resolve("localhost", "127.0.0.1:0".parse().expect("addr"));
+        .resolve("localhost", "127.0.0.1:0".parse().expect("addr"))
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(4));
     if let Some((cert, key)) = identity {
         let pem = format!("{cert}{key}");
         builder = builder.identity(reqwest::Identity::from_pem(pem.as_bytes()).expect("identity"));
@@ -242,6 +244,132 @@ async fn the_peer_certificate_is_the_phase_zero_identity() {
         )),
     );
     assert!(stranger.post(&url).body("").send().await.is_err());
+}
+
+/// A node fixture: the CAs, the enrolled node's certificate and key, and a
+/// running listener that knows that node.
+struct Node {
+    server_ca: Ca,
+    cert: (String, String),
+    key: Ed25519KeyPair,
+    addr: std::net::SocketAddr,
+}
+
+async fn node_fixture() -> Node {
+    let node_ca = ca("jeryu node ca");
+    let server_ca = ca("jeryu gateway ca");
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("key");
+    let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("pair");
+    let public: [u8; 32] = key.public_key().as_ref().try_into().expect("32");
+    let cert = leaf(&node_ca, &["node-1"], ExtendedKeyUsagePurpose::ClientAuth);
+    let fingerprint = CertificateFingerprint::of_der(&der_of(&cert.0));
+    let addr = start(&server_ca, &node_ca, &[(fingerprint, public)]).await;
+    Node {
+        server_ca,
+        cert,
+        key,
+        addr,
+    }
+}
+
+/// A raw TLS client with the node's certificate, for byte-level checks.
+async fn tls_connect(node: &Node) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from_pem_slice(node.server_ca.pem.as_bytes()).expect("ca"))
+        .expect("root");
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("tls13")
+        .with_root_certificates(roots)
+        .with_client_auth_cert(
+            vec![CertificateDer::from_pem_slice(node.cert.0.as_bytes()).expect("cert")],
+            PrivateKeyDer::from_pem_slice(node.cert.1.as_bytes()).expect("key"),
+        )
+        .expect("client auth");
+    let tcp = tokio::net::TcpStream::connect(node.addr)
+        .await
+        .expect("tcp");
+    tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(ServerName::try_from("localhost").expect("name"), tcp)
+        .await
+        .expect("handshake")
+}
+
+/// Silent TCP never reaches a serving slot: with more silent sockets open
+/// than the listener serves at once, the enrolled node is still answered
+/// at once, not after the handshake timeout.
+#[tokio::test]
+async fn silent_tcp_never_holds_a_serving_slot() {
+    let node = node_fixture().await;
+    let mut silent = Vec::new();
+    for _ in 0..listener::MAX_CONNECTIONS + 16 {
+        silent.push(
+            tokio::net::TcpStream::connect(node.addr)
+                .await
+                .expect("tcp"),
+        );
+    }
+    let url = format!(
+        "https://localhost:{}/internal/gateway/sess-1/claude",
+        node.addr.port()
+    );
+    let started = std::time::Instant::now();
+    let body = client(&node.server_ca, Some(node.cert.clone()))
+        .post(&url)
+        .body(open_line(&node.key))
+        .send()
+        .await
+        .expect("served while silent sockets are open")
+        .text()
+        .await
+        .expect("body");
+    assert!(body.contains("provider_not_connected"), "{body}");
+    assert!(
+        started.elapsed() < listener::HANDSHAKE_TIMEOUT,
+        "it waited for a slot"
+    );
+    drop(silent);
+}
+
+/// After the handshake, a connection that sends no request is closed within
+/// the header timeout; and a served connection closes after its one request
+/// (keep-alive is off), so no authenticated connection idles on a slot.
+#[tokio::test]
+async fn authenticated_connections_cannot_idle() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let node = node_fixture().await;
+    let mut quiet = tls_connect(&node).await;
+    let limit = listener::HEADER_READ_TIMEOUT + std::time::Duration::from_secs(3);
+    let mut buf = Vec::new();
+    let closed = tokio::time::timeout(limit, quiet.read_to_end(&mut buf)).await;
+    assert!(
+        closed.is_ok(),
+        "a silent authenticated connection stayed open"
+    );
+
+    let mut served = tls_connect(&node).await;
+    let line = open_line(&node.key);
+    let request = format!(
+        "POST /internal/gateway/sess-1/claude HTTP/1.1\r\nhost: localhost\r\ncontent-length: {}\r\n\r\n{line}",
+        line.len()
+    );
+    served.write_all(request.as_bytes()).await.expect("request");
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        served.read_to_end(&mut response),
+    )
+    .await
+    .expect("closed after one response, not kept alive")
+    .ok();
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("provider_not_connected"), "{response}");
 }
 
 #[test]

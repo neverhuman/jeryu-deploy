@@ -18,10 +18,17 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::{Gateway, PeerIdentity};
 
-/// Connections served at once; the next one waits in the kernel backlog.
+/// Authenticated node connections served at once. Only a connection that
+/// finished the node-CA handshake takes one of these.
 pub const MAX_CONNECTIONS: usize = 64;
+/// TLS handshakes in progress at once. A socket that arrives while this pool
+/// is full is closed at once, so silent TCP can never hold a serving slot.
+pub const MAX_HANDSHAKES: usize = 256;
 /// A peer that has not finished the TLS handshake by then is dropped.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// After the handshake, the request head must arrive within this. Keep-alive
+/// is off (one relay request per connection), so no connection idles.
+pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Why the listener's TLS material was refused. Never carries key bytes.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -88,23 +95,25 @@ pub async fn serve(
 ) -> std::io::Result<()> {
     let acceptor = TlsAcceptor::from(tls.0);
     let app = crate::router(gateway);
+    let handshakes = Arc::new(Semaphore::new(MAX_HANDSHAKES));
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
-        let slot = slots
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| std::io::Error::other("gateway listener closed"))?;
+        // Accept first: no slot is held while waiting for a socket.
         let (socket, _) = listener.accept().await?;
+        let Ok(handshake) = handshakes.clone().try_acquire_owned() else {
+            drop(socket);
+            continue;
+        };
         let acceptor = acceptor.clone();
         let app = app.clone();
+        let slots = slots.clone();
         tokio::spawn(async move {
-            let _slot = slot;
             let Ok(Ok(tls)) =
                 tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(socket)).await
             else {
                 return;
             };
+            drop(handshake);
             // The verifier required a client certificate; the relay maps its
             // digest to exactly one enrolled node.
             let Some(peer) = tls
@@ -116,11 +125,20 @@ pub async fn serve(
             else {
                 return;
             };
+            // Only an authenticated connection takes a serving slot; a full
+            // house turns the newest one away instead of queueing it.
+            let Ok(_slot) = slots.try_acquire_owned() else {
+                return;
+            };
             let app = app.layer(axum::Extension(peer));
             let service = hyper_util::service::TowerToHyperService::new(app);
-            // The relay bounds each request with its own idle timeout, so a
-            // streaming response may outlive any fixed connection deadline.
+            // The relay bounds each request with its own idle timeout and
+            // re-check monitor, so a streaming response may outlive any fixed
+            // connection deadline; the head must still arrive promptly.
             let _ = hyper::server::conn::http1::Builder::new()
+                .timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(HEADER_READ_TIMEOUT)
+                .keep_alive(false)
                 .max_buf_size(64 * 1024)
                 .serve_connection(hyper_util::rt::TokioIo::new(tls), service)
                 .await;

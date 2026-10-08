@@ -88,8 +88,11 @@ impl Gateway {
         credentials: Arc<dyn CredentialSource>,
     ) -> Result<Self, RelayError> {
         // Redirects are never followed: a redirect is upstream_host_denied.
-        // Provider hosts resolve to public addresses only.
+        // Provider hosts resolve to public addresses only, and the gateway
+        // dials them itself: proxy environment variables are ignored, so a
+        // proxy can never stand in for the public-address check.
         let client = reqwest::Client::builder()
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .dns_resolver(Arc::new(crate::upstream_dns::PublicOnly))
             .build()
@@ -111,7 +114,9 @@ impl Gateway {
         self.slots.lock().get(session_id).copied().unwrap_or(0)
     }
 
-    /// Replace the clock (tests).
+    /// Replace the clock. Test builds only: production always reads the
+    /// wall clock.
+    #[cfg(any(test, feature = "test-harness"))]
     #[must_use]
     pub fn with_clock(mut self, clock: fn() -> u64) -> Self {
         self.clock = clock;
@@ -244,11 +249,16 @@ impl Gateway {
 }
 
 /// Re-check the accepted request every [`RECHECK_INTERVAL`] until it fails.
-async fn watch(accepted: &Accepted) -> RelayError {
+/// The store and vault traits are synchronous, so each check runs on the
+/// blocking pool: a durable store doing I/O cannot stall the runtime.
+async fn watch(accepted: &Arc<Accepted>) -> RelayError {
     loop {
         tokio::time::sleep(RECHECK_INTERVAL).await;
-        if let Err(error) = accepted.recheck() {
-            return error;
+        let accepted = accepted.clone();
+        match tokio::task::spawn_blocking(move || accepted.recheck()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return error,
+            Err(_) => return RelayError::LeaseBindingMismatch,
         }
     }
 }

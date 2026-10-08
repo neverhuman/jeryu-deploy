@@ -17,14 +17,15 @@ fn no_product_crate_depends_on_a_mock() {
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_string();
-        if name.starts_with("jeryu-mock-") {
-            continue;
-        }
+        let mock = name.starts_with("jeryu-mock-");
         let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) else {
             continue;
         };
         let manifest: toml::Table = manifest.parse().expect("manifest toml");
         for table in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if mock {
+                continue;
+            }
             if let Some(deps) = manifest.get(table).and_then(|deps| deps.as_table()) {
                 for mock in ["jeryu-mock-provider", "jeryu-mock-agent"] {
                     assert!(
@@ -34,8 +35,9 @@ fn no_product_crate_depends_on_a_mock() {
                 }
             }
         }
-        // A product crate may use the gateway, but never its test-only
-        // test harness (loopback upstreams, handshake-free peers).
+        // No crate, the mocks included, may enable the gateway's test harness
+        // (loopback upstreams, handshake-free peers, a settable clock)
+        // outside dev-dependencies, so no non-test build compiles it.
         for table in ["dependencies", "build-dependencies"] {
             let gateway = manifest
                 .get(table)
@@ -50,7 +52,9 @@ fn no_product_crate_depends_on_a_mock() {
                 "{name} [{table}] enables jeryu-gateway/test-harness"
             );
         }
-        checked += 1;
+        if !mock {
+            checked += 1;
+        }
     }
     assert!(checked >= 3, "found the product crates");
 }
@@ -97,4 +101,28 @@ async fn the_mock_binds_loopback_only() {
         .expect("start");
     assert!(provider.addr.ip().is_loopback());
     assert_ne!(provider.addr.port(), 0);
+}
+
+/// The gateway's test-only surface exists only in test builds: each item is
+/// gated on `test` or the `test-harness` feature.
+#[test]
+fn test_only_gateway_items_are_cfg_gated() {
+    let src = workspace_root().join("crates/jeryu-gateway/src");
+    for (file, item) in [
+        ("relay.rs", "pub fn with_clock("),
+        ("authority.rs", "pub fn for_tests("),
+        ("policy.rs", "pub fn loopback("),
+    ] {
+        let source = std::fs::read_to_string(src.join(file)).expect("source");
+        let at = source
+            .find(item)
+            .unwrap_or_else(|| panic!("{item} in {file}"));
+        let before: Vec<&str> = source[..at].lines().rev().take(4).collect();
+        assert!(
+            before
+                .iter()
+                .any(|line| line.contains("#[cfg(") && line.contains("feature = \"test-harness\"")),
+            "{file}: {item} must be gated on the test-harness feature"
+        );
+    }
 }
