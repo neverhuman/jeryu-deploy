@@ -120,6 +120,9 @@ pub(super) async fn request(
         requested_by: account.login.clone(),
     };
     state.regate_requests.record(request.clone());
+    // The ask is work an idle slot can start now, so it wakes one rather than
+    // waiting to be found on the next tick.
+    super::gate_wanted::record_regate(&state, &request.repo, number, &request.head_sha);
     (StatusCode::ACCEPTED, Json(request)).into_response()
 }
 

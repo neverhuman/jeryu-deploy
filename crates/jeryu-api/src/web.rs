@@ -14,6 +14,7 @@ mod embedded_web;
 mod error_codes;
 mod error_envelope;
 pub(crate) mod family;
+pub(crate) mod gate_wanted;
 mod idempotency;
 mod jankurai;
 mod managed_launch;
@@ -162,6 +163,10 @@ pub(crate) struct WebState {
     pub(crate) merge_attempts: merge_attempts::MergeAttemptStore,
     /// Re-gate requests the gate runner reads each tick (`regate`).
     pub(crate) regate_requests: regate::RegateStore,
+    /// Heads that became gateable, long-polled by the gate runner so a push
+    /// starts its gate without waiting for the runner's next tick
+    /// (`gate_wanted`).
+    pub(crate) gate_wanted: gate_wanted::GateWantedStore,
     /// Kept answers to `POST` writes that carried an `Idempotency-Key`
     /// (`<data_dir>/shift.sqlite`, `idempotency_keys`), so a retry after a
     /// restart replays the first answer instead of writing twice.
@@ -332,6 +337,7 @@ impl WebState {
             merge_queue: Arc::default(),
             merge_attempts: merge_attempts::MergeAttemptStore::default(),
             regate_requests: regate::RegateStore::default(),
+            gate_wanted: gate_wanted::GateWantedStore::default(),
             idempotency: idempotency::IdempotencyStore::open(&shift_path)
                 .expect("open idempotency key store"),
             shift,
@@ -997,6 +1003,8 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/repos/:id/automation", get(repo_automation::show)),
         ("/api/v1/merge-queue", get(merge_queue::list_all)),
         ("/api/v1/gate-regate", get(regate::list)),
+        // Heads that became gateable since the runner last asked, long-polled.
+        ("/api/v1/gate-wanted", get(gate_wanted::list)),
         (
             "/api/v1/repos/:id/jankurai-scores",
             get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),

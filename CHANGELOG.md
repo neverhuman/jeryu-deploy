@@ -10,6 +10,21 @@
   required` on `/mcp/bot`. Values are copied from the request or the forge's
   answer; the forge's check is unchanged. Rerun a bot's setup script to pick
   this up.
+- The forge tells the gate runner when a head can be gated, so a gate starts on
+  the push instead of on the runner's next timer tick. It records a signal when
+  a push moves a branch, when the merge queue builds a queue commit (a head
+  nothing else could announce) and when a re-gate is asked for; `GET
+  /api/v1/gate-wanted?after=<seq>&wait=<secs>` hands those over, holding the
+  request open for up to 60 seconds while there are none, so an idle slot starts
+  gating about as soon as the push finished rather than up to a tick later --
+  twice over for a pull request queued after its base moved. The signal is a
+  hint, not an instruction: the runner still chooses, claims and gates heads as
+  it does from its timer, which stays the fallback, so a signal nobody read
+  costs one tick of latency and nothing else. A reader sees only repositories it
+  may read and needs no credential of its own, and the store is in memory and
+  bounded: a restarted forge hands out a smaller sequence, which is a resync
+  rather than a backlog. `docs/repo-automation.md`.
+
 - A repository can turn jankurai audits off in its own `.jeryu/ci.toml`:
   `[jankurai] audit = false` (schema 2, next to `provider = "jeryu"`). The push
   path then records no audit ticket and publishes no `jankurai/proof`, so a

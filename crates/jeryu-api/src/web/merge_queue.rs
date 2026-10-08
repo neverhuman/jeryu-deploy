@@ -338,6 +338,9 @@ fn build_after(
         conclusion: None,
         at: now(),
     });
+    // Only the forge knows this commit exists, so only the forge can tell the
+    // gate runner to come and gate it instead of waiting for its next tick.
+    super::gate_wanted::record_queue_commit(state, &entry.repo, entry.number, &entry.queue_sha);
     Ok(())
 }
 

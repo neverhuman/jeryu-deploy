@@ -142,3 +142,46 @@ The store is in memory: a request lives for one runner tick, and a forge that
 restarts in between should be asked again rather than replay an older ask. It is
 the attention inbox's `action.api` for a `pr_checks_failing` item whose failing
 check is one the base requires.
+
+## Starting a gate on the push
+
+A gate runner slot used to learn about work only when its own timer fired, so
+every gate waited up to a tick after the head existed -- twice for a pull
+request queued after its base moved, because the queue commit is a second head.
+The forge knows the moment a gateable head appears, so it says so.
+
+`GET /api/v1/gate-wanted?after=<seq>&wait=<secs>` is the signal
+(`ops/pr-gate/bin/pr-gate-wake.sh` in jeryu-ci-runner reads it):
+
+```json
+{
+  "seq": 41,
+  "signals": [
+    {
+      "seq": 41,
+      "repo": "acme/widgets",
+      "ref_name": "refs/heads/dana/feature-1",
+      "sha": "5b8e1d9c7a6f4e3b2d1c0a9f8e7d6c5b4a392817",
+      "source": "push",
+      "at": "2026-10-08T09:00:00Z"
+    }
+  ]
+}
+```
+
+One signal is recorded per branch a push moved (`source: "push"`, naming the
+ref), per merge-queue commit the forge built (`"queue"`, naming the pull
+request) and per re-gate asked for (`"regate"`). `after` asks for signals above
+a sequence, and `wait` holds the request open for up to 60 seconds while there
+are none, so a push reaches an idle slot in about as long as the push took.
+A reader is handed signals only for repositories it may read, while `seq` is
+always the forge's own, so the next poll does not re-walk what this one skipped.
+
+The signal is a hint, never an instruction: it says a head appeared, not that it
+is gateable, and the runner still chooses, claims and gates heads exactly as it
+does from its timer. That is what keeps the timer a sufficient fallback -- a
+signal nobody read costs one tick of latency and nothing else -- and why the
+store is in memory and bounded: a forge that restarts hands out a smaller
+sequence, which a runner treats as a resync rather than a backlog of work. It
+needs no credential of its own; the runner reads it as the identity it already
+heartbeats and gates with.

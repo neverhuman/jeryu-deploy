@@ -324,16 +324,24 @@ pub(crate) async fn git_receive_pack(
     // for any moved branch runs detached: scoring a pushed commit must not hold
     // the acknowledgement the pushing agent is waiting for.
     let core = state.core.clone();
-    let mirror_state = state.clone();
+    // The web state the detached post-push work needs: the gate signal and the
+    // tag mirror both ride on it.
+    let post_push = state.clone();
     spawn_post_push(&response, move || {
         let after = snapshot_refs(&manager, &owner, &repo);
         let updates = crate::ci_bridge::ref_updates(&before, &after);
+        // A moved branch is the first thing the gate could want: record it
+        // before the check-runs so a runner long-polling the signal starts its
+        // tick while this push's own CI is still being compiled. The signal is
+        // a hint -- whether the ref is a pull request head is the runner's
+        // question, not this one's.
+        crate::web::gate_wanted::record_push(&post_push, &owner, &repo, &updates);
         crate::ci_bridge::on_push(&core, &manager, &owner, &repo, &updates, &origin_base_url);
         // A pushed tag is mirrored to GitHub the same way a merge mirrors main:
         // new tags only, and an existing GitHub tag is reported, never moved.
         let tags = crate::ci_bridge::tag_updates(&before, &after);
         crate::web::mirror_reconcile::mirror_pushed_tags(
-            &mirror_state,
+            &post_push,
             &owner,
             repo.trim_end_matches(".git"),
             &tags,
