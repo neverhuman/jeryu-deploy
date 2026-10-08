@@ -187,6 +187,11 @@ fn justfile_has_required(text: &str) -> bool {
 }
 
 /// Render `.jeryu/ci.toml` in the shared schema "2".
+///
+/// `[jankurai] audit` is written explicitly at its default (`true`) with the
+/// comment that explains it: a repository that does not use the audit — a
+/// wiki, a notes repository — sets it to `false` and the forge queues no
+/// audit and publishes no `jankurai/proof` for its heads.
 fn ci_toml(lane_command: &str) -> String {
     let command = toml_basic_string(lane_command);
     format!(
@@ -195,7 +200,16 @@ fn ci_toml(lane_command: &str) -> String {
          \n\
          [[lane]]\n\
          name = \"required\"\n\
-         command = {command}\n"
+         command = {command}\n\
+         \n\
+         # Whether the forge queues a jankurai audit for this repository's main\n\
+         # and pull request heads. Set it to false in a repository that holds no\n\
+         # code: no audit is queued and no `jankurai/proof` is published. A base\n\
+         # branch that requires `jankurai/proof` is audited whatever this says,\n\
+         # and the switch is read from the base branch of a pull request, never\n\
+         # from its head.\n\
+         [jankurai]\n\
+         audit = true\n"
     )
 }
 
@@ -431,10 +445,16 @@ mod tests {
     fn control_files_encode_required_keys() {
         let files = bundle(AutonomyProfile::FullAuto, JUST_REQUIRED);
         let ci = &files.iter().find(|f| f.path == "ci.toml").unwrap().contents;
-        assert_eq!(
-            ci,
-            "schema_version = \"2\"\nprovider = \"jeryu\"\n\n[[lane]]\nname = \"required\"\ncommand = \"just required\"\n"
+        assert!(
+            ci.starts_with(
+                "schema_version = \"2\"\nprovider = \"jeryu\"\n\n[[lane]]\nname = \"required\"\ncommand = \"just required\"\n"
+            ),
+            "ci {ci:?}"
         );
+        // The audit switch is named in the schema at its default, with the
+        // comment that tells a non-code repository how to turn it off.
+        assert!(ci.contains("[jankurai]\naudit = true\n"), "ci {ci:?}");
+        assert!(ci.contains("# Whether the forge queues a jankurai audit"));
         assert!(!ci.contains("github_actions_required"), "retired key");
         assert!(!ci.contains("runs"), "runs is omitted by default");
         let policy = &files

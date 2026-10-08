@@ -89,11 +89,17 @@ pub(crate) fn is_object_id(value: &str) -> bool {
 
 /// The proof of a head whose audit is waiting for a gate runner. It is never
 /// completed here: with no runner, `jankurai/proof` stays pending and says so.
-pub(crate) fn jankurai_queued_output(ticket: &super::audit_queue::AuditTicket) -> CheckRunOutput {
+/// `note` is said on the check when the audit switch in the repository's own
+/// `.jeryu/ci.toml` did not decide this head: it was ignored because the base
+/// requires the proof, or it could not be read.
+pub(crate) fn jankurai_queued_output(
+    ticket: &super::audit_queue::AuditTicket,
+    note: Option<&str>,
+) -> CheckRunOutput {
     CheckRunOutput {
         title: "queued for a gate runner".to_string(),
         summary: format!(
-            "- head: {}\n- base: {}{}\n- state: waiting for a gate runner to claim and audit this head\n\nThe forge records audit work; it does not run the auditor. This check completes \
+            "- head: {}\n- base: {}{}\n- state: waiting for a gate runner to claim and audit this head\n{}\nThe forge records audit work; it does not run the auditor. This check completes \
              only when a runner submits a provenance-checked report for this exact head.",
             ticket.head_sha,
             ticket.base_sha,
@@ -101,7 +107,9 @@ pub(crate) fn jankurai_queued_output(ticket: &super::audit_queue::AuditTicket) -
                 " (none: this head has no commit base, so its whole tree is audited)"
             } else {
                 ""
-            }
+            },
+            note.map(|note| format!("- note: {note}\n"))
+                .unwrap_or_default(),
         ),
         text: None,
     }

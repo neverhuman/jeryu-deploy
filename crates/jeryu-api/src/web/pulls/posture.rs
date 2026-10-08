@@ -392,7 +392,7 @@ const AUDIT_GATE_REPOS_ENV: &str = "JERYU_AUDIT_GATE_REPOS";
 /// Whether a failing or missing `jankurai/proof` blocks approval and merge for
 /// this repository. `JERYU_AUDIT_ENFORCE_MERGE` turns it on family-wide; until
 /// then each repo opts in by name.
-pub(super) fn audit_gate_enforced_for(owner: &str, repo: &str) -> bool {
+pub(crate) fn audit_gate_enforced_for(owner: &str, repo: &str) -> bool {
     audit_merge_enforced()
         || audit_gate_repo_listed(
             std::env::var(AUDIT_GATE_REPOS_ENV).ok().as_deref(),
@@ -515,13 +515,14 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
     };
     let mut checks = Vec::with_capacity(runs.len() + statuses.len());
     for run in &runs {
-        count(check_bucket(run));
         let is_required = required.contains(&run.name);
+        let (bucket, status) = check_row_state(run, is_required);
+        count(bucket);
         checks.push(PullRequestCheck {
             id: run.id.to_string(),
             name: run.name.clone(),
             kind: "check_run",
-            status: check_status(run).to_string(),
+            status: status.to_string(),
             conclusion: run.conclusion.as_ref().map(conclusion),
             details_url: run.details_url.clone(),
             title: run.output.as_ref().map(|output| output.title.clone()),
@@ -797,6 +798,22 @@ fn check_bucket(run: &CheckRun) -> &'static str {
             _ => "failure",
         },
     }
+}
+
+/// How a check's newest run reads on the row: its bucket for the counters and
+/// its status for the row itself.
+///
+/// An advisory `jankurai/proof` — a repository the gate is not on for, or one
+/// that turned the audit off in its own `.jeryu/ci.toml` — reports a score
+/// nothing waits on. A below-floor score there is not a broken build, so the
+/// row reads neutral instead of failure red: the red one had owners of
+/// non-code repositories chasing a gate they do not use.
+fn check_row_state(run: &CheckRun, is_required: bool) -> (&'static str, &'static str) {
+    let bucket = check_bucket(run);
+    if !is_required && run.name == JANKURAI_PROOF && bucket == "failure" {
+        return ("skipped", "neutral");
+    }
+    (bucket, check_status(run))
 }
 
 fn check_status(run: &CheckRun) -> &'static str {

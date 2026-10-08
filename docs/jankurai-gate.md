@@ -44,6 +44,50 @@ on every pull request, which means:
   and publishes a failing proof whose title is the reason, and that reason is
   what blocks.
 
+## A repository that does not use the audit
+
+Decision, 2026-10-07: a repository that holds no code — a private markdown
+wiki, a notes repository — turns the audit off in its **own** `.jeryu/ci.toml`,
+the schema-2 file jankurai already reads for the CI-present credit. There is no
+site setting for it: the repository states what it is.
+
+```toml
+schema_version = "2"
+provider = "jeryu"
+
+[[lane]]
+name = "required"
+command = "just required"
+
+[jankurai]
+audit = false   # default true: queue an audit for main and pull request heads
+```
+
+`jeryu autonomy init` writes the key at its default with that comment. With
+`audit = false` the push path records no audit ticket and publishes no
+`jankurai/proof` at all, so no runner time is spent and no advisory check
+appears on the repository's pull requests.
+
+Two rules keep it from being a way out of a gate:
+
+- **The base decides, not the head.** For a pull request head the key is read
+  from the base branch's `.jeryu/ci.toml`, so a pull request that adds
+  `audit = false` to itself opts out nothing. For a push to `main` it is read
+  from the pushed commit.
+- **A required proof wins.** If the base branch's protection rule requires
+  `jankurai/proof` (or the site enforces the gate for the repository — see
+  below), the head is audited whatever the key says, and the pending proof
+  carries a note that the opt-out was ignored and why.
+
+A declaration that cannot be read — not valid TOML, `audit` set to something
+that is not a boolean, or a file larger than 64 KiB — turns nothing off: the
+head is audited as it was before the switch existed and the proof says which
+file could not be read and why.
+
+Where the gate is not on and the repository does use the audit, `jankurai/proof`
+stays an advisory row on the checks tab. A below-floor score there is a report
+nothing waits on, so the row reads **neutral**, not failure red.
+
 ## Rollout, per repository
 
 Two switches, and they belong on together — a local refusal with a hosted

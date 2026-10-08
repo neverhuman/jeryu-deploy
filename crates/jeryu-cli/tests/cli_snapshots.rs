@@ -1199,6 +1199,9 @@ fn dispatch_autonomy_init_writes_canonical_tree() {
     assert!(ci.contains("provider = \"jeryu\""));
     assert!(ci.contains("[[lane]]\nname = \"required\"\ncommand = \"just required\"\n"));
     assert!(!ci.contains("github_actions_required"));
+    // The audit switch is named at its default, so a repository that does not
+    // use the audit can see the key it has to flip.
+    assert!(ci.contains("[jankurai]\naudit = true\n"), "ci {ci:?}");
     let policy = std::fs::read_to_string(dir.join("policy.toml")).unwrap();
     assert!(policy.contains("require_admission_receipt = false"));
 

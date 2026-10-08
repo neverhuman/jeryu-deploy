@@ -1152,9 +1152,12 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
         .collect();
     failing.sort();
     let checks = checks_for_pr(state, pr).checks;
+    // The recorded verdict, not how the row renders it: an advisory
+    // `jankurai/proof` reads neutral on the checks tab, and the inbox still
+    // names it as an optional failure rather than dropping it silently.
     let mut failing_optional: Vec<String> = checks
         .iter()
-        .filter(|check| check.status == "failure")
+        .filter(|check| check.status == "failure" || check.conclusion.as_deref() == Some("failure"))
         .map(|check| check.name.clone())
         .filter(|name| !required.iter().any(|context| &context.name == name))
         .collect();
@@ -1184,6 +1187,7 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
 pub(in crate::web) mod diff;
 mod posture;
 
+pub(crate) use posture::audit_gate_enforced_for;
 #[cfg(test)]
 use posture::required_contexts_with_enforcement;
 #[cfg(test)]

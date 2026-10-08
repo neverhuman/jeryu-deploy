@@ -823,6 +823,214 @@ fn only_pull_heads_and_the_protected_main_are_audited() {
     );
 }
 
+// --- a repository that does not use the audit ---
+
+/// Commit `.jeryu/ci.toml` on the current branch and return the new head.
+fn write_ci_declaration(work: &Path, body: &str) -> String {
+    write(work, ".jeryu/ci.toml", body);
+    git(work, &["add", "-A"]);
+    git(work, &["commit", "-q", "-m", "chore: declare CI"]);
+    git_out(work, &["rev-parse", "HEAD"])
+}
+
+/// The tickets and the proof this test's head has, if any.
+fn audit_record(core: &ForgeCore, repo: &str, head: &str) -> (usize, Vec<String>) {
+    let tickets = audit_queue::queue()
+        .lock()
+        .unwrap()
+        .tickets()
+        .iter()
+        .filter(|ticket| ticket.repo == repo && ticket.head_sha == head)
+        .count();
+    let proofs = core
+        .list_check_runs("jeryu", repo, Some(head))
+        .unwrap()
+        .check_runs
+        .iter()
+        .filter(|check| check.name == JANKURAI_PROOF_CHECK)
+        .map(|check| check.output.as_ref().unwrap().summary.clone())
+        .collect();
+    (tickets, proofs)
+}
+
+/// A repository that holds no code says so in its own `.jeryu/ci.toml`, and
+/// the push path then records nothing and publishes nothing: no runner time
+/// spent, and no red advisory check on a wiki's pull requests.
+#[test]
+fn a_repository_that_turned_audits_off_queues_nothing() {
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let (_, previous) = init_version_repo(work.path());
+    let head = write_ci_declaration(
+        work.path(),
+        "schema_version = \"2\"\nprovider = \"jeryu\"\n\n[jankurai]\naudit = false\n",
+    );
+    clone_bare(work.path(), bare.path());
+    let core = core_with_repo("wiki");
+
+    let planned = plan_push_audit(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "wiki",
+        &ref_update("refs/heads/main", &previous, &head),
+    );
+    assert_eq!(
+        planned,
+        PushAudit::Skipped(audit_queue::AUDIT_OPT_OUT_REASON),
+        "the opt-out is reported in the repository's own words"
+    );
+
+    queue_head_audit(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "wiki",
+        &ref_update("refs/heads/main", &previous, &head),
+        "http://forge.test",
+    );
+    let (tickets, proofs) = audit_record(&core, "wiki", &head);
+    assert_eq!(tickets, 0, "no audit work is recorded");
+    assert!(proofs.is_empty(), "no proof is published either");
+}
+
+/// The switch belongs to the branch a change lands on. A pull request that
+/// adds `audit = false` to its own head opts out nothing, and a base branch
+/// that requires `jankurai/proof` is audited even when it carries the
+/// opt-out itself — the proof then says the switch was ignored.
+#[test]
+fn a_pull_request_cannot_turn_off_a_gate_its_base_requires() {
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let (_, main_head) = init_version_repo(work.path());
+    git(work.path(), &["checkout", "-q", "-b", "codex/opt-out"]);
+    let head = write_ci_declaration(
+        work.path(),
+        "schema_version = \"2\"\nprovider = \"jeryu\"\n\n[jankurai]\naudit = false\n",
+    );
+    clone_bare(work.path(), bare.path());
+    let core = core_with_repo("opt-out-pull");
+    core.create_pull_request(
+        "jeryu",
+        "opt-out-pull",
+        "author",
+        jeryu_core::CreatePullRequestRequest {
+            title: "turn the audit off".to_string(),
+            head: "codex/opt-out".to_string(),
+            base: "main".to_string(),
+            head_sha: Some(head.clone()),
+            ..jeryu_core::CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+
+    // The base says nothing, so the head's own key is never read.
+    let planned = plan_push_audit(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "opt-out-pull",
+        &ref_update("refs/heads/codex/opt-out", &main_head, &head),
+    );
+    let PushAudit::Queued { ticket, note } = planned else {
+        panic!("the pull head is audited: {planned:?}");
+    };
+    assert_eq!(ticket.branch, "codex/opt-out");
+    assert_eq!(note, None, "nothing was ignored: the base never opted out");
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("jeryu", "opt-out-pull", &head);
+
+    // A base that both opts out and requires the proof: the requirement wins,
+    // and the proof says the switch was ignored.
+    let gated = core_with_repo("gated-opt-out");
+    gated
+        .set_branch_protection(
+            "jeryu",
+            "gated-opt-out",
+            "main",
+            jeryu_core::SetBranchProtectionRequest {
+                require_jankurai_proof: true,
+                ..jeryu_core::SetBranchProtectionRequest::default()
+            },
+        )
+        .unwrap();
+    let gated_work = tempfile::tempdir().unwrap();
+    let gated_bare = tempfile::tempdir().unwrap();
+    let (_, gated_previous) = init_version_repo(gated_work.path());
+    let opted_out_main = write_ci_declaration(
+        gated_work.path(),
+        "schema_version = \"2\"\nprovider = \"jeryu\"\n\n[jankurai]\naudit = false\n",
+    );
+    clone_bare(gated_work.path(), gated_bare.path());
+    queue_head_audit(
+        &gated,
+        "git",
+        gated_bare.path(),
+        "jeryu",
+        "gated-opt-out",
+        &ref_update("refs/heads/main", &gated_previous, &opted_out_main),
+        "http://forge.test",
+    );
+    let (tickets, proofs) = audit_record(&gated, "gated-opt-out", &opted_out_main);
+    assert_eq!(tickets, 1, "the gated base is audited anyway");
+    assert_eq!(proofs.len(), 1);
+    assert!(
+        proofs[0].contains("was ignored"),
+        "the proof says the opt-out did not apply: {}",
+        proofs[0]
+    );
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("jeryu", "gated-opt-out", &opted_out_main);
+}
+
+/// A declaration the push path cannot read decides nothing: the head is
+/// audited as it was before the switch existed, and the pending proof says
+/// which file could not be read and why.
+#[test]
+fn a_malformed_ci_declaration_is_audited_and_says_why() {
+    let work = tempfile::tempdir().unwrap();
+    let bare = tempfile::tempdir().unwrap();
+    let (_, previous) = init_version_repo(work.path());
+    let head = write_ci_declaration(work.path(), "schema_version = \"2\"\n[jankurai\naudit =\n");
+    clone_bare(work.path(), bare.path());
+    let core = core_with_repo("malformed-ci");
+
+    queue_head_audit(
+        &core,
+        "git",
+        bare.path(),
+        "jeryu",
+        "malformed-ci",
+        &ref_update("refs/heads/main", &previous, &head),
+        "http://forge.test",
+    );
+    let (tickets, proofs) = audit_record(&core, "malformed-ci", &head);
+    assert_eq!(tickets, 1, "an unreadable declaration turns nothing off");
+    assert_eq!(proofs.len(), 1);
+    assert!(
+        proofs[0].contains(".jeryu/ci.toml") && proofs[0].contains("could not be read"),
+        "the proof names the file and the reason: {}",
+        proofs[0]
+    );
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("jeryu", "malformed-ci", &head);
+
+    // A key of the wrong type is read the same way: it is not a switch.
+    assert!(matches!(
+        audit_queue::audit_preference("git", bare.path(), &head),
+        audit_queue::AuditPreference::Unreadable(_)
+    ));
+}
+
 /// The queue keeps one ticket per head, drops superseded tips, hands claimed
 /// work to one runner at a time, and recovers a lease a runner abandoned.
 #[test]

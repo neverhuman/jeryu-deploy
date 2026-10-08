@@ -208,10 +208,10 @@ pub(crate) fn queue_head_audit(
                 None,
                 jankurai::jankurai_unqueued_output(reason),
             ),
-            PushAudit::Queued(ticket) => (
+            PushAudit::Queued { ticket, note } => (
                 CheckRunStatus::InProgress,
                 None,
-                jankurai::jankurai_queued_output(&ticket),
+                jankurai::jankurai_queued_output(&ticket, note.as_deref()),
             ),
         };
     let _ = core.create_check_run(

@@ -10,6 +10,18 @@
   required` on `/mcp/bot`. Values are copied from the request or the forge's
   answer; the forge's check is unchanged. Rerun a bot's setup script to pick
   this up.
+- A repository can turn jankurai audits off in its own `.jeryu/ci.toml`:
+  `[jankurai] audit = false` (schema 2, next to `provider = "jeryu"`). The push
+  path then records no audit ticket and publishes no `jankurai/proof`, so a
+  non-code repository — a private wiki — no longer spends audit-runner time or
+  shows a check its owner does not use. The key is read from the base branch for
+  a pull request head, so a pull request cannot opt itself out, and it is
+  ignored (with a note on the proof) when the base requires `jankurai/proof` or
+  the site enforces the gate. An unreadable declaration audits as before and
+  says why. An advisory `jankurai/proof` below the floor now renders neutral
+  rather than failure red on the checks tab. `jeryu autonomy init` writes the
+  key at its default; `docs/jankurai-gate.md`.
+
 - A release-board target can name the shift slots that run it, not only forge
   runners: `slots: [{family, host}]` on a `jeryu.release_board.v1` target, at
   most 64 per target, `family` a family name and `host` 1–200 printable

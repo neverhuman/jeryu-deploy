@@ -61,6 +61,17 @@ const UNAUDITED_BRANCH_PREFIXES: &[&str] = &[
 /// The same classes spelled as a whole branch name.
 const UNAUDITED_BRANCH_NAMES: &[&str] = &["import", "preserve", "archive", "archives"];
 
+/// The repository's own CI declaration, read for the `[jankurai] audit` switch.
+/// Schema 2 — the same file jankurai reads for the CI-present credit.
+pub(crate) const CI_DECLARATION_PATH: &str = ".jeryu/ci.toml";
+/// Most bytes of `.jeryu/ci.toml` the push path will read. A control file is a
+/// few lines; anything larger is not one, and a push must not read a blob of
+/// unbounded size on the host that serves git for the whole family.
+pub(crate) const MAX_CI_DECLARATION_BYTES: u64 = 64 * 1024;
+/// What a repository that turned audits off is told on the push path.
+pub(crate) const AUDIT_OPT_OUT_REASON: &str =
+    "this repository turned jankurai audits off in .jeryu/ci.toml";
+
 /// One head waiting to be audited, and by whom if a runner holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -249,23 +260,107 @@ pub(crate) fn skip_reason(branch: &str, has_open_pull: bool) -> Option<&'static 
     Some("only the protected main and pull request heads are audited")
 }
 
-/// Whether this branch is the head of a pull request still under review. A
-/// draft counts: its gate runs, so its head is audited like any other.
-fn has_open_pull(core: &ForgeCore, owner: &str, repo: &str, branch: &str) -> bool {
+/// The base branch of the pull request this branch is the head of, when it is
+/// the head of one still under review. A draft counts: its gate runs, so its
+/// head is audited like any other.
+///
+/// The base is what the caller needs, not just the fact of a pull request: the
+/// audit switch and the required checks of a pull request head are both read
+/// from the base, never from the head, so a pull request cannot turn off a
+/// gate the branch it targets requires.
+fn open_pull_base(core: &ForgeCore, owner: &str, repo: &str, branch: &str) -> Option<String> {
     core.list_pull_requests(owner, repo, None)
-        .map(|pulls| {
-            pulls
-                .iter()
-                .filter(|pull| {
-                    // The state is an evaluation (mergeable, blocked, queued,
-                    // ...), so "still under review" is everything that is not
-                    // finished.
-                    !matches!(
-                        pull.state,
-                        PullRequestState::Merged | PullRequestState::Closed
-                    )
-                })
-                .any(|pull| pull.head.ref_name == branch || pull.head.label == branch)
+        .ok()?
+        .into_iter()
+        .filter(|pull| {
+            // The state is an evaluation (mergeable, blocked, queued,
+            // ...), so "still under review" is everything that is not
+            // finished.
+            !matches!(
+                pull.state,
+                PullRequestState::Merged | PullRequestState::Closed
+            )
+        })
+        .find(|pull| pull.head.ref_name == branch || pull.head.label == branch)
+        .map(|pull| pull.base.ref_name)
+}
+
+/// What `.jeryu/ci.toml` says about auditing this repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AuditPreference {
+    /// No opt-out: no file, no `[jankurai]` table, or `audit = true`.
+    On,
+    /// `[jankurai] audit = false`: the repository does not use the audit.
+    Off,
+    /// The file exists but could not be read as the switch; the head is
+    /// audited as it was before the switch existed, and the proof says why.
+    Unreadable(String),
+}
+
+/// Read `[jankurai] audit` from `<rev>:.jeryu/ci.toml` in the bare repository.
+///
+/// `rev` is the base branch's ref for a pull request head and the pushed commit
+/// for `main`: a repository states what it uses on the branch it protects, so a
+/// pull request cannot opt itself out by adding the key.
+pub(crate) fn audit_preference(
+    git_bin: &str,
+    bare: &std::path::Path,
+    rev: &str,
+) -> AuditPreference {
+    let object = format!("{rev}:{CI_DECLARATION_PATH}");
+    // No file (and no such rev) is the common case and says nothing: audit.
+    let Some(size) = super::run_git_stdout(git_bin, Some(bare), &["cat-file", "-s", &object])
+        .and_then(|size| size.trim().parse::<u64>().ok())
+    else {
+        return AuditPreference::On;
+    };
+    if size > MAX_CI_DECLARATION_BYTES {
+        return AuditPreference::Unreadable(format!(
+            "{CI_DECLARATION_PATH} is {size} bytes, larger than the {MAX_CI_DECLARATION_BYTES} \
+             bytes the push path reads"
+        ));
+    }
+    let Some(text) = super::run_git_stdout(git_bin, Some(bare), &["cat-file", "blob", &object])
+    else {
+        return AuditPreference::Unreadable(format!("{CI_DECLARATION_PATH} could not be read"));
+    };
+    let declaration: toml::Value = match toml::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            return AuditPreference::Unreadable(format!(
+                "{CI_DECLARATION_PATH} is not valid TOML: {}",
+                error.message()
+            ));
+        }
+    };
+    match declaration
+        .get("jankurai")
+        .and_then(|table| table.get("audit"))
+    {
+        None => AuditPreference::On,
+        Some(toml::Value::Boolean(true)) => AuditPreference::On,
+        Some(toml::Value::Boolean(false)) => AuditPreference::Off,
+        Some(other) => AuditPreference::Unreadable(format!(
+            "{CI_DECLARATION_PATH} sets [jankurai] audit to {other}, which is not a boolean"
+        )),
+    }
+}
+
+/// Whether the branch a change lands on requires `jankurai/proof` anyway: its
+/// protection rule asks for it, or the site enforces the audit gate for this
+/// repository. A repository may decline an advisory audit; it may not decline
+/// one its own protected branch is gated on.
+fn proof_required_for_base(core: &ForgeCore, owner: &str, repo: &str, base: &str) -> bool {
+    if crate::web::audit_gate_enforced_for(owner, repo) {
+        return true;
+    }
+    core.get_branch_protection(owner, repo, base)
+        .map(|rule| {
+            rule.require_jankurai_proof
+                || rule
+                    .required_status_checks
+                    .iter()
+                    .any(|name| name == super::JANKURAI_PROOF_CHECK)
         })
         .unwrap_or(false)
 }
@@ -280,12 +375,20 @@ pub(crate) enum PushAudit {
     /// The head needs an audit but no ticket could be recorded; the proof stays
     /// pending and says why, and nothing on the forge runs the audit instead.
     Unqueued(&'static str),
-    Queued(AuditTicket),
+    Queued {
+        ticket: AuditTicket,
+        /// Something a reader of the proof has to be told about how this head
+        /// came to be audited: that the repository's own opt-out was ignored
+        /// because the base requires the proof, or that its `.jeryu/ci.toml`
+        /// could not be read and the head was audited as it was before.
+        note: Option<String>,
+    },
 }
 
 /// Decide what a pushed head needs and record it. This runs on the push path,
-/// so it does no clone, no checkout and no audit: at most a `merge-base` in the
-/// bare repository the push just wrote.
+/// so it does no clone, no checkout and no audit: at most a `merge-base` and
+/// one bounded `.jeryu/ci.toml` blob read in the bare repository the push just
+/// wrote.
 pub(crate) fn plan_push_audit(
     core: &ForgeCore,
     git_bin: &str,
@@ -297,9 +400,36 @@ pub(crate) fn plan_push_audit(
     let Some(branch) = update.ref_name.strip_prefix("refs/heads/") else {
         return PushAudit::Skipped("only branch heads are audited");
     };
-    if let Some(reason) = skip_reason(branch, has_open_pull(core, owner, repo, branch)) {
+    let pull_base = open_pull_base(core, owner, repo, branch);
+    if let Some(reason) = skip_reason(branch, pull_base.is_some()) {
         return PushAudit::Skipped(reason);
     }
+    // What the repository says about auditing itself, read from the branch a
+    // change lands on: the pushed `main`, or the base a pull request targets.
+    // A pull request that adds the key opts out nothing.
+    let base_branch = pull_base.unwrap_or_else(|| branch.to_string());
+    let read_from = if base_branch == branch {
+        update.new_oid.clone()
+    } else {
+        format!("refs/heads/{base_branch}")
+    };
+    let note = match audit_preference(git_bin, bare, &read_from) {
+        AuditPreference::On => None,
+        AuditPreference::Off => {
+            if !proof_required_for_base(core, owner, repo, &base_branch) {
+                return PushAudit::Skipped(AUDIT_OPT_OUT_REASON);
+            }
+            Some(format!(
+                "`{}` requires `{}`, so the `[jankurai] audit = false` in \
+                 {CI_DECLARATION_PATH} was ignored and this head was audited",
+                base_branch,
+                super::JANKURAI_PROOF_CHECK,
+            ))
+        }
+        AuditPreference::Unreadable(reason) => Some(format!(
+            "the audit switch could not be read ({reason}), so this head was audited"
+        )),
+    };
     // One audit per head, across the forge and `<repo>/required`: a head that
     // already carries a score, or already has a ticket, needs no second job.
     let scored = core
@@ -319,7 +449,9 @@ pub(crate) fn plan_push_audit(
     match queue.enqueue(ticket.clone()) {
         EnqueueOutcome::AlreadyQueued => PushAudit::AlreadyCovered,
         EnqueueOutcome::Full => PushAudit::Unqueued("the audit queue is full"),
-        EnqueueOutcome::Queued | EnqueueOutcome::Superseded(_) => PushAudit::Queued(ticket),
+        EnqueueOutcome::Queued | EnqueueOutcome::Superseded(_) => {
+            PushAudit::Queued { ticket, note }
+        }
     }
 }
 

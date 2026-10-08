@@ -1829,7 +1829,10 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
         crate::web::pulls::checks(State(state), AxumPath((repo.id.to_string(), pr.number))).await,
     )
     .await;
-    assert_eq!(checks["failing"], 2, "{checks}");
+    // Only the required gate is red. The advisory proof is a report nothing
+    // waits on, so it does not count as a failure of this pull request.
+    assert_eq!(checks["failing"], 1, "{checks}");
+    assert_eq!(checks["skipped"], 1, "{checks}");
     let row = |name: &str| {
         checks["checks"]
             .as_array()
@@ -1844,6 +1847,9 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     assert_eq!(proof["kind"], "check_run");
     assert_eq!(proof["title"], "score 42 < floor 85");
     assert_eq!(proof["required"], false);
+    // Advisory and below the floor: neutral on the row, not failure red.
+    assert_eq!(proof["status"], "neutral", "{proof}");
+    assert_eq!(proof["conclusion"], "failure", "the verdict itself is kept");
     assert_eq!(
         proof["advisory"]["label"],
         "advisory - gate not enabled here"
