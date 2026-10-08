@@ -21,10 +21,12 @@ pub mod policy;
 pub mod relay;
 mod route;
 mod stream;
+mod upstream;
+mod upstream_dns;
 
 pub use authority::{
-    Assignment, EnrolledNode, LeaseBinding, NoSessions, NodeRegistry, PeerIdentity,
-    SessionAuthority,
+    Assignment, CertificateFingerprint, EnrolledNode, LeaseBinding, NoSessions, NodeRegistry,
+    PeerIdentity, SessionAuthority,
 };
 pub use capability::{Capability, Mode, OwnerKind};
 pub use policy::{Upstream, UpstreamTable};

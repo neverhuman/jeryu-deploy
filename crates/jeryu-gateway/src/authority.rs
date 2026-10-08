@@ -16,25 +16,44 @@ use std::collections::HashMap;
 use crate::RelayError;
 use crate::capability::{Capability, Mode, owner_matches_kind, signed_by};
 
-/// The verified mTLS client certificate of the caller, as SHA-256 of its DER.
-/// Only the node-facing listener creates one, after the TLS handshake.
+/// An administrator's name for a node certificate: the SHA-256 of its DER.
+/// Enrollment uses this. It is not a claim about who is calling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PeerIdentity {
-    certificate_sha256: [u8; 32],
-}
+pub struct CertificateFingerprint([u8; 32]);
 
-impl PeerIdentity {
+impl CertificateFingerprint {
     #[must_use]
-    pub fn from_certificate_der(der: &[u8]) -> Self {
+    pub fn of_der(der: &[u8]) -> Self {
         let digest = ring::digest::digest(&ring::digest::SHA256, der);
-        let mut certificate_sha256 = [0_u8; 32];
-        certificate_sha256.copy_from_slice(digest.as_ref());
-        Self { certificate_sha256 }
+        let mut bytes = [0_u8; 32];
+        bytes.copy_from_slice(digest.as_ref());
+        Self(bytes)
     }
 
     #[must_use]
-    pub fn from_sha256(certificate_sha256: [u8; 32]) -> Self {
-        Self { certificate_sha256 }
+    pub fn from_sha256(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
+/// The caller, as the TLS handshake proved it: the fingerprint of the client
+/// certificate that chained to the node CA. Only the node-facing listener
+/// mints one, so nothing outside this crate can claim to be a node. Test
+/// harnesses build one through the `test-harness` feature, which product
+/// crates never enable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerIdentity(CertificateFingerprint);
+
+impl PeerIdentity {
+    pub(crate) fn verified(leaf_der: &[u8]) -> Self {
+        Self(CertificateFingerprint::of_der(leaf_der))
+    }
+
+    /// A peer that did not complete a handshake. Test harnesses only.
+    #[cfg(feature = "test-harness")]
+    #[must_use]
+    pub fn for_tests(fingerprint: CertificateFingerprint) -> Self {
+        Self(fingerprint)
     }
 }
 
@@ -50,16 +69,16 @@ pub struct EnrolledNode {
 /// Enrolled nodes by client certificate. Empty means no node may relay.
 #[derive(Debug, Clone, Default)]
 pub struct NodeRegistry {
-    nodes: HashMap<PeerIdentity, EnrolledNode>,
+    nodes: HashMap<CertificateFingerprint, EnrolledNode>,
 }
 
 impl NodeRegistry {
-    pub fn enroll(&mut self, peer: PeerIdentity, node: EnrolledNode) {
-        self.nodes.insert(peer, node);
+    pub fn enroll(&mut self, certificate: CertificateFingerprint, node: EnrolledNode) {
+        self.nodes.insert(certificate, node);
     }
 
     fn node(&self, peer: &PeerIdentity) -> Option<&EnrolledNode> {
-        self.nodes.get(peer)
+        self.nodes.get(&peer.0)
     }
 }
 
@@ -101,7 +120,8 @@ impl SessionAuthority for NoSessions {
     }
 }
 
-/// Phase 0 for one `gateway-open`. Returns the runner the call belongs to.
+/// Phase 0 for one `gateway-open`. Returns the runner the call belongs to
+/// and its stored lease's expiry, which bounds the capability's window.
 pub(crate) fn verify(
     registry: &NodeRegistry,
     authority: &dyn SessionAuthority,
@@ -109,7 +129,7 @@ pub(crate) fn verify(
     capability: &Capability,
     route: (&str, &str),
     now_unix_millis: u64,
-) -> Result<String, RelayError> {
+) -> Result<(String, u64), RelayError> {
     let unverified = RelayError::CapabilityUnverified;
     let node = peer
         .and_then(|peer| registry.node(peer))
@@ -124,20 +144,21 @@ pub(crate) fn verify(
     {
         return Err(unverified);
     }
-    current(authority, &node.runner_id, capability, now_unix_millis)?;
-    Ok(node.runner_id.clone())
+    let lease_expires = current(authority, &node.runner_id, capability, now_unix_millis)?;
+    Ok((node.runner_id.clone(), lease_expires))
 }
 
 /// The stored assignment still names `runner_id`, the signed lease fields,
 /// and the signed binding, and the lease is still current. Phase 0 runs it on
 /// open; the relay runs it again on every later line, where a failure is
 /// `lease_binding_mismatch` (the call was authentic when it opened).
+/// Returns the stored lease's expiry.
 pub(crate) fn current(
     authority: &dyn SessionAuthority,
     runner_id: &str,
     capability: &Capability,
     now_unix_millis: u64,
-) -> Result<(), RelayError> {
+) -> Result<u64, RelayError> {
     let unverified = RelayError::CapabilityUnverified;
     let assignment = authority
         .assignment(&capability.session_id)
@@ -156,7 +177,7 @@ pub(crate) fn current(
             && binding.mode == capability.mode
     });
     if lease_matches && binding_matches {
-        Ok(())
+        Ok(assignment.lease_expires_at_unix_millis)
     } else {
         Err(unverified)
     }

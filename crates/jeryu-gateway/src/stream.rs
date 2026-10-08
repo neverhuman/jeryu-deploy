@@ -9,6 +9,10 @@ use futures_util::{Stream, StreamExt};
 
 use crate::RelayError;
 use crate::frames::{MAX_LINE_BYTES, NodeLine};
+
+/// The most bytes one transport chunk may carry into the line reader, so
+/// the reader never holds more than this plus one line.
+pub const MAX_TRANSPORT_CHUNK: usize = 1024 * 1024;
 use crate::relay::{IDLE_TIMEOUT, MAX_IN_FLIGHT};
 
 pub(crate) type Slots = Arc<parking_lot::Mutex<HashMap<String, usize>>>;
@@ -87,7 +91,8 @@ where
             match tokio::time::timeout(IDLE_TIMEOUT, self.input.next()).await {
                 Err(_) => return Err(RelayError::RelayIdleTimeout),
                 Ok(None) | Ok(Some(Err(_))) => return Err(RelayError::RelayStreamInvalid),
-                Ok(Some(Ok(bytes))) => self.pending = bytes,
+                Ok(Some(Ok(bytes))) if bytes.len() <= MAX_TRANSPORT_CHUNK => self.pending = bytes,
+                Ok(Some(Ok(_))) => return Err(RelayError::RelayStreamInvalid),
             }
         }
     }

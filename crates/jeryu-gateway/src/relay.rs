@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures_util::{Stream, StreamExt};
+use futures_util::Stream;
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
@@ -16,9 +16,10 @@ use crate::RelayError;
 use crate::authority::{self, NodeRegistry, PeerIdentity, SessionAuthority};
 use crate::body::{Accepted, request_body};
 use crate::capability::{Capability, Mode, verify_validity};
-use crate::frames::{GatewayLine, Header, MAX_CHUNK_BYTES, NodeLine};
+use crate::frames::{GatewayLine, NodeLine};
 use crate::policy::{UpstreamTable, check_headers};
 use crate::stream::{LineReader, Slot, now_unix_millis};
+use crate::upstream::{Prepared, forward, send};
 
 /// Relay requests in flight per session; the next `gateway-open` is busy.
 pub const MAX_IN_FLIGHT: usize = 4;
@@ -27,6 +28,9 @@ pub const MAX_IN_FLIGHT: usize = 4;
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A request body streams upstream; this bounds its total size.
 pub const MAX_REQUEST_BODY: usize = 8 * 1024 * 1024;
+/// While a request is open, the assignment and connection are re-checked at
+/// least this often, even when no line moves in either direction.
+pub const RECHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// What the gateway asks the vault about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +75,7 @@ pub struct Gateway {
     pub(crate) authority: Arc<dyn SessionAuthority>,
     table: UpstreamTable,
     pub(crate) credentials: Arc<dyn CredentialSource>,
-    client: reqwest::Client,
+    pub(crate) client: reqwest::Client,
     slots: crate::stream::Slots,
     pub(crate) clock: fn() -> u64,
 }
@@ -84,8 +88,10 @@ impl Gateway {
         credentials: Arc<dyn CredentialSource>,
     ) -> Result<Self, RelayError> {
         // Redirects are never followed: a redirect is upstream_host_denied.
+        // Provider hosts resolve to public addresses only.
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(crate::upstream_dns::PublicOnly))
             .build()
             .map_err(|_| RelayError::UpstreamHostDenied)?;
         Ok(Self {
@@ -181,7 +187,7 @@ impl Gateway {
         let now = (self.clock)();
         // Phase 0: nothing below runs, and the vault is not asked, unless the
         // peer, its key, the assignment, and the stored lease all match.
-        let runner_id = authority::verify(
+        let (runner_id, lease_expires) = authority::verify(
             &self.registry,
             self.authority.as_ref(),
             peer.as_ref(),
@@ -198,7 +204,7 @@ impl Gateway {
         if authorization.is_some() {
             return Err(RelayError::GuestAuthorizationRejected);
         }
-        verify_validity(&capability, now)?;
+        verify_validity(&capability, now, lease_expires)?;
         let (url, upstream) = self.table.resolve(provider, &path)?;
         check_headers(&headers)?;
         let method = match method.as_str() {
@@ -218,81 +224,31 @@ impl Gateway {
             accepted.clone(),
             Arc::clone(&failure),
         );
-        let mut request = self
-            .client
-            .request(method, url)
-            .body(reqwest::Body::wrap_stream(body));
-        for Header { name, value } in &headers {
-            request = request.header(name.as_str(), value.as_str());
-        }
-        for (name, value) in &upstream.fixed_headers {
-            request = request.header(name.as_str(), value.as_str());
-        }
-        request = request.header(auth.header.as_str(), auth.value.as_str());
-        drop(auth);
-        let body_failure = || failure.lock().take();
-        let response = match tokio::time::timeout(IDLE_TIMEOUT, request.send()).await {
-            Err(_) => return Err(RelayError::RelayIdleTimeout),
-            Ok(Err(_)) => return Err(body_failure().unwrap_or(RelayError::UpstreamHostDenied)),
-            Ok(Ok(response)) => response,
+        let prepared = Prepared {
+            method,
+            url,
+            headers,
+            fixed_headers: upstream.fixed_headers.clone(),
+            auth,
         };
-        if let Some(error) = body_failure() {
-            return Err(error);
+        // The request ends at the first of: done, a failed periodic re-check
+        // (even while upstream is idle or the node stops reading), or the
+        // node hanging up. Dropping the forward future cancels the upstream
+        // call and frees the slot.
+        tokio::select! {
+            outcome = forward(&self.client, prepared, body, &failure, &accepted, &request_id, tx) => outcome,
+            error = watch(&accepted) => Err(error),
+            () = tx.closed() => Err(RelayError::RelayStreamInvalid),
         }
-        if response.status().is_redirection() {
-            return Err(RelayError::UpstreamHostDenied);
-        }
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| value.len() <= 256)
-            .map(|value| Header {
-                name: "content-type".into(),
-                value: value.into(),
-            });
-        let head = GatewayLine::Head {
-            request_id: request_id.clone(),
-            status: response.status().as_u16(),
-            headers: content_type.into_iter().collect(),
-        };
-        send(tx, &head).await?;
-        let mut stream = response.bytes_stream();
-        let mut seq = 0_u64;
-        loop {
-            let chunk = match tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await {
-                Err(_) => return Err(RelayError::RelayIdleTimeout),
-                Ok(None) => break,
-                Ok(Some(Err(_))) => return Err(RelayError::RelayStreamInvalid),
-                Ok(Some(Ok(chunk))) => chunk,
-            };
-            for piece in chunk.chunks(MAX_CHUNK_BYTES) {
-                // A disconnect, replacement, or lease change stops the body here.
-                accepted.recheck()?;
-                seq += 1;
-                let line = GatewayLine::ResponseBody {
-                    request_id: request_id.clone(),
-                    seq,
-                    bytes_b64: crate::frames::encode_chunk(piece),
-                };
-                send(tx, &line).await?;
-            }
-        }
-        let end = GatewayLine::ResponseEnd {
-            request_id,
-            seq_end: seq,
-        };
-        send(tx, &end).await
     }
 }
 
-/// One response line to the node. A node that stops reading for the idle
-/// timeout ends the request instead of holding it open forever.
-async fn send(tx: &mpsc::Sender<Bytes>, line: &GatewayLine) -> Result<(), RelayError> {
-    let bytes = Bytes::from(line.to_line()?);
-    match tokio::time::timeout(IDLE_TIMEOUT, tx.send(bytes)).await {
-        Err(_) => Err(RelayError::RelayIdleTimeout),
-        Ok(Err(_)) => Err(RelayError::RelayStreamInvalid),
-        Ok(Ok(())) => Ok(()),
+/// Re-check the accepted request every [`RECHECK_INTERVAL`] until it fails.
+async fn watch(accepted: &Accepted) -> RelayError {
+    loop {
+        tokio::time::sleep(RECHECK_INTERVAL).await;
+        if let Err(error) = accepted.recheck() {
+            return error;
+        }
     }
 }

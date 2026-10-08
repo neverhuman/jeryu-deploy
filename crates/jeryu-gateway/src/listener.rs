@@ -38,13 +38,18 @@ pub enum TlsSetupError {
     Config,
 }
 
+/// The listener's TLS configuration. Only [`server_config`] builds one, so a
+/// listener can never run without a required node client certificate.
+#[derive(Clone)]
+pub struct NodeTls(Arc<ServerConfig>);
+
 /// TLS 1.3, server certificate `cert_pem` with `key_pem`, and a required client
 /// certificate chaining to `client_ca_pem`.
 pub fn server_config(
     cert_pem: &[u8],
     key_pem: &[u8],
     client_ca_pem: &[u8],
-) -> Result<Arc<ServerConfig>, TlsSetupError> {
+) -> Result<NodeTls, TlsSetupError> {
     let certificates = CertificateDer::pem_slice_iter(cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| TlsSetupError::Certificate)?;
@@ -72,16 +77,16 @@ pub fn server_config(
         .with_single_cert(certificates, key)
         .map_err(|_| TlsSetupError::Config)?;
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    Ok(Arc::new(config))
+    Ok(NodeTls(Arc::new(config)))
 }
 
 /// Serve the gateway router on `listener` until the task is dropped.
 pub async fn serve(
     listener: TcpListener,
-    tls: Arc<ServerConfig>,
+    tls: NodeTls,
     gateway: Arc<Gateway>,
 ) -> std::io::Result<()> {
-    let acceptor = TlsAcceptor::from(tls);
+    let acceptor = TlsAcceptor::from(tls.0);
     let app = crate::router(gateway);
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
@@ -107,7 +112,7 @@ pub async fn serve(
                 .1
                 .peer_certificates()
                 .and_then(|chain| chain.first())
-                .map(|leaf| PeerIdentity::from_certificate_der(leaf.as_ref()))
+                .map(|leaf| PeerIdentity::verified(leaf.as_ref()))
             else {
                 return;
             };

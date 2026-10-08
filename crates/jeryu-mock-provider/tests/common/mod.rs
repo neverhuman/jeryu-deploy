@@ -11,9 +11,9 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use jeryu_gateway::frames::{GatewayLine, encode_chunk};
 use jeryu_gateway::{
-    Assignment, Binding, Capability, CredentialSource, EnrolledNode, Gateway, LeaseBinding, Mode,
-    NodeRegistry, OwnerKind, PeerIdentity, RelayError, SessionAuthority, Upstream, UpstreamAuth,
-    UpstreamTable,
+    Assignment, Binding, Capability, CertificateFingerprint, CredentialSource, EnrolledNode,
+    Gateway, LeaseBinding, Mode, NodeRegistry, OwnerKind, PeerIdentity, RelayError,
+    SessionAuthority, Upstream, UpstreamAuth, UpstreamTable,
 };
 use jeryu_mock_provider::{MockConfig, MockProvider};
 use parking_lot::Mutex;
@@ -94,9 +94,10 @@ fn node(registry: &mut NodeRegistry, digest: u8, runner_id: &str) -> Node {
     let rng = ring::rand::SystemRandom::new();
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("key");
     let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("pair");
-    let peer = PeerIdentity::from_sha256([digest; 32]);
+    let certificate = CertificateFingerprint::from_sha256([digest; 32]);
+    let peer = PeerIdentity::for_tests(certificate);
     registry.enroll(
-        peer,
+        certificate,
         EnrolledNode {
             runner_id: runner_id.into(),
             capability_key: key.public_key().as_ref().try_into().expect("32"),

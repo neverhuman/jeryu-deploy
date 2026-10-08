@@ -66,15 +66,24 @@ pub fn signed_by(capability: &Capability, key: &[u8; 32]) -> bool {
 }
 
 /// After phase 0 and the vault checks (connection-v1 §4 precedence 9 and
-/// 10): the lifetime is at most 60 s, `gateway-open` arrives before expiry,
-/// and the audience is the gateway. Later lines of an accepted request are
-/// not re-checked against `expires_at`.
-pub fn verify_validity(capability: &Capability, now_unix_millis: u64) -> Result<(), RelayError> {
-    let lifetime = capability
-        .expires_at_unix_millis
-        .checked_sub(capability.issued_at_unix_millis);
+/// 10). The acceptance window is `issued_at <= now < expires_at`, at most
+/// 60 s long, and ends no later than the stored lease; the audience is the
+/// gateway. Later lines of an accepted request are not re-checked against
+/// `expires_at`.
+pub fn verify_validity(
+    capability: &Capability,
+    now_unix_millis: u64,
+    lease_expires_at_unix_millis: u64,
+) -> Result<(), RelayError> {
+    let (issued, expires) = (
+        capability.issued_at_unix_millis,
+        capability.expires_at_unix_millis,
+    );
+    let lifetime = expires.checked_sub(issued);
     if !matches!(lifetime, Some(1..=MAX_LIFETIME_MILLIS))
-        || now_unix_millis >= capability.expires_at_unix_millis
+        || now_unix_millis < issued
+        || now_unix_millis >= expires
+        || expires > lease_expires_at_unix_millis
     {
         return Err(RelayError::CapabilityExpired);
     }
@@ -213,21 +222,32 @@ pub(crate) mod tests {
 
     #[test]
     fn expiry_lifetime_and_audience_are_enforced() {
+        let lease = u64::MAX;
         let (_, capability) = signed(1_000, |_| {});
-        assert_eq!(verify_validity(&capability, 2_000), Ok(()));
+        assert_eq!(verify_validity(&capability, 2_000, lease), Ok(()));
         assert_eq!(
-            verify_validity(&capability, 31_000),
+            verify_validity(&capability, 31_000, lease),
             Err(RelayError::CapabilityExpired)
+        );
+        assert_eq!(
+            verify_validity(&capability, 999, lease),
+            Err(RelayError::CapabilityExpired),
+            "issued in the future"
+        );
+        assert_eq!(
+            verify_validity(&capability, 2_000, 30_999),
+            Err(RelayError::CapabilityExpired),
+            "outlives the stored lease"
         );
         let (_, long) = signed(1_000, |c| c.expires_at_unix_millis = 1_000 + 60_001);
         assert_eq!(
-            verify_validity(&long, 2_000),
+            verify_validity(&long, 2_000, lease),
             Err(RelayError::CapabilityExpired),
             "lifetime above 60 s"
         );
         let (_, audience) = signed(1_000, |c| c.audience = "jeryu.other".into());
         assert_eq!(
-            verify_validity(&audience, 2_000),
+            verify_validity(&audience, 2_000, lease),
             Err(RelayError::CapabilityAudienceMismatch)
         );
         let (_, kind) = signed(1_000, |c| c.owner_kind = OwnerKind::ServiceAccount);

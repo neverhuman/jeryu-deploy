@@ -170,6 +170,63 @@ async fn a_new_lease_mid_request_ends_it() {
     assert!(!has_body(&lines));
 }
 
+/// The periodic re-check fences a request even when no line moves: here
+/// the node goes quiet mid-body, so neither direction has a frame to check
+/// on, and the connection is replaced meanwhile.
+#[tokio::test]
+async fn a_quiet_request_is_still_fenced_by_the_periodic_recheck() {
+    let harness = Harness::new().await;
+    let capability = harness.capability(|_| {});
+    let (tx, output) = harness.relay_open();
+    tx.send(Ok(open_line("r-1", &capability, None)))
+        .await
+        .expect("open");
+    tx.send(Ok(body_line("r-1", 1, b"{")))
+        .await
+        .expect("body 1");
+    harness.until_in_flight(1).await;
+    harness.vault.generation.store(2, Ordering::SeqCst);
+    let lines: Vec<GatewayLine> = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        output
+            .map(|line| serde_json::from_slice(&line).expect("line"))
+            .collect(),
+    )
+    .await
+    .expect("fenced within a few re-check intervals");
+    assert_eq!(
+        error_of(&lines),
+        Some(RelayError::ConnectionGenerationStale)
+    );
+    harness.until_in_flight(0).await;
+    assert_eq!(harness.calls().1, 1);
+    drop(tx);
+}
+
+/// A node that hangs up mid-request cancels the upstream call and frees the
+/// slot, without waiting for the idle timeout.
+#[tokio::test]
+async fn a_consumer_that_hangs_up_frees_the_slot() {
+    let harness = Harness::new().await;
+    let capability = harness.capability(|_| {});
+    let (tx, output) = harness.relay_open();
+    tx.send(Ok(open_line("r-1", &capability, None)))
+        .await
+        .expect("open");
+    tx.send(Ok(body_line("r-1", 1, b"{")))
+        .await
+        .expect("body 1");
+    harness.until_in_flight(1).await;
+    drop(output);
+    harness.until_in_flight(0).await;
+    assert_eq!(
+        harness.counters().await["chat_authorized"],
+        0,
+        "the upstream call was cut"
+    );
+    drop(tx);
+}
+
 #[tokio::test]
 async fn four_requests_may_be_in_flight_and_the_fifth_is_busy() {
     let harness = Harness::new().await;

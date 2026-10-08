@@ -157,6 +157,26 @@ async fn open_preconditions_after_phase_zero_retrieve_no_credential() {
         (error, credentials),
         (Some(RelayError::CapabilityExpired), 0)
     );
+    // Issued in the future, or outliving the stored lease: still expired.
+    let future = harness.capability(|c| {
+        c.issued_at_unix_millis += 5_000;
+        c.expires_at_unix_millis += 5_000;
+    });
+    let (error, (_, credentials)) = refusal(&harness, a, &future, None).await;
+    assert_eq!(
+        (error, credentials),
+        (Some(RelayError::CapabilityExpired), 0)
+    );
+    let mut short = assignment();
+    short.lease_expires_at_unix_millis = clock() + 10_000;
+    *harness.sessions.0.lock() = Some(short);
+    let overshoot = harness.capability(|_| {});
+    let (error, (_, credentials)) = refusal(&harness, a, &overshoot, None).await;
+    assert_eq!(
+        (error, credentials),
+        (Some(RelayError::CapabilityExpired), 0)
+    );
+    *harness.sessions.0.lock() = Some(assignment());
     // Guest Authorization in gateway_helper mode.
     let good = harness.capability(|_| {});
     let (error, (_, credentials)) = refusal(&harness, a, &good, Some("Bearer stolen")).await;

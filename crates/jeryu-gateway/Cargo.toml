@@ -8,9 +8,10 @@ rust-version.workspace = true
 publish = false
 
 [features]
-# Test harnesses only: lets an upstream table point at a loopback HTTP mock.
-# Production code never enables this; see tests/policy in jeryu-mock-provider.
-loopback-upstream = []
+# Test harnesses only: lets an upstream table point at a loopback HTTP mock,
+# and builds a PeerIdentity without a TLS handshake. Product crates never
+# enable this; see tests/policy in jeryu-mock-provider.
+test-harness = []
 
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }

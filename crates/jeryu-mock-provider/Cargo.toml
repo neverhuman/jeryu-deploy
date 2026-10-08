@@ -23,7 +23,7 @@ uuid.workspace = true
 parking_lot.workspace = true
 bytes = "1"
 futures-util = "0.3"
-jeryu-gateway = { path = "../jeryu-gateway", features = ["loopback-upstream"] }
+jeryu-gateway = { path = "../jeryu-gateway", features = ["test-harness"] }
 ring = "0.17"
 zeroize = "1"
 tempfile.workspace = true

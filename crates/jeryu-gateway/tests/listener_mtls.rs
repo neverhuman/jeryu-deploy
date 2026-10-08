@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use jeryu_gateway::listener::{self, TlsSetupError};
 use jeryu_gateway::{
-    Assignment, Binding, Capability, CredentialSource, EnrolledNode, Gateway, LeaseBinding, Mode,
-    NodeRegistry, OwnerKind, PeerIdentity, RelayError, SessionAuthority, UpstreamAuth,
-    UpstreamTable,
+    Assignment, Binding, Capability, CertificateFingerprint, CredentialSource, EnrolledNode,
+    Gateway, LeaseBinding, Mode, NodeRegistry, OwnerKind, RelayError, SessionAuthority,
+    UpstreamAuth, UpstreamTable,
 };
 use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair};
 use ring::signature::{Ed25519KeyPair, KeyPair as _};
@@ -136,7 +136,7 @@ fn leaf(ca: &Ca, names: &[&str], usage: ExtendedKeyUsagePurpose) -> (String, Str
 async fn start(
     server_ca: &Ca,
     node_ca: &Ca,
-    enrolled: &[(PeerIdentity, [u8; 32])],
+    enrolled: &[(CertificateFingerprint, [u8; 32])],
 ) -> std::net::SocketAddr {
     let (cert, key) = leaf(
         server_ca,
@@ -191,7 +191,7 @@ async fn the_peer_certificate_is_the_phase_zero_identity() {
     let node_key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("pair");
     let public: [u8; 32] = node_key.public_key().as_ref().try_into().expect("32");
     let node_cert = leaf(&node_ca, &["node-1"], ExtendedKeyUsagePurpose::ClientAuth);
-    let peer = PeerIdentity::from_certificate_der(&der_of(&node_cert.0));
+    let peer = CertificateFingerprint::of_der(&der_of(&node_cert.0));
     let addr = start(&server_ca, &node_ca, &[(peer, public)]).await;
     let url = format!(
         "https://localhost:{}/internal/gateway/sess-1/claude",

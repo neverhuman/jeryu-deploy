@@ -53,7 +53,7 @@ impl UpstreamTable {
     }
 
     /// Point a provider at a loopback mock. Test harnesses only.
-    #[cfg(feature = "loopback-upstream")]
+    #[cfg(feature = "test-harness")]
     pub fn loopback(&mut self, provider: &str, upstream: Upstream) -> Result<(), RelayError> {
         let is_loopback = upstream.base_url.starts_with("http://127.0.0.1:");
         if !is_loopback {
