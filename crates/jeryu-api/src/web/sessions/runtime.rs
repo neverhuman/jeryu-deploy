@@ -59,21 +59,8 @@ fn run_git(git_bin: &str, args: &[&str], cwd: Option<&std::path::Path>) -> Resul
     ))
 }
 
-/// Resolve which PTY backend a session agent runs under, the launch command for it,
-/// and (for `auto`) a docker fallback. `auto` (default) runs the native kernel
-/// sandbox and, only if native returns `sandbox_unavailable` at spawn time, retries
-/// the same run on docker; `docker`/`native` force one path.
-///
-/// Returns `(backend, primary_spec, docker_fallback)`:
-/// - `docker`: backend `DockerHost`, primary = the host `docker run ... <image>
-///   <in-image agent argv>` (hardened flags from the planned [`OciSpec`]); `None`
-///   when `docker` is absent (drives the graceful not-available line).
-/// - `native`: backend `Native`, primary = the resolved host agent binary; `None`
-///   when that binary is absent.
-/// - `auto`: backend `Native` with the host agent binary as primary AND a docker
-///   command as the fallback (when docker is on PATH). A missing native binary
-///   still degrades to the graceful not-available line — `auto` only falls back on
-///   an actual kernel-sandbox failure, never on a missing agent CLI.
+/// Legacy component construction; public launches are rejected before it.
+/// Auto never retries another host backend.
 pub(super) fn resolve_session_backend(
     config: &SessionRuntimeConfig,
     agent_id: &str,
@@ -82,7 +69,7 @@ pub(super) fn resolve_session_backend(
     env: BTreeMap<String, String>,
     container: &OciSpec,
     run_id: &str,
-) -> (PtyBackend, Option<CommandSpec>, Option<CommandSpec>) {
+) -> (PtyBackend, Option<CommandSpec>) {
     let native_ok = !agent_program.as_os_str().is_empty() && agent_program.is_file();
     let native_spec = native_ok.then(|| {
         // The native binary is launched directly (no in-image entrypoint), so the
@@ -103,9 +90,10 @@ pub(super) fn resolve_session_backend(
         .map(|docker| docker_command(docker, container, workspace, agent_id, env, run_id));
 
     match config.runtime {
-        SessionRuntime::Docker => (PtyBackend::DockerHost, docker_spec, None),
-        SessionRuntime::Native => (PtyBackend::Native, native_spec, None),
-        SessionRuntime::Auto => (PtyBackend::Native, native_spec, docker_spec),
+        SessionRuntime::Docker => (PtyBackend::DockerHost, docker_spec),
+        SessionRuntime::Native => (PtyBackend::Native, native_spec),
+        SessionRuntime::Auto => (PtyBackend::Native, native_spec),
+        SessionRuntime::Firecracker | SessionRuntime::Invalid => (PtyBackend::Native, None),
     }
 }
 
@@ -835,6 +823,8 @@ fn in_image_agent_command(agent_id: &str) -> Vec<String> {
 /// Which container/native runtime a launched session uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionRuntime {
+    Firecracker,
+    Invalid,
     Auto,
     Docker,
     Native,
@@ -859,24 +849,10 @@ pub(crate) struct SessionRuntimeConfig {
 }
 
 impl SessionRuntimeConfig {
-    /// Resolve the session runtime config from the environment.
-    ///
-    /// `JERYU_AGENT_RUNTIME` selects the backend (`auto` default; `docker`/`native`
-    /// force one; an unknown value is treated as `auto` so a typo never wedges New
-    /// Session). `JERYU_DOCKER_BIN` overrides the docker binary the seam invokes;
-    /// otherwise a `docker` on `PATH` is used when present.
+    /// Firecracker is the default; unknown and legacy selections fail closed.
     pub(crate) fn from_env() -> Self {
-        let runtime = match std::env::var("JERYU_AGENT_RUNTIME")
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
-            Some("docker") => SessionRuntime::Docker,
-            Some("native") => SessionRuntime::Native,
-            _ => SessionRuntime::Auto,
-        };
+        let runtime =
+            Self::runtime_from_value(std::env::var("JERYU_AGENT_RUNTIME").ok().as_deref());
         let docker_bin = std::env::var("JERYU_DOCKER_BIN")
             .ok()
             .map(|v| v.trim().to_string())
@@ -887,6 +863,15 @@ impl SessionRuntimeConfig {
             runtime,
             docker_bin,
             spawn_companion_shell: true,
+        }
+    }
+    pub(crate) fn runtime_from_value(value: Option<&str>) -> SessionRuntime {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            None | Some("") | Some("firecracker") => SessionRuntime::Firecracker,
+            Some("auto") => SessionRuntime::Auto,
+            Some("docker") => SessionRuntime::Docker,
+            Some("native") => SessionRuntime::Native,
+            Some(_) => SessionRuntime::Invalid,
         }
     }
 }

@@ -396,6 +396,7 @@ fn create_session(
     request: CreateSessionRequest,
     session_owner: Option<String>,
 ) -> Result<CreateSessionResponse, Box<AxumResponse>> {
+    super::managed_launch::require(state, "create an agent session for a repository")?;
     let repo = find_repo(state, repo_id).ok_or_else(|| Box::new(repo_not_found(repo_id)))?;
     let owner = repo.owner.clone();
     let name = repo.name.clone();
@@ -612,7 +613,7 @@ fn create_session(
     // even with `--network none` (model egress is a separate later layer).
     let mut agent_env: BTreeMap<String, String> = BTreeMap::new();
     agent_env.insert("JERYU_BRANCH".to_string(), branch.clone());
-    let (backend, spec, docker_fallback) = resolve_session_backend(
+    let (backend, spec) = resolve_session_backend(
         &state.session_runtime,
         &agent_id,
         &agent_program,
@@ -628,7 +629,6 @@ fn create_session(
             workspace: workspace.clone(),
             spec,
             backend,
-            docker_fallback,
             control_rx,
             timeout: Duration::from_secs(SESSION_AGENT_TIMEOUT_SECS),
             output_budget: SESSION_AGENT_OUTPUT_BYTES,
@@ -694,7 +694,6 @@ fn create_session(
                 workspace,
                 spec: Some(shell_spec),
                 backend: PtyBackend::DockerHost, // unsandboxed host PTY — operator shell
-                docker_fallback: None,
                 control_rx: shell_ctl_rx,
                 timeout: Duration::from_secs(7200),
                 output_budget: 20_971_520,
@@ -913,7 +912,6 @@ fn publish_session(
 
 mod runtime;
 
-#[cfg(test)]
 pub(crate) use runtime::SessionRuntime;
 pub(crate) use runtime::SessionRuntimeConfig;
 pub(in crate::web) use runtime::purge_seeded_agent_auth;

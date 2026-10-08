@@ -230,6 +230,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "reading repository source from git failed",
     ),
     entry(
+        "host_launch_denied",
+        403,
+        "managed agent or terminal execution on the host is denied",
+    ),
+    entry(
         "idempotency_conflict",
         409,
         "the Idempotency-Key was used with a different request",
@@ -298,6 +303,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "an agent_id or run_id has a character a ref may not carry",
     ),
     entry("invalid_token", 401, "invalid bot credential"),
+    entry(
+        "managed_runtime_invalid",
+        422,
+        "the configured managed runtime is unknown",
+    ),
     entry(
         "merge_blocked",
         409,
@@ -459,6 +469,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "runner_policy_denied",
         422,
         "the runner policy denies this trust tier on the chosen runner",
+    ),
+    entry(
+        "sandbox_unavailable",
+        424,
+        "a verified Firecracker runner is unavailable",
     ),
     entry(
         "serialization_failed",

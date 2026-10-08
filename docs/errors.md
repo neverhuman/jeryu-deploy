@@ -115,6 +115,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `forge_validation` | 422 | the forge rejected the request fields |
 | `git_error` | 500 | a git operation failed |
 | `git_source_failed` | 500 | reading repository source from git failed |
+| `host_launch_denied` | 403 | managed agent or terminal execution on the host is denied |
 | `idempotency_conflict` | 409 | the Idempotency-Key was used with a different request |
 | `idempotency_key_in_flight` | 409 | a request with this Idempotency-Key is still running |
 | `idempotency_key_reused` | 422 | the Idempotency-Key was already used for a different request |
@@ -132,6 +133,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_request` | 422 | credentials must not be passed as query parameters |
 | `invalid_session_id` | 422 | an agent_id or run_id has a character a ref may not carry |
 | `invalid_token` | 401 | invalid bot credential |
+| `managed_runtime_invalid` | 422 | the configured managed runtime is unknown |
 | `merge_blocked` | 409 | merge policy blocks this pull request |
 | `merge_failed` | 500 | the merge failed |
 | `merge_gate_blocked` | 409 | the merge gate has not passed for the current head |
@@ -170,6 +172,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `repository_changed` | 409 | the repository the replayed request created no longer exists |
 | `request_failed` | 400 | the request failed |
 | `runner_policy_denied` | 422 | the runner policy denies this trust tier on the chosen runner |
+| `sandbox_unavailable` | 424 | a verified Firecracker runner is unavailable |
 | `serialization_failed` | 500 | the response could not be serialized |
 | `service_unavailable` | 503 | the service is temporarily unavailable |
 | `session_already_published` | 409 | the session was already published |

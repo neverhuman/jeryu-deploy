@@ -16,6 +16,7 @@ mod error_envelope;
 pub(crate) mod family;
 mod idempotency;
 mod jankurai;
+mod managed_launch;
 mod markdown;
 mod merge_attempts;
 mod merge_queue;
@@ -109,7 +110,7 @@ const MCP_ISSUE_TOOL: &str = "jeryu.bug_submit";
 const MCP_AGENT_WORK_TOOL: &str = "jeryu.agent_work.start";
 /// Steady-state depth of pre-warmed agent containers the pool refills back to, so
 /// a New Session claims a ready cell instead of paying a cold-start.
-const WARM_POOL_TARGET: usize = 2;
+const WARM_POOL_TARGET: usize = 0;
 const BOOTSTRAP_ADMIN_LOGIN: &str = "jeryu-admin";
 const BOOTSTRAP_ADMIN_PASSWORD_ENV: &str = "JERYU_BOOTSTRAP_ADMIN_PASSWORD";
 
@@ -304,9 +305,9 @@ impl WebState {
             site_settings::SiteSettingsStore::open(&shift_path).expect("open site settings store");
         let attention_acks = pipeline::attention::AckStore::open(&shift_path)
             .expect("open attention acknowledgement store");
-        // Pre-warm the agent pool over the real CLI lifecycle. With the OCI gate
-        // closed this only records planned cells (no daemon), so construction is
-        // infallible in every environment the web edge boots in.
+        // Managed execution is Firecracker-only. Constructing the web edge
+        // must never prewarm host OCI agent containers, including when the
+        // historical JERYU_RUN_OCI switch is enabled.
         let warm_runtime: Arc<dyn ContainerLifecycle> = Arc::new(CliContainerRuntime);
         let warm_pool = Arc::new(Mutex::new(
             WarmPool::new(warm_runtime, WARM_POOL_TARGET).expect("pre-warm the agent pool"),

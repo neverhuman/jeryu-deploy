@@ -270,3 +270,19 @@ Proof lanes:
   with the required `repo_roots`; to keep the slice narrow, move the edit back
   under an allowed root. Rerun:
   `cargo test -p jeryu-api --features web --jobs 40 workcell_export_slice`.
+
+
+## Managed Firecracker admission
+
+Managed sessions, agent runs, workcell and MCP agent work, and companion
+terminals require a verified Firecracker runner. Firecracker is the default.
+Explicit native, Docker, or auto selectors return host_launch_denied; unknown
+selectors return managed_runtime_invalid. An unavailable runner returns
+sandbox_unavailable before host workspace resolution, execution intents,
+operator authentication imports, or process creation. The Native-to-Docker
+retry has been removed. Web construction does not prewarm OCI agent containers.
+
+This admission foundation suspends legacy execution until reviewed runner
+dispatch is connected. It does not prove working virtual sessions, provider
+qualification, publication, or production cutover. Existing host sessions need
+an explicit retained-work migration; their processes cannot become VM sessions.

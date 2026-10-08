@@ -19,6 +19,7 @@ fn start_request(
     state: Arc<WebState>,
     request: AgentRunStartRequest,
 ) -> AgentRunResponseResult<AgentRunStartResponse> {
+    crate::web::managed_launch::require(&state, "start an agent run")?;
     let resolved = resolve_agent_run_source(&state, &request)?;
 
     // Record what this run is for, and take its id, before anything is
@@ -90,7 +91,6 @@ fn start_request(
         spec,
         io_mode: request.io_mode,
         backend: PtyBackend::Native,
-        docker_fallback: None,
         timeout,
         output_budget,
         require_cgroup: request.require_cgroup(),
@@ -128,11 +128,6 @@ struct DriverThreadInit {
     /// `docker run ...` (the container is the jail). Only meaningful for the Pty
     /// io_mode; the Pipe path always uses the native sandbox driver.
     backend: PtyBackend,
-    /// Auto-mode docker fallback. When the `Native` backend returns
-    /// `sandbox_unavailable` (the host blocks the unprivileged-userns sandbox) and
-    /// this carries a docker command, the same run retries on the docker host-PTY
-    /// backend instead of failing — the `auto` runtime selector's whole point.
-    docker_fallback: Option<CommandSpec>,
     timeout: Duration,
     output_budget: usize,
     require_cgroup: bool,
@@ -160,6 +155,15 @@ pub(in crate::web) enum PtyBackend {
 /// commands; the Pipe path supervises over pipes. Either way the terminal
 /// outcome lands through `store.complete`.
 fn spawn_driver_thread(init: DriverThreadInit) {
+    if let Err(denial) =
+        crate::web::managed_launch::admission(crate::web::sessions::SessionRuntime::Firecracker)
+    {
+        init.store.complete(
+            &init.run_id,
+            Err(DriverError::SandboxUnavailable(denial.code().to_string())),
+        );
+        return;
+    }
     let DriverThreadInit {
         store,
         run_id,
@@ -167,7 +171,6 @@ fn spawn_driver_thread(init: DriverThreadInit) {
         spec,
         io_mode,
         backend,
-        docker_fallback,
         timeout,
         output_budget,
         require_cgroup,
@@ -186,22 +189,10 @@ fn spawn_driver_thread(init: DriverThreadInit) {
             (AgentRunIoMode::Pty, PtyBackend::DockerHost) => {
                 driver.run_host_pty(&repo_root, &spec, &sink, &control_rx)
             }
-            (AgentRunIoMode::Pty, PtyBackend::Native) => {
-                let native = driver.clone().with_require_cgroup(require_cgroup).run(
-                    &repo_root,
-                    &spec,
-                    &sink,
-                    &control_rx,
-                );
-                match (native, docker_fallback) {
-                    // Auto fallback: the host blocked the kernel sandbox, so retry
-                    // the same run on the docker host-PTY backend.
-                    (Err(DriverError::SandboxUnavailable(_)), Some(docker_spec)) => {
-                        driver.run_host_pty(&repo_root, &docker_spec, &sink, &control_rx)
-                    }
-                    (other, _) => other,
-                }
-            }
+            (AgentRunIoMode::Pty, PtyBackend::Native) => driver
+                .clone()
+                .with_require_cgroup(require_cgroup)
+                .run(&repo_root, &spec, &sink, &control_rx),
             (AgentRunIoMode::Pipe, _) => AgentDriver::new(timeout, output_budget)
                 .with_require_cgroup(require_cgroup)
                 .run(&repo_root, &spec, &sink),
@@ -228,10 +219,6 @@ pub(in crate::web) struct SessionAgentSpawn {
     pub spec: Option<CommandSpec>,
     /// Which PTY backend supervises the child (native sandbox vs. host docker).
     pub backend: PtyBackend,
-    /// Auto-mode docker fallback command: when `backend` is `Native` and native
-    /// returns `sandbox_unavailable`, the run retries on the docker host-PTY
-    /// backend with this command instead of failing.
-    pub docker_fallback: Option<CommandSpec>,
     /// Live control sender already recorded against the run, moved into the driver.
     pub control_rx: mpsc::Receiver<AgentControl>,
     /// Wall-clock budget for the session agent.
@@ -259,12 +246,20 @@ pub(in crate::web) struct SessionAgentSpawn {
 /// record one clear TTY line so the web terminal shows why the agent never started,
 /// and mark the run finished.
 pub(in crate::web) fn spawn_session_agent(store: &AgentRunStore, spawn: SessionAgentSpawn) {
+    if let Err(denial) =
+        crate::web::managed_launch::admission(crate::web::sessions::SessionRuntime::Firecracker)
+    {
+        store.complete(
+            &spawn.run_id,
+            Err(DriverError::SandboxUnavailable(denial.code().to_string())),
+        );
+        return;
+    }
     let SessionAgentSpawn {
         run_id,
         workspace,
         spec,
         backend,
-        docker_fallback,
         control_rx,
         timeout,
         output_budget,
@@ -283,7 +278,6 @@ pub(in crate::web) fn spawn_session_agent(store: &AgentRunStore, spawn: SessionA
         spec,
         io_mode: AgentRunIoMode::Pty,
         backend,
-        docker_fallback,
         timeout,
         output_budget,
         require_cgroup,
@@ -473,6 +467,9 @@ pub(in crate::web) async fn shell(
     State(state): State<Arc<WebState>>,
     AxumPath(parent_run_id): AxumPath<String>,
 ) -> AxumResponse {
+    if let Err(denial) = crate::web::managed_launch::require(&state, "start a companion shell") {
+        return *denial;
+    }
     // Look up the parent run's workspace.
     let workspace = {
         let inner = state.agent_runs.inner.lock().expect("runs mutex");
@@ -540,7 +537,6 @@ pub(in crate::web) async fn shell(
             workspace,
             spec: Some(spec),
             backend: PtyBackend::Native,
-            docker_fallback: None,
             control_rx,
             timeout: std::time::Duration::from_secs(7200),
             output_budget: 20_971_520,
@@ -564,6 +560,7 @@ pub(in crate::web) async fn shell(
 pub(in crate::web) fn mcp_start(state: Arc<WebState>, args: Value) -> Result<Value, String> {
     let request: AgentRunStartRequest =
         serde_json::from_value(args).map_err(|err| err.to_string())?;
+    crate::web::managed_launch::require_mcp(&state, "start an agent run via MCP")?;
     let response = start_request(state, request).map_err(|_| {
         "agent_work.start failed; use the REST route for typed repair details".to_string()
     })?;

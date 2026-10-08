@@ -146,6 +146,9 @@ pub(in crate::web) async fn run_agent(
         });
     }
 
+    if let Err(denial) = crate::web::managed_launch::require(&state, "run an agent in a workcell") {
+        return *denial;
+    }
     let run_root = match selected_run_root(&lease, request.repo_root.as_deref()) {
         Ok(run_root) => run_root,
         Err(response) => return *response,
