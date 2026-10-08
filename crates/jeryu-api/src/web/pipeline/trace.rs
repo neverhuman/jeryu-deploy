@@ -306,7 +306,7 @@ fn stage_of(kind: &str) -> Option<Stage> {
         "todo_blocked" | "todo_handoff" | "todo_parked" => Stage::Done,
         "shift_without_pr" | "shift_stranded_work" => Stage::Shift,
         "pr_draft_waiting" => Stage::Pr,
-        "pr_checks_failing" | "gate_runner_down" => Stage::Gate,
+        "pr_checks_failing" | "pr_changes_own_gate" | "gate_runner_down" => Stage::Gate,
         "pr_changes_requested" | "pr_awaiting_approval" | "reviewer_stuck" => Stage::Review,
         "pr_ready_to_merge" | "queue_failed" | "queue_refused" | "queue_stuck" => Stage::Queue,
         "pin_behind" => Stage::Pinned,

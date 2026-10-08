@@ -12,8 +12,9 @@ use super::attention::{
     ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
     Filter, Hosts, Item, KINDS, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts,
     PullFacts, Severity, board_items, budget_items, divergence_items, draft_items,
-    drop_shadowed_pull_rows, mirror_items, only_matching, order, pin_items, pull_items,
-    queue_items, release_items, runner_items, shift_items, todo_items, web_routes, worker_items,
+    drop_shadowed_pull_rows, gate_definition_paths, mirror_items, only_matching, order, pin_items,
+    pull_items, queue_items, release_items, runner_items, shift_items, todo_items, web_routes,
+    worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -480,6 +481,7 @@ fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
         head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
         updated_at: now() - Duration::minutes(minutes_old),
         posture,
+        changed_paths: vec!["crates/jeryu-api/src/web/pulls.rs".to_string()],
     }
 }
 
@@ -687,6 +689,100 @@ fn a_draft_idle_past_the_threshold_is_waiting_on_a_person() {
 
     // The threshold is what decides it, so raising it empties the list.
     assert!(draft_items(&drafts, 30, now()).is_empty());
+}
+
+/// The gate runs the recipe at the pull request's own head, so a diff that
+/// touches the recipe, the CI scripts it calls or the jankurai and policy files
+/// those read is a change judging itself, and waits on a person whatever the
+/// merge posture says. Ordinary work -- tests included -- is not flagged.
+#[test]
+fn a_pull_request_that_changes_its_own_gate_waits_on_a_person() {
+    assert!(gate_definition_paths(&[]).is_empty());
+    let ordinary = [
+        "crates/jeryu-api/src/web/pulls.rs",
+        "crates/jeryu-api/src/web/pulls/tests.rs",
+        "tests/sandbox_escape_matrix.sh",
+        "docs/jankurai-gate.md",
+        "README.md",
+    ]
+    .map(str::to_string);
+    assert!(gate_definition_paths(&ordinary).is_empty());
+    let gate = [
+        "crates/thing/tests/it.rs",
+        "policies/trust-tiers.toml",
+        "ops/ci/pr-ci.sh",
+        "Justfile",
+        "agent/jankurai-gate.toml",
+        "ops/jankurai/report.toml",
+    ]
+    .map(str::to_string);
+    assert_eq!(
+        gate_definition_paths(&gate),
+        [
+            "Justfile",
+            "agent/jankurai-gate.toml",
+            "ops/ci/pr-ci.sh",
+            "ops/jankurai/report.toml",
+            "policies/trust-tiers.toml",
+        ]
+    );
+
+    // Green and mergeable: exactly the case worth a person's eyes, so the
+    // ready row and this one are both raised.
+    let green = PullPosture {
+        checks_green: true,
+        can_merge: true,
+        ..PullPosture::default()
+    };
+    let items = pull_items(
+        &[PullFacts {
+            changed_paths: vec!["ops/ci/pr-ci.sh".to_string()],
+            ..pull(7, 15, green)
+        }],
+        &[],
+        now(),
+    );
+    assert_eq!(kinds(&items), ["pr_changes_own_gate", "pr_ready_to_merge"]);
+    let item = &items[0];
+    assert_eq!(item.severity, Severity::Action);
+    assert_eq!(item.pr, Some(7));
+    assert_eq!(item.id, "pr-changes-own-gate:jeryu/jeryu-web:7");
+    assert_eq!(item.href, "/repos/jeryu/jeryu/jeryu-web/pulls/7");
+    assert_eq!(api(item), None);
+    assert!(
+        item.reason.contains("changes ops/ci/pr-ci.sh"),
+        "{}",
+        item.reason
+    );
+    assert!(
+        item.reason.contains("rewrote the check that reports on it"),
+        "{}",
+        item.reason
+    );
+    assert!(
+        item.next_step
+            .starts_with("Read the gate change against the base branch")
+    );
+
+    // A diff that rewrites the whole gate names the first few and counts the
+    // rest, so the reason stays one sentence.
+    let many: Vec<String> = (0..9)
+        .map(|step| format!("ops/ci/step-{step}.sh"))
+        .collect();
+    let items = pull_items(
+        &[PullFacts {
+            changed_paths: many,
+            ..pull(9, 45, PullPosture::default())
+        }],
+        &[],
+        now(),
+    );
+    assert_eq!(kinds(&items), ["pr_changes_own_gate"]);
+    assert!(
+        items[0].reason.contains("ops/ci/step-5.sh and 3 more"),
+        "{}",
+        items[0].reason
+    );
 }
 
 fn queue_entry(number: u64, state: QueueState, hours_old: i64) -> QueueEntry {
@@ -1789,6 +1885,58 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// The acceptance case of R4: a pull request that edits `ops/ci/pr-ci.sh`
+/// reaches the inbox behind /needs-you, with a reason saying why a person has
+/// to look. Nothing about the gate's conclusion changes; this is the flag.
+#[tokio::test]
+async fn a_pull_request_editing_the_ci_script_reaches_the_inbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = shift_forge(dir.path());
+    let open_pr = |changed: Value| {
+        router.clone().oneshot(request(
+            HttpMethod::POST,
+            "/api/v3/repos/jeryu/jeryu-deploy/pulls",
+            &admin,
+            Some(json!({
+                "title": "Teach the gate a new step",
+                "head": "alice/gate",
+                "base": "main",
+                "head_sha": "7b4d2c6b8e0f1a3d53f1c9e0b6a2d4857c1b0e9f",
+                "changed_files": changed,
+            })),
+        ))
+    };
+    let created = open_pr(json!(["ops/ci/pr-ci.sh", "crates/jeryu-api/src/web.rs"]))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED, "{:?}", created);
+    let number = body_json(created).await["number"].as_u64().unwrap();
+
+    let body = body_json(
+        router
+            .clone()
+            .oneshot(request(HttpMethod::GET, "/api/v1/attention", &admin, None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "pr_changes_own_gate")
+        .unwrap_or_else(|| panic!("no pr_changes_own_gate item in {body}"));
+    assert_eq!(item["pr"], number);
+    assert_eq!(item["repo"], "jeryu/jeryu-deploy");
+    assert_eq!(item["severity"], "action");
+    let reason = item["reason"].as_str().unwrap();
+    assert!(reason.contains("changes ops/ci/pr-ci.sh"), "{reason}");
+    assert!(reason.contains("own head"), "{reason}");
+    // Only the gate-defining path is named: the ordinary file in the same diff
+    // is not what makes this a question for a person.
+    assert!(!reason.contains("web.rs"), "{reason}");
+}
+
 /// An agent that replays an item's `action.api` as it stands fixes what the
 /// item is about: the next collect no longer reports it.
 #[tokio::test]
@@ -2528,6 +2676,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("pin_behind", "/releases"),
     ("pin_behind", "/repos/:provider/:owner/*"),
     ("pr_awaiting_approval", "/repos/:provider/:owner/*"),
+    ("pr_changes_own_gate", "/repos/:provider/:owner/*"),
     ("pr_changes_requested", "/repos/:provider/:owner/*"),
     ("pr_checks_failing", "/repos/:provider/:owner/*"),
     ("pr_draft_waiting", "/repos/:provider/:owner/*"),
@@ -2752,6 +2901,11 @@ fn one_of_every_kind() -> Vec<Item> {
                 },
                 15,
             ),
+            // A head that rewrote the gate that judges it.
+            PullFacts {
+                changed_paths: vec!["ops/ci/pr-ci.sh".to_string()],
+                ..posture(PullPosture::default(), 18)
+            },
         ],
         std::slice::from_ref(&building),
         now(),

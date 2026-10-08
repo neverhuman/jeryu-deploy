@@ -26,6 +26,61 @@ pub(crate) struct PullFacts {
     pub head_sha: String,
     pub updated_at: DateTime<Utc>,
     pub posture: PullPosture,
+    /// Every path `base...head` touches, for [`gate_definition_paths`].
+    pub changed_paths: Vec<String>,
+}
+
+/// How many gate-defining paths one item names before it counts the rest.
+const GATE_PATHS_NAMED: usize = 6;
+
+/// The paths of a diff that define the gate the pull request is judged by. The
+/// gate runner runs the recipe at the pull request's own head
+/// (jeryu-ci-runner `ops/pr-gate`), so a diff touching one of these rewrote the
+/// check that then reports on it.
+///
+/// The set is narrow on purpose (owner decision, 2026-10-02): the recipe entry
+/// point, the CI scripts it calls, and the jankurai and policy files those
+/// read. Ordinary test directories are left out, because nearly every pull
+/// request touches tests and a flag that fires on all of them says nothing;
+/// so is documentation about the gate, which is not the gate. It is the same
+/// set as `gate_definition_paths` in jeryu-ci-runner's `pr-gate-state.sh`,
+/// which annotates the check run from it.
+pub(crate) fn gate_definition_paths(changed: &[String]) -> Vec<String> {
+    let mut paths: Vec<String> = changed
+        .iter()
+        .filter(|path| defines_the_gate(path))
+        .cloned()
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn defines_the_gate(path: &str) -> bool {
+    if path.starts_with("docs/") {
+        return false;
+    }
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == "Justfile"
+        || path.starts_with("ops/ci/")
+        || path.starts_with("ops/jankurai/")
+        || path.starts_with("policies/")
+        || name.to_ascii_lowercase().contains("jankurai")
+}
+
+/// `a, b and 3 more`: enough of the list to recognise the change, and a count
+/// for the rest, so a diff that rewrites the whole gate stays one sentence.
+fn named_paths(paths: &[String]) -> String {
+    let shown = paths
+        .iter()
+        .take(GATE_PATHS_NAMED)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    match paths.len().saturating_sub(GATE_PATHS_NAMED) {
+        0 => shown,
+        rest => format!("{shown} and {rest} more"),
+    }
 }
 
 /// An open draft pull request. A draft is outside the merge flow, so the only
@@ -135,6 +190,38 @@ pub(crate) fn pull_items(
                 item.sha = Some(pull.head_sha.clone());
                 items.push(item);
             }
+        }
+        // A change to the gate's own definition waits on a person whatever the
+        // merge posture says, so it is its own row rather than one branch of
+        // the verdict below: a green gate is exactly the case worth seeing.
+        let gate_paths = gate_definition_paths(&pull.changed_paths);
+        if !gate_paths.is_empty() {
+            let mut item = Draft {
+                id: format!("pr-changes-own-gate:{}:{}", pull.repo, pull.number),
+                kind: "pr_changes_own_gate",
+                severity: Severity::Action,
+                title: format!("{label} changes the gate that judges it"),
+                reason: format!(
+                    "\"{}\" by {} changes {}. The gate runs the recipe at the pull request's \
+                     own head, so this diff rewrote the check that reports on it: a green \
+                     gate here is the change proving itself. The `pr-gate-runner` check run \
+                     on the pull request says the same. Read the gate change against the base \
+                     branch before approving or merging it.",
+                    pull.title,
+                    pull.author,
+                    named_paths(&gate_paths)
+                ),
+                href: pull_href(&pull.repo, pull.number),
+                label: "Read the gate change against the base branch, then approve it or ask for changes",
+                api: None,
+                command: None,
+            }
+            .build();
+            item.since = Some(pull.updated_at.to_rfc3339());
+            item.repo = Some(pull.repo.clone());
+            item.pr = Some(pull.number);
+            item.sha = Some(pull.head_sha.clone());
+            items.push(item);
         }
         let verdict: Option<(&'static str, String, String, &str)> = if posture.changes_requested > 0
         {

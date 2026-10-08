@@ -21,6 +21,45 @@ pub(super) fn pull_request_diff(state: &WebState, pr: &PullRequest) -> PullReque
     }
 }
 
+/// The paths `base...head` touches, names only, for a rule that asks what a
+/// pull request changes rather than how. Read from git for the same reason
+/// [`pull_request_diff`] does, with the stored list as the same fallback.
+pub(in crate::web) fn changed_paths(state: &WebState, pr: &PullRequest) -> Vec<String> {
+    git_changed_paths(state, pr).unwrap_or_else(|| pr.changed_files.clone())
+}
+
+fn git_changed_paths(state: &WebState, pr: &PullRequest) -> Option<Vec<String>> {
+    if pr.base.sha.is_empty() || pr.head.sha.is_empty() {
+        return None;
+    }
+    let resolved = state.repo_manager.resolve_parts(&pr.owner, &pr.repo).ok()?;
+    let output = std::process::Command::new(&state.repo_manager.config().git_bin)
+        .arg("-C")
+        .arg(&resolved.path)
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--name-only",
+            "--no-color",
+            "--no-ext-diff",
+            "--find-renames",
+        ])
+        .arg(format!("{}...{}", pr.base.sha, pr.head.sha))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .filter(|path| !path.is_empty())
+            .collect(),
+    )
+}
+
 fn stored_files(pr: &PullRequest) -> Vec<PullRequestDiffFile> {
     pr.changed_files
         .iter()

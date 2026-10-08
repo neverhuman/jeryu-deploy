@@ -48,6 +48,10 @@ mod work;
 
 pub(crate) use acks::AckStore;
 pub(crate) use board::{BoardFacts, BoardLane, board_items};
+/// The pure path rule behind `pr_changes_own_gate`; `pull_items` is the only
+/// caller outside its own tests.
+#[cfg(test)]
+pub(crate) use flow::gate_definition_paths;
 pub(crate) use flow::{
     DraftFacts, LatestDeployment, ProductionFacts, PullFacts, draft_items, drop_shadowed_pull_rows,
     pull_items, queue_items, release_items, runner_items,
@@ -129,6 +133,7 @@ pub(crate) const KINDS: &[&str] = &[
     "mirror_failing",
     "pin_behind",
     "pr_awaiting_approval",
+    "pr_changes_own_gate",
     "pr_changes_requested",
     "pr_checks_failing",
     "pr_draft_waiting",
@@ -423,6 +428,7 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
                 head_sha: pr.head.sha.clone(),
                 updated_at: pr.updated_at,
                 posture,
+                changed_paths: super::super::pulls::diff::changed_paths(state, &pr),
             });
         }
     }
