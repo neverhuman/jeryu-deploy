@@ -99,6 +99,22 @@ fn exit_code_within(child: &mut Child, timeout: Duration) -> Option<i32> {
     None
 }
 
+/// The signal that ended `child` within `timeout`, or `None` (and the child is
+/// killed) if it was still running or exited normally.
+fn exit_signal_within(child: &mut Child, timeout: Duration) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return status.signal();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
 fn signal(child: &Child, signal: Signal) {
     let pid = Pid::from_raw(i32::try_from(child.id()).expect("pid")).expect("nonzero pid");
     kill_process(pid, signal).expect("signal");
@@ -186,12 +202,37 @@ fn ignore_sigint_reports_each_signal_and_exits_on_sigterm() {
     let (mut hang, mut master) = spawn_on_pty(&agents, "mock-claude", "hang");
     read_until(&mut master, b"mode=hang", Duration::from_secs(5));
     signal(&hang, Signal::INT);
-    let status = hang.wait().expect("wait hang");
-    use std::os::unix::process::ExitStatusExt;
     assert_eq!(
-        status.signal(),
+        exit_signal_within(&mut hang, Duration::from_secs(5)),
         Some(2),
-        "SIGINT keeps its default and kills hang"
+        "SIGINT kills hang"
+    );
+}
+
+/// `hang` dies by SIGINT even when it starts with SIGINT ignored, as it does
+/// under a non-interactive shell's background job. Before, it inherited the
+/// ignore, outlived SIGINT, and the test above waited forever.
+#[test]
+fn hang_dies_by_sigint_even_when_started_with_sigint_ignored() {
+    use std::io::{BufRead, BufReader};
+    let agents = Agents::new();
+    let mut hang = std::process::Command::new("bash")
+        .arg("-c")
+        .arg("trap '' INT; exec \"$0\" hang")
+        .arg(agents.path("mock-claude"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn hang with SIGINT ignored");
+    let mut banner = String::new();
+    BufReader::new(hang.stdout.take().expect("stdout"))
+        .read_line(&mut banner)
+        .expect("banner");
+    assert!(banner.contains("mode=hang"), "{banner}");
+    signal(&hang, Signal::INT);
+    assert_eq!(
+        exit_signal_within(&mut hang, Duration::from_secs(5)),
+        Some(2),
+        "SIGINT kills hang even though it was ignored at exec"
     );
 }
 

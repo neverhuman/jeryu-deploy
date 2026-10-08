@@ -51,7 +51,12 @@ fn main() -> ExitCode {
     // Register handlers before the banner: a signal sent as soon as the banner
     // appears must already find them.
     let signals = match mode.as_str() {
-        "hang" => Some(vec![signal_hook::consts::SIGTERM]),
+        // SIGINT too: `hang` must die by SIGINT even when its parent left
+        // SIGINT ignored (an ignored disposition survives exec).
+        "hang" => Some(vec![
+            signal_hook::consts::SIGTERM,
+            signal_hook::consts::SIGINT,
+        ]),
         "ignore-sigint" => Some(vec![
             signal_hook::consts::SIGTERM,
             signal_hook::consts::SIGINT,
@@ -71,7 +76,10 @@ fn main() -> ExitCode {
         "cpr" => cpr(),
         "flood" => flood(),
         "hang" | "ignore-sigint" => match signals {
-            Some(signals) => wait_for_sigterm(signals, Duration::from_secs(3600)),
+            Some(signals) => {
+                let sigint_kills = mode == "hang";
+                wait_for_sigterm(signals, sigint_kills, Duration::from_secs(3600))
+            }
             None => ExitCode::from(1),
         },
         "background-child" => background_child(),
@@ -175,15 +183,26 @@ fn flood() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `hang` registers only SIGTERM, so SIGINT keeps its default and kills it.
-/// `ignore-sigint` also registers SIGINT and reports each one. Both exit 0 on
-/// SIGTERM, and on their own after `limit`.
-fn wait_for_sigterm(mut signals: signal_hook::iterator::Signals, limit: Duration) -> ExitCode {
+/// `hang` dies by SIGINT exactly as the default action would: it restores the
+/// default and re-raises, so an ignored SIGINT inherited from a background
+/// launcher cannot keep it alive. `ignore-sigint` reports each SIGINT instead.
+/// Both exit 0 on SIGTERM, and on their own after `limit`.
+fn wait_for_sigterm(
+    mut signals: signal_hook::iterator::Signals,
+    sigint_kills: bool,
+    limit: Duration,
+) -> ExitCode {
     let deadline = Instant::now() + limit;
     while Instant::now() < deadline {
         for signal in signals.pending() {
             if signal == signal_hook::consts::SIGTERM {
                 return ExitCode::SUCCESS;
+            }
+            if sigint_kills {
+                let _ = std::io::stdout().flush();
+                if signal_hook::low_level::emulate_default_handler(signal).is_err() {
+                    return ExitCode::from(1);
+                }
             }
             println!("SIGINT_IGNORED");
             let _ = std::io::stdout().flush();
