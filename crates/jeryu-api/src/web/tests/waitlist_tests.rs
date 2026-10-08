@@ -41,11 +41,99 @@ async fn post_anonymous(router: &axum::Router, body: &Value) -> (StatusCode, Hea
     )
 }
 
+#[derive(Debug)]
+struct RawReply {
+    status: StatusCode,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+async fn raw_anonymous(router: &axum::Router, body: &Value) -> RawReply {
+    // The edge mints a fresh `x-request-id` when the caller omits one. Both
+    // posts send the same id so a stored name or note cannot hide in that
+    // header, and every other header still has to match.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/waitlist")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-request-id", "waitlist-repeat-proof")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let mut headers: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                value.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    headers.sort();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec();
+    RawReply {
+        status,
+        headers,
+        body,
+    }
+}
+
 fn router_for(core: ForgeCore) -> axum::Router {
     app(
         WebState::new(core).with_auth(true, false, false),
         Path::new("/tmp/jeryu-no-spa"),
     )
+}
+
+/// A new address and a repeat of that address must be the same HTTP response.
+/// The stored name and note stay off the public body.
+#[tokio::test]
+async fn public_repeat_matches_the_first_response_bytes() {
+    let router = router_for(ForgeCore::new());
+    let first = raw_anonymous(
+        &router,
+        &json!({
+            "email": "ada@example.com",
+            "name": "Ada",
+            "note": "secret note"
+        }),
+    )
+    .await;
+    let repeat = raw_anonymous(
+        &router,
+        &json!({
+            "email": "ADA@example.com",
+            "name": "someone else",
+            "note": "a different note"
+        }),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::ACCEPTED, "{first:?}");
+    assert_eq!(repeat.status, first.status);
+    assert!(
+        first
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-request-id" && value == "waitlist-repeat-proof"),
+        "the edge did not echo the caller request id: {first:?}"
+    );
+    assert_eq!(repeat.headers, first.headers, "headers differ");
+    assert_eq!(repeat.body, first.body, "body bytes differ");
+    let text = String::from_utf8(first.body.clone()).expect("utf-8 body");
+    assert!(!text.contains("Ada"), "{text}");
+    assert!(!text.contains("secret"), "{text}");
+    assert!(!text.contains("someone else"), "{text}");
+    assert_eq!(text, r#"{"result":"received"}"#);
 }
 
 #[tokio::test]
@@ -322,6 +410,43 @@ fn assert_waitlist_refusal(headers: &HeaderMap, body: &Value) {
     );
 }
 
+/// `JERYU_TRUSTED_PROXIES` unset is an empty trusted list. #239 ignores a
+/// forwarding header from an untrusted peer and buckets that peer. It does
+/// not answer 403, and it does not mint a key for the forwarded address.
+#[tokio::test]
+async fn unset_trusted_proxies_ignore_a_forwarded_header() {
+    let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 9);
+    let state = WebState::new(ForgeCore::new()).with_auth(true, false, false);
+    let limits = Arc::clone(&state.auth_rate_limits);
+    let router = app(state, Path::new("/tmp/jeryu-no-spa"));
+    for (header_name, header_value, email) in [
+        ("x-forwarded-for", "198.51.100.8", "xff@example.com"),
+        ("forwarded", "for=198.51.100.8", "fwd@example.com"),
+    ] {
+        let mut request = Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/api/v1/waitlist")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header_name, header_value)
+            .body(axum::body::Body::from(
+                json!({ "email": email }).to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(peer));
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "{header_name}");
+    }
+    let keys = waitlist_keys(&limits);
+    assert!(
+        keys.iter().any(|key| key == "waitlist:203.0.113.9"),
+        "the direct peer was not the bucket: {keys:?}"
+    );
+    assert!(
+        keys.iter().all(|key| !key.contains("198.51.100.8")),
+        "an untrusted forwarded address minted a bucket: {keys:?}"
+    );
+}
+
 async fn post_from(
     router: &axum::Router,
     ip: Ipv4Addr,
@@ -422,6 +547,86 @@ async fn waitlist_full_display_maps_to_503() {
         !rendered.contains("storage failed") && !rendered.contains("echoed caller text"),
         "public body leaked internal detail: {rendered}"
     );
+}
+
+/// The typed full-list arm is 503. This is the same contract the display
+/// test asserts, kept as its own name so the arm cannot be dropped quietly.
+#[tokio::test]
+async fn waitlist_full_variant_maps_to_503() {
+    let published = super::super::error_codes::lookup("waitlist_full")
+        .expect("waitlist_full is published in error_codes.rs");
+    let response = super::super::auth::waitlist_join_failure(ForgeError::WaitlistFull);
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(
+        body,
+        json!({
+            "code": published.code,
+            "message": published.summary,
+        }),
+        "{body}"
+    );
+}
+
+/// #239 has no storage-code arm. A `Storage` value whose text starts with
+/// `waitlist_full` stays a 500, and the caller text stays off the wire.
+/// #238 mapped that same string to 503.
+#[tokio::test]
+async fn waitlist_full_storage_text_stays_storage_failed() {
+    let shown = "waitlist_full: the waitlist is not accepting new addresses";
+    let response =
+        super::super::auth::waitlist_join_failure(ForgeError::Storage(shown.to_string()));
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(
+        body,
+        json!({
+            "code": "storage_failed",
+            "message": "could not save the waitlist signup",
+        }),
+        "{body}"
+    );
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains(shown) && !rendered.contains("waitlist_full"),
+        "public body leaked the storage detail: {rendered}"
+    );
+}
+
+/// A mention of `waitlist_full` inside another variant is not a full list.
+#[tokio::test]
+async fn waitlist_full_substring_inside_another_variant_is_storage_failed() {
+    let echoed = "disk full while saving waitlist_full@example.com";
+    assert!(
+        echoed.contains("waitlist_full"),
+        "the negative case has to contain the old substring"
+    );
+    for error in [
+        ForgeError::Storage(echoed.to_string()),
+        ForgeError::Conflict("waitlist_full: not the storage code".to_string()),
+        ForgeError::NotFound("waitlist_full".to_string()),
+    ] {
+        let response = super::super::auth::waitlist_join_failure(error);
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body["code"], "storage_failed", "{body}");
+        assert!(
+            !body.to_string().contains("waitlist_full"),
+            "public body leaked the variant text: {body}"
+        );
+    }
 }
 
 /// A sealed database fails the join and the admin read. The public body is the
