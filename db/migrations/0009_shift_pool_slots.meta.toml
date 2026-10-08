@@ -1,0 +1,35 @@
+# Structured metadata for 0009_shift_pool_slots.sql. The SQL file is
+# checksum-bound once applied, so its lock and timeout posture lives here.
+#
+# The store is SQLite, not PostgreSQL: there is no `SET lock_timeout` or
+# `SET statement_timeout` to put in the SQL (SQLite rejects both). The
+# equivalents below are what bound this migration in practice.
+
+migration = "0009_shift_pool_slots"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/shift/heartbeats.rs"
+apply = "HeartbeatStore::open -> migrate(), one transaction per migration"
+
+[lock_timeout]
+# SQLite's lock wait is the connection busy timeout. HeartbeatStore::open sets
+# it before migrate() runs, and migrate() is called from nowhere else, so the
+# migration waits at most this long for the write lock and then fails startup
+# instead of queueing behind other writers.
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+
+[statement_timeout]
+# SQLite has no statement timeout. The bound is the shape of the change: four
+# ALTER TABLE ADD COLUMN, each a schema-only edit (a constant DEFAULT or NULL),
+# so no existing row is read or rewritten and the time does not grow with the
+# table. The table is telemetry with 14-day retention.
+mechanism = "schema-only ADD COLUMN; no row rewrite"
+value = "constant, independent of row count"
+
+[rollback]
+plan = "stop the server and delete shift.sqlite, or drop the four columns and delete version 9 from shift_schema_migrations"
+backup = "not required: telemetry only, nothing of record is lost"
+
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::shift::pool_tests (a version-8 store upgrades; a held write lock bounds the wait)"

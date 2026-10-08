@@ -11,7 +11,7 @@ use jeryu_core::{ForgeCore, UserRole};
 use serde_json::json;
 use tower::ServiceExt;
 
-use super::heartbeats::{StoredHeartbeat, build_history};
+use super::heartbeats::{HeartbeatStore, StoredHeartbeat, build_history, migrate_through};
 use super::tests::{body_json, request};
 use super::types::{Heartbeat, WorkerKind};
 use crate::web::{WebState, app};
@@ -214,4 +214,56 @@ async fn pool_heartbeat_fields_round_trip_and_a_queue_beat_is_unchanged() {
         .max()
         .unwrap();
     assert_eq!(busiest, 4, "{history}");
+}
+
+/// Migration 0009 on a store an older binary left at version 8: the rows it
+/// wrote become todoq slots with no pool fields, and the data survives.
+#[test]
+fn a_version_8_store_upgrades_and_keeps_its_rows_as_todoq_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shift.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        migrate_through(&conn, 8).unwrap();
+        conn.execute(
+            "INSERT INTO shift_heartbeats
+                 (received_ms, reporter, operator, host, slot, family, state)
+             VALUES (?1, 'operator', 'operator', 'node-a', 'w1', 'globex', 'idle')",
+            [Utc::now().timestamp_millis()],
+        )
+        .unwrap();
+    }
+    let store = HeartbeatStore::open(&path).unwrap();
+    let rows = store.latest(0).unwrap();
+    assert_eq!(rows.len(), 1);
+    let beat = &rows[0].heartbeat;
+    assert_eq!(beat.kind, WorkerKind::Todoq.as_str());
+    assert_eq!(
+        (beat.detail.as_deref(), beat.capacity, beat.active),
+        (None, None, None)
+    );
+}
+
+/// The migration's lock bound (0009_shift_pool_slots.meta.toml): while another
+/// writer holds shift.sqlite, opening the store waits out the busy timeout and
+/// fails instead of queueing forever, and succeeds once the lock is gone.
+#[test]
+fn a_held_write_lock_bounds_the_migration_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shift.sqlite");
+    let holder = rusqlite::Connection::open(&path).unwrap();
+    migrate_through(&holder, 8).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let started = std::time::Instant::now();
+    let refused = HeartbeatStore::open(&path)
+        .err()
+        .expect("open must fail while locked");
+    let waited = started.elapsed();
+    assert!(refused.contains("locked"), "{refused}");
+    assert!(waited >= std::time::Duration::from_secs(4), "{waited:?}");
+    assert!(waited < std::time::Duration::from_secs(30), "{waited:?}");
+
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert!(HeartbeatStore::open(&path).is_ok());
 }

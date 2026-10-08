@@ -18,7 +18,11 @@ file for an applied version stops the server at startup.
 | `0009_shift_pool_slots.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/shift/heartbeats.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
-header comment. Every later migration must be ordered, immutable after
+header comment. A migration that alters an existing table also has a
+`<stem>.meta.toml` beside it declaring its lock and statement bounds. SQLite
+has no `lock_timeout` or `statement_timeout` to set in the SQL: the lock wait
+is the store's `busy_timeout`, and the statement bound comes from the change's
+shape. The SQL file stays checksum-bound; the metadata is not embedded. Every later migration must be ordered, immutable after
 release, and checksum-bound in the release receipt. The same reviewed change
 must provide:
 

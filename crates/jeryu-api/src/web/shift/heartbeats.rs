@@ -250,6 +250,20 @@ impl HeartbeatStore {
 /// Apply every shift.sqlite migration not yet recorded. Idempotent, so each
 /// store sharing the file (heartbeats, pipeline events) may call it on open.
 pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
+    apply_migrations(conn, MIGRATIONS)
+}
+
+/// A store as an older binary left it: only migrations up to `version`.
+#[cfg(test)]
+pub(super) fn migrate_through(conn: &Connection, version: i64) -> Result<(), String> {
+    let end = MIGRATIONS
+        .iter()
+        .position(|(v, _, _)| *v > version)
+        .unwrap_or(MIGRATIONS.len());
+    apply_migrations(conn, &MIGRATIONS[..end])
+}
+
+fn apply_migrations(conn: &Connection, migrations: &[(i64, &str, &str)]) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS shift_schema_migrations (
             version INTEGER PRIMARY KEY,
@@ -259,7 +273,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
         )",
     )
     .map_err(|err| err.to_string())?;
-    for (version, name, sql) in MIGRATIONS {
+    for (version, name, sql) in migrations {
         let checksum = hex::encode(Sha256::digest(sql.as_bytes()));
         let applied: Option<String> = conn
             .query_row(
