@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::tempdir;
 
+mod agent_run_access_tests;
 mod auth_tests;
 mod bot_setup_script;
 mod bots_tests;

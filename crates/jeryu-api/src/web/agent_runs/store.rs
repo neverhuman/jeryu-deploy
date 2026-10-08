@@ -549,6 +549,23 @@ impl AgentRunStore {
         });
     }
 
+    /// Seed a repo session run owned by `owner`, optionally marked as a
+    /// companion shell, for access tests outside this module.
+    pub(in crate::web) fn seed_test_session(
+        &self,
+        run_id: &str,
+        owner: &str,
+        repo: &str,
+        agent: Option<&str>,
+    ) {
+        self.seed_test_run(run_id, 8);
+        let mut inner = self.inner.lock().expect("agent run store mutex");
+        let record = inner.runs.get_mut(run_id).expect("seeded run");
+        record.owner = Some(owner.to_string());
+        record.repo = Some(repo.to_string());
+        record.agent = agent.map(str::to_string);
+    }
+
     /// Publish one prebuilt raw TTY event through the same ring-plus-broadcast path
     /// `append_event` uses, so a test can drive both the cursor-pull replay and the
     /// live SSE fan-out from one helper.

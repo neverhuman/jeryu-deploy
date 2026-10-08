@@ -1,4 +1,5 @@
-//! Viewer access to agent runs through the real auth gate.
+//! Viewer access to agent runs through the real auth gate: owner, repo writer,
+//! non-owner stranger, and admin; forbidden routes; cross-origin upgrades.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -9,7 +10,10 @@ use axum::http::{HeaderValue, Method, Request};
 use jeryu_core::{CreateRepositoryRequest, ForgeCore, RepoAccessLevel, UserRole};
 use tower::ServiceExt;
 
-use super::*;
+use axum::http::{HeaderMap, StatusCode, header};
+
+use crate::web::WebState;
+use crate::web::agent_runs::agent_run_viewer_id;
 use crate::web::auth::websocket_origin_allowed;
 
 struct Fixture {
@@ -58,21 +62,12 @@ impl Fixture {
             .core
             .grant_repo_access("admin", "writer", "alice", "demo", RepoAccessLevel::Write)
             .expect("grant");
-        state.agent_runs.seed_test_run("ar-acl", 8);
-        {
-            let mut inner = state.agent_runs.inner.lock().expect("store");
-            let record = inner.runs.get_mut("ar-acl").expect("run");
-            record.owner = Some("owner".into());
-            record.repo = Some("alice/demo".into());
-        }
-        state.agent_runs.seed_test_run("ar-shell", 8);
-        {
-            let mut inner = state.agent_runs.inner.lock().expect("store");
-            let record = inner.runs.get_mut("ar-shell").expect("run");
-            record.owner = Some("owner".into());
-            record.repo = Some("alice/demo".into());
-            record.agent = Some("shell".into());
-        }
+        state
+            .agent_runs
+            .seed_test_session("ar-acl", "owner", "alice/demo", None);
+        state
+            .agent_runs
+            .seed_test_session("ar-shell", "owner", "alice/demo", Some("shell"));
         let app = crate::web::app(state, &root.path().join("absent-spa"));
         Self {
             _root: root,

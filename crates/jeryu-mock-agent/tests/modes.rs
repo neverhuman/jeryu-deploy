@@ -87,7 +87,7 @@ fn read_until(master: &mut std::fs::File, needle: &[u8], timeout: Duration) -> V
     seen
 }
 
-fn wait_exit(child: &mut Child, timeout: Duration) -> Option<i32> {
+fn exit_code_within(child: &mut Child, timeout: Duration) -> Option<i32> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Ok(Some(status)) = child.try_wait() {
@@ -121,7 +121,10 @@ fn provider_comes_from_argv0_and_unknown_names_exit_2() {
             "{name}"
         );
         signal(&child, Signal::TERM);
-        assert_eq!(wait_exit(&mut child, Duration::from_secs(5)), Some(0));
+        assert_eq!(
+            exit_code_within(&mut child, Duration::from_secs(5)),
+            Some(0)
+        );
     }
     let unknown = agents.run("mock-jekko", "flood", cwd.path());
     assert_eq!(unknown.status.code(), Some(2));
@@ -151,12 +154,15 @@ fn cpr_blocks_until_the_terminal_answers() {
     let query = read_until(&mut master, b"\x1b[6n", Duration::from_secs(5));
     assert!(query.ends_with(b"\x1b[6n"), "no banner before the query");
     master.write_all(b"\x1b[24;80R").expect("answer");
-    assert_eq!(wait_exit(&mut child, Duration::from_secs(5)), Some(0));
+    assert_eq!(
+        exit_code_within(&mut child, Duration::from_secs(5)),
+        Some(0)
+    );
 
     let (mut silent, mut master) = spawn_on_pty(&agents, "mock-grok", "cpr");
     read_until(&mut master, b"\x1b[6n", Duration::from_secs(5));
     assert_eq!(
-        wait_exit(&mut silent, Duration::from_secs(5)),
+        exit_code_within(&mut silent, Duration::from_secs(5)),
         Some(3),
         "an unanswered query times out"
     );
@@ -172,7 +178,10 @@ fn ignore_sigint_reports_each_signal_and_exits_on_sigterm() {
     assert!(seen.windows(14).any(|w| w == b"SIGINT_IGNORED"));
     assert_eq!(child.try_wait().expect("wait"), None, "still running");
     signal(&child, Signal::TERM);
-    assert_eq!(wait_exit(&mut child, Duration::from_secs(5)), Some(0));
+    assert_eq!(
+        exit_code_within(&mut child, Duration::from_secs(5)),
+        Some(0)
+    );
 
     let (mut hang, mut master) = spawn_on_pty(&agents, "mock-claude", "hang");
     read_until(&mut master, b"mode=hang", Duration::from_secs(5));
@@ -201,7 +210,10 @@ fn background_child_outlives_its_parent_in_its_own_session() {
         read_until(&mut master, b"\r\n", Duration::from_secs(1)),
     ]
     .concat();
-    assert_eq!(wait_exit(&mut parent, Duration::from_secs(5)), Some(0));
+    assert_eq!(
+        exit_code_within(&mut parent, Duration::from_secs(5)),
+        Some(0)
+    );
     let text = String::from_utf8_lossy(&seen);
     let pid: i32 = text
         .split("BACKGROUND_CHILD_PID=")

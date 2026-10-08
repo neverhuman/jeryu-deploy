@@ -569,8 +569,6 @@ pub(super) fn agent_run_state_label(state: AgentRunState) -> &'static str {
 // Keep route orchestration, state mutation, and PR export independently
 // reviewable while preserving this module as the single public surface.
 mod access;
-#[cfg(test)]
-mod access_tests;
 mod attach;
 #[cfg(test)]
 mod attach_tests;
