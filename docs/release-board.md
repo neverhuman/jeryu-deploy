@@ -76,11 +76,20 @@ minutes ahead of the forge's clock.
   targets[], promote?, ships?, rollback?, forge?}`. `column` must be one of the board's
   `columns`.
   - `state` is `ok | warn | bad | none`; a stage is only `ok` when every target is.
-  - `targets[]`: `{name, running, state, runners?}`. `running` is what the target runs, or null.
+  - `targets[]`: `{name, running, state, runners?, slots?}`. `running` is what the target runs,
+    or null.
     `runners` names the forge runners that serve the target, each exactly as `runnerId` on
     `GET /api/v1/control-plane/runners` (e.g. `gate-a/slot0`), so `/releases` and `/runners` can
     link to each other. At most 64 per target, each 1–200 characters with no control
     characters and no duplicates; an empty list is omitted.
+    `slots[{family, host}]` names the shift slots that run the target instead: an external
+    worker pool reports to `POST /api/v1/shift/heartbeat` under a family, a host and a slot, so
+    it has no `runnerId` and `/releases` links it to `/work?family=…&host=…#workers`, which
+    shows those slots. One entry per pool host — "3 workers" on the board is three
+    `{family, host}` entries, whatever the host runs. At most 64 per target, `family` a family
+    name (lowercase letters, digits and dashes, 1–63 characters), `host` 1–200 characters with
+    no control characters, no `{family, host}` twice; an empty list is omitted. A target may
+    carry both keys.
   - `known_by` says how the collector knows: `reported` (a forge deployment), `host` (read from
     the machine or service), `derived` (computed from git), `unverified`.
   - `parallel` marks a stage that runs beside the previous one instead of after it;
@@ -110,8 +119,9 @@ An adapter defines `collect_<family>` (dashes become underscores) and uses `lib.
 
 - `mirror owner/repo` — a bare mirror of a forge repository, fetched once per run.
 - `stage key=value…` / `lane id name source owner read_only [group=name] stage…` /
-  `target name running state [runners]` — the board's pieces (`runners` is an optional JSON
-  array of runner ids; empty or absent leaves the key out); `board_columns id=name…` declares the grid
+  `target name running state [runners] [slots]` — the board's pieces (`runners` is an optional
+  JSON array of runner ids and `slots` an optional JSON array of `{family, host}` worker pools;
+  empty or absent leaves the key out); `board_columns id=name…` declares the grid
   and `stage … column=id` places a stage on it.
 - `behind`, `contains`, `worst`, `worst_of`, `short`, `lines_json` — comparisons and formatting.
 - `work_summary family method unlinked mirror=tip…` — the work bar; set `main_specs` first.

@@ -50,6 +50,8 @@ const MAX_BOARD_COLUMNS: usize = 8;
 const MAX_FAMILIES: usize = 64;
 const MAX_TARGET_RUNNERS: usize = 64;
 const MAX_RUNNER_ID_CHARS: usize = 200;
+const MAX_TARGET_SLOTS: usize = 64;
+const MAX_SLOT_HOST_CHARS: usize = 200;
 /// A collector clock may run a little ahead of the forge's; more than this is
 /// a wrong clock, and a board from the future would never be replaced.
 const MAX_CLOCK_SKEW_SECS: i64 = 300;
@@ -192,6 +194,20 @@ pub(crate) struct Target {
     /// each other. Absent when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runners: Vec<String>,
+    /// Shift slots (worker pools) that run this target, as they report on
+    /// `POST /api/v1/shift/heartbeat`: a family and the host its slots run on.
+    /// A pool reports to the shift heartbeat rather than the control plane, so
+    /// it has no `runnerId`; `/releases` links these to `/work` instead of
+    /// `/runners`. Absent when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<Slot>,
+}
+
+/// One worker pool a target is served by: every slot of `family` on `host`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct Slot {
+    pub family: String,
+    pub host: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -504,7 +520,9 @@ pub(crate) fn validate(
                 MAX_TARGETS,
             )?;
             for (t, target) in stage.targets.iter().enumerate() {
-                check_runners(&format!("{at}.targets[{t}]"), &target.runners)?;
+                let target_at = format!("{at}.targets[{t}]");
+                check_runners(&target_at, &target.runners)?;
+                check_slots(&target_at, &target.slots)?;
             }
             if let Some(ships) = &stage.ships {
                 check_count(&format!("{at}.ships"), ships.len(), 0, MAX_SHIPS)?;
@@ -577,6 +595,41 @@ fn check_runners(at: &str, runners: &[String]) -> Result<(), String> {
         if !seen.insert(runner.as_str()) {
             return Err(format!(
                 "{at}.runners[{r}] {runner:?} is listed twice in the target"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A target's worker pools: a family name the shift pages can filter by, and
+/// the host its slots run on. Not matched against a hosted family: a pool may
+/// report under a family this forge does not host yet.
+fn check_slots(at: &str, slots: &[Slot]) -> Result<(), String> {
+    check_count(&format!("{at}.slots"), slots.len(), 0, MAX_TARGET_SLOTS)?;
+    let mut seen = BTreeSet::new();
+    for (s, slot) in slots.iter().enumerate() {
+        if !valid_family(&slot.family) {
+            return Err(format!(
+                "{at}.slots[{s}].family {:?} is not a family name",
+                slot.family
+            ));
+        }
+        let chars = slot.host.chars().count();
+        if chars == 0 || chars > MAX_SLOT_HOST_CHARS {
+            return Err(format!(
+                "{at}.slots[{s}].host is {chars} characters; allowed 1 to {MAX_SLOT_HOST_CHARS}"
+            ));
+        }
+        if slot.host.chars().any(char::is_control) {
+            return Err(format!(
+                "{at}.slots[{s}].host {:?} contains a control character",
+                slot.host
+            ));
+        }
+        if !seen.insert((slot.family.as_str(), slot.host.as_str())) {
+            return Err(format!(
+                "{at}.slots[{s}] {}/{} is listed twice in the target",
+                slot.family, slot.host
             ));
         }
     }

@@ -10,6 +10,14 @@
   required` on `/mcp/bot`. Values are copied from the request or the forge's
   answer; the forge's check is unchanged. Rerun a bot's setup script to pick
   this up.
+- A release-board target can name the shift slots that run it, not only forge
+  runners: `slots: [{family, host}]` on a `jeryu.release_board.v1` target, at
+  most 64 per target, `family` a family name and `host` 1–200 printable
+  characters, no pair twice. An external worker pool reports to
+  `POST /api/v1/shift/heartbeat` (family, host, slot) rather than to the control
+  plane, so it has no `runnerId` and `/releases` links it to the workers panel
+  on `/work`. Older snapshots are unchanged. `docs/release-board.md`,
+  `target name running state [runners] [slots]` in the collector library.
 - `POST /api/v1/shift/heartbeat` accepts the logins named in
   `JERYU_SHIFT_REPORTERS` (comma-separated site setting, no default) as well as
   forge admins, so a worker-pool host reports its slots without holding an admin

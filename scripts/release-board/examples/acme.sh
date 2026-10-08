@@ -30,8 +30,13 @@ collect_acme() {
     running="$(curl --silent --fail --max-time 10 "$(printf "$ACME_HEALTH" "$node")" | jq -r '.commit // empty' 2>/dev/null)" \
       || problem "$node" "health endpoint did not answer"
     # A 4th argument, a JSON array of runner ids such as '["gate-a/slot0"]', links the target
-    # to the runners that serve it on /runners.
-    targets+=("$(target "$node" "$(short "$running")" "$( [ -n "$running" ] && [ "$running" = "$prod_sha" ] && echo ok || echo bad)")")
+    # to the runners that serve it on /runners. A 5th, a JSON array of {family, host} worker
+    # pools, links it to the shift slots that run it on /work ("2 workers"): use this when the
+    # work is done by an external pool reporting to /api/v1/shift/heartbeat, which has no
+    # runnerId. Here each node runs the acme pool's slots.
+    targets+=("$(target "$node" "$(short "$running")" \
+      "$( [ -n "$running" ] && [ "$running" = "$prod_sha" ] && echo ok || echo bad)" \
+      '[]' "$(jq -cn --arg host "$node" '[{family: "acme", host: $host}]')")")
   done
   local prod_targets prod_state n_behind
   prod_targets="$(printf '%s\n' "${targets[@]}" | jq -cs .)"

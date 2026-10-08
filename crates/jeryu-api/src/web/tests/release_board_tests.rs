@@ -305,3 +305,127 @@ async fn bad_target_runners_are_refused_with_the_path() {
         );
     }
 }
+
+/// The example board with `slots` set on lane 0, stage 1, target 0.
+fn with_slots(slots: serde_json::Value) -> String {
+    let mut example: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    example["lanes"][0]["stages"][1]["targets"][0]["slots"] = slots;
+    example.to_string()
+}
+
+#[tokio::test]
+async fn target_slots_round_trip_and_an_empty_list_is_omitted() {
+    use tower::ServiceExt;
+    let board = board_router();
+    let pools = serde_json::json!([
+        { "family": "acme", "host": "node-b" },
+        { "family": "acme", "host": "node-c" },
+    ]);
+
+    let accepted = board
+        .router
+        .clone()
+        .oneshot(put(&board.ci_bot, "acme", with_slots(pools.clone())))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let one = response_json(
+        board
+            .router
+            .clone()
+            .oneshot(get(&board.admin, "/api/v1/release-board/acme"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let stage = &one["lanes"][0]["stages"][1];
+    assert_eq!(stage["targets"][0]["slots"], pools);
+    assert!(stage["targets"][1].get("slots").is_none(), "{stage}");
+
+    let empty = board
+        .router
+        .clone()
+        .oneshot(put(
+            &board.ci_bot,
+            "acme",
+            with_slots(serde_json::json!([])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::OK);
+    let one = response_json(
+        board
+            .router
+            .clone()
+            .oneshot(get(&board.admin, "/api/v1/release-board/acme"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let target = &one["lanes"][0]["stages"][1]["targets"][0];
+    assert!(target.get("slots").is_none(), "{target}");
+}
+
+#[tokio::test]
+async fn bad_target_slots_are_refused_with_the_path() {
+    use tower::ServiceExt;
+    let board = board_router();
+    let too_many: Vec<serde_json::Value> = (0..65)
+        .map(|n| serde_json::json!({ "family": "acme", "host": format!("node-{n}") }))
+        .collect();
+    let cases = [
+        (
+            serde_json::json!(too_many),
+            "lanes[0].stages[1].targets[0].slots has 65 entries",
+        ),
+        (
+            serde_json::json!([{ "family": "", "host": "node-b" }]),
+            "lanes[0].stages[1].targets[0].slots[0].family \"\" is not a family name",
+        ),
+        (
+            serde_json::json!([{ "family": "Acme Pool", "host": "node-b" }]),
+            "lanes[0].stages[1].targets[0].slots[0].family \"Acme Pool\" is not a family name",
+        ),
+        (
+            serde_json::json!([{ "family": "acme", "host": "" }]),
+            "lanes[0].stages[1].targets[0].slots[0].host is 0 characters",
+        ),
+        (
+            serde_json::json!([{ "family": "acme", "host": "x".repeat(201) }]),
+            "lanes[0].stages[1].targets[0].slots[0].host is 201 characters",
+        ),
+        (
+            serde_json::json!([{ "family": "acme", "host": "node\u{7}b" }]),
+            "lanes[0].stages[1].targets[0].slots[0].host",
+        ),
+        (
+            serde_json::json!([
+                { "family": "acme", "host": "node-b" },
+                { "family": "acme", "host": "node-b" },
+            ]),
+            "lanes[0].stages[1].targets[0].slots[1] acme/node-b is listed twice",
+        ),
+    ];
+    for (slots, expected) in cases {
+        let answer = board
+            .router
+            .clone()
+            .oneshot(put(&board.ci_bot, "acme", with_slots(slots)))
+            .await
+            .unwrap();
+        assert_eq!(
+            answer.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{expected}"
+        );
+        let body = response_json(answer).await;
+        assert_eq!(body["code"], "invalid_input");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(expected),
+            "{expected}: {body}"
+        );
+    }
+}

@@ -29,7 +29,7 @@ collect_demo() {
   lane app "App" "demo/app" demo false \
     "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived column=main)" \
     "$(stage id=prod name=prod column=prod version="$(short "$prod")" state=warn status="$(behind "$m" "$prod" "$main") behind" known=host \
-        targets="[$(target node-a "$(short "$prod")" ok '["gate-a/slot0","gate-a/slot1"]'),$(target node-b old bad '[]')]" human_only=true promote_cmd="tag it" \
+        targets="[$(target node-a "$(short "$prod")" ok '["gate-a/slot0","gate-a/slot1"]'),$(target node-b old bad '[]' '[{"family":"demo","host":"node-b"}]')]" human_only=true promote_cmd="tag it" \
         ships="$(git -C "$m" log --format='%h · %s' "$prod..$main" | lines_json)" forge_repo=demo/app forge_env=production)"
   lane tool-a "Tool A" "demo/app" demo false group=Tools \
     "$(stage id=installed name=installed version="$(short "$main")" state=ok status="= main" known=host column=prod)"
@@ -106,6 +106,10 @@ jq -e '.lanes[0].stages[1] | .forge == {repo: "demo/app", environment: "producti
   and .targets[0].runners == ["gate-a/slot0", "gate-a/slot1"] and (.targets[1] | has("runners") | not)' "$b" >/dev/null \
   || fail "the prod stage carries its binding, promote, targets and ships"
 ok "a stage carries its forge binding, promote action, targets and what promoting ships"
+jq -e '.lanes[0].stages[1] | .targets[1].slots == [{family: "demo", host: "node-b"}]
+  and (.targets[0] | has("slots") | not)' "$b" >/dev/null \
+  || fail "a target run by a worker pool names its shift slots: $(jq -c '.lanes[0].stages[1].targets' "$b")"
+ok "target slots link a target to the shift slots that run it"
 jq -e '.columns == [{id: "main", name: "main"}, {id: "stage", name: "stage"}, {id: "prod", name: "production"}]
   and ([.lanes[0].stages[].column] == ["main", "prod"])
   and ([.lanes[] | .group] == [null, "Tools", "Tools"])
