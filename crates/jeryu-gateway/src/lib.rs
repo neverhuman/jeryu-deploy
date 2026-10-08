@@ -15,6 +15,7 @@ pub mod frames;
 pub mod policy;
 pub mod relay;
 mod route;
+mod stream;
 
 pub use capability::{Capability, Mode, OwnerKind, Verifier};
 pub use policy::{Upstream, UpstreamTable};

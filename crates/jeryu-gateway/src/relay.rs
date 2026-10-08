@@ -3,7 +3,6 @@
 //! connection generation is re-checked before every body line in both
 //! directions, so a disconnect or credential replacement cuts the response.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,8 +13,9 @@ use zeroize::Zeroizing;
 
 use crate::RelayError;
 use crate::capability::{Mode, Verifier};
-use crate::frames::{GatewayLine, Header, MAX_CHUNK_BYTES, MAX_LINE_BYTES, NodeLine};
+use crate::frames::{GatewayLine, Header, MAX_CHUNK_BYTES, NodeLine};
 use crate::policy::{UpstreamTable, check_headers};
+use crate::stream::{LineReader, Slot, now_unix_millis};
 
 /// Relay requests in flight per session; the next `gateway-open` is busy.
 pub const MAX_IN_FLIGHT: usize = 4;
@@ -51,7 +51,7 @@ pub struct Gateway {
     table: UpstreamTable,
     credentials: Arc<dyn CredentialSource>,
     client: reqwest::Client,
-    slots: Arc<parking_lot::Mutex<HashMap<String, usize>>>,
+    slots: crate::stream::Slots,
     clock: fn() -> u64,
 }
 
@@ -296,83 +296,4 @@ async fn send(tx: &mpsc::Sender<Bytes>, line: &GatewayLine) -> Result<(), RelayE
     tx.send(Bytes::from(line.to_line()))
         .await
         .map_err(|_| RelayError::RelayStreamInvalid)
-}
-
-/// A held in-flight slot for one session; released on drop.
-struct Slot {
-    slots: Arc<parking_lot::Mutex<HashMap<String, usize>>>,
-    session_id: String,
-}
-
-impl Slot {
-    fn take(
-        slots: &Arc<parking_lot::Mutex<HashMap<String, usize>>>,
-        session_id: &str,
-    ) -> Result<Self, RelayError> {
-        let mut map = slots.lock();
-        let count = map.entry(session_id.to_string()).or_default();
-        if *count >= MAX_IN_FLIGHT {
-            return Err(RelayError::ConnectionBusy);
-        }
-        *count += 1;
-        Ok(Self {
-            slots: slots.clone(),
-            session_id: session_id.to_string(),
-        })
-    }
-}
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        let mut map = self.slots.lock();
-        if let Some(count) = map.get_mut(&self.session_id) {
-            *count -= 1;
-            if *count == 0 {
-                map.remove(&self.session_id);
-            }
-        }
-    }
-}
-
-/// Splits a byte stream into NDJSON lines, bounded and idle-timed.
-struct LineReader<S> {
-    input: S,
-    buffer: Vec<u8>,
-}
-
-impl<S, E> LineReader<S>
-where
-    S: Stream<Item = Result<Bytes, E>> + Unpin,
-{
-    fn new(input: S) -> Self {
-        Self {
-            input,
-            buffer: Vec::new(),
-        }
-    }
-
-    async fn next_line(&mut self) -> Result<NodeLine, RelayError> {
-        loop {
-            if let Some(end) = self.buffer.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = self.buffer.drain(..=end).collect();
-                return crate::frames::parse_node_line(&line[..line.len() - 1]);
-            }
-            if self.buffer.len() > MAX_LINE_BYTES {
-                return Err(RelayError::RelayStreamInvalid);
-            }
-            match tokio::time::timeout(IDLE_TIMEOUT, self.input.next()).await {
-                Err(_) => return Err(RelayError::RelayIdleTimeout),
-                Ok(None) | Ok(Some(Err(_))) => return Err(RelayError::RelayStreamInvalid),
-                Ok(Some(Ok(bytes))) => self.buffer.extend_from_slice(&bytes),
-            }
-        }
-    }
-}
-
-fn now_unix_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }

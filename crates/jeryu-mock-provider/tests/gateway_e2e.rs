@@ -410,3 +410,40 @@ async fn production_hosts_relay_nothing_until_a_path_is_enrolled() {
         );
     }
 }
+
+/// Negative authorization proof: a node-signed capability for a non-owner
+/// (another user, or a service account claiming a user's connection) is
+/// forbidden by the vault check and never reaches the provider.
+#[tokio::test]
+async fn a_non_owner_capability_is_forbidden_and_nothing_reaches_the_provider() {
+    let harness = Harness::new().await;
+    let other_user = harness.capability(|c| c.owner_id = "user/mallory".into());
+    let mut lines = vec![open_line("r-1", &other_user, None)];
+    lines.extend(body_lines("r-1", b"{}"));
+    assert_eq!(
+        error_of(&relay_all(&harness, lines).await),
+        Some(RelayError::ConnectionOwnerMismatch)
+    );
+    let service = harness.capability(|c| {
+        c.owner_kind = OwnerKind::ServiceAccount;
+        c.owner_id = "service/redteam".into();
+    });
+    assert_eq!(
+        error_of(&relay_all(&harness, vec![open_line("r-2", &service, None)]).await),
+        Some(RelayError::ConnectionOwnerMismatch)
+    );
+    let counters: Value = reqwest::get(format!("{}/counters", harness.provider_url))
+        .await
+        .expect("counters")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        counters["chat_authorized"], 0,
+        "the wrong user got no upstream call"
+    );
+    assert_eq!(
+        counters["chat_rejected"], 0,
+        "nothing was even attempted upstream"
+    );
+}
