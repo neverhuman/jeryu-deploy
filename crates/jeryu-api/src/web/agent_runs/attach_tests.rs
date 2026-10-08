@@ -233,8 +233,9 @@ async fn attach_to_unknown_run_is_not_found() {
     }
 }
 
-/// Real PTY driver behind the socket: injected keystrokes reach the agent and
-/// its reply comes back as live output, then the run ends cleanly.
+/// A socket component fixture verifies exact input delivery to its control
+/// receiver and drains recorded bytes before explicitly simulated completion.
+/// It does not launch an agent or prove guest application of the input.
 #[tokio::test]
 async fn attach_component_delivers_input_and_drains_fixture_output_before_ended() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
