@@ -11,7 +11,7 @@ const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_ENTRIES: usize = 200_000;
 
 pub(crate) fn secret_probe(args: &[String]) -> ExitCode {
-    let mut found = args.iter().any(|arg| contains_canary(arg.as_bytes()))
+    let found = args.iter().any(|arg| contains_canary(arg.as_bytes()))
         || std::env::vars_os().any(|(key, value)| {
             contains_canary(key.as_encoded_bytes()) || contains_canary(value.as_encoded_bytes())
         });
@@ -28,41 +28,82 @@ pub(crate) fn secret_probe(args: &[String]) -> ExitCode {
     if std::fs::read_dir(".").is_err() {
         return ExitCode::from(5);
     }
-    let mut budget = MAX_ENTRIES;
+    // Tests shrink the budget to prove an early stop is not `absent`.
+    let mut budget = std::env::var("JERYU_MOCK_AGENT_PROBE_BUDGET")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(MAX_ENTRIES);
+    let mut verdict = found;
     for root in roots {
-        if found {
+        if verdict {
             break;
         }
-        found = walk(&root, &mut budget);
+        match walk(&root, &mut budget) {
+            Ok(present) => verdict = present,
+            // mock-agent-v1: a walk that stopped early has not searched.
+            // Exit 5 and print no verdict.
+            Err(Incomplete) => return ExitCode::from(5),
+        }
     }
-    let verdict = if found { "present" } else { "absent" };
+    let verdict = if verdict { "present" } else { "absent" };
     println!("LEAK_ORACLE_PROBE={verdict}");
     ExitCode::SUCCESS
 }
 
+/// The walk stopped before it searched everything it could see: the entry
+/// budget ran out, or a read failed for a reason other than the entry being
+/// unreadable to this user or already gone.
+struct Incomplete;
+
+/// An entry this process cannot read, or that vanished during the walk, is
+/// not visible to the agent, so skipping it is not an early stop.
+fn invisible(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+    )
+}
+
 /// Depth-first walk that never follows symlinks and never enters `/proc`.
-fn walk(root: &Path, budget: &mut usize) -> bool {
+/// A root that does not exist is skipped.
+fn walk(root: &Path, budget: &mut usize) -> Result<bool, Incomplete> {
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
-        if path.starts_with("/proc") || *budget == 0 {
+        if path.starts_with("/proc") {
             continue;
+        }
+        if *budget == 0 {
+            return Err(Incomplete);
         }
         *budget -= 1;
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(error) if invisible(&error) => continue,
+            Err(_) => return Err(Incomplete),
         };
         if meta.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                pending.extend(entries.flatten().map(|entry| entry.path()));
+            let entries = match std::fs::read_dir(&path) {
+                Ok(entries) => entries,
+                Err(error) if invisible(&error) => continue,
+                Err(_) => return Err(Incomplete),
+            };
+            for entry in entries {
+                match entry {
+                    Ok(entry) => pending.push(entry.path()),
+                    Err(error) if invisible(&error) => {}
+                    Err(_) => return Err(Incomplete),
+                }
             }
-        } else if meta.is_file()
-            && meta.len() <= MAX_FILE_BYTES
-            && std::fs::read(&path).is_ok_and(|bytes| contains_canary(&bytes))
-        {
-            return true;
+        } else if meta.is_file() && meta.len() <= MAX_FILE_BYTES {
+            match std::fs::read(&path) {
+                Ok(bytes) if contains_canary(&bytes) => return Ok(true),
+                Ok(_) => {}
+                Err(error) if invisible(&error) => {}
+                Err(_) => return Err(Incomplete),
+            }
         }
     }
-    false
+    Ok(false)
 }
 
 fn contains_canary(bytes: &[u8]) -> bool {

@@ -308,3 +308,54 @@ fn secret_probe_reports_presence_without_printing_the_canary() {
         !stdout.contains(&canary) && !String::from_utf8_lossy(&via_file.stderr).contains(&canary)
     );
 }
+
+/// mock-agent-v1: `absent` only after a complete walk. A probe that runs out
+/// of entry budget exits 5 and prints no verdict at all.
+#[test]
+fn secret_probe_never_says_absent_after_an_early_stop() {
+    let agents = Agents::new();
+    let tree = tempfile::tempdir().expect("tree");
+    for index in 0..8 {
+        std::fs::write(tree.path().join(format!("file-{index}")), "clean").expect("file");
+    }
+    let probe = |budget: &str| {
+        let mut command = Command::new(agents.path("mock-codex"));
+        command
+            .arg("secret-probe")
+            .current_dir(tree.path())
+            .env("HOME", tree.path())
+            .env("JERYU_MOCK_AGENT_PROBE_ROOTS", tree.path())
+            .env("JERYU_MOCK_AGENT_PROBE_BUDGET", budget)
+            .env_remove("JERYU_MOCK_AGENT_MODE");
+        command.output().expect("probe")
+    };
+    let cut_short = probe("3");
+    assert_eq!(cut_short.status.code(), Some(5));
+    assert!(
+        cut_short.stdout.is_empty(),
+        "no verdict after an early stop"
+    );
+    let complete = probe("1000");
+    assert_eq!(complete.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&complete.stdout),
+        "LEAK_ORACLE_PROBE=absent\n"
+    );
+    // A root that does not exist is not an early stop.
+    let mut missing = Command::new(agents.path("mock-codex"));
+    missing
+        .arg("secret-probe")
+        .current_dir(tree.path())
+        .env("HOME", tree.path())
+        .env(
+            "JERYU_MOCK_AGENT_PROBE_ROOTS",
+            std::env::join_paths([tree.path(), &tree.path().join("absent-root")]).expect("roots"),
+        )
+        .env_remove("JERYU_MOCK_AGENT_MODE");
+    let output = missing.output().expect("probe");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "LEAK_ORACLE_PROBE=absent\n"
+    );
+}
