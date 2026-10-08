@@ -51,22 +51,26 @@ pub(crate) fn secret_probe(args: &[String]) -> ExitCode {
 }
 
 /// The walk stopped before it searched everything it could see: the entry
-/// budget ran out, or a read failed for a reason other than the entry being
-/// unreadable to this user or already gone.
+/// budget ran out, an admitted entry vanished, or a read failed for a reason
+/// other than the entry being unreadable to this user.
 struct Incomplete;
 
-/// An entry this process cannot read, or that vanished during the walk, is
-/// not visible to the agent, so skipping it is not an early stop.
-fn invisible(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
-    )
+/// An entry this process may not read is not visible to the agent, so
+/// skipping it is not an early stop. An entry that vanished after it was
+/// listed is: the walk did not see it.
+fn unreadable(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
 }
 
 /// Depth-first walk that never follows symlinks and never enters `/proc`.
-/// A root that does not exist is skipped.
+/// A root that does not exist is skipped; nothing else is.
 fn walk(root: &Path, budget: &mut usize) -> Result<bool, Incomplete> {
+    match std::fs::symlink_metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if unreadable(&error) => return Ok(false),
+        Err(_) => return Err(Incomplete),
+        Ok(_) => {}
+    }
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
         if path.starts_with("/proc") {
@@ -78,19 +82,18 @@ fn walk(root: &Path, budget: &mut usize) -> Result<bool, Incomplete> {
         *budget -= 1;
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(meta) => meta,
-            Err(error) if invisible(&error) => continue,
+            Err(error) if unreadable(&error) => continue,
             Err(_) => return Err(Incomplete),
         };
         if meta.is_dir() {
             let entries = match std::fs::read_dir(&path) {
                 Ok(entries) => entries,
-                Err(error) if invisible(&error) => continue,
+                Err(error) if unreadable(&error) => continue,
                 Err(_) => return Err(Incomplete),
             };
             for entry in entries {
                 match entry {
                     Ok(entry) => pending.push(entry.path()),
-                    Err(error) if invisible(&error) => {}
                     Err(_) => return Err(Incomplete),
                 }
             }
@@ -98,7 +101,7 @@ fn walk(root: &Path, budget: &mut usize) -> Result<bool, Incomplete> {
             match std::fs::read(&path) {
                 Ok(bytes) if contains_canary(&bytes) => return Ok(true),
                 Ok(_) => {}
-                Err(error) if invisible(&error) => {}
+                Err(error) if unreadable(&error) => {}
                 Err(_) => return Err(Incomplete),
             }
         }
