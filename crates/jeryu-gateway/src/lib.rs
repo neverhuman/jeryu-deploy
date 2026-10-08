@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 pub mod authority;
 mod body;
 pub mod capability;
+mod client;
 pub mod frames;
 pub mod listener;
 pub mod policy;
@@ -29,6 +30,7 @@ pub use authority::{
     PeerIdentity, SessionAuthority,
 };
 pub use capability::{Capability, Mode, OwnerKind};
+pub use client::GatewayInitError;
 pub use policy::{Upstream, UpstreamTable};
 pub use relay::{Binding, CredentialSource, Gateway, UpstreamAuth};
 pub(crate) use route::router;

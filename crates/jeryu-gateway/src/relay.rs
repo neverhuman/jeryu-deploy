@@ -16,6 +16,7 @@ use crate::RelayError;
 use crate::authority::{self, NodeRegistry, PeerIdentity, SessionAuthority};
 use crate::body::{Accepted, request_body};
 use crate::capability::{Capability, Mode, verify_validity};
+use crate::client::{GatewayInitError, hardened, upstream_client};
 use crate::frames::{GatewayLine, NodeLine};
 use crate::policy::{UpstreamTable, check_headers};
 use crate::stream::{LineReader, Slot, now_unix_millis};
@@ -86,17 +87,9 @@ impl Gateway {
         authority: Arc<dyn SessionAuthority>,
         table: UpstreamTable,
         credentials: Arc<dyn CredentialSource>,
-    ) -> Result<Self, RelayError> {
-        // Redirects are never followed: a redirect is upstream_host_denied.
-        // Provider hosts resolve to public addresses only, and the gateway
-        // dials them itself: proxy environment variables are ignored, so a
-        // proxy can never stand in for the public-address check.
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .dns_resolver(Arc::new(crate::upstream_dns::PublicOnly))
-            .build()
-            .map_err(|_| RelayError::UpstreamHostDenied)?;
+    ) -> Result<Self, GatewayInitError> {
+        // No proxy, no redirects, public-only DNS: see `client::hardened`.
+        let client = upstream_client(hardened(reqwest::Client::builder()))?;
         Ok(Self {
             registry,
             authority,

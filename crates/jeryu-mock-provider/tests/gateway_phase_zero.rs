@@ -6,6 +6,7 @@
 mod common;
 
 use common::*;
+use futures_util::StreamExt;
 use jeryu_gateway::{Mode, OwnerKind, RelayError};
 
 /// Relay one open (plus an empty body) and return the error and the calls.
@@ -213,5 +214,42 @@ async fn open_preconditions_after_phase_zero_retrieve_no_credential() {
         (error, credentials),
         (Some(RelayError::ProviderNotConnected), 0)
     );
+    assert_nothing_upstream(&harness).await;
+}
+
+/// Negative authorization proof for the constructor change: a gateway built
+/// by `Gateway::new` still refuses a forbidden caller (a non-owner node
+/// presenting another node's session) with the relay wire code alone. The
+/// startup error type never reaches the wire, and nothing reaches the vault
+/// or the provider.
+#[tokio::test]
+async fn a_forbidden_non_owner_gets_only_the_wire_code_from_a_new_gateway() {
+    let harness = Harness::new().await;
+    let good = harness.capability(|_| {});
+    let mut lines = vec![open_line("r-1", &good, None)];
+    lines.extend(body_lines("r-1", b"{}"));
+    let answer = harness
+        .gateway
+        .relay(
+            Some(harness.node_b.peer),
+            "sess-1",
+            "claude",
+            futures_util::stream::iter(lines.into_iter().map(Ok::<_, std::io::Error>)),
+        )
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(answer.len(), 1, "one error line and nothing else");
+    let line: serde_json::Value = serde_json::from_slice(&answer[0]).expect("json line");
+    assert_eq!(line["type"], "error");
+    assert_eq!(line["error"], "capability_unverified");
+    let keys: Vec<&str> = line
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys.len(), 3, "type, request_id and error only: {keys:?}");
+    assert!(!String::from_utf8_lossy(&answer[0]).contains("gateway_client_unavailable"));
+    assert_eq!(harness.calls(), (0, 0));
     assert_nothing_upstream(&harness).await;
 }
