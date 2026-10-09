@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Design for Flow (`docs/flow.md`, ADR 0004): the delivery line as stations,
+  with WIP, queue and process time, rework loops, holds, the bottleneck and the
+  runners behind each station, built from the event log and heartbeats. Docs only;
+  nothing is built yet.
 - `GET /api/v1/yield` (admin-only) reports what the agent factory spent against
   what reached main: cost per merged change with a 95% interval, yield
   (main spend over main plus scrap), first-pass rate, review and triage share,

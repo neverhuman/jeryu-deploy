@@ -35,6 +35,9 @@ authority. Durable detail is intentionally routed rather than duplicated:
   deliberately does not: `docs/search.md`.
 - Paging every list route, on both the `/api/v1` and `/api/v3` edges:
   `docs/pagination.md`.
+- Flow, the delivery line as stations (where work sits, waits and loops back,
+  and the runners behind each station), design and build order: `docs/flow.md`
+  (decision: `docs/adr/0004-flow-shows-where-work-sits-and-backs-up.md`).
 
 Governed Jankurai rotations run the closed projection integration test, the
 hostile-identity shell verifier, full score, and protected-base diff audit
