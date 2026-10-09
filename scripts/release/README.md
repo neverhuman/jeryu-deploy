@@ -179,7 +179,18 @@ changes exactly the two lock fields on `auto/pin-web-<sha12>` and opens
 `release: pin jeryu-web <sha7>` as the configured bump identity (`JERYU_PIN_GIT_NAME`). (A head that changes no shipped file, such as a
 test-only commit, builds the bundle already pinned: then only `commit` moves and the pull request
 says the bundle is unchanged.) It never merges: the reviewer and the merge queue land
-it, auto-stage stages main, and a person deploys. It skips a head while any bump is open, retries
+it, auto-stage stages main, and a person deploys. It skips a head while a bump is open and
+holding, but not a stale one: an open `auto/pin-web-*` bump that pins an older commit leading to the
+green web head (a strict ancestor) is **superseded** when it is not in the merge queue and is not
+approved on its current head, or a reviewer requested changes, or it is older than
+`JERYU_AUTO_PIN_SUPERSEDE_AFTER` (default `6h`; `90m` or plain seconds also work). auto-pin comments
+`Superseded by <sha7>` on it, closes it, opens the new bump in the same tick (the prune pass deletes
+the closed bump's branch) and posts `pin.bump_superseded` (`needs_human=false`, `detail.superseded_pr`
+and `detail.superseding_pr`). It never closes a queued bump, or one with a live approval inside that
+age; a bump whose pin is not an ancestor of the head, or that this script did not open, stays open
+(the first posts `pin.bump_diverged`, `needs_human=true`) and the head waits as before. Nothing is
+closed while the head is not green or when the queue, the reviews or the close itself cannot be
+read. It retries
 a failing head once, then posts `pin.bump_failed` for a human and leaves that head alone. What is
 pinned, how far behind it is and whether a bump is open: `GET /api/v1/pins` and the inbox item
 `pin_behind` (docs/pipeline-events.md).

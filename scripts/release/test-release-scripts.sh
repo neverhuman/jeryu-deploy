@@ -388,13 +388,19 @@ case "\$method \$url" in
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls?"*)
     page="\${url##*page=}"; page="\${page%%&*}"
     if [ -e "$P/pulls.json.\$page" ]; then cat "$P/pulls.json.\$page"; elif [ "\$page" = 1 ]; then cat "$P/pulls.json"; else echo '[]'; fi ;;
+  "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/merge-queue?"*) cat "$P/queue.json" ;;
+  "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*) cat "$P/detail.json" ;;
+  "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/issues/"*"/comments")
+    echo "\${url%/comments}" >>"$P/comments.log"; cat >>"$P/comments.log"; echo >>"$P/comments.log"; echo '{}' ;;
+  "PATCH https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*) echo "\${url##*/} \$(cat)" >>"$P/closed.log"; echo '{}' ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-web/commits/"*"/status") echo "{\"state\":\"\$(cat "$P/gate")\"}" ;;
   *) echo "unexpected curl: \$method \$url" >&2; exit 22 ;;
 esac
 EOF
 chmod +x "$P/bin/curl"
 echo "not-a-real-pin-token" >"$P/token"; chmod 600 "$P/token"
-echo '[]' >"$P/pulls.json"; echo pending >"$P/gate"; : >"$P/curl-args"; : >"$P/events.jsonl"; : >"$P/prs.jsonl"; : >"$P/builds"; : >"$P/beats.jsonl"
+echo '{"entries":[],"page":{"has_more":false}}' >"$P/queue.json"; echo '{"reviews":[]}' >"$P/detail.json"; : >"$P/comments.log"; : >"$P/closed.log"
+echo '[]' >"$P/pulls.json"; echo pending >"$P/gate";: >"$P/curl-args"; : >"$P/events.jsonl"; : >"$P/prs.jsonl"; : >"$P/builds"; : >"$P/beats.jsonl"
 # The bump identity and the credential path are site settings with no default,
 # so every invocation names them. The identity below is this test's, not a site's.
 # It starts in / as the timer starts outside any repository, so a bare `git push` fails here too.
@@ -476,6 +482,76 @@ since="$(newest "$P/beats.jsonl" | jq -r .last.finishedAt)"; sleep 1
 auto_pin >/dev/null 2>&1 || fail "a second tick behind an open bump failed"
 beat_is '.last.finishedAt == $since' --arg since "$since" || fail "a wait must keep the time it began"
 ok "auto-pin never proposes twice: an existing pull request (on any page), a pushed branch, or any open bump"
+
+# A stale bump no longer blocks a newer head. #60 is auto-pin's own bump of h1 (an ancestor of the
+# head h2). It is closed with a comment, and the bump for h2 opens in the same tick, unless it is
+# approved or queued, pins a commit that is not an ancestor, or is the head's own bump.
+cp "$P/state/opened.tsv" "$P/opened.tsv.keep"; builds_keep="$(lines "$P/builds")"
+: >"$P/prs.jsonl"; : >"$P/events.jsonl"
+side_sha="$(g "$P/web" commit-tree -m side "$(git -C "$P/web" rev-parse 'HEAD^{tree}')" -p "$w1")" # off main
+git -C "$P/state/jeryu-web.git" fetch -q "$P/web" "$side_sha" # the cache has seen it, as it would an orphaned pin
+stale_pr() { # NUMBER REF CREATED_AT
+  jq -n --argjson n "$1" --arg ref "$2" --arg at "$3" '[{number: $n, state: "open", title: "release: pin jeryu-web abc1234", created_at: $at,
+    head: {ref: $ref, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+}
+undo_bump() { # forget what a test tick opened for h2
+  git -C "$P/deploy.git" update-ref -d "refs/heads/$b2" 2>/dev/null || true
+  cp "$P/opened.tsv.keep" "$P/state/opened.tsv"; : >"$P/prs.jsonl"; : >"$P/events.jsonl"; : >"$P/comments.log"; : >"$P/closed.log"
+  : >"$P/builds"; for _ in $(seq 1 "$builds_keep"); do echo build >>"$P/builds"; done
+  echo '{"reviews":[]}' >"$P/detail.json"; echo '{"entries":[],"page":{"has_more":false}}' >"$P/queue.json"
+}
+now_iso="$(date -u +%FT%TZ)"; b2="auto/pin-web-${h2:0:12}"
+approval='{"reviews":[{"state":"APPROVED","effective":true}]}'
+
+stale_pr 60 "$b1" "$now_iso"; echo "$approval" >"$P/detail.json"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick behind an approved bump failed"
+grep -q "bump #60 is approved on its head" "$P/run.log" && grep -q "bump #60 is open" "$P/run.log" \
+  && [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" && -z "$(git -C "$P/deploy.git" for-each-ref "refs/heads/$b2")" ]] \
+  || { cat "$P/run.log" >&2; fail "auto-pin closed or replaced an approved bump"; }
+undo_bump
+
+stale_pr 60 "$b1" "$now_iso"; echo '{"entries":[{"number":60,"state":"building"}],"page":{"has_more":false}}' >"$P/queue.json"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick behind a queued bump failed"
+grep -q "bump #60 is in the merge queue" "$P/run.log" && [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] \
+  || { cat "$P/run.log" >&2; fail "auto-pin closed or replaced a queued bump"; }
+undo_bump
+
+stale_pr 61 "auto/pin-web-${side_sha:0:12}" "$now_iso"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick behind a diverged bump failed"
+grep -q "does not lead to jeryu-web main" "$P/run.log" && [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] \
+  || { cat "$P/run.log" >&2; fail "auto-pin closed or replaced a diverged bump"; }
+jq -es '.[0] | .kind == "pin.bump_diverged" and .pr == 61 and .needs_human == true' "$P/events.jsonl" >/dev/null || fail "a diverged bump posted no event"
+undo_bump
+
+stale_pr 62 "$b2" "$now_iso"; git -C "$P/deploy.git" update-ref "refs/heads/$b2" "$(git -C "$P/deploy.git" rev-parse main)"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick with the head's own bump open failed"
+[[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" && ! -s "$P/events.jsonl" && ! -s "$P/comments.log" ]] || fail "the head's own open bump was touched"
+undo_bump
+
+stale_pr 60 "$b1" "$now_iso" # no approval, not queued: superseded
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "superseding a stale bump failed the tick"; }
+grep -q '^60 {"state":"closed"}$' "$P/closed.log" && grep -q "issues/60" "$P/comments.log" && grep -q "Superseded by ${h2:0:7}" "$P/comments.log" \
+  || fail "the stale bump was not closed with a comment naming the new head"
+[[ "$(posted "$P/prs.jsonl")" == 1 && -n "$(git -C "$P/deploy.git" for-each-ref "refs/heads/$b2")" ]] || fail "the new bump was not opened in the same tick"
+jq -es --arg from "$h1" --arg to "$h2" '.[0] | .kind == "pin.bump_superseded" and .needs_human == false and .pr == 7
+  and .detail.superseded_pr == 60 and .detail.superseding_pr == 7 and .detail.from == $from and .detail.to == $to' "$P/events.jsonl" >/dev/null \
+  || fail "no pin.bump_superseded event naming both pull requests"
+jq -es '.[1].kind == "pin.bump_opened"' "$P/events.jsonl" >/dev/null || fail "the superseding tick did not also post pin.bump_opened"
+undo_bump
+
+stale_pr 60 "$b1" "$(date -u -d '7 hours ago' +%FT%TZ)"; echo "$approval" >"$P/detail.json" # approved, but older than 6h
+auto_pin >"$P/run.log" 2>&1 || fail "superseding an aged bump failed the tick"
+grep -q '^60 ' "$P/closed.log" || fail "an approval older than JERYU_AUTO_PIN_SUPERSEDE_AFTER still held a bump"
+undo_bump
+stale_pr 60 "$b1" "$now_iso"; echo '{"reviews":[{"state":"APPROVED","effective":true},{"state":"CHANGES_REQUESTED","effective":true}]}' >"$P/detail.json"
+auto_pin >"$P/run.log" 2>&1 || fail "superseding a bump with requested changes failed the tick"
+grep -q '^60 ' "$P/closed.log" || fail "a bump with requested changes was not superseded"
+undo_bump
+echo success >"$P/gate.keep"; echo pending >"$P/gate"; stale_pr 60 "$b1" "$now_iso"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick with a not-green head failed"
+[[ ! -s "$P/closed.log" ]] || fail "a bump was closed for a head that is not green"
+echo success >"$P/gate"; rm "$P/gate.keep"; undo_bump
+ok "auto-pin supersedes a stale unqueued bump in one tick, and leaves approved, queued, diverged and same-head bumps alone"
 
 echo '[]' >"$P/pulls.json"; touch "$P/fail"; : >"$P/events.jsonl"
 if auto_pin >"$P/run.log" 2>&1; then fail "a failed build reported success"; fi

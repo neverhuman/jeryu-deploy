@@ -12,6 +12,12 @@
 #      any bump pull request for jeryu-web is open (its landing moves the pin; the next tick
 #      proposes whatever is newer), when this head already has its branch and pull request, or
 #      when the head's combined status is not `success`.
+#      An open bump that pins an OLDER commit on the way to this head, and is neither queued nor
+#      approved (no approval on its head, a reviewer asked for changes, or it is older than
+#      JERYU_AUTO_PIN_SUPERSEDE_AFTER), is closed with a comment naming the new head, and the new bump
+#      opens in the same tick (`pin.bump_superseded`). A queued bump is never closed; a bump pinning a
+#      commit that is not an ancestor of the head is left alone with a `pin.bump_diverged` event, and
+#      so is one this script did not open.
 #   3. Build the dist with build-web-dist.sh taken from jeryu-deploy main itself (git archive), so
 #      the recipe is always the reviewed one. It prints "<commit> <web_dist_sha256>".
 #   4. On branch auto/pin-web-<sha12> cut from main: set exactly the two lock fields, commit as
@@ -43,7 +49,7 @@
 # JERYU_PIN_GIT_NAME / JERYU_PIN_GIT_EMAIL (required, no default: the identity the bump is
 # committed as. A credential path and an automation identity belong to one installation, and
 # this source is public, so none of the three has a default);
-# JERYU_AUTO_PIN_MAX_FAILURES (2); JERYU_AUTO_PIN_EVENTS=0 turns the events off;
+# JERYU_AUTO_PIN_MAX_FAILURES (2); JERYU_AUTO_PIN_SUPERSEDE_AFTER (6h; also 90m or seconds); JERYU_AUTO_PIN_EVENTS=0 turns the events off;
 # JERYU_AUTO_PIN_BEAT=0 turns the heartbeat off.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
@@ -245,7 +251,70 @@ list_pulls || exit 1
 mine="$(jq -r --arg b "$branch" '[.[] | select(.head.ref == $b)][0].number // empty' <<<"$pulls")"
 if [ -n "$mine" ]; then exit 0; fi # this head already has its pull request, open or decided
 other="$(jq -r '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))][0].number // empty' <<<"$pulls")"
-if [ -n "$other" ]; then waiting_for "$other"; say "bump #$other is open; ${head:0:12} waits for it to land"; exit 0; fi
+
+# supersede_stale N: the open bump #N pins an older commit of jeryu-web main than this head. When it
+# is neither queued nor approved (or an approval has aged past the supersede age, or a reviewer asked
+# for changes), close it with a comment naming this head and return 0: the caller opens the new bump
+# in the same tick. Returns 1 when it stays, having said why. Anything it cannot read counts as stays.
+supersede_stale() {
+  local n="$1" row ref created pinned_sha queue_rows reviews_json approved changes age queued
+  row="$(jq -c --argjson n "$n" --arg repo "$repo_path" '
+    [.[] | select(.number == $n and .head.repo.full_name == $repo)][0] // empty' <<<"$pulls")"
+  [ -n "$row" ] || return 1 # not a branch of this repository: a fork's
+  ref="$(jq -r '.head.ref' <<<"$row")"; created="$(jq -r '.created_at // empty' <<<"$row")"
+  [[ "$ref" =~ ^auto/pin-web-([0-9a-f]{12})$ ]] || return 1 # only auto-pin's own bumps
+  pinned_sha="$(git -C "$web_cache" rev-parse --verify -q "${BASH_REMATCH[1]}^{commit}")" || return 1
+  if ! git -C "$web_cache" merge-base --is-ancestor "$pinned_sha" "$head" 2>/dev/null; then
+    say "bump #$n pins ${pinned_sha:0:12}, which does not lead to jeryu-web main ${head:0:12}; leaving it for a human"
+    emit pin.bump_diverged true "auto-pin:diverged:$n:${head:0:12}" \
+      "bump $repo_path#$n pins jeryu-web ${pinned_sha:0:7}, which is not an ancestor of main ${head:0:7}; left open" \
+      "$(jq -n --arg dep "$web_path" --arg pinned "$pinned_sha" --arg to "$head" '{dependency: $dep, pinned: $pinned, to: $to}')" \
+      "$n" "a diverged pin is never closed automatically"
+    return 1
+  fi
+  # Close nothing for a head that is not green: the old bump would be gone with no new one coming.
+  [ "$(api GET "/api/v3/repos/$web_path/commits/$head/status" 2>/dev/null | jq -r '.state // "unknown"')" = success ] \
+    || { say "jeryu-web ${head:0:12} is not green; bump #$n stays"; return 1; }
+  queue_rows="$(api GET "/api/v1/repos/$repo_path/merge-queue?per_page=100" 2>/dev/null)" \
+    || { say "bump #$n: could not read the merge queue; not superseding"; return 1; }
+  queued="$(jq -r --argjson n "$n" '
+    if (.page.has_more // false) then "unknown"
+    elif any((.entries // [])[]; .number == $n and (.state | IN("landed", "failed", "dequeued") | not)) then "yes"
+    else "no" end' <<<"$queue_rows" 2>/dev/null)" || queued=unknown
+  [ "$queued" = no ] || { say "bump #$n is in the merge queue ($queued); not superseding"; return 1; }
+  reviews_json="$(api GET "/api/v1/repos/$repo_path/pulls/$n" 2>/dev/null)" \
+    || { say "bump #$n: could not read its reviews; not superseding"; return 1; }
+  approved="$(jq -r 'any((.reviews // [])[]; .effective == true and .state == "APPROVED")' <<<"$reviews_json" 2>/dev/null)" || return 1
+  changes="$(jq -r 'any((.reviews // [])[]; .effective == true and .state == "CHANGES_REQUESTED")' <<<"$reviews_json" 2>/dev/null)" || return 1
+  age=0; [ -z "$created" ] || age=$(( $(date -u +%s) - $(date -u -d "$created" +%s 2>/dev/null || date -u +%s) ))
+  if [ "$approved" = true ] && [ "$changes" != true ] && (( age <= supersede_after )); then
+    say "bump #$n is approved on its head; not superseding"; return 1
+  fi
+  say "bump #$n pins ${pinned_sha:0:12}, behind green main ${head:0:12}, and is not queued (approved=$approved changes_requested=$changes age=${age}s); superseding"
+  jq -n --arg b "Superseded by ${head:0:7}: jeryu-web main moved to \`${head:0:12}\` while this bump (\`${pinned_sha:0:7}\`) was not queued and had no live approval. auto-pin closes it and opens the bump for the new head in the same tick." \
+    '{body: $b}' | api POST "/api/v3/repos/$repo_path/issues/$n/comments" --data-binary @- >/dev/null 2>&1 \
+    || say "bump #$n: the comment was not accepted (ignored)"
+  echo '{"state":"closed"}' | api PATCH "/api/v3/repos/$repo_path/pulls/$n" --data-binary @- >/dev/null 2>&1 \
+    || { say "bump #$n: could not close it; not superseding"; return 1; }
+  superseded_pr="$n"; superseded_pinned="$pinned_sha"
+  return 0
+}
+# duration_seconds 6h|90m|3600 -> seconds; prints nothing for a malformed value.
+duration_seconds() {
+  case "$1" in
+    *h) [[ "${1%h}" =~ ^[0-9]+$ ]] && echo $(( ${1%h} * 3600 )) ;;
+    *m) [[ "${1%m}" =~ ^[0-9]+$ ]] && echo $(( ${1%m} * 60 )) ;;
+    *) [[ "$1" =~ ^[0-9]+$ ]] && echo "$1" ;;
+  esac
+  return 0
+}
+supersede_after="$(duration_seconds "${JERYU_AUTO_PIN_SUPERSEDE_AFTER:-6h}")"
+[ -n "$supersede_after" ] || supersede_after=21600
+superseded_pr="" superseded_pinned=""
+if [ -n "$other" ]; then
+  if supersede_stale "$other"; then other=""
+  else waiting_for "$other"; say "bump #$other is open; ${head:0:12} waits for it to land"; exit 0; fi
+fi
 
 pushed="$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
 if [ -z "$pushed" ]; then
@@ -338,6 +407,12 @@ rm -f "$state/failures/$head"
 find "$state/logs" -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\n' | sort -rn | tail -n +21 \
   | cut -d' ' -f2- | xargs -r rm -f
 say "OPENED $repo_path#$number: $title"
+if [ -n "$superseded_pr" ]; then
+  emit pin.bump_superseded false "auto-pin:superseded:$superseded_pr:${head:0:12}" \
+    "closed $repo_path#$superseded_pr, superseded by #$number (jeryu-web ${head:0:7})" \
+    "$(jq -n --arg dep "$web_path" --arg from "$superseded_pinned" --arg to "$head" --argjson old "$superseded_pr" --argjson new "$number" \
+      '{dependency: $dep, from: $from, to: $to, superseded_pr: $old, superseding_pr: $new}')" "$number"
+fi
 emit pin.bump_opened false "auto-pin:opened:${head:0:12}" \
   "opened $repo_path#$number: pin jeryu-web ${head:0:7} ($(grep -c . <<<"$shipped") commits)" \
   "$(jq -n --arg dep "$web_path" --arg from "$pin" --arg to "$head" --arg hash "$hash" \
