@@ -1381,7 +1381,8 @@ pub(super) fn bot_token_rate_limit(
 /// Five joins an hour from one address, and thirty a minute for the route.
 /// The address is `client_ip`, which trusts `X-Forwarded-For` only from peers
 /// in `JERYU_TRUSTED_PROXIES`: behind a reverse proxy that is not listed there,
-/// every join shares the proxy's bucket. The route bucket is a deliberate
+/// every join shares the proxy's bucket, which `super::proxy_trust` warns
+/// about once and reports on the admin runners page. The route bucket is a deliberate
 /// global ceiling on unauthenticated writes; a burst from many addresses can
 /// close it for the rest of the minute, which is the tradeoff for bounding
 /// growth of the table.
@@ -1467,14 +1468,24 @@ fn rate_limited() -> AxumResponse {
 }
 
 fn client_ip(peer: Option<SocketAddr>, headers: &HeaderMap) -> IpAddr {
-    client_ip_with(peer, headers, &trusted_proxy_ips())
+    let trusted = trusted_proxy_ips();
+    let ip = client_ip_with(peer, headers, &trusted);
+    // A forwarding header from a peer the forge does not trust means the edge
+    // is unlisted: say so once instead of silently sharing one bucket.
+    super::proxy_trust::observe(peer_ip(peer), headers, &trusted);
+    ip
+}
+
+/// The direct peer, or the unspecified address when the transport named none,
+/// exactly as `client_ip_with` reads it.
+fn peer_ip(peer: Option<SocketAddr>) -> IpAddr {
+    peer.map(|addr| addr.ip())
+        .unwrap_or(IpAddr::from([0, 0, 0, 0]))
 }
 
 /// Believes `X-Forwarded-For` only when the direct peer is a trusted proxy.
 fn client_ip_with(peer: Option<SocketAddr>, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAddr {
-    let peer_ip = peer
-        .map(|addr| addr.ip())
-        .unwrap_or(IpAddr::from([0, 0, 0, 0]));
+    let peer_ip = peer_ip(peer);
     if !trusted.contains(&peer_ip) {
         return peer_ip;
     }
@@ -1486,7 +1497,7 @@ fn client_ip_with(peer: Option<SocketAddr>, headers: &HeaderMap, trusted: &[IpAd
         .unwrap_or(peer_ip)
 }
 
-fn trusted_proxy_ips() -> Vec<IpAddr> {
+pub(super) fn trusted_proxy_ips() -> Vec<IpAddr> {
     std::env::var("JERYU_TRUSTED_PROXIES")
         .map(|raw| parse_trusted_proxies(&raw))
         .unwrap_or_default()

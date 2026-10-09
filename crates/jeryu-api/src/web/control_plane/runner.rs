@@ -87,6 +87,7 @@ pub(crate) fn runner_fabric_at(state: &WebState, now: DateTime<Utc>) -> RunnerFa
             last_updated,
             node_details,
         },
+        proxy_trust: crate::web::proxy_trust::status(),
         mirror: MirrorEvidence {
             name: "github_actions_runners".to_string(),
             state: EvidenceState::Missing,

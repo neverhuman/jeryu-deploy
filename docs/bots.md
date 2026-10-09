@@ -118,7 +118,14 @@ handle @mcp_private {
 
 Token routes (`/api/v1/bot/token*`) are public by design and rate limited per
 client address. Set `JERYU_TRUSTED_PROXIES` to the proxy's address so those
-limits key on the real client and not on the proxy.
+limits key on the real client and not on the proxy. The variable is unset by
+default: the forge then ignores `X-Forwarded-For` and every token request
+shares the proxy's one bucket. The first such request writes one warning
+naming `JERYU_TRUSTED_PROXIES`, and `GET /api/v1/control-plane/runners`
+carries the same sentence in `proxyTrust` for the admin runners and system
+pages, with a count and the peer each limit keyed on. Owner step: set
+`JERYU_TRUSTED_PROXIES` to the edge proxy's address in the forge's site env
+file on the forge host and restart the forge.
 
 ## Check
 

@@ -29,6 +29,7 @@ mod mcp_backend;
 mod permissions;
 mod pipeline;
 mod principals;
+mod proxy_trust;
 mod pulls;
 mod regate;
 mod release_board;

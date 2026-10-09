@@ -95,7 +95,14 @@
   list answers 503 `waitlist_full`, matched on core's typed
   `ForgeError::WaitlistFull` (the 50,000-row cap), not on error text. Behind a
   reverse proxy, list it in `JERYU_TRUSTED_PROXIES` or every join shares the
-  proxy's per-address bucket. `GET /api/v1/admin/waitlist` pages with
+  proxy's per-address bucket, which makes the public waitlist one global five
+  joins an hour. The forge no longer stays quiet about that: the first request
+  carrying `X-Forwarded-For` from a peer that is not in
+  `JERYU_TRUSTED_PROXIES` writes one warning naming the variable to set, and
+  `GET /api/v1/control-plane/runners` reports it in `proxyTrust` (count, last
+  peer, and the sentence to act on) for the admin runners and system pages.
+  Owner step: set `JERYU_TRUSTED_PROXIES` to the edge proxy's address in the
+  forge's site env file on the forge host, then restart the forge. `GET /api/v1/admin/waitlist` pages with
   `limit` and `offset` for an admin and writes an audit entry for the read.
 - Agent discovery resolves. Every URL an error body advertises is now served
   under the `/api/v1` prefix the edge routes: `GET /api/v1/capabilities` is the

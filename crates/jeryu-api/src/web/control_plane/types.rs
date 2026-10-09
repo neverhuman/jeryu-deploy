@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::web::proxy_trust::ProxyTrustStatus;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EvidenceState {
@@ -236,6 +238,10 @@ pub(crate) struct RunnerFabricResponse {
     pub server_time: Option<String>,
     pub local: RunnerLocalFabric,
     pub mirror: MirrorEvidence,
+    /// Whether `X-Forwarded-For` is honoured, so an admin sees on this page
+    /// that an unlisted edge proxy is collapsing every per-address limit.
+    #[serde(default)]
+    pub proxy_trust: ProxyTrustStatus,
 }
 
 /// What code the forge itself runs.

@@ -1056,3 +1056,65 @@ async fn a_running_gate_carries_an_estimate_from_its_recent_passes() {
         serde_json::json!({"typicalSeconds": 420, "slowSeconds": 600, "samples": 3})
     );
 }
+
+/// A proxied request from a peer that is not in `JERYU_TRUSTED_PROXIES` is
+/// ignored for the client address, which collapses every per-address limit
+/// onto the proxy. The admin runners page carries that as one sentence
+/// naming the variable to set, so an owner sees it without reading the log.
+#[tokio::test]
+async fn an_unlisted_edge_proxy_reaches_the_admin_runners_page() {
+    use axum::extract::ConnectInfo;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "test", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new(core.clone()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let mut proxied = Request::builder()
+        .method(HttpMethod::POST)
+        .uri("/api/v1/waitlist")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-forwarded-for", "198.51.100.8")
+        .body(axum::body::Body::from(
+            serde_json::json!({ "email": "ada@example.com" }).to_string(),
+        ))
+        .unwrap();
+    proxied.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+        9,
+    )));
+    let accepted = router.clone().oneshot(proxied).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+
+    let fleet = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/control-plane/runners")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fleet.status(), StatusCode::OK);
+    let body = response_json(fleet).await;
+    let trust = &body["proxyTrust"];
+    assert_eq!(trust["trustedProxies"], 0, "{trust}");
+    assert!(
+        trust["forwardedFromUntrustedPeer"].as_u64().unwrap_or(0) >= 1,
+        "the proxied request was not counted: {trust}"
+    );
+    let message = trust["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("JERYU_TRUSTED_PROXIES"),
+        "the page does not name the variable to set: {trust}"
+    );
+}
