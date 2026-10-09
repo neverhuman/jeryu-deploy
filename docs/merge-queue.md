@@ -250,3 +250,25 @@ refused with `409` naming what is missing, and the pull request goes through the
 queue, which builds the replay, has it gated at its exact sha, and only then
 fast-forwards the base. A base that declares no required contexts has no gate to
 wait for, and that path is unchanged.
+
+## The head branch is deleted after a merge (`delete_branch_on_merge`)
+
+Every path that records a real merge (a direct merge, a head already in the
+base, a base seeded at the head, and a queue landing) then deletes the pull
+request's head branch, the way GitHub's `delete_branch_on_merge` does. Merged
+branches used to stay until somebody swept them by hand, and nothing did.
+
+It is on for every repository unless an administrator turns it off, in GitHub's
+spelling: `PATCH /repos/{owner}/{repo}` with `{"delete_branch_on_merge": false}`
+(so `gh repo edit --delete-branch-on-merge=false` works), read back on
+`GET /repos/{owner}/{repo}`. The value is kept per repository id in
+`shift.sqlite` (migration `0011_repo_merge_settings.sql`).
+
+The branch is kept, and the reason reported, when its head lives in another
+repository, when it is the base or the default branch, when it has branch
+protection, or when another open pull request uses it as its head or its base.
+The delete is a compare-and-swap against the head that merged and goes through
+the same ref policy as `git push --delete`, so a push made after the merge, or
+a branch the server's protected-ref rules cover, survives. A direct merge's
+response says what happened in `head_branch` (`{"name", "deleted", "reason"}`);
+a queue landing logs a kept branch.

@@ -581,7 +581,11 @@ impl GithubRouter {
                     base_oid,
                     ready.req.sha.as_deref(),
                 ) {
-                    Ok(result) => merge_success_response(&result),
+                    Ok(result) => {
+                        let head =
+                            self.delete_merged_head(rm, &resolved, &ready.merged_head(&head_oid));
+                        merge_success_with_head(&result, &head)
+                    }
                     Err(ForgeError::BranchProtection(reason)) => json_response(
                         405,
                         &json!({ "message": reason, "documentation_url": docs_url() }),
@@ -602,6 +606,9 @@ impl GithubRouter {
         // the live base tip first (as the merge queue does) so a clean PR that
         // readiness reports as mergeable actually lands; a replay that cannot
         // be built is refused with its reason instead of a bare non-ff error.
+        // The branch is deleted after the merge only while it still points at
+        // the head that was gated, not at a linear-history replay of it.
+        let gated_head = head_oid.clone();
         let head_oid = if ready.require_linear_history {
             match crate::web::rebase_onto(
                 &rm.config().git_bin,
@@ -723,7 +730,8 @@ impl GithubRouter {
                 // autoversion-advanced) live main tip to GitHub. Advisory by
                 // construction — the merge response is already decided.
                 self.mirror_merged_main(rm, &resolved, &ready, &outcome.merge_oid);
-                merge_success_response(&result)
+                let head = self.delete_merged_head(rm, &resolved, &ready.merged_head(&gated_head));
+                merge_success_with_head(&result, &head)
             }
             // The ref already moved; we do NOT roll it back. A reconciler can
             // detect the divergence by comparing merge_commit_sha vs the ref.
@@ -812,7 +820,8 @@ impl GithubRouter {
         ) {
             Ok(result) => {
                 self.mirror_merged_main(rm, resolved, ready, head_oid);
-                merge_success_response(&result)
+                let head = self.delete_merged_head(rm, resolved, &ready.merged_head(head_oid));
+                merge_success_with_head(&result, &head)
             }
             Err(ForgeError::BranchProtection(reason)) => json_response(
                 405,
@@ -926,6 +935,13 @@ impl GithubRouter {
             require_linear_history,
         };
         self.mirror_merged_main(rm, &resolved, &ready, &outcome.merge_oid);
+        // The queue reports a landing, not a response body, so a kept branch
+        // is only logged here.
+        if let super::head_cleanup::HeadBranch::Kept { name, reason } =
+            self.delete_merged_head(rm, &resolved, &ready.merged_head(pr_head))
+        {
+            eprintln!("merge queue: kept {owner}/{repo} branch {name} after #{number}: {reason}");
+        }
         Ok(outcome.merge_oid)
     }
 
@@ -1115,6 +1131,20 @@ struct MergeReady<'a> {
 
 #[cfg(feature = "web")]
 impl MergeReady<'_> {
+    /// This pull request as the head-branch cleanup sees it, merged at
+    /// `merged_head` (the head commit before any linear-history replay).
+    fn merged_head<'a>(&'a self, merged_head: &'a str) -> super::head_cleanup::MergedHead<'a> {
+        super::head_cleanup::MergedHead {
+            owner: self.owner,
+            repo: self.repo,
+            number: self.number,
+            base_ref: &self.base_ref,
+            head_ref: &self.head_ref,
+            source_repository: &self.source_repository,
+            merged_head,
+        }
+    }
+
     /// Where the merge looks for this PR's head, for error messages.
     fn head_locator(&self) -> String {
         if fork_source(self.owner, self.repo, Some(&self.source_repository)).is_some() {
@@ -1132,6 +1162,25 @@ fn merge_success_response(result: &jeryu_core::MergeResult) -> Response {
             "sha": result.sha,
             "merged": result.merged,
             "message": result.message,
+        }),
+    )
+}
+
+/// A merge response that also says what happened to the head branch
+/// (`delete_branch_on_merge`). `head_branch` is Jeryu's own field; GitHub
+/// clients ignore it.
+#[cfg(feature = "web")]
+fn merge_success_with_head(
+    result: &jeryu_core::MergeResult,
+    head: &super::head_cleanup::HeadBranch,
+) -> Response {
+    json_response(
+        200,
+        &json!({
+            "sha": result.sha,
+            "merged": result.merged,
+            "message": result.message,
+            "head_branch": head.json(),
         }),
     )
 }
@@ -1206,6 +1255,13 @@ fn fork_source(
         return None;
     }
     Some((source_owner.to_string(), source_repo.to_string()))
+}
+
+/// Whether a pull request's head lives in another repository than the one it
+/// merges into.
+#[cfg(feature = "web")]
+pub(super) fn is_fork(owner: &str, repo: &str, source_repository: &str) -> bool {
+    fork_source(owner, repo, Some(source_repository)).is_some()
 }
 
 /// Web UI route for a pull request: `/repos/<host>/<owner>/<repo>/pulls/<n>`.

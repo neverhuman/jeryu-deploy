@@ -21,6 +21,7 @@ use super::tests::{body_json, request, shift_forge};
 use super::types::Event;
 use crate::web::control_plane::{GateRunnerHeartbeat, GateRunnerRecord, GateRunnerResult};
 use crate::web::merge_queue::{QueueEntry, QueueState};
+use crate::web::pulls::landed::Landed;
 use crate::web::pulls::{GateFailure, PullPosture};
 use crate::web::shift::{
     BlockKind, Heartbeat, ShiftBranch, ShiftPr, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow,
@@ -489,10 +490,58 @@ fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
         author: "rel-bot".to_string(),
         head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
         head_ref: format!("work/pr-{number}"),
+        base_ref: "main".to_string(),
         updated_at: now() - Duration::minutes(minutes_old),
         posture,
         changed_paths: vec!["crates/jeryu-api/src/web/pulls.rs".to_string()],
+        landed: None,
     }
+}
+
+/// A pull request whose change is already on its base gets one row, the one
+/// that says to close it, whatever its gate and reviews say: a green, approved
+/// pull request would otherwise ask to be merged, a red one to be fixed.
+#[test]
+fn a_pull_request_already_on_its_base_asks_only_to_be_closed() {
+    let ready = PullPosture {
+        checks_green: true,
+        can_merge: true,
+        ..PullPosture::default()
+    };
+    let red = PullPosture {
+        failing: vec!["ci/fast".to_string()],
+        ..PullPosture::default()
+    };
+    let pulls = [
+        PullFacts {
+            landed: Some(Landed::Ancestor),
+            changed_paths: vec!["ops/ci/pr-ci.sh".to_string()],
+            ..pull(4, 600, ready)
+        },
+        PullFacts {
+            landed: Some(Landed::Content),
+            ..pull(5, 600, red)
+        },
+    ];
+    let items = pull_items(&pulls, &[], now(), &hosts());
+    assert_eq!(kinds(&items), ["pr_already_landed", "pr_already_landed"]);
+    let ancestor = &items[0];
+    assert_eq!(ancestor.id, "pr-already-landed:jeryu/jeryu-web:4");
+    assert_eq!(ancestor.severity, Severity::Action);
+    assert_eq!(ancestor.title, "jeryu/jeryu-web#4 is already on main");
+    assert!(
+        ancestor
+            .reason
+            .contains("its head commit b761244 is already in the history of main"),
+        "{}",
+        ancestor.reason
+    );
+    assert!(
+        items[1].reason.contains("squash, a cherry-pick"),
+        "{}",
+        items[1].reason
+    );
+    assert_eq!(items[1].href, "/repos/jeryu/jeryu/jeryu-web/pulls/5");
 }
 
 #[test]
@@ -3076,6 +3125,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     // that pull request is the next step.
     ("pin_behind", "/releases"),
     ("pin_behind", "/repos/:provider/:owner/*"),
+    ("pr_already_landed", "/repos/:provider/:owner/*"),
     ("pr_awaiting_approval", "/repos/:provider/:owner/*"),
     // One row for a whole branch opens the search that lists exactly the pull
     // requests it stands for, in every repository they are in.
@@ -3347,6 +3397,16 @@ fn one_of_every_kind() -> Vec<Item> {
         &hosts(),
     ));
     items.extend(draft_items(&[draft(12, 9, "main")], 3, now()));
+    items.extend(pull_items(
+        &[PullFacts {
+            repo: repo.to_string(),
+            landed: Some(Landed::Content),
+            ..pull(19, 45, PullPosture::default())
+        }],
+        &[],
+        now(),
+        &hosts(),
+    ));
 
     let open: BTreeSet<(String, u64)> = [
         (repo.to_string(), 13),

@@ -1238,6 +1238,7 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
 }
 
 pub(in crate::web) mod diff;
+pub(in crate::web) mod landed;
 mod posture;
 
 pub(crate) use posture::audit_gate_enforced_for;

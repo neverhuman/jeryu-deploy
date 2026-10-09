@@ -299,6 +299,7 @@ fn each_attention_kind_belongs_to_one_stage_or_to_the_forge() {
         "todo_stuck_claim",
         "shift_without_pr",
         "pr_draft_waiting",
+        "pr_already_landed",
         "pr_checks_failing",
         "pr_awaiting_approval",
         "queue_refused",

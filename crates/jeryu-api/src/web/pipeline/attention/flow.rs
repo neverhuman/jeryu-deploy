@@ -14,6 +14,7 @@ use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
 use crate::web::pipeline::Event;
 use crate::web::pulls::PullPosture;
+use crate::web::pulls::landed::Landed;
 
 /// An open pull request and where its merge gate stands.
 #[derive(Clone, Debug)]
@@ -27,10 +28,15 @@ pub(crate) struct PullFacts {
     /// The branch the pull request merges from, which is what a campaign of
     /// pull requests shares; see [`fold_branch_campaigns`].
     pub head_ref: String,
+    /// The branch it merges into.
+    pub base_ref: String,
     pub updated_at: DateTime<Utc>,
     pub posture: PullPosture,
     /// Every path `base...head` touches, for [`gate_definition_paths`].
     pub changed_paths: Vec<String>,
+    /// Set when the change is already on the base branch, so the only step
+    /// left is to close the pull request ([`landed_item`]).
+    pub landed: Option<Landed>,
 }
 
 #[derive(Clone, Debug)]
@@ -184,6 +190,50 @@ fn gate_evidence(attempt: Option<&str>, pull: &PullFacts, hosts: &Hosts) -> Stri
     }
 }
 
+/// An open pull request whose change is already on its base branch. Closing it
+/// is a person's call on the pull request page, so the item links there; the
+/// forge deletes nothing on its behalf.
+pub(crate) fn landed_item(pull: &PullFacts, landed: Landed) -> Item {
+    let label = format!("{}#{}", pull.repo, pull.number);
+    let how = match landed {
+        Landed::Ancestor => format!(
+            "its head commit {} is already in the history of {}",
+            short_sha(&pull.head_sha),
+            pull.base_ref
+        ),
+        Landed::Content => format!(
+            "merging it into {} would change nothing: every change it makes is already \
+             there, so it landed by a squash, a cherry-pick or a replacement pull request",
+            pull.base_ref
+        ),
+    };
+    let mut item = Draft {
+        id: format!("pr-already-landed:{}:{}", pull.repo, pull.number),
+        kind: "pr_already_landed",
+        severity: Severity::Action,
+        title: format!("{label} is already on {}", pull.base_ref),
+        reason: format!(
+            "\"{}\" by {} is still open, but {how}. Its checks and reviews no longer \
+             matter; it only clutters the flow until somebody closes it.",
+            pull.title, pull.author
+        ),
+        href: pull_href(&pull.repo, pull.number),
+        label: "Close the pull request: its change is already on the base branch",
+        api: None,
+        command: None,
+    }
+    .build();
+    item.since = Some(pull.updated_at.to_rfc3339());
+    item.repo = Some(pull.repo.clone());
+    item.pr = Some(pull.number);
+    item.sha = Some(pull.head_sha.clone());
+    item
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
 /// Open pull requests waiting on a person: changes requested, red checks,
 /// missing approvals, or mergeable and simply not merged.
 /// `entries` is the merge queue: a pull request the queue is holding is not
@@ -196,6 +246,12 @@ pub(crate) fn pull_items(
 ) -> Vec<Item> {
     let mut items = Vec::new();
     for pull in pulls {
+        // A change already on its base needs closing, not reviewing, gating
+        // or merging: every other row about it would point at the wrong step.
+        if let Some(landed) = pull.landed {
+            items.push(landed_item(pull, landed));
+            continue;
+        }
         let posture = &pull.posture;
         let label = format!("{}#{}", pull.repo, pull.number);
         let building = entries.iter().find(|entry| {

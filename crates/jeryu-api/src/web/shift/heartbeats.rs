@@ -75,6 +75,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0012_agent_presence",
         include_str!("../../../../../db/migrations/0012_agent_presence.sql"),
     ),
+    (
+        13,
+        "0013_repo_merge_settings",
+        include_str!("../../../../../db/migrations/0013_repo_merge_settings.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;

@@ -426,12 +426,13 @@ fn authorize_github_repo_request(
                 "branch-protection changes require repository-admin access",
             ))
         }
-        // `PATCH /repos/{owner}/{repo}` archives, unarchives and renames.
-        // Admin-only, and deliberately stricter than the repository-write rule
-        // below: archiving makes a repository read-only for everyone and a
-        // rename moves every URL it is known by, so each is a decision about
-        // the repository rather than a use of write access to it. This mirrors
-        // the same call's authz on `PATCH /api/v1/repos/:id`.
+        // `PATCH /repos/{owner}/{repo}` archives, unarchives, renames and sets
+        // `delete_branch_on_merge`. Admin-only, and deliberately stricter than
+        // the repository-write rule below: archiving makes a repository
+        // read-only for everyone, a rename moves every URL it is known by, and
+        // the merge setting decides whether the forge deletes branches, so each
+        // is a decision about the repository rather than a use of write access
+        // to it. This mirrors the same call's authz on `PATCH /api/v1/repos/:id`.
         (Method::Patch, ["repos", _, _]) if account.role != UserRole::Admin => Some(
             github_forbidden("repository settings changes require admin access"),
         ),

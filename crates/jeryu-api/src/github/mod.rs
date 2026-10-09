@@ -25,9 +25,11 @@ mod commit_status;
 mod commits;
 mod deployments;
 mod graphql;
+mod head_cleanup;
 mod hooks;
 mod issues;
 mod listing;
+mod merge_settings;
 pub(crate) mod pulls;
 mod releases;
 mod repos;
@@ -101,6 +103,7 @@ pub struct GithubRouter {
     core: ForgeCore,
     work_store: Option<WorkStore>,
     work_bridge_repairs: WorkBridgeRepairQueue,
+    merge_settings: merge_settings::RepoMergeSettings,
     #[cfg(feature = "web")]
     repo_manager: Option<std::sync::Arc<jeryu_gitd::RepoManager>>,
     /// Opt-in, tests only: finalize a merge with a synthesized sha when no
@@ -125,6 +128,7 @@ impl GithubRouter {
             core,
             work_store: None,
             work_bridge_repairs: WorkBridgeRepairQueue::default(),
+            merge_settings: merge_settings::RepoMergeSettings::default(),
             #[cfg(feature = "web")]
             repo_manager: None,
             #[cfg(feature = "web")]
@@ -149,6 +153,16 @@ impl GithubRouter {
     #[cfg(feature = "web")]
     pub fn with_work_bridge_repair_store(mut self, path: &std::path::Path) -> Result<Self, String> {
         self.work_bridge_repairs = WorkBridgeRepairQueue::with_store(path)?;
+        Ok(self)
+    }
+
+    /// Persist per-repository merge settings (`delete_branch_on_merge`) in the
+    /// sqlite file at `path` (the web server's `<data_dir>/shift.sqlite`). Without
+    /// this call they live only in this router and every repository uses the
+    /// default after a restart.
+    #[cfg(feature = "web")]
+    pub fn with_merge_settings_store(mut self, path: &std::path::Path) -> Result<Self, String> {
+        self.merge_settings = merge_settings::RepoMergeSettings::with_store(path)?;
         Ok(self)
     }
 

@@ -338,7 +338,9 @@ impl WebState {
                 .with_repo_manager(repo_manager.clone())
                 .with_work_store(work.clone())
                 .with_work_bridge_repair_store(&shift_path)
-                .expect("open work bridge repair store"),
+                .expect("open work bridge repair store")
+                .with_merge_settings_store(&shift_path)
+                .expect("open repo merge settings store"),
             tui,
             spa_dir,
             ws: WsHub::new(),
@@ -1529,6 +1531,9 @@ mod repository_move_tests;
 
 #[cfg(test)]
 mod merge_queue_tests;
+
+#[cfg(test)]
+mod head_cleanup_tests;
 
 #[cfg(test)]
 mod paging_tests;

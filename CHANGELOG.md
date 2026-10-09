@@ -53,6 +53,21 @@
   oldest 20 lots at each station with an ETA and the slowest station still
   ahead of them. A metric with fewer than three samples is null and listed in
   the station's `unknown` with its reason. `docs/flow.md`.
+- The forge deletes a pull request's head branch after it merges
+  (`delete_branch_on_merge`, on unless an administrator turns it off with
+  `PATCH /repos/{owner}/{repo}`, read back on `GET`; migration
+  `0013_repo_merge_settings.sql`). Direct merges, already-contained heads and
+  merge-queue landings all do it. A branch from a fork, the base or default
+  branch, a protected branch, or one another open pull request uses as its head
+  or base is kept, and the delete is a compare-and-swap against the merged head,
+  so a later push survives. The merge response's `head_branch` says what
+  happened. `docs/merge-queue.md`.
+- `/needs-you` has a `pr_already_landed` item for an open pull request whose
+  change is already on its base branch (its head is in the base's history, or
+  merging it would change nothing, as after a squash or a cherry-pick). It
+  replaces that pull request's other rows: the step is to close it.
+  `docs/pipeline-events.md`.
+
 - `GET /api/v1/yield` (admin-only) reports what the agent factory spent against
   what reached main: cost per merged change with a 95% interval, yield
   (main spend over main plus scrap), first-pass rate, review and triage share,

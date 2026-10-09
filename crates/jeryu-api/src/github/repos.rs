@@ -99,22 +99,35 @@ impl GithubRouter {
 
     pub(super) fn get_repo(&self, owner: &str, repo: &str) -> Response {
         match self.core.get_repository(owner, repo) {
-            Ok(repo) => json_response(200, &repository_json(&repo)),
+            Ok(repo) => json_response(200, &self.repository_json_with_settings(&repo)),
             Err(err) => error_response(err),
         }
     }
 
-    /// `PATCH /repos/{owner}/{repo}` — archive, unarchive or rename, spelled
-    /// the way GitHub spells them (`archived`, `name`), so `gh` and every
-    /// GitHub client already know how to ask. Admin-only; the edge refuses a
-    /// non-admin before this runs.
+    /// The repository JSON plus the merge settings GitHub reports on a single
+    /// repository (`delete_branch_on_merge`). List routes keep the plain shape,
+    /// as GitHub's do.
+    fn repository_json_with_settings(&self, repo: &Repository) -> Value {
+        let mut json = repository_json(repo);
+        json["delete_branch_on_merge"] = Value::Bool(
+            self.merge_settings
+                .delete_branch_on_merge(&repo.id.to_string()),
+        );
+        json
+    }
+
+    /// `PATCH /repos/{owner}/{repo}` — archive, unarchive, rename, or turn
+    /// `delete_branch_on_merge` on or off, spelled the way GitHub spells them
+    /// (`archived`, `name`, `delete_branch_on_merge`), so `gh` and every GitHub
+    /// client already know how to ask. Admin-only; the edge refuses a non-admin
+    /// before this runs.
     ///
-    /// Only `archived` and `name` are accepted, one per request: archiving and
-    /// renaming are separate decisions, and a rename of an archived repository
-    /// is refused by the core anyway. Every other repository setting has its
-    /// own typed Jeryu route, and quietly ignoring an unknown key would let a
-    /// caller believe a setting moved when it did not, so an unrecognised body
-    /// is a validation error rather than a silent success.
+    /// Exactly one of those fields per request: archiving, renaming and the
+    /// merge setting are separate decisions, and a rename of an archived
+    /// repository is refused by the core anyway. Every other repository setting
+    /// has its own typed Jeryu route, and quietly ignoring an unknown key would
+    /// let a caller believe a setting moved when it did not, so an unrecognised
+    /// body is a validation error rather than a silent success.
     ///
     /// `actor` is bound by the edge from the authenticated principal before
     /// this runs, so the audit trail names the caller, never the body.
@@ -126,6 +139,36 @@ impl GithubRouter {
             .get("actor")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        let given = ["archived", "name", "delete_branch_on_merge"]
+            .into_iter()
+            .filter(|field| fields.contains_key(*field))
+            .count();
+        if given > 1 {
+            return validation(
+                "send one of `archived`, `name` or `delete_branch_on_merge`: each is a separate \
+                 request",
+            );
+        }
+        if let Some(value) = fields.get("delete_branch_on_merge") {
+            let Some(value) = value.as_bool() else {
+                return validation("delete_branch_on_merge must be a boolean");
+            };
+            let current = match self.core.get_repository(owner, repo) {
+                Ok(current) => current,
+                Err(err) => return error_response(err),
+            };
+            return match self.merge_settings.set_delete_branch_on_merge(
+                &current.id.to_string(),
+                value,
+                actor,
+            ) {
+                Ok(()) => json_response(200, &self.repository_json_with_settings(&current)),
+                Err(err) => json_response(
+                    500,
+                    &json!({ "message": format!("could not store delete_branch_on_merge: {err}") }),
+                ),
+            };
+        }
         match (fields.get("archived"), fields.get("name")) {
             (Some(_), Some(_)) => validation(
                 "send `archived` or `name`, not both: archive and rename are separate requests",
@@ -138,7 +181,7 @@ impl GithubRouter {
                     .core
                     .set_repository_archived(actor, owner, repo, archived)
                 {
-                    Ok(repo) => json_response(200, &repository_json(&repo)),
+                    Ok(repo) => json_response(200, &self.repository_json_with_settings(&repo)),
                     Err(err) => error_response(err),
                 }
             }
@@ -149,7 +192,8 @@ impl GithubRouter {
                 self.move_repo(actor, owner, repo, None, Some(name), 200)
             }
             (None, None) => validation(
-                "no supported field: this route accepts `archived` (a boolean) or `name` (a string)",
+                "no supported field: this route accepts `archived` (a boolean), `name` (a string) \
+                 or `delete_branch_on_merge` (a boolean)",
             ),
         }
     }

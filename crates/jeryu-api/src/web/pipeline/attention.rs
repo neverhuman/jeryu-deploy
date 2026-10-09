@@ -149,6 +149,7 @@ pub(crate) const KINDS: &[&str] = &[
     "mirror_diverged",
     "mirror_failing",
     "pin_behind",
+    "pr_already_landed",
     "pr_awaiting_approval",
     "pr_branch_campaign",
     "pr_changes_own_gate",
@@ -466,9 +467,11 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
                 author: pr.author.clone(),
                 head_sha: pr.head.sha.clone(),
                 head_ref: pr.head.ref_name.clone(),
+                base_ref: pr.base.ref_name.clone(),
                 updated_at: pr.updated_at,
                 posture,
                 changed_paths: super::super::pulls::diff::changed_paths(state, &pr),
+                landed: super::super::pulls::landed::already_landed(state, &pr),
             });
         }
     }

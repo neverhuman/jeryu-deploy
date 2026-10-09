@@ -7,7 +7,7 @@ use jeryu_core::{
     CreateReviewRequest, ReviewState,
 };
 
-fn account(login: &str, role: UserRole) -> Extension<AccountSummary> {
+pub(super) fn account(login: &str, role: UserRole) -> Extension<AccountSummary> {
     Extension(AccountSummary {
         login: login.to_string(),
         display_name: login.to_string(),
@@ -20,7 +20,7 @@ fn account(login: &str, role: UserRole) -> Extension<AccountSummary> {
     })
 }
 
-fn git(cwd: &Path, args: &[&str]) -> String {
+pub(super) fn git(cwd: &Path, args: &[&str]) -> String {
     let output = crate::test_git::git_command()
         .args(args)
         .current_dir(cwd)
@@ -40,18 +40,18 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 
 /// A repository `alice/jeryu` whose `feature` branch adds `feature.txt`, an
 /// approved PR for it with a green check on its head, and a work clone.
-struct Fixture {
+pub(super) struct Fixture {
     _storage: tempfile::TempDir,
-    bare: PathBuf,
-    work: PathBuf,
-    state: Arc<WebState>,
-    repo_id: String,
-    number: u64,
-    head: String,
+    pub(super) bare: PathBuf,
+    pub(super) work: PathBuf,
+    pub(super) state: Arc<WebState>,
+    pub(super) repo_id: String,
+    pub(super) number: u64,
+    pub(super) head: String,
 }
 
 impl Fixture {
-    fn new(feature_file: &str, feature_body: &str) -> Self {
+    pub(super) fn new(feature_file: &str, feature_body: &str) -> Self {
         Self::build(feature_file, feature_body, false)
     }
 
@@ -175,11 +175,11 @@ impl Fixture {
         git(&self.work, &["rev-parse", "HEAD"])
     }
 
-    fn main(&self) -> String {
+    pub(super) fn main(&self) -> String {
         git(&self.bare, &["rev-parse", "refs/heads/main"])
     }
 
-    fn has_ref(&self, name: &str) -> bool {
+    pub(super) fn has_ref(&self, name: &str) -> bool {
         crate::test_git::git_command()
             .args(["rev-parse", "--verify", "--quiet", name])
             .current_dir(&self.bare)
@@ -206,7 +206,7 @@ impl Fixture {
             .unwrap();
     }
 
-    async fn enqueue(&self) -> (StatusCode, Value) {
+    pub(super) async fn enqueue(&self) -> (StatusCode, Value) {
         self.enqueue_as(account("rel-bot", UserRole::Admin)).await
     }
 
@@ -245,7 +245,7 @@ impl Fixture {
             .collect()
     }
 
-    fn entry(&self) -> merge_queue::QueueEntry {
+    pub(super) fn entry(&self) -> merge_queue::QueueEntry {
         self.state
             .merge_queue
             .entries(&self.state, |_| true)

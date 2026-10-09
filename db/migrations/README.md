@@ -19,6 +19,7 @@ file for an applied version stops the server at startup.
 | `0010_cost_ledger.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/store.rs` |
 | `0011_flow_ledger.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/store.rs` |
 | `0012_agent_presence.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/agent_presence/store.rs` |
+| `0013_repo_merge_settings.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/github/merge_settings.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. A migration that alters an existing table also has a
