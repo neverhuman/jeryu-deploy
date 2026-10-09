@@ -307,7 +307,9 @@ fn stage_of(kind: &str) -> Option<Stage> {
         "shift_without_pr" | "shift_stranded_work" => Stage::Shift,
         "pr_draft_waiting" => Stage::Pr,
         "pr_checks_failing" | "pr_changes_own_gate" | "gate_runner_down" => Stage::Gate,
-        "pr_changes_requested" | "pr_awaiting_approval" | "reviewer_stuck" => Stage::Review,
+        "pr_changes_requested" | "pr_awaiting_approval" | "reviewer_offline" | "reviewer_stuck" => {
+            Stage::Review
+        }
         "pr_ready_to_merge" | "queue_failed" | "queue_refused" | "queue_stuck" => Stage::Queue,
         "pin_behind" => Stage::Pinned,
         "release_staged" | "release_stage_failed" => Stage::Staged,

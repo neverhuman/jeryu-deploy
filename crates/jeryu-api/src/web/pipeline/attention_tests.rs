@@ -11,10 +11,10 @@ use tower::ServiceExt;
 use super::attention::{
     ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
     Filter, Hosts, Item, KINDS, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts,
-    PullFacts, Severity, board_items, budget_items, divergence_items, draft_items,
-    drop_shadowed_pull_rows, gate_definition_paths, mirror_items, only_matching, order, pin_items,
-    pull_items, queue_items, release_items, runner_items, shift_items, todo_items, web_routes,
-    worker_items,
+    PullFacts, ReviewerOfflineThresholds, Severity, board_items, budget_items, divergence_items,
+    draft_items, drop_shadowed_pull_rows, gate_definition_paths, mirror_items, only_matching,
+    order, pin_items, pull_items, queue_items, release_items, runner_items, shift_items,
+    todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -157,6 +157,13 @@ fn hosts() -> Hosts {
             .to_string(),
         )
     })
+}
+
+fn reviewer_thresholds() -> ReviewerOfflineThresholds {
+    ReviewerOfflineThresholds {
+        heartbeat_minutes: 10,
+        pass_minutes: 15,
+    }
 }
 
 fn kinds(items: &[Item]) -> Vec<&'static str> {
@@ -1302,7 +1309,9 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
             runner("xbabe2/slot0", &["pr-gate"], 30, None),
         ],
         &open,
+        0,
         false,
+        reviewer_thresholds(),
         now(),
         &hosts(),
     ));
@@ -1333,7 +1342,9 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
             runner("xbabe2/slot0", &["pr-gate"], 30, None),
         ],
         &open,
+        0,
         false,
+        reviewer_thresholds(),
         now(),
         &hosts(),
     ));
@@ -1399,7 +1410,9 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     let healthy = runner_items(
         &[stuck.clone(), approved, closed_pr, gate, stale_gate.clone()],
         &open,
+        0,
         false,
+        reviewer_thresholds(),
         now(),
         &hosts(),
     );
@@ -1412,7 +1425,15 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     assert_eq!(healthy[0].pr, Some(35));
 
     // Only a reviewer and a gate slot silent for ten minutes are left.
-    let down = runner_items(&[stuck, stale_gate.clone()], &open, false, now(), &hosts());
+    let down = runner_items(
+        &[stuck, stale_gate.clone()],
+        &open,
+        0,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    );
     assert_eq!(kinds(&down), ["reviewer_stuck", "gate_runner_down"]);
     assert_eq!(down[1].severity, Severity::Critical);
     assert!(down[1].action.command.is_some());
@@ -1422,17 +1443,110 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     );
     // No open PR and nothing queued: a silent gate is nobody's problem yet.
     let only_stale = std::slice::from_ref(&stale_gate);
-    assert!(runner_items(only_stale, &BTreeSet::new(), false, now(), &hosts()).is_empty());
+    assert!(
+        runner_items(
+            only_stale,
+            &BTreeSet::new(),
+            0,
+            false,
+            reviewer_thresholds(),
+            now(),
+            &hosts()
+        )
+        .is_empty()
+    );
     assert_eq!(
         kinds(&runner_items(
             only_stale,
             &BTreeSet::new(),
+            0,
             true,
+            reviewer_thresholds(),
             now(),
             &hosts()
         )),
         ["gate_runner_down"],
         "the merge queue waiting on a gate counts"
+    );
+}
+
+#[test]
+fn reviewer_offline_is_critical_when_reviewers_stop_reporting() {
+    let open: BTreeSet<(String, u64)> = [("jeryu/jeryu-web".to_string(), 35)].into();
+    let gate = runner("node-2/slot0", &["pr-gate"], 30, None);
+    let stale = runner("node-0/redteam", &["redteam"], 660, Some(("approve", 35)));
+    let fresh = runner("node-0/redteam", &["redteam"], 30, Some(("approve", 35)));
+
+    let stale_items = runner_items(
+        &[stale, gate.clone()],
+        &open,
+        2,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    );
+    assert_eq!(kinds(&stale_items), ["reviewer_offline"]);
+    assert_eq!(stale_items[0].severity, Severity::Critical);
+    assert_eq!(
+        stale_items[0].since.as_deref(),
+        Some("2026-09-19T12:49:00+00:00")
+    );
+    assert!(
+        stale_items[0]
+            .reason
+            .contains("2 pull request(s) wait for review"),
+        "{}",
+        stale_items[0].reason
+    );
+    assert!(
+        stale_items[0]
+            .reason
+            .contains("last heartbeat 2026-09-19 12:49:00 UTC"),
+        "{}",
+        stale_items[0].reason
+    );
+
+    let fresh_items = runner_items(
+        &[fresh, gate],
+        &open,
+        2,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    );
+    assert!(fresh_items.is_empty(), "{fresh_items:?}");
+}
+
+#[test]
+fn reviewer_offline_fires_when_review_passes_stop_completing() {
+    let open: BTreeSet<(String, u64)> = [("jeryu/jeryu-web".to_string(), 35)].into();
+    let gate = runner("node-2/slot0", &["pr-gate"], 30, None);
+    let mut quiet = runner("node-0/redteam", &["redteam"], 30, Some(("approve", 35)));
+    quiet
+        .heartbeat
+        .last
+        .as_mut()
+        .expect("review pass")
+        .finished_at = now() - Duration::minutes(16);
+
+    let items = runner_items(
+        &[quiet, gate],
+        &open,
+        1,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    );
+    assert_eq!(kinds(&items), ["reviewer_offline"]);
+    assert!(
+        items[0]
+            .reason
+            .contains("No review pass has completed within the 15 minute site threshold"),
+        "{}",
+        items[0].reason
     );
 }
 
@@ -2933,6 +3047,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("release_board_problem", "/releases/family/:family"),
     ("release_stage_failed", "/activity"),
     ("release_staged", "/releases"),
+    ("reviewer_offline", "/runners"),
     ("reviewer_stuck", "/repos/:provider/:owner/*"),
     ("shift_budget_spent", "/work"),
     ("shift_stranded_work", "/work"),
@@ -3209,7 +3324,18 @@ fn one_of_every_kind() -> Vec<Item> {
             runner("gate-1", &["pr-gate"], 600, None),
         ],
         &open,
+        1,
         true,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    ));
+    items.extend(runner_items(
+        &[runner("gate-2", &["pr-gate"], 30, None)],
+        &open,
+        1,
+        false,
+        reviewer_thresholds(),
         now(),
         &hosts(),
     ));

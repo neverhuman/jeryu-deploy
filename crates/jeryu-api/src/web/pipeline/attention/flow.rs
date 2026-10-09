@@ -100,6 +100,12 @@ pub(crate) struct DraftFacts {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReviewerOfflineThresholds {
+    pub(crate) heartbeat_minutes: i64,
+    pub(crate) pass_minutes: i64,
+}
+
 /// Drafts nobody has touched for `idle_days`. A draft says "not yet", which is
 /// fine for a day or two and a stranded change after that: no gate runs on it,
 /// no automation reviews it, and nothing else in the inbox would ever mention
@@ -712,12 +718,24 @@ pub(crate) fn queue_items(
 pub(crate) fn runner_items(
     runners: &[GateRunnerRecord],
     open_pulls: &BTreeSet<(String, u64)>,
+    waiting_review_count: usize,
     queue_building: bool,
+    reviewer_thresholds: ReviewerOfflineThresholds,
     now: DateTime<Utc>,
     hosts: &Hosts,
 ) -> Vec<Item> {
     let mut items = Vec::new();
-    for record in runners.iter().filter(|r| is_reviewer(&r.heartbeat)) {
+    let reviewers: Vec<&GateRunnerRecord> = runners
+        .iter()
+        .filter(|r| is_reviewer(&r.heartbeat))
+        .collect();
+    items.extend(reviewer_offline_items(
+        &reviewers,
+        waiting_review_count,
+        reviewer_thresholds,
+        now,
+    ));
+    for record in reviewers {
         let Some(last) = &record.heartbeat.last else {
             continue;
         };
@@ -795,6 +813,70 @@ pub(crate) fn runner_items(
         items.push(item);
     }
     items
+}
+
+fn reviewer_offline_items(
+    reviewers: &[&GateRunnerRecord],
+    waiting_review_count: usize,
+    thresholds: ReviewerOfflineThresholds,
+    now: DateTime<Utc>,
+) -> Vec<Item> {
+    if waiting_review_count == 0 {
+        return Vec::new();
+    }
+    let last_heartbeat = reviewers.iter().map(|record| record.received_at).max();
+    let last_pass = reviewers
+        .iter()
+        .filter_map(|record| record.heartbeat.last.as_ref().map(|last| last.finished_at))
+        .max();
+    let heartbeat_quiet =
+        last_heartbeat.is_none_or(|seen| (now - seen).num_minutes() > thresholds.heartbeat_minutes);
+    let pass_quiet =
+        last_pass.is_none_or(|finished| (now - finished).num_minutes() > thresholds.pass_minutes);
+    if !heartbeat_quiet && !pass_quiet {
+        return Vec::new();
+    }
+    let heartbeat_phrase = last_heartbeat
+        .map(|seen| format!("last heartbeat {seen}"))
+        .unwrap_or_else(|| "no reviewer heartbeat has arrived since startup".to_string());
+    let pass_phrase = last_pass
+        .map(|finished| format!("last completed review pass {finished}"))
+        .unwrap_or_else(|| "no completed review pass has been reported since startup".to_string());
+    let reason = if heartbeat_quiet && pass_quiet {
+        format!(
+            "{waiting_review_count} pull request(s) wait for review; {heartbeat_phrase}, and \
+             {pass_phrase}. The reviewer is not reporting progress, so new approvals will not \
+             arrive until its runner reports again."
+        )
+    } else if heartbeat_quiet {
+        format!(
+            "{waiting_review_count} pull request(s) wait for review; {heartbeat_phrase}. The \
+             reviewer heartbeat is past the {} minute site threshold, so new approvals may not \
+             arrive until its runner reports again.",
+            thresholds.heartbeat_minutes
+        )
+    } else {
+        format!(
+            "{waiting_review_count} pull request(s) wait for review; {pass_phrase}. No review \
+             pass has completed within the {} minute site threshold, so approvals are not \
+             keeping up.",
+            thresholds.pass_minutes
+        )
+    };
+    let mut item = Draft {
+        id: "reviewer-offline".to_string(),
+        kind: "reviewer_offline",
+        severity: Severity::Critical,
+        title: format!("{waiting_review_count} pull request(s) wait and no reviewer is current"),
+        reason,
+        href: "/runners".to_string(),
+        label: "Check the reviewer runner and restart it if it is not reporting",
+        api: None,
+        command: None,
+    }
+    .build();
+    item.since = last_heartbeat.map(|seen| seen.to_rfc3339());
+    vec![item]
 }
 
 /// What production runs for one repository, from the Deployments API.

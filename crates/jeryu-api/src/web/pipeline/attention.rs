@@ -53,8 +53,8 @@ pub(crate) use board::{BoardFacts, BoardLane, board_items};
 #[cfg(test)]
 pub(crate) use flow::gate_definition_paths;
 pub(crate) use flow::{
-    DraftFacts, LatestDeployment, ProductionFacts, PullFacts, draft_items, drop_shadowed_pull_rows,
-    pull_items, queue_items, release_items, runner_items,
+    DraftFacts, LatestDeployment, ProductionFacts, PullFacts, ReviewerOfflineThresholds,
+    draft_items, drop_shadowed_pull_rows, pull_items, queue_items, release_items, runner_items,
 };
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
@@ -77,6 +77,13 @@ pub(super) const READY_TO_MERGE_MINUTES: i64 = 10;
 /// automated reviewer merges approved work every five minutes, so six of its
 /// passes with nothing landing says the reviewer itself stopped merging.
 pub(super) const MERGER_STALLED_MINUTES: i64 = 30;
+/// A reviewer heartbeat this quiet is not just between ticks. Site
+/// configuration can override it with `JERYU_REVIEWER_HEARTBEAT_OFFLINE_MINUTES`.
+pub(super) const REVIEWER_HEARTBEAT_OFFLINE_MINUTES: i64 = 10;
+/// A review pass this old, while pull requests wait for review, says the
+/// reviewer is not making progress. Site configuration can override it with
+/// `JERYU_REVIEWER_PASS_OFFLINE_MINUTES`.
+pub(super) const REVIEWER_PASS_OFFLINE_MINUTES: i64 = 15;
 pub(super) const QUEUE_LOOKBACK_HOURS: i64 = 24;
 /// A queue entry still building after this long is no longer waiting for a
 /// gate that is about to report.
@@ -151,6 +158,7 @@ pub(crate) const KINDS: &[&str] = &[
     "release_board_problem",
     "release_stage_failed",
     "release_staged",
+    "reviewer_offline",
     "reviewer_stuck",
     "shift_budget_spent",
     "shift_stranded_work",
@@ -458,6 +466,13 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     pulls
 }
 
+fn waits_for_review(pull: &PullFacts) -> bool {
+    pull.posture.changes_requested == 0
+        && pull.posture.failing.is_empty()
+        && pull.posture.checks_green
+        && pull.posture.approvals < pull.posture.required_approvals
+}
+
 /// How many idle days make a draft an attention item. A value that is not a
 /// positive whole number of days is ignored in favour of [`DRAFT_IDLE_DAYS`],
 /// so a typo in the environment cannot silence the rule or fire it at once.
@@ -467,6 +482,27 @@ pub(super) fn draft_idle_days() -> i64 {
         .and_then(|value| value.trim().parse::<i64>().ok())
         .filter(|days| *days > 0)
         .unwrap_or(DRAFT_IDLE_DAYS)
+}
+
+fn positive_minutes_env(name: &str, fallback: i64) -> i64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|minutes| *minutes > 0)
+        .unwrap_or(fallback)
+}
+
+pub(super) fn reviewer_offline_thresholds() -> ReviewerOfflineThresholds {
+    ReviewerOfflineThresholds {
+        heartbeat_minutes: positive_minutes_env(
+            "JERYU_REVIEWER_HEARTBEAT_OFFLINE_MINUTES",
+            REVIEWER_HEARTBEAT_OFFLINE_MINUTES,
+        ),
+        pass_minutes: positive_minutes_env(
+            "JERYU_REVIEWER_PASS_OFFLINE_MINUTES",
+            REVIEWER_PASS_OFFLINE_MINUTES,
+        ),
+    }
 }
 
 /// Every open draft, whatever its base branch. A draft is not part of the
@@ -652,6 +688,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     ));
     let pulls = open_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
+    let waiting_review_count = pulls.iter().filter(|pull| waits_for_review(pull)).count();
     let entries = state.merge_queue.entries(state, |_| true);
     let building = entries.iter().any(|e| e.state == QueueState::Building);
     items.extend(pull_items(&pulls, &entries, now, &hosts));
@@ -660,7 +697,9 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     items.extend(runner_items(
         &state.gate_runners.snapshot(),
         &open,
+        waiting_review_count,
         building,
+        reviewer_offline_thresholds(),
         now,
         &hosts,
     ));
