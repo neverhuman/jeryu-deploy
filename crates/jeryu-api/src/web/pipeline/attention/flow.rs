@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use super::{
     BRANCH_CAMPAIGN_PRS, Draft, Hosts, Item, MERGER_STALLED_MINUTES, PullLink,
     QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES, Severity, Shell,
-    enqueue_call, parse_time, pull_href, ready_for_review_call, regate_call,
+    enqueue_call, parse_time, pull_href, ready_for_review_call, regate_call, web_pin_bump_prs,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -680,11 +680,12 @@ fn fold_merger_stalled(items: &mut Vec<Item>, now: DateTime<Utc>) {
 /// and the review, so the `pr_changes_requested` row for the same pull
 /// request would only repeat it one line further down.
 pub(crate) fn drop_shadowed_pull_rows(items: &mut Vec<Item>) {
-    let stuck: BTreeSet<(Option<String>, Option<u64>)> = items
+    let mut stuck: BTreeSet<(Option<String>, Option<u64>)> = items
         .iter()
         .filter(|item| item.kind == "reviewer_stuck")
         .map(|item| (item.repo.clone(), item.pr))
         .collect();
+    stuck.extend(web_pin_bump_prs(items));
     items.retain(|item| {
         item.kind != "pr_changes_requested" || !stuck.contains(&(item.repo.clone(), item.pr))
     });

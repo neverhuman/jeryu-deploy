@@ -139,6 +139,12 @@ fn pin(kind: &'static str, state: &'static str, bump: Option<u64>) -> Pin {
             number,
             state: "open".to_string(),
             url: format!("/repos/jeryu/jeryu/jeryu-deploy/pulls/{number}"),
+            title: "release: pin jeryu-web".to_string(),
+            head_ref: "auto/pin-web-427bebe".to_string(),
+            head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
+            created_at: "2026-09-19T15:00:00+00:00".to_string(),
+            changes_requested: false,
+            blocking_review: None,
         }),
         unreleased: vec![Unreleased {
             sha: "427bebecb848d7b7bb37ecc71521d7461072694d".to_string(),
@@ -190,8 +196,10 @@ fn commit_pin_behind_with_no_bump_long_after_the_commit_asks_to_run_auto_pin() {
     );
     // The fact leads; what is waiting follows.
     assert!(
-        item.reason
-            .starts_with("The auto-pin timer should have opened this bump and has not."),
+        item.reason.starts_with(
+            "auto-pin has emitted no pin.bump_opened or pin.bump_failed event for this head. \
+                 The auto-pin timer should have opened this bump and has not."
+        ),
         "{item:?}"
     );
     assert!(
@@ -307,6 +315,85 @@ fn commit_pin_with_a_bump_open_only_points_at_that_pull_request() {
     assert_eq!(item.pr, Some(53));
     assert_eq!(item.action.command, None);
     assert!(item.next_step.contains(&item.href), "{item:?}");
+}
+
+#[test]
+fn web_pin_bump_with_changes_requested_is_an_action_row() {
+    let mut pin = pin("commit", "behind", Some(53));
+    let bump = pin.bump_pr.as_mut().unwrap();
+    bump.changes_requested = true;
+    bump.blocking_review = Some("Bundle hash changed; rebuild from the checked head.".to_string());
+    let items = pin_items(&consumer(vec![pin]));
+    let [item] = items.as_slice() else {
+        panic!("one item: {items:?}")
+    };
+    assert_eq!((item.kind, item.severity), ("pin_behind", Severity::Action));
+    assert_eq!(item.pr, Some(53));
+    assert_eq!(item.href, "/repos/jeryu/jeryu/jeryu-deploy/pulls/53");
+    assert_eq!(
+        item.title,
+        "The web UI is not shipping: jeryu-deploy#53 (pins jeryu-web 427bebe, 9 behind main) is held - Bundle hash changed; rebuild from the checked head."
+    );
+    assert!(item.reason.contains("current head has changes requested"));
+    assert_eq!(
+        item.action.label,
+        "Read the review and push a fix, or dismiss it"
+    );
+}
+
+#[test]
+fn web_pin_bump_open_for_six_hours_is_an_action_row() {
+    let mut pin = pin("commit", "behind", Some(53));
+    pin.bump_pr.as_mut().unwrap().created_at = "2026-09-19T09:29:00+00:00".to_string();
+    let items = pin_items(&consumer(vec![pin]));
+    let [item] = items.as_slice() else {
+        panic!("one item: {items:?}")
+    };
+    assert_eq!(item.severity, Severity::Action);
+    assert!(item.title.contains("has been open for 6 hours"), "{item:?}");
+    assert!(item.reason.contains("without merging"), "{item:?}");
+    assert_eq!(item.action.label, "Review and merge the web pin bump");
+}
+
+#[test]
+fn web_pin_with_a_bump_escalates_after_twelve_hours_behind_green_main() {
+    let mut pin = pin("commit", "behind", Some(53));
+    pin.latest_at = Some("2026-09-19T03:20:00+00:00".to_string());
+    pin.bump_pr.as_mut().unwrap().title = "release: pin another dependency".to_string();
+    let items = pin_items(&consumer(vec![pin]));
+    let [item] = items.as_slice() else {
+        panic!("one item: {items:?}")
+    };
+    assert_eq!(item.severity, Severity::Action);
+    assert_eq!(
+        item.title,
+        "jeryu-web has been green and ahead of the shipped pin for 12 hours"
+    );
+    assert!(
+        item.reason
+            .contains("The open bump meant to move it is jeryu-deploy#53."),
+        "{item:?}"
+    );
+}
+
+#[test]
+fn missing_web_bump_names_the_latest_auto_pin_event_state() {
+    let mut opened = gave_up(9, HEAD);
+    opened.kind = "pin.bump_opened".to_string();
+    opened.needs_human = false;
+    opened.pr = Some(77);
+    opened.reason = None;
+
+    let items = pin_items_given_up(vec![pin("commit", "behind", None)], &[opened], now());
+    let [item] = items.as_slice() else {
+        panic!("one item: {items:?}")
+    };
+    assert_eq!(item.severity, Severity::Action);
+    assert!(
+        item.reason
+            .starts_with("auto-pin last emitted pin.bump_opened for PR #77."),
+        "{item:?}"
+    );
 }
 
 const HEAD: &str = "427bebecb848d7b7bb37ecc71521d7461072694d";

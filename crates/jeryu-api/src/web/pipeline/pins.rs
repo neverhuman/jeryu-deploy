@@ -32,7 +32,10 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::Utc;
-use jeryu_core::{CommitStatusState, PullRequestState, Repository};
+use jeryu_core::{
+    CommitStatusState, PullRequest, PullRequestState, Repository, Review, ReviewState,
+    effective_reviews_for_head,
+};
 use serde::Serialize;
 
 use super::super::WebState;
@@ -52,6 +55,12 @@ pub(crate) struct BumpPr {
     pub number: u64,
     pub state: String,
     pub url: String,
+    pub title: String,
+    pub head_ref: String,
+    pub head_sha: String,
+    pub created_at: String,
+    pub changes_requested: bool,
+    pub blocking_review: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -263,6 +272,38 @@ pub(crate) fn hosted_repository<'a>(
     })
 }
 
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn first_review_line(review: &Review) -> Option<String> {
+    review
+        .body
+        .as_deref()
+        .and_then(|body| body.lines().find(|line| !line.trim().is_empty()))
+        .map(one_line)
+        .filter(|line| !line.is_empty())
+        .or_else(|| Some(format!("{} requested changes", review.author)))
+}
+
+fn bump_review(state: &WebState, pr: &PullRequest) -> (bool, Option<String>) {
+    let reviews = state
+        .core
+        .list_reviews(&pr.owner, &pr.repo, pr.number)
+        .unwrap_or_default();
+    let mut requested: Vec<&Review> = effective_reviews_for_head(&reviews, &pr.head.sha)
+        .into_iter()
+        .filter(|review| review.state == ReviewState::ChangesRequested)
+        .collect();
+    requested.sort_by_key(|review| review.submitted_at);
+    (
+        !requested.is_empty(),
+        requested
+            .first()
+            .and_then(|review| first_review_line(review)),
+    )
+}
+
 fn bump_pr(state: &WebState, consumer: &Repository, name: &str) -> Option<BumpPr> {
     let title_prefix = format!("release: pin {name}");
     let listed = state
@@ -281,13 +322,22 @@ fn bump_pr(state: &WebState, consumer: &Repository, name: &str) -> Option<BumpPr
             pr.title.starts_with(&title_prefix)
                 || (pr.head.ref_name.starts_with("auto/pin-") && pr.title.contains(name))
         })
-        .map(|pr| BumpPr {
-            number: pr.number,
-            state: serde_json::to_value(&pr.state)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_string))
-                .unwrap_or_else(|| "open".to_string()),
-            url: pull_request_web_path(&pr.owner, &pr.repo, pr.number),
+        .map(|pr| {
+            let (changes_requested, blocking_review) = bump_review(state, &pr);
+            BumpPr {
+                number: pr.number,
+                state: serde_json::to_value(&pr.state)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_string))
+                    .unwrap_or_else(|| "open".to_string()),
+                url: pull_request_web_path(&pr.owner, &pr.repo, pr.number),
+                title: pr.title,
+                head_ref: pr.head.ref_name,
+                head_sha: pr.head.sha,
+                created_at: pr.created_at.to_rfc3339(),
+                changes_requested,
+                blocking_review,
+            }
         })
 }
 

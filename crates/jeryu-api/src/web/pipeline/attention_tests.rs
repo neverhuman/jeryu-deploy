@@ -1455,6 +1455,112 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
     );
 }
 
+#[test]
+fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
+    let repo = "acme/globex-deploy".to_string();
+    let mut items = pull_items(
+        &[PullFacts {
+            repo: repo.clone(),
+            number: 243,
+            title: "release: pin jeryu-web".to_string(),
+            author: "rel-bot".to_string(),
+            head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
+            head_ref: "auto/pin-web-427bebe".to_string(),
+            updated_at: now() - Duration::minutes(45),
+            posture: PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+            changed_paths: vec!["globex-split.lock.toml".to_string()],
+        }],
+        &[],
+        now(),
+        &hosts(),
+    );
+    let mut pin = Pin {
+        dependency: "acme/jeryu-web".to_string(),
+        kind: "commit",
+        source: "globex-split.lock.toml".to_string(),
+        pinned_ref: "8afe03c49bbdf1ad26d1282095561b50c840bf0e".to_string(),
+        pinned_sha: Some("8afe03c49bbdf1ad26d1282095561b50c840bf0e".to_string()),
+        latest_sha: Some("427bebecb848d7b7bb37ecc71521d7461072694d".to_string()),
+        latest_at: Some("2026-09-19T12:00:00Z".to_string()),
+        behind: 7,
+        latest_green: Some(true),
+        state: "behind",
+        bump_pr: Some(BumpPr {
+            number: 243,
+            state: "open".to_string(),
+            url: "/repos/jeryu/acme/globex-deploy/pulls/243".to_string(),
+            title: "release: pin jeryu-web".to_string(),
+            head_ref: "auto/pin-web-427bebe".to_string(),
+            head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
+            created_at: "2026-09-19T12:30:00Z".to_string(),
+            changes_requested: true,
+            blocking_review: Some("The bundle checksum does not match the lock.".to_string()),
+        }),
+        unreleased: vec![Unreleased {
+            sha: "427bebecb848d7b7bb37ecc71521d7461072694d".to_string(),
+            subject: "ship the calmer inbox".to_string(),
+        }],
+    };
+    items.extend(pin_items(
+        &[Consumer {
+            repo: repo.clone(),
+            family: Some("acme".to_string()),
+            branch: "main".to_string(),
+            pins: vec![pin.clone()],
+        }],
+        &[],
+        &hosts(),
+        now(),
+    ));
+    assert_eq!(kinds(&items), ["pr_changes_requested", "pin_behind"]);
+
+    drop_shadowed_pull_rows(&mut items);
+    assert_eq!(kinds(&items), ["pin_behind"]);
+    assert_eq!(items[0].repo.as_deref(), Some(repo.as_str()));
+    assert_eq!(items[0].pr, Some(243));
+
+    pin.bump_pr.as_mut().unwrap().changes_requested = false;
+    let mut unheld = pull_items(
+        &[PullFacts {
+            repo: repo.clone(),
+            number: 243,
+            title: "release: pin jeryu-web".to_string(),
+            author: "rel-bot".to_string(),
+            head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
+            head_ref: "auto/pin-web-427bebe".to_string(),
+            updated_at: now() - Duration::minutes(45),
+            posture: PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+            changed_paths: Vec::new(),
+        }],
+        &[],
+        now(),
+        &hosts(),
+    );
+    unheld.extend(pin_items(
+        &[Consumer {
+            repo,
+            family: Some("acme".to_string()),
+            branch: "main".to_string(),
+            pins: vec![pin],
+        }],
+        &[],
+        &hosts(),
+        now(),
+    ));
+    drop_shadowed_pull_rows(&mut unheld);
+    assert_eq!(
+        kinds(&unheld),
+        ["pr_changes_requested", "pin_behind"],
+        "only the dedicated held web-pin row shadows the generic review row"
+    );
+}
+
 fn runner(
     id: &str,
     labels: &[&str],
@@ -3253,6 +3359,12 @@ fn one_of_every_kind() -> Vec<Item> {
             number,
             state: "open".to_string(),
             url: format!("/repos/jeryu/{repo}/pulls/{number}"),
+            title: "release: pin widget-core".to_string(),
+            head_ref: "auto/pin-widget-core-89abcde".to_string(),
+            head_sha: "89abcdef0123456789abcdef0123456789abcdef".to_string(),
+            created_at: "2026-09-19T12:00:00Z".to_string(),
+            changes_requested: false,
+            blocking_review: None,
         }),
         unreleased: vec![Unreleased {
             sha: "89abcdef0123456789abcdef0123456789abcdef".to_string(),

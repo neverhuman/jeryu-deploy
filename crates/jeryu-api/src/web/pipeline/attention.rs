@@ -60,7 +60,7 @@ pub(crate) use flow::{
 };
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
-pub(crate) use pins::pin_items;
+pub(crate) use pins::{pin_items, web_pin_bump_prs};
 pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
 /// `v1.1` added `action.api`, `v1.2` the optional `budget`, `v1.3` the
@@ -773,18 +773,17 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
             .query(&page("todo.claimed", None))
             .unwrap_or_default(),
     ));
-    let gave_up = state
+    let pin_events = state
         .events
         .query(&super::types::EventsQuery {
-            kind: Some("pin.bump_failed".to_string()),
-            needs_human: Some(true),
+            source: Some("auto-pin".to_string()),
             limit: Some(20),
             ..Default::default()
         })
         .unwrap_or_default();
     items.extend(pin_items(
         &super::pins::snapshot(state).consumers,
-        &gave_up,
+        &pin_events,
         &hosts,
         now,
     ));
