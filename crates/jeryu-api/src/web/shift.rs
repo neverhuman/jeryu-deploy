@@ -39,6 +39,8 @@ use super::WebState;
 use super::pipeline::{self, NewEvent};
 use super::strict_query::StrictQuery;
 use super::workcells_support::{TypedError, typed_error};
+#[cfg(test)]
+pub(crate) use heartbeats::migrate_through as migrate_shift_store_through;
 use heartbeats::{HEALTHY_MS, HeartbeatStore};
 pub(crate) use heartbeats::{migrate as migrate_shift_store, rfc3339_ms};
 use queue::{Queue, WriteError, commit_change, discover};
@@ -46,10 +48,11 @@ pub(crate) use queue::{git as run_git, resolve as resolve_commit};
 use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;
 pub(crate) use types::{
-    BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, TodosQuery, WorkerRow, WorkersQuery,
+    Attempt, BlockKind, ShiftBranch, ShiftRepo, ShiftTodo, TodoStatus, TodosQuery, WorkerRow,
+    WorkersQuery,
 };
 #[cfg(test)]
-pub(crate) use types::{Heartbeat, ShiftPr};
+pub(crate) use types::{Heartbeat, ShiftPr, TodoPr};
 use visibility::stage_event;
 pub(crate) use visibility::{
     FamilySnapshot, attention_snapshot, shift_context, todo_traces, trailer_commit, trailer_todos,
@@ -294,6 +297,29 @@ pub(crate) fn all_todos(state: &WebState) -> (Vec<ShiftTodo>, Vec<String>) {
         }
     }
     (todos, problems)
+}
+
+/// Every todo of one family (canonical key) or of every hosted family, with
+/// the merged, released and pull-request truth `GET /api/v1/shift/todos`
+/// derives, so a report over todos counts the same work as merged. A queue
+/// that cannot be read fails the whole answer, as it does on that route.
+pub(crate) fn enriched_todos(
+    state: &WebState,
+    family: Option<&str>,
+) -> Result<Vec<ShiftTodo>, String> {
+    let now = Utc::now();
+    let mut todos = Vec::new();
+    for queue in discover(&state.repo_manager) {
+        if family.is_some_and(|family| family != queue.family.name) {
+            continue;
+        }
+        let queued = queue_todos(state, &queue)
+            .map_err(|err| format!("todo queue {}: {err}", queue.family.name))?;
+        let mut family_todos: Vec<ShiftTodo> = queued.iter().map(|q| q.todo.to_api(now)).collect();
+        state.shift.truth.enrich(state, &queue, &mut family_todos);
+        todos.extend(family_todos);
+    }
+    Ok(todos)
 }
 
 /// `GET /api/v1/shift/todos`

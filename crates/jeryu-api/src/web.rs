@@ -56,6 +56,7 @@ mod work;
 mod workcells;
 mod workcells_support;
 mod ws;
+mod yields;
 
 pub use bots::render_bot_setup_script;
 /// Whether the `jankurai/proof` gate binds for a repository. The push path
@@ -1109,6 +1110,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         ("/api/v1/pins", get(pipeline::pins::pins)),
         ("/api/v1/trace", get(pipeline::trace::trace)),
+        ("/api/v1/yield", get(yields::yield_report)),
         ("/api/v1/release-board", get(release_board::list_boards)),
         (
             "/api/v1/release-board/:family",

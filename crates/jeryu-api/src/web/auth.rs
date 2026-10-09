@@ -1295,6 +1295,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || attention_path(path)
         || pins_path(path)
         || trace_path(path)
+        || yield_path(path)
         || audit_path(path)
 }
 
@@ -1340,6 +1341,12 @@ fn pins_path(path: &str) -> bool {
 /// repository the work touches, so like the inbox it is for global admins.
 fn trace_path(path: &str) -> bool {
     path == "/api/v1/trace" || path == "/api/v1/trace/"
+}
+
+/// The yield report names todos, their spend and the routing experiments of
+/// every family, so like the event log it reads from it is for global admins.
+fn yield_path(path: &str) -> bool {
+    path == "/api/v1/yield" || path == "/api/v1/yield/"
 }
 
 fn admin_only_path(path: &str) -> bool {

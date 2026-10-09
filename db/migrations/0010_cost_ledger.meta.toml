@@ -1,0 +1,31 @@
+# Structured metadata for 0010_cost_ledger.sql. The SQL file is checksum-bound
+# once applied, so its lock and timeout posture lives here.
+#
+# The store is SQLite, not PostgreSQL: there is no `SET lock_timeout` or
+# `SET statement_timeout` to put in the SQL (SQLite rejects both). The
+# equivalents below are what bound this migration in practice.
+
+migration = "0010_cost_ledger"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/pipeline/store.rs"
+apply = "HeartbeatStore::open / EventStore::open -> migrate(), one transaction per migration"
+
+[lock_timeout]
+# SQLite's lock wait is the connection busy timeout, set before migrate() runs.
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+
+[statement_timeout]
+# SQLite has no statement timeout. The bound is the backfill's source: it
+# copies rows of pipeline_events, which the server prunes to 30 days, so the
+# INSERT ... SELECT reads at most a month of events once.
+mechanism = "backfill bounded by pipeline_events 30-day retention"
+value = "one pass over at most 30 days of events"
+
+[rollback]
+plan = "stop the server, DROP TABLE cost_ledger and delete version 10 from shift_schema_migrations"
+backup = "sqlite3 shift.sqlite '.backup cost-ledger.sqlite' before rollback; ledger rows older than 30 days exist nowhere else"
+
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::pipeline::ledger_tests (a version-9 store upgrades and copies its costed events)"

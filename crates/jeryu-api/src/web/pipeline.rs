@@ -21,6 +21,8 @@ mod attention_tests;
 #[cfg(test)]
 mod emit_tests;
 #[cfg(test)]
+mod ledger_tests;
+#[cfg(test)]
 mod pins_tests;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -39,8 +41,8 @@ use serde_json::{Value, json};
 
 use super::WebState;
 use super::workcells_support::{TypedError, typed_error};
-pub(crate) use store::EventStore;
 use store::Inserted;
+pub(crate) use store::{EventStore, LedgerRow};
 use types::{EVENTS_SCHEMA, EventsResponse, MAX_BATCH, normalize};
 pub(crate) use types::{Event, EventsQuery, NewEvent};
 

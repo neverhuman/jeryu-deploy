@@ -14,6 +14,8 @@ tools. This page is the contract that makes it visible in one place:
   released, and which pull request carries it.
 - **`/api/v1/trace`**: where one piece of work is, from the todo that filed it
   to the deployment that ships it. It answers "where is this".
+- **`/api/v1/yield`**: what the agent factory spent against what reached main.
+  It answers "what does a merged change cost".
 
 JSON is snake_case. Every refusal on these routes is a typed JSON error
 (`code`, `message`, `reason`, `repair_hint`, `common_fixes`, `docs_url`),
@@ -24,7 +26,8 @@ never HTML. A path under `/api/` (any version) that no route matches answers
 Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
 `crates/jeryu-api/src/web/pipeline/` (store, emit points, attention rules,
 the work trace), `crates/jeryu-api/src/web/shift/truth.rs` and
-`shift/visibility.rs`, `db/migrations/0002_pipeline_events.sql`.
+`shift/visibility.rs`, `crates/jeryu-api/src/web/yields.rs` and `yields/`,
+`db/migrations/0002_pipeline_events.sql`, `db/migrations/0010_cost_ledger.sql`.
 
 ## Access
 
@@ -37,6 +40,7 @@ the work trace), `crates/jeryu-api/src/web/shift/truth.rs` and
 | `GET`, `POST /api/v1/attention/acks` | global admins |
 | `GET /api/v1/pins` | global admins |
 | `GET /api/v1/trace` | global admins |
+| `GET /api/v1/yield` | global admins |
 | WebSocket scope `pipeline` | global admins |
 
 Reads are admin-only in v1 because events and attention items carry todo
@@ -100,6 +104,18 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 | `gate.started`, `gate.finished`, `review.started`, `review.finished` | a runner heartbeat's `current` or `last` differs from that runner's previous beat (`review.*` for the `redteam` label; never for the `automation` label, see [Runner heartbeats](#runner-heartbeats)). A reviewer verdict of `hold`, `failed`, `publication_rejected` or `too_large` sets `needs_human` |
 | `deploy.created`, `deploy.status` | a write to the Deployments API; `outcome` is the deployment status state, `needs_human` for `failure` and `error`; `reason` is the status description, which `deploy-release.sh` ends with the last meaningful line of switch.sh's output on failure. The status request may also carry `log_path` (the operator's kept switch log on the release host) and `log_tail`: the Deployments API stores neither, and the event's `detail` carries both (the tail cut to its last 20 lines and at most 6000 bytes of JSON, so the event fits the 8 KiB `detail` limit) |
 
+### Cost ledger
+
+Every stored event with a `cost_usd` is also written to `cost_ledger` in the
+same transaction, with the event's `reporter`, `event_id`, `ts_ms`, `source`,
+`kind`, `family`, `repo`, `pr`, `sha`, `todo_id`, `shift`, `outcome`,
+`cost_usd`, `seconds` and `detail`. The ledger is never pruned: spend is a
+record, the event log is telemetry. A repeated `event_id` writes neither table,
+and an event re-posted after the log pruned it is stored in the log again but
+counted once in the ledger (the ledger is unique on `reporter`, `event_id`).
+Migration `0010_cost_ledger.sql` copied every costed event the log held when it
+ran.
+
 There is no `status.posted`: commit statuses are too noisy, and `gate.*` covers
 them. Server-side emission is best-effort: a failed insert is written to the
 server log and never reaches the response of the request it rode on.
@@ -108,9 +124,10 @@ Posted by producers:
 
 | Source | Kinds |
 |---|---|
-| `todoq` | `todo.claimed`, `todo.attempt_finished` (`outcome` `done`, `retry`, `blocked` or `ratelimit`; `cost_usd`, `seconds`, `log_tail`), `todo.merged`, `todo.waiting_on_unmerged`, `shift.exhausted` (`shift` is the shift branch, `needs_human` when claimable todos are left waiting; `detail` has `spent_usd`, `budget_usd` and `waiting`), `worker.error` |
+| `todoq` | `todo.claimed`, `todo.attempt_finished` (`outcome` `done`, `retry`, `blocked`, `ratelimit`, `retarget` or `killed`; `cost_usd`, `seconds`, `log_tail`; `detail` has `usage`, `model`, `agent`, `experiment`, `session`, `factory`), `todo.merged`, `todo.waiting_on_unmerged`, `shift.exhausted` (`shift` is the shift branch, `needs_human` when claimable todos are left waiting; `detail` has `spent_usd`, `budget_usd` and `waiting`), `worker.error` |
 | `auto-stage` | `release.staged` (`sha` is the staged commit; `detail` has `release`, `previous_release`, `deploy_command`), `release.stage_failed` (`log_tail`; `needs_human` on the final attempt) |
 | `auto-pin` | `pin.bump_opened` (`repo` is the consumer, `pr` the bump, `sha` the dependency commit; `detail` has `dependency`, `from`, `to`, `web_dist_sha256`), `pin.bump_failed` (`log_tail`; `needs_human` on the second failure for the same commit) |
+| the pull request reviewer | `pr.reviewed` (`repo`, `pr`, `sha`, `outcome` is the review decision, `cost_usd`, `seconds`; `detail` has `usage`, `model`, `decision`). The yield report reads the kind, not the source name |
 | `pr-gate` | `gate.log` (`outcome` including `timed_out` and `inputs_changed`, `seconds`, `log_tail`, a receipt subset in `detail`) |
 
 ### `POST /api/v1/events`
@@ -472,6 +489,18 @@ person that work is waiting for a tag.
   family repo name, as in `commits`. `state` is the core pull request state
   (`mergeable`, `merged`, `closed`, ...), as on the shift cards.
 - `cost_usd`: the sum over `worked_by`, or null.
+- `triage_cost_usd`: what triaging the todo cost, or null when todoq recorded
+  none.
+- `worked_by[]` attempts carry, besides `by, host, slot, model, session,
+  started, ended, outcome, cost_usd, note, shift`, whichever of these the file
+  has (omitted when it has not): `agent` (harness CLI, e.g. `claude` or
+  `codex`; absent means the operator default), `factory`
+  (`agent:model:p<prompt sha8>`), `run` (run directory name), `experiment`
+  (routing experiment; absent means not routed), `arm_p` (the probability the
+  arm had of being drawn), `cost_estimated` (`true` when the cost was priced
+  from a transcript because the run was stopped first) and `usage`
+  (`{"<model>": {input, output, cache_read, cache_write, thinking, cost_usd,
+  cost_basis, ...}}`, numbers as numbers). `outcome` may also be `killed`.
 - `park_until`: when a `parked` todo comes back by itself, or `""`.
 - `block_kind`: on `blocked` and `handoff` todos, what kind of help it needs
   (see [Block kinds](#block-kinds)); null on every other status.
@@ -552,6 +581,73 @@ dependency commit it names reaches the work. Reaching means the work's commit
 is that commit or an ancestor of it, counting both the sha the todo recorded
 and the base commit that carries its `Todo:` trailer, because a shift branch
 is replayed onto the base and the sha changes.
+
+## Yield
+
+`GET /api/v1/yield` reports spend against what reached main. Admin-only, like
+the event log. Implementation: `crates/jeryu-api/src/web/yields.rs` (route)
+and `yields/report.rs` (arithmetic).
+
+Query: `family` (either spelling; an unknown family is `422 family_unknown`),
+`since` and `until` (`YYYY-MM-DD`, UTC, both included; default `until` is
+today and `since` 28 days before `until`), `by` = `model`, `agent`,
+`experiment`, `family`, `repo`, `requester` or `week` (default `model`). A bad
+value, `since` after `until`, or a key the route does not read is
+`422 invalid_query`.
+
+The unit of work is a todo, read with the same merged truth as
+`GET /api/v1/shift/todos` ([Todo truth](#todo-truth)). A todo is in the window
+when at least one of its attempts started in it; all of its attempts then
+count. Author spend (an attempt's `cost_usd`) goes to that attempt's group. A
+todo's outcome (merged, first pass), its `triage_cost_usd` and its review spend
+go to the group of its landing attempt: the last `done` attempt, else its last.
+Review spend is every `pr.reviewed` row of the cost ledger whose `repo` (by
+name) and `pr` is one of the todo's shift pull requests (`prs`), split equally
+over every todo that pull request carries.
+
+Groups: `model` is the attempt's model; `agent` its harness, `claude` when
+absent; `experiment` is `<experiment>/<agent>:<model>` or `(not routed)`;
+`family`; `repo` is the todo's first repo; `requester` is `requested_by`;
+`week` is the Monday (UTC) of the attempt's `started`. A missing value groups
+as `(unknown)` (`(none)` for a todo without repos).
+
+Where a todo ended up: **main** when merged; **scrap** when `blocked`,
+`closed` or `handoff` and not merged; **pending** otherwise.
+
+```jsonc
+{
+  "schema_version": "jeryu.yield/v1",
+  "generated_at": "2026-10-14T12:00:00Z",
+  "window": {"since": "2026-10-01", "until": "2026-10-14"},
+  "family": null,              // or the canonical family key asked for
+  "by": "model",
+  "price_sources": ["config", "pricing@0000001"],  // distinct usage cost_basis, sorted
+  "totals": Row,
+  "groups": [Row & {"group": "model-a"}],          // spend_usd, highest first
+  "weekly": [{"week": "2026-10-05", "group": "model-a", "merged": 1,
+              "main_usd": 4.75, "usd_per_merged": 4.75}],  // group "all" for by=week
+  "experiments": [{"experiment": "exp-1",
+                   "arms": [{"agent": "codex", "model": "model-b", "arm_p": 0.25,
+                             "enough_data": false, "row": Row}]}],
+  "costliest": [TodoRef],      // top 10 by spend
+  "scrap": [TodoRef]           // top 10 scrap by spend
+}
+```
+
+`Row` (money in USD, rates 0..1, null when undefined): `todos`, `attempts`,
+`merged`, `first_pass`, `spend_usd` (= `author_usd + review_usd +
+triage_usd`), `author_usd`, `review_usd`, `triage_usd`, `main_usd`,
+`scrap_usd`, `pending_usd`, `killed_usd` (attempts with outcome `killed`),
+`estimated_usd` (attempts with `cost_estimated`), `yield` (`main_usd /
+(main_usd + scrap_usd)`), `usd_per_merged` (`main_usd / merged`),
+`usd_per_merged_ci95` (`[lo, hi]`, mean ± 1.96·sd/√n over the whole spend of
+each merged todo landing in the group; null below two), `first_pass_rate`
+(`first_pass / merged`). A merged todo is a first pass when exactly one of its
+attempts is not `ratelimit`, `retarget` or `killed`. An experiment arm has
+`enough_data` once it has 20 merged todos.
+
+`TodoRef`: `{id, family, title, status, merged, spend_usd, attempts, agent,
+model}`, agent and model of the landing attempt.
 
 ## Runner heartbeats
 
@@ -822,6 +918,11 @@ may be older than the client.
   which holds telemetry only. `switch.sh` does not snapshot that file, and does
   not need to: an older binary checks only the migrations it knows, so a
   rollback runs against the migrated file unchanged.
+  `0010_cost_ledger.sql` adds `cost_ledger`, which is a record, not telemetry:
+  rows older than 30 days exist nowhere else, so back up `shift.sqlite`
+  (`sqlite3 shift.sqlite '.backup <file>'`) before deleting it or rolling the
+  migration back. An older binary ignores the table; costs it stores during an
+  overlap are not copied.
 - **Environment.** `JERYU_EVENT_REPORTERS` (site setting, e.g. `ci-bot,review-bot`) and
   `JERYU_SHIFT_REPORTERS` (site setting, e.g. `fleet-bot,pool-bot`; unset, only
   admins may post shift heartbeats). todoq

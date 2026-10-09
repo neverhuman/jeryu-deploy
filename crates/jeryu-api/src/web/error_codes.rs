@@ -795,6 +795,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         422,
         "the workcell archive contains a denied path",
     ),
+    entry(
+        "yield_read_failed",
+        500,
+        "the todo queues or the cost ledger behind the yield report could not be read",
+    ),
 ];
 
 pub(crate) fn lookup(code: &str) -> Option<&'static ErrorCode> {

@@ -42,6 +42,7 @@ pub(crate) const WEB_ROUTES: &[&str] = &[
     "/shared-tools/adoption",
     "/shared-tools/adoption/:tool",
     "/settings",
+    "/yield",
     "/wiki",
     "/wiki/*",
 ];

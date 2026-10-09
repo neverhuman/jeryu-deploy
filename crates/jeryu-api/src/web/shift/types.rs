@@ -90,6 +90,8 @@ pub(crate) struct ShiftTodo {
     pub prs: Vec<TodoPr>,
     /// Total spend over every attempt, when any attempt recorded a cost.
     pub cost_usd: Option<f64>,
+    /// What triaging the todo cost, when todoq recorded a non-zero amount.
+    pub triage_cost_usd: Option<f64>,
     pub note: String,
     /// When a parked todo comes back by itself, as the file spells it; empty
     /// when it is parked with no date or not parked at all.
@@ -211,6 +213,31 @@ pub(crate) struct Attempt {
     pub cost_usd: Option<f64>,
     pub note: String,
     pub shift: String,
+    /// The harness CLI that ran the attempt (`claude`, `codex`); absent on
+    /// attempts recorded before todoq wrote it, which ran the operator default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// `agent:model:p<prompt sha8>`, the full recipe the attempt ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub factory: Option<String>,
+    /// The worker's run directory name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    /// The routing experiment that chose the attempt's arm; absent when the
+    /// attempt was not routed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experiment: Option<String>,
+    /// The probability the arm had of being drawn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arm_p: Option<f64>,
+    /// True when the cost was priced from a transcript because the run was
+    /// stopped before it reported one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_estimated: Option<bool>,
+    /// Token counts and cost by model, as the file has them:
+    /// `{ "<model>": { input, output, cache_read, cache_write, thinking, cost_usd, ... } }`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

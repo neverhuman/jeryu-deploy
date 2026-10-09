@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `GET /api/v1/yield` (admin-only) reports what the agent factory spent against
+  what reached main: cost per merged change with a 95% interval, yield
+  (main spend over main plus scrap), first-pass rate, review and triage share,
+  killed and estimated spend, a weekly trend and the arms of each routing
+  experiment side by side, grouped by model, agent, experiment, family, repo,
+  requester or week. Costs now survive the event log's 30-day prune: every
+  event with a `cost_usd` is also kept in `cost_ledger` (migration
+  `0010_cost_ledger.sql`, which copies the costed events already stored). Todo
+  attempts pass through todoq's new `agent`, `factory`, `run`, `experiment`,
+  `arm_p`, `cost_estimated` and `usage` fields, and todos their
+  `triage_cost_usd`. The web app's `/yield` route is registered.
+  `docs/pipeline-events.md`, "Yield".
+
 - The bot proxy fills the MCP routing headers a client left out: `Mcp-Method`
   (and `Mcp-Name` for `tools/call`, `prompts/get`, `resources/read`) from the
   JSON-RPC body, and `MCP-Protocol-Version` from the version agreed at

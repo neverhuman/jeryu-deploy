@@ -241,6 +241,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `workcell_run_workspace_denied` | 422 | the workcell run workspace was denied |
 | `workcell_startup_rebase_failed` | 409 | the workcell startup rebase failed |
 | `workcell_tar_path_denied` | 422 | the workcell archive contains a denied path |
+| `yield_read_failed` | 500 | the todo queues or the cost ledger behind the yield report could not be read |
 
 ## CLI Exit Codes
 

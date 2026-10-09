@@ -60,6 +60,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0009_shift_pool_slots",
         include_str!("../../../../../db/migrations/0009_shift_pool_slots.sql"),
     ),
+    (
+        10,
+        "0010_cost_ledger",
+        include_str!("../../../../../db/migrations/0010_cost_ledger.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
@@ -255,7 +260,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
 
 /// A store as an older binary left it: only migrations up to `version`.
 #[cfg(test)]
-pub(super) fn migrate_through(conn: &Connection, version: i64) -> Result<(), String> {
+pub(crate) fn migrate_through(conn: &Connection, version: i64) -> Result<(), String> {
     let end = MIGRATIONS
         .iter()
         .position(|(v, _, _)| *v > version)

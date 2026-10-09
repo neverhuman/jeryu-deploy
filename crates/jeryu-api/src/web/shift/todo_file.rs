@@ -310,6 +310,11 @@ impl TodoFile {
                     .collect();
                 (!costs.is_empty()).then(|| costs.iter().sum())
             },
+            triage_cost_usd: self
+                .extra
+                .iter()
+                .find(|(key, _)| key == "triage_cost_usd")
+                .and_then(|(_, value)| number(value)),
             note: self.note.clone(),
             park_until: self.park_until.clone(),
             block_kind: BlockKind::derive(
@@ -342,11 +347,15 @@ fn attempt_from(value: &Value) -> Option<Attempt> {
             })
             .unwrap_or_default()
     };
-    let cost_usd = table.get("cost_usd").and_then(|v| match v {
-        Value::Float(f) => Some(*f.value()),
-        Value::Integer(i) => Some(*i.value() as f64),
-        _ => None,
-    });
+    let cost_usd = table.get("cost_usd").and_then(number);
+    let optional = |key: &str| {
+        table
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
     Some(Attempt {
         by: text("by"),
         host: text("host"),
@@ -359,7 +368,47 @@ fn attempt_from(value: &Value) -> Option<Attempt> {
         cost_usd,
         note: text("note"),
         shift: text("shift"),
+        agent: optional("agent"),
+        factory: optional("factory"),
+        run: optional("run"),
+        experiment: optional("experiment"),
+        arm_p: table.get("arm_p").and_then(number),
+        cost_estimated: table.get("cost_estimated").and_then(Value::as_bool),
+        usage: table
+            .get("usage")
+            .filter(|v| v.is_inline_table())
+            .map(to_json),
     })
+}
+
+/// A TOML number as `f64`; anything else is not a number.
+fn number(value: &Value) -> Option<f64> {
+    match value {
+        Value::Float(f) => Some(*f.value()).filter(|v| v.is_finite()),
+        Value::Integer(i) => Some(*i.value() as f64),
+        _ => None,
+    }
+}
+
+/// A TOML value as JSON: tables become objects and numbers stay numbers. A
+/// float JSON cannot spell (nan, inf) becomes null.
+fn to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::String(s) => serde_json::Value::String(s.value().clone()),
+        Value::Integer(i) => serde_json::Value::from(*i.value()),
+        Value::Float(f) => serde_json::Number::from_f64(*f.value())
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::Boolean(b) => serde_json::Value::Bool(*b.value()),
+        Value::Datetime(d) => serde_json::Value::String(d.value().to_string()),
+        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(to_json).collect()),
+        Value::InlineTable(table) => serde_json::Value::Object(
+            table
+                .iter()
+                .map(|(key, v)| (key.to_string(), to_json(v)))
+                .collect(),
+        ),
+    }
 }
 
 /// A TOML basic string, spelled the way Python's `json.dumps(ensure_ascii=False)` does.

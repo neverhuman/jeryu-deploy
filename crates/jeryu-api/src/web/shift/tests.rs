@@ -74,6 +74,88 @@ fn todoq_files_round_trip_byte_for_byte() {
     assert!(!api.lease_live);
 }
 
+/// A todo todoq wrote with the cost fields: routed attempts, a killed one
+/// priced from its transcript, usage by model, and a triage cost.
+const COSTED: &str = r#"+++
+id = "20261005-080000-bbbbbb"
+family = "acme"
+title = "Count widgets"
+repos = ["widget"]
+mode = "night"
+priority = 3
+blocked_by = []
+status = "open"
+attempts = 2
+requested_by = "operator"
+filed_at = "2026-10-05T08:00:00Z"
+claim_by = ""
+lease_until = ""
+shift = ""
+change_set = ""
+commits = {}
+merged = false
+note = ""
+triaged = true
+worked_by = [{ "by" = "operator@node-a/w1", "host" = "node-a", "slot" = "w1", "model" = "model-a", "session" = "s-1", "started" = "2026-10-05T08:01:00Z", "ended" = "2026-10-05T08:20:00Z", "outcome" = "killed", "cost_usd" = 0.4, "note" = "", "shift" = "", "agent" = "claude", "factory" = "claude:model-a:p0a1b2c3d", "run" = "run-1", "cost_estimated" = true }, { "by" = "operator@node-a/w2", "host" = "node-a", "slot" = "w2", "model" = "model-b", "session" = "s-2", "started" = "2026-10-05T09:00:00Z", "ended" = "2026-10-05T09:30:00Z", "outcome" = "retry", "cost_usd" = 0.75, "note" = "", "shift" = "", "agent" = "codex", "experiment" = "exp-1", "arm_p" = 0.25, "usage" = { "model-b" = { "input" = 1200, "output" = 300, "cache_read" = 0, "cache_write" = 0, "thinking" = 40, "cost_usd" = 0.75, "cost_basis" = "pricing@0000001" } } }]
+triage_cost_usd = 0.125
++++
+Count them.
+"#;
+
+/// Attempts written before the cost fields existed serialize exactly as they
+/// did; the new fields pass through as JSON when todoq writes them.
+#[test]
+fn attempt_cost_fields_pass_through_and_old_attempts_are_unchanged() {
+    let old = TodoFile::parse(CURRENT).unwrap().to_api(Utc::now());
+    assert_eq!(old.triage_cost_usd, None);
+    let attempt = serde_json::to_value(&old.worked_by[0]).unwrap();
+    let mut keys: Vec<&str> = attempt
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "by", "cost_usd", "ended", "host", "model", "note", "outcome", "session", "shift",
+            "slot", "started"
+        ],
+        "no new key appears on an attempt that has none"
+    );
+    let todo_json = serde_json::to_value(&old).unwrap();
+    assert_eq!(todo_json["triage_cost_usd"], Value::Null);
+
+    let file = TodoFile::parse(COSTED).unwrap();
+    assert_eq!(
+        file.dump(),
+        COSTED,
+        "the new fields round-trip byte for byte"
+    );
+    let api = file.to_api(Utc::now());
+    assert_eq!(api.triage_cost_usd, Some(0.125));
+    let json = serde_json::to_value(&api).unwrap();
+    assert_eq!(json["triage_cost_usd"], 0.125);
+    let killed = &json["worked_by"][0];
+    assert_eq!(killed["outcome"], "killed");
+    assert_eq!(killed["agent"], "claude");
+    assert_eq!(killed["factory"], "claude:model-a:p0a1b2c3d");
+    assert_eq!(killed["run"], "run-1");
+    assert_eq!(killed["cost_estimated"], true);
+    assert!(killed.get("experiment").is_none());
+    assert!(killed.get("usage").is_none());
+    let routed = &json["worked_by"][1];
+    assert_eq!(routed["agent"], "codex");
+    assert_eq!(routed["experiment"], "exp-1");
+    assert_eq!(routed["arm_p"], 0.25);
+    assert_eq!(
+        routed["usage"],
+        json!({"model-b": {"input": 1200, "output": 300, "cache_read": 0, "cache_write": 0,
+                          "thinking": 40, "cost_usd": 0.75, "cost_basis": "pricing@0000001"}})
+    );
+}
+
 #[test]
 fn filed_by_reads_as_requested_by_and_dumps_in_todoq_order() {
     let todo = TodoFile::parse(PRE_SHIFT_TODO).expect("parse pre-shift todo");

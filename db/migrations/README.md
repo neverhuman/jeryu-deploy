@@ -16,6 +16,7 @@ file for an applied version stops the server at startup.
 | `0007_idempotency_keys.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/idempotency.rs` |
 | `0008_agent_run_intents.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/agent_runs/intents.rs` |
 | `0009_shift_pool_slots.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/shift/heartbeats.rs` |
+| `0010_cost_ledger.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/store.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. A migration that alters an existing table also has a

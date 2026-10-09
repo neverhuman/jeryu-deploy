@@ -1,7 +1,9 @@
 //! The pipeline event log in `<data_dir>/shift.sqlite`.
 //!
 //! Append-only: rows are inserted and, after 30 days, pruned (at most once an
-//! hour, on write); nothing updates a row. The schema comes from the reviewed
+//! hour, on write); nothing updates a row. An event that carries a `cost_usd`
+//! is also written to `cost_ledger` (`db/migrations/0010_cost_ledger.sql`),
+//! which is never pruned. The schema comes from the reviewed
 //! `db/migrations/0002_pipeline_events.sql`, applied by the shift migration
 //! runner. The store holds its own connection to the file the heartbeat store
 //! also uses; sqlite serialises the two writers and `busy_timeout` covers the
@@ -23,6 +25,15 @@ pub(crate) const MAX_LIMIT: i64 = 500;
 
 const COLUMNS: &str = "seq, ts_ms, event_id, source, kind, reporter, actor, family, repo, pr, sha, todo_id,
     shift, outcome, needs_human, summary, reason, cost_usd, seconds, log_tail, log_url, detail_json";
+
+/// One row of the durable cost ledger (`db/migrations/0010_cost_ledger.sql`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LedgerRow {
+    pub repo: Option<String>,
+    pub pr: Option<i64>,
+    pub cost_usd: f64,
+    pub detail: Option<serde_json::Value>,
+}
 
 /// What [`EventStore::insert`] did.
 #[derive(Clone, Debug, PartialEq)]
@@ -94,21 +105,57 @@ impl EventStore {
             }
         }
         let detail = event.detail.as_ref().map(|d| d.to_string());
-        inner
+        // The event and its ledger row commit together: a cost is never in
+        // the log without the ledger, nor in the ledger without the log.
+        let tx = inner
             .conn
-            .execute(
-                "INSERT INTO pipeline_events (ts_ms, event_id, source, kind, reporter, actor,
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        tx.execute(
+            "INSERT INTO pipeline_events (ts_ms, event_id, source, kind, reporter, actor,
                    family, repo, pr, sha, todo_id, shift, outcome, needs_human, summary, reason,
                    cost_usd, seconds, log_tail, log_url, detail_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
                    ?17, ?18, ?19, ?20, ?21)",
+            params![
+                now_ms,
+                event.event_id,
+                event.source,
+                event.kind,
+                reporter,
+                event.actor,
+                event.family,
+                event.repo,
+                event.pr,
+                event.sha,
+                event.todo_id,
+                event.shift,
+                event.outcome,
+                event.needs_human,
+                event.summary,
+                event.reason,
+                event.cost_usd,
+                event.seconds,
+                event.log_tail,
+                event.log_url,
+                detail,
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        let seq = tx.last_insert_rowid();
+        if event.cost_usd.is_some() {
+            // OR IGNORE: an event pruned from the log and posted again under
+            // the same event_id is already in the ledger, and counts once.
+            tx.execute(
+                "INSERT OR IGNORE INTO cost_ledger (reporter, event_id, ts_ms, source, kind,
+                   family, repo, pr, sha, todo_id, shift, outcome, cost_usd, seconds, detail_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
-                    now_ms,
+                    reporter,
                     event.event_id,
+                    now_ms,
                     event.source,
                     event.kind,
-                    reporter,
-                    event.actor,
                     event.family,
                     event.repo,
                     event.pr,
@@ -116,18 +163,14 @@ impl EventStore {
                     event.todo_id,
                     event.shift,
                     event.outcome,
-                    event.needs_human,
-                    event.summary,
-                    event.reason,
                     event.cost_usd,
                     event.seconds,
-                    event.log_tail,
-                    event.log_url,
                     detail,
                 ],
             )
             .map_err(|err| err.to_string())?;
-        let seq = inner.conn.last_insert_rowid();
+        }
+        tx.commit().map_err(|err| err.to_string())?;
         if now_ms - inner.last_prune_ms >= PRUNE_EVERY_MS {
             inner
                 .conn
@@ -255,6 +298,32 @@ impl EventStore {
         let mut stmt = inner.conn.prepare(&sql).map_err(|err| err.to_string())?;
         let rows = stmt
             .query_map(params_from_iter(values.iter()), event_from_row)
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())
+    }
+
+    /// Every ledger row of exactly `kind`, oldest first. The ledger is never
+    /// pruned, so this reads spend older than the event log keeps.
+    pub(crate) fn ledger(&self, kind: &str) -> Result<Vec<LedgerRow>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner
+            .conn
+            .prepare_cached(
+                "SELECT repo, pr, cost_usd, detail_json
+                   FROM cost_ledger WHERE kind = ?1 ORDER BY seq",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![kind], |row| {
+                let detail: Option<String> = row.get(3)?;
+                Ok(LedgerRow {
+                    repo: row.get(0)?,
+                    pr: row.get(1)?,
+                    cost_usd: row.get(2)?,
+                    detail: detail.and_then(|d| serde_json::from_str(&d).ok()),
+                })
+            })
             .map_err(|err| err.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|err| err.to_string())
