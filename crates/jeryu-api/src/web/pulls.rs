@@ -1102,6 +1102,9 @@ pub(crate) struct PullPosture {
     /// The failure cause the gate runner published for this head, if the
     /// `pr-gate-runner` check run failed and named one.
     pub gate_failure: Option<GateFailure>,
+    /// The base branch's main-health failure at this pull request's base SHA,
+    /// if the PR is failing beside an already-red main.
+    pub main_failure: Option<GateFailure>,
 }
 
 /// The check run the gate runner publishes on every head it gates.
@@ -1179,6 +1182,16 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
             && summary.checks.pending == 0
             && (!required.is_empty() || summary.checks.total > 0),
         gate_failure: gate_failure(&checks),
+        main_failure: crate::web::pipeline::attention::main_health_at(
+            state,
+            &pr.owner,
+            &pr.repo,
+            &pr.base.sha,
+        )
+        .map(|health| GateFailure {
+            title: health.first_step,
+            attempt: Some(health.log_id),
+        }),
         failing,
         failing_optional,
     })

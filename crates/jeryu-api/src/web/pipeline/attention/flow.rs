@@ -33,6 +33,16 @@ pub(crate) struct PullFacts {
     pub changed_paths: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct MainRedFacts {
+    /// `owner/name`.
+    pub repo: String,
+    pub sha: String,
+    pub since: String,
+    pub first_step: String,
+    pub log_id: String,
+}
+
 /// How many gate-defining paths one item names before it counts the rest.
 const GATE_PATHS_NAMED: usize = 6;
 
@@ -291,11 +301,21 @@ pub(crate) fn pull_items(
                     "Open the failing check and fix or re-run it".to_string(),
                 ),
             };
+            let main_red = posture
+                .main_failure
+                .as_ref()
+                .map_or_else(String::new, |failure| {
+                    format!(
+                        " main is red too at this PR's base: {}. Attempt {}.",
+                        failure.title.trim_end_matches('.'),
+                        failure.attempt.as_deref().unwrap_or("unknown")
+                    )
+                });
             Some((
                 "pr_checks_failing",
                 format!("Checks failing on {label}"),
                 format!(
-                    "{} failed on \"{}\" by {}, so it cannot merge.{cause}",
+                    "{} failed on \"{}\" by {}, so it cannot merge.{cause}{main_red}",
                     posture.failing.join(", "),
                     pull.title,
                     pull.author
@@ -712,6 +732,34 @@ pub(crate) fn queue_items(
         items.push(item);
     }
     items
+}
+
+pub(crate) fn main_red_items(facts: &[MainRedFacts]) -> Vec<Item> {
+    facts
+        .iter()
+        .map(|fact| {
+            let mut item = Draft {
+                id: format!("main-red:{}", fact.repo),
+                kind: "main_red",
+                severity: Severity::Critical,
+                title: format!("{} main is red", fact.repo),
+                reason: format!(
+                    "{} main at {} is failing main-health since {}. First failing step: {}. \
+                     Log id: {}.",
+                    fact.repo, fact.sha, fact.since, fact.first_step, fact.log_id
+                ),
+                href: super::repo_href(&fact.repo),
+                label: "Fix main before merging PRs into it",
+                api: None,
+                command: None,
+            }
+            .build();
+            item.since = Some(fact.since.clone());
+            item.repo = Some(fact.repo.clone());
+            item.sha = Some(fact.sha.clone());
+            item
+        })
+        .collect()
 }
 
 /// Reviewers that could not review an open PR, and a gate with no runner.

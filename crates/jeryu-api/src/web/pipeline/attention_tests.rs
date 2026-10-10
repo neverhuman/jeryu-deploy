@@ -10,11 +10,11 @@ use tower::ServiceExt;
 
 use super::attention::{
     ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
-    Filter, Hosts, Item, KINDS, LatestDeployment, MirrorDrift, MirrorFailure, ProductionFacts,
-    PullFacts, ReviewerOfflineThresholds, Severity, board_items, budget_items, divergence_items,
-    draft_items, drop_shadowed_pull_rows, gate_definition_paths, mirror_items, only_matching,
-    order, pin_items, pull_items, queue_items, release_items, runner_items, shift_items,
-    todo_items, web_routes, worker_items,
+    Filter, Hosts, Item, KINDS, LatestDeployment, MainRedFacts, MirrorDrift, MirrorFailure,
+    ProductionFacts, PullFacts, ReviewerOfflineThresholds, Severity, board_items, budget_items,
+    divergence_items, draft_items, drop_shadowed_pull_rows, gate_definition_paths, main_red_items,
+    mirror_items, only_matching, order, pin_items, pull_items, queue_items, release_items,
+    runner_items, shift_items, todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -714,6 +714,48 @@ fn a_failing_gate_row_says_what_the_runner_published() {
     assert_eq!(
         items[0].action.label,
         "Open the failing check and fix or re-run it"
+    );
+}
+
+#[test]
+fn main_red_is_its_own_attention_row_and_annotates_pr_failures() {
+    let main = MainRedFacts {
+        repo: "jeryu/jeryu-web".to_string(),
+        sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        since: "2026-09-19T11:00:00Z".to_string(),
+        first_step: "step failed (exit 1): ops/ci/check.sh".to_string(),
+        log_id: "5f1d1b3e-2a0c-4f5e-9f2a-7c1d0b8e4a61".to_string(),
+    };
+    let rows = main_red_items(std::slice::from_ref(&main));
+    assert_eq!(kinds(&rows), ["main_red"]);
+    assert_eq!(rows[0].severity, Severity::Critical);
+    assert_eq!(rows[0].repo.as_deref(), Some("jeryu/jeryu-web"));
+    assert_eq!(rows[0].sha.as_deref(), Some(main.sha.as_str()));
+    assert_eq!(rows[0].since.as_deref(), Some(main.since.as_str()));
+    assert_eq!(rows[0].action.label, "Fix main before merging PRs into it");
+    assert!(rows[0].reason.contains(&main.first_step), "{:?}", rows[0]);
+    assert!(rows[0].reason.contains(&main.log_id), "{:?}", rows[0]);
+
+    let pulls = [pull(
+        2,
+        5,
+        PullPosture {
+            failing: vec!["jeryu-web/required".to_string()],
+            main_failure: Some(GateFailure {
+                title: main.first_step,
+                attempt: Some(main.log_id),
+            }),
+            ..PullPosture::default()
+        },
+    )];
+    let items = pull_items(&pulls, &[], now(), &hosts());
+    assert_eq!(kinds(&items), ["pr_checks_failing"]);
+    assert!(
+        items[0]
+            .reason
+            .contains("main is red too at this PR's base"),
+        "{}",
+        items[0].reason
     );
 }
 
@@ -3025,6 +3067,7 @@ async fn finishing_a_todo_removes_its_item() {
 const KIND_ROUTES: &[(&str, &str)] = &[
     ("deploy_failed", "/releases"),
     ("gate_runner_down", "/runners"),
+    ("main_red", "/repos/:provider/:owner/*"),
     ("merger_stalled", "/repos"),
     ("mirror_diverged", "/repos/:provider/:owner/*"),
     ("mirror_failing", "/repos"),
@@ -3186,6 +3229,13 @@ fn one_of_every_kind() -> Vec<Item> {
         github_only_commits: vec!["89abcdef".to_string()],
         tag_drift: Vec::new(),
         since: Some(now() - Duration::hours(3)),
+    }]));
+    items.extend(main_red_items(&[MainRedFacts {
+        repo: repo.to_string(),
+        sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        since: "2026-09-19T11:00:00Z".to_string(),
+        first_step: "step failed (exit 1): ops/ci/check.sh".to_string(),
+        log_id: "5f1d1b3e-2a0c-4f5e-9f2a-7c1d0b8e4a61".to_string(),
     }]));
 
     // One pull request per posture, plus one the queue has been building for

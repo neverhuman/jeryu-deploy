@@ -28,6 +28,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::{DateTime, Utc};
+use jeryu_core::CommitStatusState;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -53,8 +54,9 @@ pub(crate) use board::{BoardFacts, BoardLane, board_items};
 #[cfg(test)]
 pub(crate) use flow::gate_definition_paths;
 pub(crate) use flow::{
-    DraftFacts, LatestDeployment, ProductionFacts, PullFacts, ReviewerOfflineThresholds,
-    draft_items, drop_shadowed_pull_rows, pull_items, queue_items, release_items, runner_items,
+    DraftFacts, LatestDeployment, MainRedFacts, ProductionFacts, PullFacts,
+    ReviewerOfflineThresholds, draft_items, drop_shadowed_pull_rows, main_red_items, pull_items,
+    queue_items, release_items, runner_items,
 };
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
@@ -141,6 +143,7 @@ impl Severity {
 pub(crate) const KINDS: &[&str] = &[
     "deploy_failed",
     "gate_runner_down",
+    "main_red",
     "merger_stalled",
     "mirror_diverged",
     "mirror_failing",
@@ -466,6 +469,98 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     pulls
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MainHealthFailure {
+    pub(crate) first_red: String,
+    pub(crate) first_step: String,
+    pub(crate) log_id: String,
+}
+
+fn main_head(state: &WebState, owner: &str, name: &str) -> Option<String> {
+    let repo = state.github.core().get_repository(owner, name).ok()?;
+    let bare = state.repo_manager.open_parts(owner, name).ok()?;
+    jeryu_gitd::refs::RefService::new((*state.repo_manager).clone())
+        .resolve_commit(&bare, &format!("refs/heads/{}", repo.default_branch))
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn main_health_at(
+    state: &WebState,
+    owner: &str,
+    name: &str,
+    sha: &str,
+) -> Option<MainHealthFailure> {
+    let context = format!("{name}/main-health");
+    let statuses = state.core.combined_status(owner, name, sha).ok()?.statuses;
+    let mut context_statuses = statuses
+        .iter()
+        .filter(|status| status.context == context)
+        .collect::<Vec<_>>();
+    context_statuses.sort_by_key(|status| status.updated_at);
+    let latest = context_statuses.last()?;
+    if !matches!(
+        latest.state,
+        CommitStatusState::Failure | CommitStatusState::Error
+    ) {
+        return None;
+    }
+    let mut first_red = latest.created_at;
+    for status in context_statuses.iter().rev() {
+        if !matches!(
+            status.state,
+            CommitStatusState::Failure | CommitStatusState::Error
+        ) {
+            break;
+        }
+        first_red = status.created_at;
+    }
+    let first_red = first_red.to_rfc3339();
+    let first_step = latest
+        .description
+        .as_deref()
+        .and_then(|description| description.split("; cause: ").nth(1))
+        .map(str::to_string)
+        .unwrap_or_else(|| "main-health failed".to_string());
+    let log_id = latest
+        .description
+        .as_deref()
+        .and_then(|description| description.split("; attempt ").nth(1))
+        .and_then(|tail| tail.split(';').next())
+        .map(str::trim)
+        .filter(|attempt| !attempt.is_empty())
+        .unwrap_or("unknown")
+        .to_string();
+    Some(MainHealthFailure {
+        first_red,
+        first_step,
+        log_id,
+    })
+}
+
+fn main_red_facts(state: &WebState) -> Vec<MainRedFacts> {
+    let mut facts = Vec::new();
+    for repo in state.core.list_repositories(None) {
+        if repo.archived {
+            continue;
+        }
+        let Some(sha) = main_head(state, &repo.owner, &repo.name) else {
+            continue;
+        };
+        let Some(health) = main_health_at(state, &repo.owner, &repo.name, &sha) else {
+            continue;
+        };
+        facts.push(MainRedFacts {
+            repo: format!("{}/{}", repo.owner, repo.name),
+            sha,
+            since: health.first_red,
+            first_step: health.first_step,
+            log_id: health.log_id,
+        });
+    }
+    facts
+}
+
 fn waits_for_review(pull: &PullFacts) -> bool {
     pull.posture.changes_requested == 0
         && pull.posture.failing.is_empty()
@@ -691,6 +786,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     let waiting_review_count = pulls.iter().filter(|pull| waits_for_review(pull)).count();
     let entries = state.merge_queue.entries(state, |_| true);
     let building = entries.iter().any(|e| e.state == QueueState::Building);
+    items.extend(main_red_items(&main_red_facts(state)));
     items.extend(pull_items(&pulls, &entries, now, &hosts));
     items.extend(draft_items(&draft_facts(state), draft_idle_days(), now));
     items.extend(queue_items(&entries, &open, now));
