@@ -151,7 +151,7 @@ async fn browser_repo_routes_serve_the_spa_shell() {
         "/repos/family/jeryu-split",
         "/repos/alice/jeryu",
         "/repos/alice/jeryu/pulls/99",
-        "/repos/alice/jeryu/settings/merge",
+        "/repos/alice/jeryu/settings/danger-zone",
         "/repos/jeryu/alice/jeryu",
         "/repos/jeryu/alice/jeryu/code",
         "/repos/jeryu/alice/jeryu/blob/main/src/lib.rs",
