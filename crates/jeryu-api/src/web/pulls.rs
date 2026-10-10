@@ -50,7 +50,7 @@ const PULL_STATES: &[&str] = &["open", "closed", "merged", "all"];
 
 #[derive(Debug, Clone, Serialize)]
 struct PullRequestListResponse {
-    items: Vec<PullRequestSummary>,
+    items: Vec<Value>,
     /// Pull requests matching the filter before paging.
     total: usize,
     page: PageInfo,
@@ -258,9 +258,9 @@ pub(super) async fn list(
     let mut items: Vec<_> = pulls
         .iter()
         .filter(|pr| state_matches(pr, filter))
-        .map(|pr| summary(&state, pr))
+        .map(|pr| summary_list_item(&state, pr))
         .collect();
-    items.sort_by_key(|pr| pr.number);
+    items.sort_by_key(|pr| pr["number"].as_u64().unwrap_or_default());
     let (items, page) = page.apply(items);
     Json(PullRequestListResponse {
         total: page.total,
@@ -268,6 +268,46 @@ pub(super) async fn list(
         page,
     })
     .into_response()
+}
+
+/// List rows carry the detail needed to explain review and required-context
+/// gates without making a second request for every pull request.
+fn summary_list_item(state: &WebState, pr: &PullRequest) -> Value {
+    let summary = summary(state, pr);
+    let mut value = serde_json::to_value(summary).expect("pull summary serializes");
+    let reviews = reviews_for_pr(state, pr);
+    let mut reviewers = BTreeMap::<String, Value>::new();
+    for review in reviews.iter().filter(|review| review.effective) {
+        let verdict = match review.state.as_str() {
+            "APPROVED" => "approved",
+            "CHANGES_REQUESTED" => "changes requested",
+            _ => "pending",
+        };
+        reviewers.insert(
+            review.author.to_lowercase(),
+            json!({
+                "login": review.author,
+                "verdict": verdict,
+                "at": review.submitted_at,
+            }),
+        );
+    }
+    if let Some(login) = super::auth::REVIEW_IDENTITY.configured() {
+        reviewers.entry(login.to_lowercase()).or_insert_with(|| {
+            json!({
+                "login": login,
+                "verdict": "pending",
+                "at": Value::Null,
+            })
+        });
+    }
+    if let Some(review) = value.get_mut("review") {
+        review["reviewers"] = Value::Array(reviewers.into_values().collect());
+    }
+    let contexts = posture::required_contexts(state, pr);
+    value["required_contexts"] =
+        serde_json::to_value(contexts).expect("required contexts serialize");
+    value
 }
 
 pub(super) async fn detail(

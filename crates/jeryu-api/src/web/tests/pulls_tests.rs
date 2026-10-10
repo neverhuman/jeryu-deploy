@@ -2254,6 +2254,8 @@ async fn the_pull_list_carries_drafts_and_their_non_main_base() {
     assert_eq!(list["items"][0]["number"], number);
     assert_eq!(list["items"][0]["draft"], true);
     assert_eq!(list["items"][0]["base_ref"], "rc/auto");
+    assert!(list["items"][0]["review"]["reviewers"].is_array());
+    assert!(list["items"][0]["required_contexts"].is_array());
 }
 
 /// Finish `count` passes of `recipe` on `repo` through the heartbeat path, so
