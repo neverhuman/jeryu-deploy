@@ -571,7 +571,9 @@ fn main_red_facts(state: &WebState) -> Vec<MainRedFacts> {
 }
 
 fn waits_for_review(pull: &PullFacts) -> bool {
-    pull.posture.changes_requested == 0
+    // An already-landed pull request asks to be closed, not reviewed.
+    pull.landed.is_none()
+        && pull.posture.changes_requested == 0
         && pull.posture.failing.is_empty()
         && pull.posture.checks_green
         && pull.posture.approvals < pull.posture.required_approvals

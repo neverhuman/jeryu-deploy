@@ -96,13 +96,7 @@ fn landed(git_bin: &str, repo: &Path, base: &str, head: &str) -> Option<Landed> 
 /// when it conflicts or git cannot build it (a git older than 2.38 has no
 /// `--write-tree`, which then reads as "not landed").
 fn merged_tree(git_bin: &str, repo: &Path, base: &str, head: &str) -> Option<String> {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let scratch = std::env::temp_dir().join(format!(
-        "jeryu-landed-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&scratch).ok()?;
+    let scratch = scratch_dir()?;
     let output = Command::new(git_bin)
         .arg("-C")
         .arg(repo)
@@ -119,6 +113,31 @@ fn merged_tree(git_bin: &str, repo: &Path, base: &str, head: &str) -> Option<Str
         .lines()
         .next()
         .map(str::to_string)
+}
+
+/// A new, empty, owner-only directory for one `merge-tree` run. It is created
+/// exclusively (never reused), so a directory another local user made first at
+/// a guessed name is skipped rather than written into.
+fn scratch_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.subsec_nanos());
+    for _ in 0..8 {
+        let scratch = std::env::temp_dir().join(format!(
+            "jeryu-landed-{}-{nanos:x}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::DirBuilder::new().mode(0o700).create(&scratch) {
+            Ok(()) => return Some(scratch),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 fn rev_parse(git_bin: &str, repo: &Path, rev: &str) -> Option<String> {

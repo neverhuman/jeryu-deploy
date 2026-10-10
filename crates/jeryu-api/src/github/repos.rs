@@ -139,17 +139,13 @@ impl GithubRouter {
             .get("actor")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        let given = ["archived", "name", "delete_branch_on_merge"]
-            .into_iter()
-            .filter(|field| fields.contains_key(*field))
-            .count();
-        if given > 1 {
-            return validation(
-                "send one of `archived`, `name` or `delete_branch_on_merge`: each is a separate \
-                 request",
-            );
-        }
         if let Some(value) = fields.get("delete_branch_on_merge") {
+            if fields.contains_key("archived") || fields.contains_key("name") {
+                return validation(
+                    "send `delete_branch_on_merge` on its own: it is a separate request from \
+                     archiving or renaming",
+                );
+            }
             let Some(value) = value.as_bool() else {
                 return validation("delete_branch_on_merge must be a boolean");
             };

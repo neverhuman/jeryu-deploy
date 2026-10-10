@@ -164,7 +164,7 @@ impl Fixture {
     }
 
     /// Commit `body` to `file` on main and push it, as another PR landing.
-    fn advance_main(&self, file: &str, body: &str) -> String {
+    pub(super) fn advance_main(&self, file: &str, body: &str) -> String {
         std::fs::write(self.work.join(file), body).unwrap();
         git(&self.work, &["add", "."]);
         git(&self.work, &["commit", "--quiet", "-m", "main moves"]);
@@ -188,7 +188,7 @@ impl Fixture {
             .success()
     }
 
-    fn status(&self, sha: &str, state: CommitStatusState) {
+    pub(super) fn status(&self, sha: &str, state: CommitStatusState) {
         self.state
             .core
             .create_commit_status(

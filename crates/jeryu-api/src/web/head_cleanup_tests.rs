@@ -1,12 +1,18 @@
 //! `delete_branch_on_merge` over real bare repositories: a merged pull
 //! request's head branch is deleted, unless something still needs it.
 
-use super::merge_queue_tests::Fixture;
+use super::merge_queue_tests::{Fixture, git};
 use super::*;
 use crate::github::Method;
-use jeryu_core::{CreatePullRequestRequest, SetBranchProtectionRequest};
+use jeryu_core::{CommitStatusState, CreatePullRequestRequest, SetBranchProtectionRequest};
 
 const FEATURE: &str = "refs/heads/feature";
+const PINNED: &str = "refs/pull/1/head";
+
+/// The commit `refs/pull/1/head` keeps once the branch is gone.
+fn pinned(fx: &Fixture) -> String {
+    git(&fx.bare, &["rev-parse", PINNED])
+}
 
 fn merge(fx: &Fixture) -> Value {
     let response = fx.state.github.handle(
@@ -59,6 +65,7 @@ fn a_direct_merge_deletes_the_head_branch_and_says_so() {
         json!({ "name": "feature", "deleted": true })
     );
     assert!(!fx.has_ref(FEATURE));
+    assert_eq!(pinned(&fx), fx.head, "the merged head stays reachable");
     assert_eq!(fx.main(), fx.head, "the merge itself still landed");
 }
 
@@ -70,6 +77,34 @@ async fn a_merge_queue_landing_deletes_the_head_branch() {
     assert_eq!(merge_queue::tick(&fx.state), 1);
     assert_eq!(fx.entry().state, merge_queue::QueueState::Landed);
     assert!(!fx.has_ref(FEATURE));
+}
+
+/// A landing onto a moved base lands a REPLAY, so the gated head is not in
+/// main's history. Deleting the branch must not leave that commit (the one the
+/// checks ran on, and the pull request's diff) unreachable.
+#[tokio::test]
+async fn a_replayed_landing_keeps_the_gated_head_reachable() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    fx.advance_main("other.txt", "other\n");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let queue_sha = body["queue_sha"].as_str().unwrap().to_string();
+    assert_ne!(queue_sha, fx.head, "the queue built a replay");
+    fx.status(&queue_sha, CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    assert_eq!(fx.entry().state, merge_queue::QueueState::Landed);
+
+    assert!(!fx.has_ref(FEATURE));
+    assert_eq!(pinned(&fx), fx.head);
+    let ancestor = crate::test_git::git_command()
+        .args(["merge-base", "--is-ancestor", &fx.head, "refs/heads/main"])
+        .current_dir(&fx.bare)
+        .status()
+        .unwrap();
+    assert!(
+        !ancestor.success(),
+        "the gated head is reachable only through the pin"
+    );
 }
 
 #[test]
@@ -88,15 +123,30 @@ fn a_repository_with_the_setting_off_keeps_its_branches() {
     assert!(fx.has_ref(FEATURE));
 }
 
+/// A branch some pull request merges into is a long-lived line (a stack's
+/// base, `release/5.0`, `develop`): a back-merge out of it keeps it.
 #[test]
-fn a_branch_another_open_pull_request_stacks_on_is_kept() {
+fn a_branch_a_pull_request_merges_into_is_kept() {
     let fx = Fixture::new("feature.txt", "feature\n");
     let stacked = open_pull(&fx, "feature-2", "feature");
     let body = merge(&fx);
     assert_eq!(body["head_branch"]["deleted"], false, "{body}");
     assert_eq!(
         body["head_branch"]["reason"],
-        format!("open pull request alice/jeryu#{stacked} uses it")
+        format!("pull request #{stacked} merges into it, so it is a long-lived branch")
+    );
+    assert!(fx.has_ref(FEATURE));
+}
+
+#[test]
+fn a_branch_another_open_pull_request_merges_from_is_kept() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let other = open_pull(&fx, "feature", "release");
+    let body = merge(&fx);
+    assert_eq!(
+        body["head_branch"]["reason"],
+        format!("open pull request #{other} uses it"),
+        "{body}"
     );
     assert!(fx.has_ref(FEATURE));
 }
@@ -135,6 +185,13 @@ fn the_setting_reads_and_writes_the_way_github_spells_it() {
         r#"{"delete_branch_on_merge": false, "archived": true}"#,
     );
     assert_eq!(status, 422, "one decision per request: {body}");
+    let (status, body) = patch_repo(&fx, r#"{"archived": true, "name": "renamed"}"#);
+    assert_eq!(status, 422, "{body}");
+    assert!(
+        body.to_string()
+            .contains("archive and rename are separate requests"),
+        "the archive+rename case keeps its own message: {body}"
+    );
 
     let (status, body) = patch_repo(&fx, r#"{"delete_branch_on_merge": false}"#);
     assert_eq!(status, 200, "{body}");

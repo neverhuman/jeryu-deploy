@@ -266,7 +266,17 @@ spelling: `PATCH /repos/{owner}/{repo}` with `{"delete_branch_on_merge": false}`
 
 The branch is kept, and the reason reported, when its head lives in another
 repository, when it is the base or the default branch, when it has branch
-protection, or when another open pull request uses it as its head or its base.
+protection, when any pull request in the repository (in any state) merges into
+it, which marks a long-lived line such as `release/5.0` or `develop` so a
+back-merge out of it keeps it, or when another open pull request uses it as its
+head. An open pull request in another repository is reported without its name.
+
+Before the delete, the merged head is pinned at `refs/pull/<n>/head`, the ref
+GitHub keeps for every pull request. A queue landing onto a moved base, or a
+linear-history direct merge, lands a replay, so the gated head commit is not in
+the base's history; the pin keeps that commit, and the pull request's diff,
+reachable. A pin that cannot be written keeps the branch.
+
 The delete is a compare-and-swap against the head that merged and goes through
 the same ref policy as `git push --delete`, so a push made after the merge, or
 a branch the server's protected-ref rules cover, survives. A direct merge's

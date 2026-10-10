@@ -1233,7 +1233,7 @@ fn create_source_repository(owner: &str, repo: &str, req: &CreatePullRequestRequ
 
 /// The branch name of a head that may carry GitHub's `fork-owner:branch` prefix.
 #[cfg(feature = "web")]
-fn head_branch(head: &str) -> &str {
+pub(super) fn head_branch(head: &str) -> &str {
     head.split_once(':').map_or(head, |(_, branch)| branch)
 }
 

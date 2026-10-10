@@ -10,8 +10,15 @@
 //! - the repository has the setting on (the default);
 //! - the head is not the base or the default branch, and has no branch
 //!   protection of its own;
-//! - no other open pull request uses it, as its head or as its base (a stacked
-//!   pull request would lose its base);
+//! - no pull request in this repository has ever merged INTO it: a branch that
+//!   has been a base is a long-lived line (`release/5.0`, `develop`), and a
+//!   back-merge out of it must not delete it;
+//! - no other open pull request uses it as its head;
+//! - the merged head is pinned first at `refs/pull/<n>/head`, the ref GitHub
+//!   keeps for every pull request. A merge-queue landing or a linear-history
+//!   merge lands a REPLAY of the head, so the gated head commit is not in the
+//!   base's history; without the pin, deleting the branch would leave the
+//!   commit the checks ran on, and the pull request's diff, unreachable;
 //! - it still points at the commit that merged. The delete is a
 //!   compare-and-swap against that commit, so a push that landed after the
 //!   merge is never thrown away, and it goes through the same ref policy as a
@@ -24,6 +31,7 @@
 #![cfg(feature = "web")]
 
 use jeryu_core::{PullRequest, PullRequestState};
+use jeryu_gitd::refs::RefService;
 use serde_json::{Value, json};
 
 use super::GithubRouter;
@@ -53,6 +61,7 @@ pub(super) struct MergedHead<'a> {
     pub repo: &'a str,
     pub number: u64,
     pub base_ref: &'a str,
+    /// The head as recorded, possibly in GitHub's `owner:branch` spelling.
     pub head_ref: &'a str,
     /// Repository full name the head lives in, as recorded on the pull request.
     pub source_repository: &'a str,
@@ -68,21 +77,25 @@ impl GithubRouter {
         resolved: &jeryu_gitd::repo::Repository,
         merged: &MergedHead<'_>,
     ) -> HeadBranch {
-        use jeryu_gitd::refs::{RefService, ZERO_OID};
+        use jeryu_gitd::refs::ZERO_OID;
 
-        let name = merged.head_ref.to_string();
+        let branch = super::pulls::head_branch(merged.head_ref);
+        let name = branch.to_string();
         let kept = |reason: String| HeadBranch::Kept {
             name: name.clone(),
             reason,
         };
-        if let Some(reason) = self.keep_reason(merged) {
+        if let Some(reason) = self.keep_reason(merged, branch) {
             return kept(reason);
         }
         let refs = RefService::new((**rm).clone());
+        if let Err(reason) = pin_pull_head(&refs, resolved, merged) {
+            return kept(reason);
+        }
         match refs.update_ref(
             resolved,
             "system:pr-merge",
-            &format!("refs/heads/{}", merged.head_ref),
+            &format!("refs/heads/{branch}"),
             ZERO_OID,
             Some(merged.merged_head),
         ) {
@@ -95,7 +108,7 @@ impl GithubRouter {
     }
 
     /// Why the head branch stays, or `None` when it may be deleted.
-    fn keep_reason(&self, merged: &MergedHead<'_>) -> Option<String> {
+    fn keep_reason(&self, merged: &MergedHead<'_>, branch: &str) -> Option<String> {
         if super::pulls::is_fork(merged.owner, merged.repo, merged.source_repository) {
             return Some(format!(
                 "it lives in {}, not in this repository",
@@ -112,23 +125,41 @@ impl GithubRouter {
         {
             return Some("delete_branch_on_merge is off for this repository".to_string());
         }
-        if merged.head_ref == merged.base_ref || merged.head_ref == repository.default_branch {
+        if branch == merged.base_ref || branch == repository.default_branch {
             return Some("it is the base or the default branch".to_string());
         }
         if self
             .core
-            .get_branch_protection(merged.owner, merged.repo, merged.head_ref)
+            .get_branch_protection(merged.owner, merged.repo, branch)
             .is_ok()
         {
             return Some("it has branch protection".to_string());
         }
-        self.open_pull_using(merged)
-            .map(|(full_name, number)| format!("open pull request {full_name}#{number} uses it"))
+        if let Some(number) = self.pull_based_on(merged, branch) {
+            return Some(format!(
+                "pull request #{number} merges into it, so it is a long-lived branch"
+            ));
+        }
+        self.open_pull_using(merged, branch)
     }
 
-    /// Another open pull request whose head is this branch of this repository,
-    /// or whose base is this branch.
-    fn open_pull_using(&self, merged: &MergedHead<'_>) -> Option<(String, u64)> {
+    /// A pull request in this repository, in any state, whose base is
+    /// `branch`. Its number is safe to name: it is in the repository being
+    /// merged.
+    fn pull_based_on(&self, merged: &MergedHead<'_>, branch: &str) -> Option<u64> {
+        self.core
+            .list_pull_requests(merged.owner, merged.repo, None)
+            .ok()?
+            .into_iter()
+            .filter(|pr| pr.number != merged.number)
+            .find(|pr| pr.base.ref_name == branch)
+            .map(|pr| pr.number)
+    }
+
+    /// Another open pull request whose head is this branch of this repository.
+    /// One in another repository is reported without its name: the caller may
+    /// not be able to read that repository.
+    fn open_pull_using(&self, merged: &MergedHead<'_>, branch: &str) -> Option<String> {
         let this_repo = format!("{}/{}", merged.owner, merged.repo);
         for repository in self.core.list_repositories(None) {
             let Ok(pulls) = self
@@ -138,28 +169,54 @@ impl GithubRouter {
                 continue;
             };
             for pr in pulls {
-                if !is_open(&pr) {
+                if !is_open(&pr) || super::pulls::head_branch(&pr.head.ref_name) != branch {
                     continue;
                 }
                 let same_repo = pr.owner == merged.owner && pr.repo == merged.repo;
                 if same_repo && pr.number == merged.number {
                     continue;
                 }
-                let head_here = if super::pulls::is_fork(&pr.owner, &pr.repo, &pr.source_repository)
-                {
-                    pr.source_repository.trim_end_matches(".git") == this_repo
-                } else {
-                    same_repo
-                };
-                let uses_as_head = head_here && pr.head.ref_name == merged.head_ref;
-                let uses_as_base = same_repo && pr.base.ref_name == merged.head_ref;
-                if uses_as_head || uses_as_base {
-                    return Some((format!("{}/{}", pr.owner, pr.repo), pr.number));
+                if super::pulls::is_fork(&pr.owner, &pr.repo, &pr.source_repository) {
+                    if pr.source_repository.trim_end_matches(".git") == this_repo {
+                        return Some(
+                            "an open pull request in another repository uses it as its head"
+                                .to_string(),
+                        );
+                    }
+                } else if same_repo {
+                    return Some(format!("open pull request #{} uses it", pr.number));
                 }
             }
         }
         None
     }
+}
+
+/// Point `refs/pull/<n>/head` at the merged head, so the commit the checks ran
+/// on stays reachable once the branch is gone. An existing ref is moved by
+/// compare-and-swap; a pin that cannot be written keeps the branch.
+fn pin_pull_head(
+    refs: &RefService,
+    resolved: &jeryu_gitd::repo::Repository,
+    merged: &MergedHead<'_>,
+) -> Result<(), String> {
+    let pull_ref = format!("refs/pull/{}/head", merged.number);
+    let current = refs
+        .resolve_commit(resolved, &pull_ref)
+        .map_err(|err| format!("{pull_ref} could not be read ({err}), so the branch is kept"))?;
+    if current.as_deref() == Some(merged.merged_head) {
+        return Ok(());
+    }
+    refs.update_ref(
+        resolved,
+        "system:pr-merge",
+        &pull_ref,
+        merged.merged_head,
+        current.as_deref(),
+    )
+    .map_err(|err| {
+        format!("the merged head could not be kept at {pull_ref} ({err}), so the branch is kept")
+    })
 }
 
 fn is_open(pr: &PullRequest) -> bool {

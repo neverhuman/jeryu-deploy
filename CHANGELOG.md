@@ -58,9 +58,11 @@
   `PATCH /repos/{owner}/{repo}`, read back on `GET`; migration
   `0013_repo_merge_settings.sql`). Direct merges, already-contained heads and
   merge-queue landings all do it. A branch from a fork, the base or default
-  branch, a protected branch, or one another open pull request uses as its head
-  or base is kept, and the delete is a compare-and-swap against the merged head,
-  so a later push survives. The merge response's `head_branch` says what
+  branch, a protected branch, a branch any pull request merges into (a
+  long-lived line), or one another open pull request uses as its head is kept.
+  The merged head is pinned at `refs/pull/<n>/head` first, so a replayed landing
+  never leaves the gated commit unreachable, and the delete is a
+  compare-and-swap against the merged head, so a later push survives. The merge response's `head_branch` says what
   happened. `docs/merge-queue.md`.
 - `/needs-you` has a `pr_already_landed` item for an open pull request whose
   change is already on its base branch (its head is in the base's history, or
