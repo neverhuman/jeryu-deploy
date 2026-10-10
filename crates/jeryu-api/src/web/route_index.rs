@@ -60,6 +60,20 @@ pub(super) async fn api_v1(State(state): State<Arc<WebState>>) -> Json<Value> {
     }))
 }
 
+/// Path templates for every mounted primary-API route, in the same display
+/// shape the JSON index publishes.
+pub fn api_v1_route_templates() -> Vec<String> {
+    let mut routes = vec![INDEX_PATH.to_string()];
+    routes.extend(
+        super::api_v1_routes()
+            .iter()
+            .map(|(path, _)| display_path(path)),
+    );
+    routes.sort();
+    routes.dedup();
+    routes
+}
+
 /// `GET /api/v1/openapi.json`: the OpenAPI document for the primary API, built
 /// from the mounted routes, so it cannot describe a route that is not served.
 pub(super) async fn openapi(State(state): State<Arc<WebState>>) -> Json<Value> {
@@ -238,6 +252,8 @@ fn query_params(path: &str) -> &'static [&'static str] {
     match path {
         "/api/v1/attention" => keys::<super::pipeline::attention::AttentionQuery>(),
         "/api/v1/events" => keys::<super::pipeline::EventsQuery>(),
+        "/api/v1/events/histogram" => keys::<super::pipeline::HistogramQuery>(),
+        "/api/v1/usage" => keys::<super::pipeline::UsageQuery>(),
         "/api/v1/yield" => keys::<super::yields::YieldQuery>(),
         "/api/v1/merge-queue" => keys::<super::merge_queue::QueueListQuery>(),
         "/api/v1/repos/:id/merge-queue" => keys::<super::merge_queue::QueuePageQuery>(),
@@ -340,6 +356,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn api_v1_route_templates_are_generated_from_the_mounted_routes() {
+        let routes = api_v1_route_templates();
+        assert!(routes.contains(&"/api/v1".to_string()));
+        assert!(routes.contains(&"/api/v1/repos/{id}".to_string()));
+        assert!(routes.contains(&"/api/v1/repos/{id}/pulls/{number}".to_string()));
+        assert!(
+            !routes.contains(&"/api/v1/repos/{id}/settings".to_string()),
+            "repo settings is not mounted by the server"
+        );
+    }
+
     /// Every path the query table names has to be a route the router mounts,
     /// or the index would publish parameters for a path nobody can call.
     #[test]
@@ -347,6 +375,8 @@ mod tests {
         for path in [
             "/api/v1/attention",
             "/api/v1/events",
+            "/api/v1/events/histogram",
+            "/api/v1/usage",
             "/api/v1/merge-queue",
             "/api/v1/repos/:id/merge-queue",
             "/api/v1/shift/todos",

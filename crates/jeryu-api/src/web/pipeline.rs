@@ -37,6 +37,7 @@ use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::Utc;
 use jeryu_core::{AccountSummary, UserRole};
 use jeryu_readmodel::contracts::WebEvent;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::WebState;
@@ -397,4 +398,100 @@ pub(crate) async fn list_events(
         .into_response(),
         Err(reason) => events_store_error(&reason),
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(crate) struct HistogramQuery {
+    pub range: Option<String>,
+    pub family: Option<String>,
+    pub repo: Option<String>,
+}
+
+impl super::strict_query::StrictFields for HistogramQuery {
+    const KEYS: &'static [&'static str] = &["range", "family", "repo"];
+}
+
+/// `GET /api/v1/events/histogram` (admin-only by path).
+pub(crate) async fn events_histogram(
+    State(state): State<Arc<WebState>>,
+    query: Result<
+        super::strict_query::StrictQuery<HistogramQuery>,
+        super::strict_query::QueryRefused,
+    >,
+) -> AxumResponse {
+    let query = match query {
+        Ok(super::strict_query::StrictQuery(query)) => query,
+        Err(refused) => return refused.into_response(),
+    };
+    match super::family::filter(&state, query.family.as_deref()) {
+        Ok(_) => {}
+        Err(response) => return *response,
+    }
+    let _repo = query.repo.as_deref();
+    let bucket_seconds = match query.range.as_deref().unwrap_or("6h") {
+        "6h" => 300,
+        "24h" => 1800,
+        "7d" => 21600,
+        other => {
+            return events_read_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "events_invalid_query",
+                &format!("range: {other:?} is not one of 6h, 24h, 7d"),
+                "send range=6h, range=24h or range=7d",
+            );
+        }
+    };
+    Json(json!({
+        "schema_version": EVENTS_SCHEMA,
+        "to": Utc::now().to_rfc3339(),
+        "bucket_seconds": bucket_seconds,
+        "buckets": [],
+        "totals": {},
+    }))
+    .into_response()
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(crate) struct UsageQuery {
+    pub family: Option<String>,
+    pub range: Option<String>,
+}
+
+impl super::strict_query::StrictFields for UsageQuery {
+    const KEYS: &'static [&'static str] = &["family", "range"];
+}
+
+/// `GET /api/v1/usage` (admin-only by path).
+pub(crate) async fn usage(
+    State(state): State<Arc<WebState>>,
+    query: Result<super::strict_query::StrictQuery<UsageQuery>, super::strict_query::QueryRefused>,
+) -> AxumResponse {
+    let query = match query {
+        Ok(super::strict_query::StrictQuery(query)) => query,
+        Err(refused) => return refused.into_response(),
+    };
+    match super::family::filter(&state, query.family.as_deref()) {
+        Ok(_) => {}
+        Err(response) => return *response,
+    }
+    match query.range.as_deref().unwrap_or("24h") {
+        "24h" => {}
+        other => {
+            return events_read_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "events_invalid_query",
+                &format!("range: {other:?} is not 24h"),
+                "send range=24h or omit range",
+            );
+        }
+    }
+    Json(json!({
+        "schema_version": "jeryu.usage/v1",
+        "generated_at": Utc::now().to_rfc3339(),
+        "slots": [],
+        "totals_today": {},
+        "buckets": [],
+        "bucket_seconds": 300,
+    }))
+    .into_response()
 }

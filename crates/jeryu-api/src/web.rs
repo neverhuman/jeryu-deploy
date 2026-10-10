@@ -63,6 +63,7 @@ pub use bots::render_bot_setup_script;
 /// Whether the `jankurai/proof` gate binds for a repository. The push path
 /// reads it too: a repository may not turn off an audit the site enforces.
 pub(crate) use pulls::audit_gate_enforced_for;
+pub use route_index::api_v1_route_templates;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
@@ -1104,6 +1105,8 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/events",
             get(pipeline::list_events).post(pipeline::post_events),
         ),
+        ("/api/v1/events/histogram", get(pipeline::events_histogram)),
+        ("/api/v1/usage", get(pipeline::usage)),
         ("/api/v1/attention", get(pipeline::attention::attention)),
         (
             "/api/v1/attention/acks",
