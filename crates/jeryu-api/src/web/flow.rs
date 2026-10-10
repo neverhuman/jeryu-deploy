@@ -9,6 +9,7 @@
 //! arithmetic is in [`report`]; the station list in [`stations`] is shared
 //! with `GET /api/v1/flow/layout`. Contract: `docs/flow.md`, ADR 0004.
 
+pub(crate) mod layout;
 pub(crate) mod project;
 pub(crate) mod report;
 pub(crate) mod stations;
@@ -28,6 +29,7 @@ use serde::Deserialize;
 use super::WebState;
 use super::strict_query::{StrictFields, StrictQuery, one_of};
 use super::workcells_support::{TypedError, typed_error};
+pub(crate) use layout::layout;
 pub(crate) use report::{Request, Visit};
 pub(crate) use stations::Station;
 

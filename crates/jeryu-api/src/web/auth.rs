@@ -1419,9 +1419,10 @@ fn yield_path(path: &str) -> bool {
 }
 
 /// Flow lays out the whole delivery line: the todos, pull requests and lots
-/// of every family, so like the yield report it is for global admins.
+/// of every family, and its layout names private runners and deployment tools,
+/// so like the yield report it is for global admins.
 fn flow_path(path: &str) -> bool {
-    path == "/api/v1/flow" || path == "/api/v1/flow/"
+    path == "/api/v1/flow" || path == "/api/v1/flow/" || path.starts_with("/api/v1/flow/")
 }
 
 fn admin_only_path(path: &str) -> bool {

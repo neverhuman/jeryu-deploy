@@ -47,6 +47,7 @@ projection and the Flow report), `db/migrations/0002_pipeline_events.sql`,
 | `GET /api/v1/trace` | global admins |
 | `GET /api/v1/yield` | global admins |
 | `GET /api/v1/flow` | global admins |
+| `GET /api/v1/flow/layout` | global admins |
 | WebSocket scope `pipeline` | global admins |
 
 Reads are admin-only in v1 because events and attention items carry todo
@@ -670,6 +671,25 @@ attempts is not `ratelimit`, `retarget` or `killed`. An experiment arm has
 
 `TodoRef`: `{id, family, title, status, merged, spend_usd, attempts, agent,
 model}`, agent and model of the landing attempt.
+
+## Flow
+
+`GET /api/v1/flow` reports the delivery-line stations. Admin-only, like the
+event log and yield report. The live metrics start unknown until the flow
+ledger has samples.
+
+`GET /api/v1/flow/layout` reports the same stations with the tools whose
+heartbeats serve them. It reads no query parameters; an unknown parameter is
+`422 invalid_query`. The route returns station cards with each tool's
+`runnerId`, `host`, `online`/`offline` state, `busy`/`idle` load, `lastSeen`,
+reported `code`, failure state and station capacity.
+
+Expected capacity is optional site configuration:
+`JERYU_FLOW_EXPECTED_<STATION>`, where `<STATION>` is `QUEUE`, `WORK`,
+`SHIFT`, `REVIEW`, `GATE`, `MERGE`, `PIN`, `STAGE` or `DEPLOY`. Absent expected
+capacity is reported as unknown. A station is flagged when it has no reporting
+tool, fewer online tools than its expected capacity, an invalid expected
+capacity value, or a tool whose latest heartbeat shows a failure.
 
 ## Runner heartbeats
 

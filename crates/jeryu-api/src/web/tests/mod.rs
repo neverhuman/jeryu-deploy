@@ -35,6 +35,7 @@ mod control_plane_tests;
 mod discovery_tests;
 mod evidence_independence_tests;
 mod family_key_tests;
+mod flow_tests;
 mod gate_wanted_tests;
 mod git_authorization;
 mod github_rest_tests;

@@ -93,6 +93,7 @@ Implemented HTTP/WebSocket routes:
 - `GET /api/v1/repos/{id}/commits?path=` (history narrowed to one file or directory)
 - `GET /api/v1/site-settings` (the internal wiki, shown only to callers who can read it)
 - `GET /api/v1/admin/site-settings`, `PUT /api/v1/admin/site-settings` (admin only)
+- `GET /api/v1/flow`, `GET /api/v1/flow/layout` (admin only)
 - `POST /api/v1/markdown/render`
 - `GET /api/v1/codegraph/query`
 - `GET /api/v1/codegraph/symbol`
