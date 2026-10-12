@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The gate's `cargo test` keeps test temp directories on tmpfs (`/dev/shm`, or
+  `JERYU_CI_TEST_TMPDIR`) when one is writable. Every web test opens a fresh
+  SQLite forge, and its migrations fsync: about 2.2s per fixture on disk and
+  45ms on tmpfs. The jeryu_api lib tests ran in 9.7s instead of 124-356s on a
+  loaded gate host. With no writable tmpfs nothing changes.
 - `docs/connect-an-agent.md` (served at `/api/v1/docs/connect-an-agent.md`):
   one page an owner hands an external agent, with its agent token, so the
   agent configures MCP, REST and git and verifies its own access.

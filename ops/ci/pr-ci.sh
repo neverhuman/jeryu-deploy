@@ -91,7 +91,23 @@ echo "[pr-ci] cargo test (excl. the host-ci-skips.sh list)" >&2
 # The exclude/skip lists live in ops/ci/host-ci-skips.sh, one place with reasons.
 source ops/ci/host-ci-skips.sh
 mapfile -t host_ci_skip_args < <(host_ci_skip_args)
-JERYU_JANKURAI_BIN=/nonexistent/jankurai \
+# Test temp directories live on tmpfs when one is writable. Nearly every web test
+# opens a fresh SQLite forge, and its migrations commit with an fsync each: on a
+# disk that is ~2.2s per fixture (1.55s to open, 0.6s for WebState), on tmpfs
+# ~45ms. With several gates syncing one disk at once, that was most of the
+# jeryu_api lib run (124-356s). No test asserts durability. JERYU_CI_TEST_TMPDIR
+# names another tmpfs; with none writable the tests use the default TMPDIR.
+test_tmp=""
+for tmpfs in "${JERYU_CI_TEST_TMPDIR:-}" /dev/shm; do
+  if [ -n "$tmpfs" ] && [ -d "$tmpfs" ] && [ -w "$tmpfs" ]; then
+    test_tmp="$(mktemp -d "$tmpfs/jeryu-pr-ci.XXXXXX")" && break
+  fi
+done
+if [ -n "$test_tmp" ]; then
+  trap 'rm -rf -- "$test_tmp"' EXIT
+  echo "[pr-ci] test temp directories on $test_tmp" >&2
+fi
+TMPDIR="${test_tmp:-${TMPDIR:-/tmp}}" JERYU_JANKURAI_BIN=/nonexistent/jankurai \
   cargo test --locked --workspace "${HOST_CI_EXCLUDE_PACKAGES[@]}" --jobs "$JOBS" --no-fail-fast -- \
   --test-threads "$TEST_THREADS" "${host_ci_skip_args[@]}"
 
