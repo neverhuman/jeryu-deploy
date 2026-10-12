@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `docs/connect-an-agent.md` (served at `/api/v1/docs/connect-an-agent.md`):
+  one page an owner hands an external agent, with its agent token, so the
+  agent configures MCP, REST and git and verifies its own access.
 - Scoped agent tokens and one MCP endpoint (ADR 0005). An owner issues a
   `jat_` token for one of its bots (`POST /api/v1/bots/{id}/tokens`, list with
   `GET`, revoke with `POST .../tokens/{token_id}/revoke`) and the agent uses it

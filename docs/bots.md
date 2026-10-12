@@ -56,6 +56,9 @@ An agent token is the simplest way to connect an agent: one URL and one token,
 no exchange and no local proxy. The token acts as the bot: it carries the bot's
 grant and nothing more, on REST, git and MCP alike
 (see `docs/adr/0005-one-mcp-endpoint-scoped-agent-tokens.md`).
+To set an agent up, give it the token and the page
+`/api/v1/docs/connect-an-agent.md` on this forge; it walks the agent through
+MCP, REST and git itself (`docs/connect-an-agent.md`).
 
 ```
 curl -s -X POST https://forge.example/api/v1/bots/<bot-id>/tokens \
