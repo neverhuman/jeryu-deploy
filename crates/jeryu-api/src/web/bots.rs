@@ -115,6 +115,90 @@ pub(super) async fn revoke(
     }
 }
 
+/// `POST /api/v1/bots/:id/tokens` — issue a scoped agent token. The token is
+/// in this response once and never again.
+pub(super) async fn issue_token(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath(id): AxumPath<String>,
+    body: Bytes,
+) -> AxumResponse {
+    let Some(bot_id) = parse_bot_id(&id) else {
+        return invalid_bot_id();
+    };
+    let fields = if body.is_empty() {
+        Map::new()
+    } else {
+        let Some(fields) = object_fields(&body) else {
+            return invalid_body();
+        };
+        fields
+    };
+    let label = match fields.get("label") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(label)) => Some(label.as_str()),
+        Some(_) => return invalid_body(),
+    };
+    let ttl_days = match fields.get("ttl_days") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_u64().and_then(|days| u32::try_from(days).ok()) {
+            Some(days) => Some(days),
+            None => return invalid_body(),
+        },
+    };
+    match state
+        .core
+        .issue_bot_access_token(&account.login, bot_id, label, ttl_days)
+    {
+        Ok(issued) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "bot": issued.bot,
+                "token_id": issued.token_id,
+                "token": issued.token,
+                "label": issued.label,
+                "created_at": issued.created_at,
+                "expires_at": issued.expires_at,
+            })),
+        )
+            .into_response(),
+        Err(error) => map_bot_error(error),
+    }
+}
+
+/// `GET /api/v1/bots/:id/tokens` — the bot's agent tokens, never the tokens.
+pub(super) async fn list_tokens(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath(id): AxumPath<String>,
+) -> AxumResponse {
+    let Some(bot_id) = parse_bot_id(&id) else {
+        return invalid_bot_id();
+    };
+    match state.core.list_bot_access_tokens(&account.login, bot_id) {
+        Ok(tokens) => Json(json!({ "tokens": tokens })).into_response(),
+        Err(error) => map_bot_error(error),
+    }
+}
+
+/// `POST /api/v1/bots/:id/tokens/:token_id/revoke`
+pub(super) async fn revoke_token(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath((id, token_id)): AxumPath<(String, String)>,
+) -> AxumResponse {
+    let Some(bot_id) = parse_bot_id(&id) else {
+        return invalid_bot_id();
+    };
+    match state
+        .core
+        .revoke_bot_access_token(&account.login, bot_id, &token_id)
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(error) => map_bot_error(error),
+    }
+}
+
 pub(super) async fn roster(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,

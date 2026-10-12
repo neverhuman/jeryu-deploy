@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Scoped agent tokens and one MCP endpoint (ADR 0005). An owner issues a
+  `jat_` token for one of its bots (`POST /api/v1/bots/{id}/tokens`, list with
+  `GET`, revoke with `POST .../tokens/{token_id}/revoke`) and the agent uses it
+  directly as a bearer on REST, git and `/mcp`: no exchange, no local proxy.
+  The token carries the bot's grant only. `/mcp` offers each caller the tools
+  its principal may use; a personal access token is refused on `/mcp` unless
+  its direct peer is listed in `JERYU_MCP_PERSONAL_TOKEN_PEERS` (empty by
+  default; no request header is trusted), so an edge can expose it.
+  Local-dev trust is withheld from requests carrying a forwarding header, and
+  routes that answer with a once-shown secret (bot enrollment, key rotation,
+  agent tokens, token exchange) are never kept by the idempotency store. `/mcp/bot`, the token exchange
+  and the setup-script proxy keep working for existing bot hosts.
 - Design for Flow (`docs/flow.md`, ADR 0004): the delivery line as stations,
   with WIP, queue and process time, rework loops, holds, the bottleneck and the
   runners behind each station, built from the event log and heartbeats. Docs only;

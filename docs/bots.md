@@ -50,6 +50,42 @@ rotates the key (the old one retires after a grace period),
 it. A repository's writers can see its bots at `GET /api/v1/repos/{id}/bots`
 and their activity at `/api/v1/repos/{id}/bot-activity`.
 
+## Agent tokens (recommended)
+
+An agent token is the simplest way to connect an agent: one URL and one token,
+no exchange and no local proxy. The token acts as the bot: it carries the bot's
+grant and nothing more, on REST, git and MCP alike
+(see `docs/adr/0005-one-mcp-endpoint-scoped-agent-tokens.md`).
+
+```
+curl -s -X POST https://forge.example/api/v1/bots/<bot-id>/tokens \
+  -H "Authorization: Bearer $(cat ~/.config/jeryu/owner.pat)" \
+  -H 'Content-Type: application/json' \
+  -d '{"label":"laptop","ttl_days":90}'
+```
+
+- The response holds `token` (shown once, starts with `jat_`), `token_id`,
+  `label`, `created_at` and `expires_at`. `ttl_days` is 1 to 365, default 90.
+  A bot holds at most 10 live tokens.
+- `GET /api/v1/bots/<bot-id>/tokens` lists them (never the token, with
+  `last_used_at`). `POST /api/v1/bots/<bot-id>/tokens/<token-id>/revoke` ends
+  one at once.
+- A token ends when it expires or is revoked, when the bot is suspended or
+  revoked, or when the owner's password changes or the account is disabled or
+  locked. Rotating the bot's enrollment key does not end it.
+- A bot or agent token cannot issue tokens.
+
+Use it directly:
+
+- **MCP:** `https://forge.example/mcp` with the header
+  `Authorization: Bearer <token>`. Any standard MCP client works; admin tools
+  are not offered to it, and every repository it names is checked against the
+  grant.
+- **gh and git:** the token is a normal bearer or basic-auth password, for
+  example `GH_TOKEN=<token>` or a git credential helper that returns it.
+
+The setup script and local proxy below remain for hosts that already use them.
+
 ## Set up the bot host
 
 On the machine that runs the agent, run the setup script from the response:
@@ -102,9 +138,18 @@ keeps the cached refresh token.
 
 ## Behind a reverse proxy
 
-MCP for bots is served at `/mcp/bot`. That mount hides every admin tool and
-enforces reach, so a public edge can expose it while keeping the general
-`/mcp` endpoint private:
+`/mcp` serves every caller and offers each one only the tools its principal
+may use. An agent token sees no admin tool. A personal access token, which
+carries every right of its account, is refused on `/mcp`; this trusts no request
+header, so a public edge can expose `/mcp` as it is. A site that wants personal
+tokens on MCP for local tools lists their direct peer addresses in
+`JERYU_MCP_PERSONAL_TOKEN_PEERS` (empty by default). Never list a proxy's
+address, and note that a proxy on the same host connects from loopback. For the
+same reason, local-dev trust (`JERYU_WEB_TRUST_LOCAL`) is withheld from any
+request that carries a forwarding header; do not enable it on a forge an edge
+exposes. `/mcp/bot` is the same endpoint for bot access tokens and
+stays for existing bot hosts. An edge that still blocks `/mcp` can keep only the
+bot mount open:
 
 ```
 @mcp_private {

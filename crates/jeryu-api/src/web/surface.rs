@@ -344,7 +344,8 @@ fn github_account_from_headers(
     method: &HttpMethod,
     headers: &HeaderMap,
 ) -> Result<super::auth::HeaderAuth, Box<AxumResponse>> {
-    if !state.auth_required || super::auth::local_dev_trusted(state, peer.map(|connect| connect.0))
+    if !state.auth_required
+        || super::auth::local_dev_trusted(state, peer.map(|connect| connect.0), headers)
     {
         return Ok(super::auth::HeaderAuth {
             account: super::auth::trusted_local_account(state),

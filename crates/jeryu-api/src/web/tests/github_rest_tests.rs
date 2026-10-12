@@ -1,5 +1,13 @@
 use super::*;
 
+use std::net::SocketAddr;
+
+use axum::extract::ConnectInfo;
+
+/// A direct loopback peer, attached to a request the way the server would.
+const LOOPBACK: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 40000);
+
 fn known_mcp_tools() -> BTreeSet<String> {
     jeryu_mcp::tool_manifest()
         .into_iter()
@@ -1050,8 +1058,11 @@ async fn mcp_endpoint_requires_configured_authentication() {
         .create_personal_access_token("alice", "test", None)
         .unwrap()
         .secret;
+    // Personal access tokens reach MCP only from a direct peer the site listed.
     let app = app(
-        WebState::new(core).with_auth(true, false, false),
+        WebState::new(core)
+            .with_auth(true, false, false)
+            .with_mcp_personal_token_peers(vec![LOOPBACK.ip()]),
         std::path::Path::new("/tmp/jeryu-no-spa"),
     );
 
@@ -1062,17 +1073,23 @@ async fn mcp_endpoint_requires_configured_authentication() {
         .unwrap();
     assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
 
-    let authenticated = app
-        .oneshot(
-            Request::builder()
-                .uri("/mcp")
-                .header(header::AUTHORIZATION, format!("Bearer {token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
+    let mcp_get = |peer: SocketAddr| {
+        Request::builder()
+            .uri("/mcp")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .extension(ConnectInfo(peer))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let authenticated = app.clone().oneshot(mcp_get(LOOPBACK)).await.unwrap();
+    assert_eq!(authenticated.status(), StatusCode::METHOD_NOT_ALLOWED);
+    // The same token from a peer that is not listed (an edge proxy, say) is
+    // refused, whatever headers it sends.
+    let unlisted = app
+        .oneshot(mcp_get("203.0.113.9:443".parse().unwrap()))
         .await
         .unwrap();
-    assert_eq!(authenticated.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(unlisted.status(), StatusCode::FORBIDDEN);
 }
 
 /// The MCP transport carries no identity of its own — the `clientInfo` name in
@@ -1091,7 +1108,9 @@ async fn mcp_control_plane_tools_answer_admins_and_refuse_other_accounts() {
     core.create_account("bob", "bob-password", UserRole::User)
         .unwrap();
     let app = app(
-        WebState::new(core.clone()).with_auth(true, false, false),
+        WebState::new(core.clone())
+            .with_auth(true, false, false)
+            .with_mcp_personal_token_peers(vec![LOOPBACK.ip()]),
         std::path::Path::new("/tmp/jeryu-no-spa"),
     );
 
@@ -1106,7 +1125,8 @@ async fn mcp_control_plane_tools_answer_admins_and_refuse_other_accounts() {
                 .uri("/mcp")
                 .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("Mcp-Method", method);
+                .header("Mcp-Method", method)
+                .extension(ConnectInfo(LOOPBACK));
             if let Some(session) = session {
                 request = request
                     .header("Mcp-Session-Id", session)
@@ -1149,6 +1169,7 @@ async fn mcp_control_plane_tools_answer_admins_and_refuse_other_accounts() {
                     .uri("/mcp")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(LOOPBACK))
                     .header("Mcp-Method", "tools/call")
                     .header("Mcp-Name", "jeryu.control_plane.status")
                     .header("Mcp-Session-Id", session)

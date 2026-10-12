@@ -1116,3 +1116,380 @@ async fn non_hs256_bot_token_is_refused() {
         assert!(!text.contains(&forged), "{alg}");
     }
 }
+
+#[tokio::test]
+async fn agent_tokens_act_as_the_bot_on_rest_and_one_mcp() {
+    use axum::http::Request as HttpRequest;
+
+    let core = jeryu_core::ForgeCore::new();
+    core.create_account("dee", "dee-password-1", UserRole::Admin)
+        .unwrap();
+    core.create_repository("dee", repo("widgets", true))
+        .unwrap();
+    core.create_repository("dee", repo("vault", true)).unwrap();
+    core.grant_repo_access("dee", "dee", "dee", "widgets", RepoAccessLevel::Write)
+        .unwrap();
+    let bot = core
+        .enroll_bot(
+            "dee",
+            "atlas",
+            "Atlas",
+            BotKind::Grok,
+            BotReach::Repositories {
+                repos: vec![BotRepoRef {
+                    owner: "dee".to_string(),
+                    name: "widgets".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+    let owner_pat = core
+        .create_personal_access_token("dee", "owner", None)
+        .unwrap()
+        .secret;
+    let router = router_for(core);
+    let tokens = format!("/api/v1/bots/{}/tokens", bot.bot.id);
+
+    let (status, body, _) = send(
+        &router,
+        HttpMethod::POST,
+        &tokens,
+        Some(&owner_pat),
+        Some("127.0.0.1"),
+        Some(r#"{"label":"laptop","ttl_days":30}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let agent = body["token"].as_str().unwrap().to_string();
+    let token_id = body["token_id"].as_str().unwrap().to_string();
+    assert!(agent.starts_with(jeryu_core::AGENT_TOKEN_PREFIX));
+
+    // REST: the bot's grant, nothing more; a forge admin owner does not widen it.
+    for (uri, expected) in [
+        ("/api/v1/repos/dee%2Fwidgets", StatusCode::OK),
+        ("/api/v1/repos/dee%2Fvault", StatusCode::FORBIDDEN),
+    ] {
+        let (status, body, _) = send(
+            &router,
+            HttpMethod::GET,
+            uri,
+            Some(&agent),
+            Some("127.0.0.1"),
+            None,
+        )
+        .await;
+        assert_eq!(status, expected, "{uri}: {body}");
+    }
+    // An agent token cannot mint more tokens.
+    let (status, body, _) = send(
+        &router,
+        HttpMethod::POST,
+        &tokens,
+        Some(&agent),
+        Some("127.0.0.1"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // MCP on the one endpoint: no proxy, no exchange, admin tools hidden.
+    let mcp = |token: &str, forwarded: bool, method: &str, session: Option<&str>, body: Value| {
+        let mut request = HttpRequest::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::HOST, "127.0.0.1")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header("Mcp-Method", method.to_string());
+        if forwarded {
+            request = request.header("X-Forwarded-For", "203.0.113.7");
+        }
+        if let Some(session) = session {
+            request = request
+                .header("Mcp-Session-Id", session.to_string())
+                .header("MCP-Protocol-Version", jeryu_mcp::MCP_PROTOCOL_VERSION);
+        }
+        request.body(Body::from(body.to_string())).unwrap()
+    };
+    let initialize = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": jeryu_mcp::MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": { "name": "agent", "version": "1" }
+        }
+    });
+    let initialized = router
+        .clone()
+        .oneshot(mcp(&agent, true, "initialize", None, initialize.clone()))
+        .await
+        .unwrap();
+    assert_eq!(initialized.status(), StatusCode::OK);
+    let session = initialized
+        .headers()
+        .get("Mcp-Session-Id")
+        .and_then(|value| value.to_str().ok())
+        .expect("session")
+        .to_string();
+    let listed = router
+        .clone()
+        .oneshot(mcp(
+            &agent,
+            true,
+            "tools/list",
+            Some(&session),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(listed.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let names: Vec<&str> = body["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(!names.is_empty(), "{body}");
+    assert!(names.contains(&"jeryu.tool_registry.summary"));
+    let admin: Vec<_> = names
+        .iter()
+        .filter(|name| super::super::mcp_backend::is_admin_tool(name))
+        .collect();
+    assert!(
+        admin.is_empty(),
+        "admin tools offered to an agent token: {admin:?}"
+    );
+
+    // A standard client sends no routing headers and an older protocol
+    // version: the one endpoint still answers, offering its own version.
+    let plain = router
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(header::AUTHORIZATION, format!("Bearer {agent}"))
+                .header(header::HOST, "127.0.0.1")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0", "id": 9, "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": { "name": "standard", "version": "1" }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plain.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(plain.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        body["result"]["protocolVersion"],
+        json!(jeryu_mcp::MCP_PROTOCOL_VERSION),
+        "{body}"
+    );
+
+    // An unscoped personal access token is refused on MCP, with or without a
+    // proxy header: the decision trusts no request header.
+    for forwarded in [true, false] {
+        let refused = router
+            .clone()
+            .oneshot(mcp(
+                &owner_pat,
+                forwarded,
+                "initialize",
+                None,
+                initialize.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused.status(),
+            StatusCode::FORBIDDEN,
+            "forwarded={forwarded}"
+        );
+    }
+
+    // An agent token cannot list or revoke tokens, and ttl_days is bounded.
+    for (method, uri) in [
+        (HttpMethod::GET, tokens.clone()),
+        (HttpMethod::POST, format!("{tokens}/{token_id}/revoke")),
+    ] {
+        let (status, body, _) =
+            send(&router, method, &uri, Some(&agent), Some("127.0.0.1"), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
+    }
+    for ttl in ["0", "366", "-1", "4294967296"] {
+        let (status, body, _) = send(
+            &router,
+            HttpMethod::POST,
+            &tokens,
+            Some(&owner_pat),
+            Some("127.0.0.1"),
+            Some(&format!(r#"{{"ttl_days":{ttl}}}"#)),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "ttl {ttl}: {body}"
+        );
+    }
+
+    // The owner sees the token's metadata, never the token, and can revoke it.
+    let (status, body, text) = send(
+        &router,
+        HttpMethod::GET,
+        &tokens,
+        Some(&owner_pat),
+        Some("127.0.0.1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["tokens"][0]["token_id"], json!(token_id));
+    assert!(!text.contains(&agent));
+    let (status, body, _) = send(
+        &router,
+        HttpMethod::POST,
+        &format!("{tokens}/{token_id}/revoke"),
+        Some(&owner_pat),
+        Some("127.0.0.1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body, _) = send(
+        &router,
+        HttpMethod::GET,
+        "/api/v1/repos/dee%2Fwidgets",
+        Some(&agent),
+        Some("127.0.0.1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+}
+
+#[tokio::test]
+async fn token_routes_answer_only_the_owner_and_keep_no_secret() {
+    let core = jeryu_core::ForgeCore::new();
+    core.create_account("eve", "eve-password-1", UserRole::User)
+        .unwrap();
+    core.create_account("finn", "finn-password-1", UserRole::User)
+        .unwrap();
+    core.create_repository("eve", repo("widgets", true))
+        .unwrap();
+    core.grant_repo_access("eve", "eve", "eve", "widgets", RepoAccessLevel::Write)
+        .unwrap();
+    let bot = core
+        .enroll_bot("eve", "atlas", "Atlas", BotKind::Muse, BotReach::General)
+        .unwrap();
+    let eve = core
+        .create_personal_access_token("eve", "owner", None)
+        .unwrap()
+        .secret;
+    let finn = core
+        .create_personal_access_token("finn", "other", None)
+        .unwrap()
+        .secret;
+    let router = router_for(core);
+    let tokens = format!("/api/v1/bots/{}/tokens", bot.bot.id);
+
+    // A non-admin owner manages its own bot's tokens; another account cannot see them.
+    for (method, uri) in [
+        (HttpMethod::GET, tokens.clone()),
+        (HttpMethod::POST, tokens.clone()),
+    ] {
+        let (status, body, _) = send(
+            &router,
+            method,
+            &uri,
+            Some(&finn),
+            Some("127.0.0.1"),
+            Some("{}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+    }
+
+    // The same Idempotency-Key twice issues two tokens: the answer, which holds
+    // a secret, is never kept and replayed.
+    let mut issued = Vec::new();
+    for _ in 0..2 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(HttpMethod::POST)
+                    .uri(&tokens)
+                    .header(header::AUTHORIZATION, format!("Bearer {eve}"))
+                    .header(header::HOST, "127.0.0.1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("Idempotency-Key", "issue-once")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        issued.push(body["token"].as_str().unwrap().to_string());
+    }
+    assert_ne!(issued[0], issued[1]);
+}
+
+#[tokio::test]
+async fn local_dev_trust_is_withheld_from_proxied_requests() {
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
+
+    let core = jeryu_core::ForgeCore::new();
+    let router = app(
+        WebState::new(core).with_auth(true, true, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let loopback: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+    let me = |proxy_header: Option<(&str, &str)>| {
+        let mut request = Request::builder()
+            .uri("/api/v1/auth/me")
+            .header(header::HOST, "127.0.0.1")
+            .extension(ConnectInfo(loopback));
+        if let Some((name, value)) = proxy_header {
+            request = request.header(name, value);
+        }
+        request.body(Body::empty()).unwrap()
+    };
+    let local = router.clone().oneshot(me(None)).await.unwrap();
+    assert_eq!(local.status(), StatusCode::OK);
+    for header_pair in [
+        ("X-Forwarded-For", "203.0.113.7"),
+        ("Forwarded", "for=203.0.113.7"),
+        ("X-Real-IP", "203.0.113.7"),
+    ] {
+        let proxied = router.clone().oneshot(me(Some(header_pair))).await.unwrap();
+        assert_eq!(
+            proxied.status(),
+            StatusCode::UNAUTHORIZED,
+            "{} must withhold local trust",
+            header_pair.0
+        );
+    }
+}

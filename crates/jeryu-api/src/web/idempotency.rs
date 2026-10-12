@@ -336,6 +336,14 @@ fn applies(method: &Method, path: &str) -> bool {
         && ["/api/v1/", "/repos/", "/api/v3/repos/"]
             .iter()
             .any(|prefix| path.starts_with(prefix))
+        && !returns_a_secret(path)
+}
+
+/// Bot enrollment, key rotation, agent-token issue and token exchange answer
+/// with a secret that is shown once. A kept answer would store that secret in
+/// the idempotency store for a day, so these routes are never kept.
+fn returns_a_secret(path: &str) -> bool {
+    path == "/api/v1/bots" || path.starts_with("/api/v1/bots/") || path.starts_with("/api/v1/bot/")
 }
 
 fn key_is_valid(key: &HeaderValue) -> bool {

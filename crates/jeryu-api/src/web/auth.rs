@@ -750,7 +750,7 @@ pub(super) async fn gate(
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connect| connect.0);
     let mut read_budget = None;
-    let auth = if !state.auth_required || local_dev_trusted(&state, peer) {
+    let auth = if !state.auth_required || local_dev_trusted(&state, peer, request.headers()) {
         HeaderAuth {
             account: trusted_local_account(&state),
             source: AuthSource::LocalDev,
@@ -853,6 +853,23 @@ pub(super) async fn gate(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
             "the bot grant does not allow this request",
+        );
+    }
+    // An unscoped personal access token carries every right of its account,
+    // admin included, so MCP takes a scoped agent token instead. A personal
+    // token is accepted only from a direct peer the site listed; the decision
+    // reads the TCP peer, never a request header, and the list is empty by
+    // default.
+    if auth.bot.is_none()
+        && auth.source == AuthSource::Bearer
+        && mcp_path(request.uri().path())
+        && !state.mcp_personal_token_peers.contains(&peer_ip(peer))
+    {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "insufficient_scope",
+            "MCP needs a scoped agent token (POST /api/v1/bots/{id}/tokens), not a \
+             personal access token",
         );
     }
     if request.uri().path() == "/api/v1/bot/whoami" && auth.bot.is_none() {
@@ -985,6 +1002,15 @@ pub(crate) fn authenticate_headers(state: &WebState, headers: &HeaderMap) -> Opt
                     });
                 }
                 return None;
+            }
+            BearerClass::AgentToken => {
+                return bot_token::authenticate_agent_token(state, &bearer).map(
+                    |(account, bot)| HeaderAuth {
+                        account,
+                        source: AuthSource::Bearer,
+                        bot: Some(bot),
+                    },
+                );
             }
             BearerClass::Unusable => return None,
             BearerClass::Other => {
@@ -1219,8 +1245,27 @@ fn password_change_allowed_path(path: &str) -> bool {
     )
 }
 
-pub(crate) fn local_dev_trusted(state: &WebState, peer: Option<SocketAddr>) -> bool {
-    state.trust_local_dev && peer.is_some_and(|peer| peer.ip().is_loopback())
+/// Local-dev trust: an unauthenticated loopback caller acts as the local admin.
+/// A request that carries a forwarding header came through a proxy, and a proxy
+/// on the same host connects from loopback, so such a request is never trusted
+/// this way. The header can only withhold trust, never grant it.
+pub(crate) fn local_dev_trusted(
+    state: &WebState,
+    peer: Option<SocketAddr>,
+    headers: &HeaderMap,
+) -> bool {
+    state.trust_local_dev && peer.is_some_and(|peer| peer.ip().is_loopback()) && !forwarded(headers)
+}
+
+fn forwarded(headers: &HeaderMap) -> bool {
+    [
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-real-ip",
+    ]
+    .iter()
+    .any(|name| headers.contains_key(*name))
 }
 
 fn websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -1592,6 +1637,18 @@ fn anonymous_account() -> AccountSummary {
     }
 }
 
+/// Direct peers whose personal access tokens may use MCP, from
+/// `JERYU_MCP_PERSONAL_TOKEN_PEERS`. Unset or empty means none.
+pub(super) fn mcp_personal_token_peers_from_env() -> Vec<IpAddr> {
+    std::env::var("JERYU_MCP_PERSONAL_TOKEN_PEERS")
+        .map(|raw| parse_trusted_proxies(&raw))
+        .unwrap_or_default()
+}
+
+fn mcp_path(path: &str) -> bool {
+    path == "/mcp" || path.starts_with("/mcp/")
+}
+
 fn bot_credential_presented(headers: &HeaderMap) -> bool {
     let Some(raw) = headers
         .get(header::AUTHORIZATION)
@@ -1609,7 +1666,9 @@ fn bot_credential_presented(headers: &HeaderMap) -> bool {
     };
     matches!(
         bot_token::classify_bearer(token),
-        bot_token::BearerClass::BotAccess | bot_token::BearerClass::Unusable
+        bot_token::BearerClass::BotAccess
+            | bot_token::BearerClass::Unusable
+            | bot_token::BearerClass::AgentToken
     )
 }
 

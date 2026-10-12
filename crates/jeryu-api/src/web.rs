@@ -228,6 +228,10 @@ pub(crate) struct WebState {
     pub(crate) auth_required: bool,
     pub(crate) trust_local_dev: bool,
     pub(crate) secure_cookies: bool,
+    /// Direct peers (the TCP peer, never a header) whose personal access tokens
+    /// may use MCP. Empty by default: MCP then takes only agent tokens.
+    /// `JERYU_MCP_PERSONAL_TOKEN_PEERS`, comma separated.
+    pub(crate) mcp_personal_token_peers: Vec<std::net::IpAddr>,
     pub(crate) auth_rate_limits: Arc<Mutex<BTreeMap<String, auth::RateLimitBucket>>>,
     /// Unit-test sessions must never seed agent credentials from the operator home.
     #[cfg(test)]
@@ -367,6 +371,7 @@ impl WebState {
             auth_required: false,
             trust_local_dev: true,
             secure_cookies: false,
+            mcp_personal_token_peers: auth::mcp_personal_token_peers_from_env(),
             auth_rate_limits: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -375,6 +380,12 @@ impl WebState {
         self.auth_required = required;
         self.trust_local_dev = trust_local_dev;
         self.secure_cookies = secure_cookies;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_mcp_personal_token_peers(mut self, peers: Vec<std::net::IpAddr>) -> Self {
+        self.mcp_personal_token_peers = peers;
         self
     }
 
@@ -841,6 +852,14 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/bots/:id/keys", post(bots::rotate)),
         ("/api/v1/bots/:id/suspend", post(bots::suspend)),
         ("/api/v1/bots/:id/revoke", post(bots::revoke)),
+        (
+            "/api/v1/bots/:id/tokens",
+            get(bots::list_tokens).post(bots::issue_token),
+        ),
+        (
+            "/api/v1/bots/:id/tokens/:token_id/revoke",
+            post(bots::revoke_token),
+        ),
         ("/api/v1/bot/token", post(bots::exchange_token)),
         ("/api/v1/bot/token/refresh", post(bots::refresh_token)),
         ("/api/v1/bot/whoami", get(bots::whoami)),

@@ -111,6 +111,16 @@ fn required_access(tool: &str) -> Option<Access> {
     Some(access)
 }
 
+/// Whether a tool, named with or without its `jeryu.` prefix, needs the admin
+/// role. Tests check the agent catalog against this table, not tool names.
+#[cfg(test)]
+pub(super) fn is_admin_tool(tool: &str) -> bool {
+    matches!(
+        required_access(tool.strip_prefix("jeryu.").unwrap_or(tool)),
+        Some(Access::Admin)
+    )
+}
+
 pub(super) struct WebMcpBackend {
     state: Arc<WebState>,
 }

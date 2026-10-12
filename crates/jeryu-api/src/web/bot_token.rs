@@ -42,6 +42,8 @@ pub(super) enum BearerClass {
     BotAccess,
     /// Enrollment key or refresh token. Never a personal access token.
     Unusable,
+    /// A scoped agent token (`jat_`), presented directly as a bearer.
+    AgentToken,
     /// Anything else, including a personal access token that happens to contain dots.
     Other,
 }
@@ -63,6 +65,9 @@ pub(super) fn invalid_credential() -> axum::response::Response {
 pub(super) fn classify_bearer(token: &str) -> BearerClass {
     if token.starts_with("jbk_") || token.starts_with("jbr_") {
         return BearerClass::Unusable;
+    }
+    if token.starts_with(jeryu_core::AGENT_TOKEN_PREFIX) {
+        return BearerClass::AgentToken;
     }
     if is_access_jwt(token) && payload_says_bot_access(token) {
         return BearerClass::BotAccess;
@@ -133,6 +138,25 @@ pub(super) fn authenticate_bearer(
             bot_id: claims.bot_id,
             generation: claims.generation,
             key_id: claims.key_id,
+        },
+    ))
+}
+
+/// Resolve a scoped agent token to its bot. Like a bot access token, the
+/// account is presented as a normal user: bot reach is `authorize_bot`'s job.
+pub(super) fn authenticate_agent_token(
+    state: &WebState,
+    token: &str,
+) -> Option<(AccountSummary, BotPrincipal)> {
+    let auth = state.core.authenticate_bot_access_token(token).ok()?;
+    let mut account = state.core.get_account(&auth.bot.owner).ok()?;
+    account.role = UserRole::User;
+    Some((
+        account,
+        BotPrincipal {
+            bot_id: auth.bot.id,
+            generation: auth.generation,
+            key_id: auth.key_id,
         },
     ))
 }
