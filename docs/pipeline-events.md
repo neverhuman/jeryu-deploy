@@ -1132,6 +1132,24 @@ opened its newest run and `completed_at` is `null` until it concludes; a status
 concluded with no `pending` before it (a green head re-verified in place) has
 `started_at: null`. The answer carries `server_time`.
 
+The row set is not only what was reported. It is the union of what the base
+branch requires (its protection rule's required status contexts, plus
+`jankurai/proof` where the gate binds), what the repository declares in its own
+`.jeryu/ci.toml` on the base branch (schema 2: a lane `x` publishes the context
+`<repo>/x`), and every context reported on the head. Each row says where it
+comes from in `source` (`required_by_protection`, `declared_by_ci_config`,
+`reported_only`) and what it is in `state` (`expected-not-reported`, `pending`,
+`success`, `failure`, `error`). A context something expects and nothing
+reported is one visible row with `state: expected-not-reported`,
+`waiting_seconds` (how long this head has waited, from the head commit's own
+time) and, when a gate runner's heartbeat names this exact head, `claim`:
+`{"state": "running" | "attempted", "recipe", "at", "conclusion", "runner_online"}`
+— so an attempt that died before posting is still visible as an attempt. The
+counters stay counts of reports (`total`, `passing`, `failing`, `pending`,
+`skipped`); `expected` counts the rows nothing has reported. `claim` names the
+runner (`runner_id`, `runner_url` into `/runners`, `reporter`) only for a
+signed-in reader: a slot's host is not an anonymous reader's to learn.
+
 ## Shift heartbeats
 
 `POST /api/v1/shift/heartbeat` is how a worker host says which slots it runs

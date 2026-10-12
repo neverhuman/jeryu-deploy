@@ -394,6 +394,7 @@ async fn pulls_routes_return_live_pr_detail_diff_checks_and_threads() {
     let checks = response_json(
         crate::web::pulls::checks(
             State(state.clone()),
+            authenticated_account("reader"),
             AxumPath((repo.id.to_string(), pr.number)),
         )
         .await,
@@ -1954,7 +1955,12 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     .unwrap();
     let state = Arc::new(WebState::new(core));
     let checks = response_json(
-        crate::web::pulls::checks(State(state), AxumPath((repo.id.to_string(), pr.number))).await,
+        crate::web::pulls::checks(
+            State(state),
+            authenticated_account("reader"),
+            AxumPath((repo.id.to_string(), pr.number)),
+        )
+        .await,
     )
     .await;
     // Only the required gate is red. The advisory proof is a report nothing
@@ -2079,7 +2085,12 @@ async fn required_status_row(
 ) -> serde_json::Value {
     let state = Arc::new(WebState::new(core));
     let checks = response_json(
-        crate::web::pulls::checks(State(state), AxumPath((repo_id.to_string(), number))).await,
+        crate::web::pulls::checks(
+            State(state),
+            authenticated_account("reader"),
+            AxumPath((repo_id.to_string(), number)),
+        )
+        .await,
     )
     .await;
     checks["checks"]
@@ -2488,6 +2499,7 @@ async fn a_running_gate_check_says_when_it_started_and_what_to_expect() {
         response_json(
             crate::web::pulls::checks(
                 State(state.clone()),
+                authenticated_account("reader"),
                 AxumPath((repo.id.to_string(), pr.number)),
             )
             .await,
@@ -2818,4 +2830,299 @@ async fn protection_that_enforces_admins_offers_no_owner_standing() {
     assert_eq!(page["viewer_is_admin"], true, "{page}");
     assert_eq!(page["viewer_may_clear_as_owner"], false, "{page}");
     assert_eq!(page["blockers"].as_array().unwrap().len(), 3, "{page}");
+}
+
+/// A bare repository whose `main` holds `.jeryu/ci.toml` with `body`, and one
+/// commit on `feature`. Returns the feature head sha.
+fn bare_repo_with_ci_declaration(
+    storage_root: &std::path::Path,
+    owner: &str,
+    repo: &str,
+    body: &str,
+) -> String {
+    let bare = storage_root.join(owner).join(format!("{repo}.git"));
+    std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
+    let work = storage_root.join(format!("{owner}-{repo}-ci-work"));
+    std::fs::create_dir_all(&work).expect("create work dir");
+    git_in(&work, &["init", "--quiet", "-b", "main"]);
+    std::fs::create_dir_all(work.join(".jeryu")).expect("create .jeryu");
+    std::fs::write(work.join(".jeryu/ci.toml"), body).expect("write ci.toml");
+    git_in(&work, &["add", ".jeryu/ci.toml"]);
+    git_in(&work, &["commit", "--quiet", "-m", "declare ci"]);
+    git_in(&work, &["checkout", "--quiet", "-b", "feature"]);
+    std::fs::write(work.join("FEATURE.txt"), "feature\n").expect("write feature file");
+    git_in(&work, &["add", "FEATURE.txt"]);
+    git_in(&work, &["commit", "--quiet", "-m", "feature"]);
+    let head_sha = git_in(&work, &["rev-parse", "HEAD"]);
+    git_in(
+        &work,
+        &[
+            "clone",
+            "--quiet",
+            "--bare",
+            ".",
+            bare.to_str().expect("bare utf8"),
+        ],
+    );
+    git_in(bare.as_path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    head_sha
+}
+
+/// The checks tab lists what a head is EXPECTED to get, not only what was
+/// reported: a head with zero statuses whose base requires `widgets/required`
+/// still shows that row, and it says the merge waits for it.
+#[tokio::test]
+async fn checks_list_a_required_context_nobody_reported() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "widgets".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "widgets",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["widgets/required".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "widgets",
+            "alice",
+            CreatePullRequestRequest {
+                title: "feature".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("deadbeef".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let state = Arc::new(WebState::new(core.clone()));
+    state
+        .gate_runners
+        .record(
+            serde_json::from_value(serde_json::json!({
+                "runnerId": "build-1/slot1", "host": "build-1", "slot": 1,
+                "last": {"repo": "alice/widgets", "pr": pr.number, "sha": "deadbeef",
+                         "recipe": "just required", "conclusion": "error", "seconds": 3,
+                         "finishedAt": "2026-10-12T17:58:54Z"}
+            }))
+            .unwrap(),
+            "gatebot",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    let read = |login: &'static str| {
+        let state = state.clone();
+        let repo_id = repo.id.to_string();
+        async move {
+            response_json(
+                crate::web::pulls::checks(
+                    State(state),
+                    authenticated_account(login),
+                    AxumPath((repo_id, pr.number)),
+                )
+                .await,
+            )
+            .await
+        }
+    };
+
+    let checks = read("reader").await;
+    assert_eq!(checks["total"], 0, "nothing was reported: {checks}");
+    assert_eq!(checks["expected"], 1, "{checks}");
+    let row = &checks["checks"][0];
+    assert_eq!(row["name"], "widgets/required");
+    assert_eq!(row["state"], "expected-not-reported", "{row}");
+    assert_eq!(row["status"], "expected-not-reported");
+    assert_eq!(row["source"], "required_by_protection");
+    assert_eq!(row["required"], true);
+    assert!(row["waiting_seconds"].is_u64(), "{row}");
+    // The attempt that died before posting is still on the row, so an
+    // operator sees that something tried.
+    assert_eq!(row["claim"]["state"], "attempted", "{row}");
+    assert_eq!(row["claim"]["conclusion"], "error");
+    assert_eq!(row["claim"]["runner_id"], "build-1/slot1");
+    assert_eq!(
+        row["claim"]["runner_url"],
+        "/runners?runners=build-1%2Fslot1"
+    );
+    assert_eq!(row["claim"]["reporter"], "gatebot");
+
+    let anonymous = read(crate::web::auth::ANONYMOUS_LOGIN).await;
+    let row = &anonymous["checks"][0];
+    assert_eq!(row["claim"]["state"], "attempted");
+    assert!(
+        row["claim"].get("runner_id").is_none(),
+        "an anonymous reader of a public repository learns no runner name: {row}"
+    );
+
+    // Once a runner posts, the row moves through the states without being
+    // duplicated by the expectation.
+    for (posted, expected) in [
+        (CommitStatusState::Pending, "pending"),
+        (CommitStatusState::Success, "success"),
+    ] {
+        core.create_commit_status(
+            "alice",
+            "widgets",
+            "deadbeef",
+            "gatebot",
+            CreateCommitStatusRequest {
+                state: posted,
+                context: "widgets/required".to_string(),
+                description: None,
+                target_url: None,
+            },
+        )
+        .unwrap();
+        let checks = read("reader").await;
+        let rows = checks["checks"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "one row per context: {checks}");
+        assert_eq!(checks["expected"], 0, "{checks}");
+        assert_eq!(rows[0]["state"], expected, "{checks}");
+        assert_eq!(rows[0]["source"], "required_by_protection");
+        assert!(rows[0].get("waiting_seconds").is_none(), "{checks}");
+    }
+}
+
+/// A context the repository declares in its own `.jeryu/ci.toml` is expected
+/// too, and a context nothing expects is still listed as optional.
+#[tokio::test]
+async fn checks_list_declared_lanes_and_mark_unexpected_reports_optional() {
+    let storage = tempfile::tempdir().expect("storage root");
+    let head_sha = bare_repo_with_ci_declaration(
+        storage.path(),
+        "alice",
+        "widgets",
+        "schema_version = \"2\"\nprovider = \"jeryu\"\n\n\
+         [[lane]]\nname = \"required\"\ncommand = \"just required\"\n\n\
+         [[lane]]\nname = \"docs\"\ncommand = \"just docs\"\n",
+    );
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "widgets".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "widgets",
+            "alice",
+            CreatePullRequestRequest {
+                title: "feature".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(head_sha.clone()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    core.create_commit_status(
+        "alice",
+        "widgets",
+        &head_sha,
+        "gatebot",
+        CreateCommitStatusRequest {
+            state: CommitStatusState::Success,
+            context: "widgets/docs".to_string(),
+            description: None,
+            target_url: None,
+        },
+    )
+    .unwrap();
+    core.create_commit_status(
+        "alice",
+        "widgets",
+        &head_sha,
+        "gatebot",
+        CreateCommitStatusRequest {
+            state: CommitStatusState::Failure,
+            context: "coverage/report".to_string(),
+            description: None,
+            target_url: None,
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new_with_git_storage(
+        core,
+        storage.path().to_path_buf(),
+    ));
+    let checks = response_json(
+        crate::web::pulls::checks(
+            State(state),
+            authenticated_account("reader"),
+            AxumPath((repo.id.to_string(), pr.number)),
+        )
+        .await,
+    )
+    .await;
+    let row = |name: &str| {
+        checks["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == name)
+            .unwrap_or_else(|| panic!("row for {name} in {checks}"))
+            .clone()
+    };
+    assert_eq!(checks["expected"], 1, "{checks}");
+    // Declared and not reported: an expected row that names the declaration.
+    let declared = row("widgets/required");
+    assert_eq!(declared["state"], "expected-not-reported");
+    assert_eq!(declared["source"], "declared_by_ci_config");
+    assert_eq!(declared["required"], false);
+    assert!(
+        declared["description"]
+            .as_str()
+            .unwrap()
+            .contains(".jeryu/ci.toml"),
+        "{declared}"
+    );
+    // Declared and reported: one row, the report's own state.
+    let reported = row("widgets/docs");
+    assert_eq!(reported["state"], "success");
+    assert_eq!(reported["source"], "declared_by_ci_config");
+    // Nothing expects it, so it is listed as what it is.
+    let extra = row("coverage/report");
+    assert_eq!(extra["state"], "failure");
+    assert_eq!(extra["source"], "reported_only");
+    assert_eq!(extra["required"], false);
+    assert!(extra["advisory"].is_object(), "{extra}");
+}
+
+/// The lane names read out of a `.jeryu/ci.toml`: schema 2 lanes, deduplicated,
+/// and nothing at all out of a file in any other shape.
+#[test]
+fn ci_declaration_lane_names_take_only_context_shaped_names() {
+    let names = |body: &str| crate::web::pulls::lane_names_for_test(body);
+    assert_eq!(
+        names(
+            "schema_version = \"2\"\n[[lane]]\nname = \"required\"\n\
+             [[lane]]\nname = \"required\"\n[[lane]]\nname = \"docs.fast\"\n"
+        ),
+        vec!["required".to_string(), "docs.fast".to_string()]
+    );
+    assert!(names("name = \"required\"\n").is_empty());
+    assert!(names("this is not toml {{{").is_empty());
+    assert!(names("[[lane]]\nname = \"a b/c\"\n").is_empty());
 }

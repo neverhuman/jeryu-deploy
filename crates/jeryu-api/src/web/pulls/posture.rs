@@ -6,6 +6,11 @@ use chrono::{DateTime, Utc};
 
 use crate::web::control_plane::{holds_gate_slot, is_online};
 
+use super::expected;
+
+/// The state of a row something expects and nothing has reported.
+const EXPECTED_STATE: &str = "expected-not-reported";
+
 pub(super) fn passport_hash(
     state: &WebState,
     pr: &PullRequest,
@@ -502,6 +507,16 @@ pub(super) fn jankurai_gate_blocker_with(
 }
 
 pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestChecks {
+    checks_for_pr_as(state, pr, None)
+}
+
+/// As [`checks_for_pr`], for a named reader: a signed-in account is told which
+/// runner owes an unreported required status, an anonymous one is not.
+pub(super) fn checks_for_pr_as(
+    state: &WebState,
+    pr: &PullRequest,
+    viewer: Option<&str>,
+) -> PullRequestChecks {
     let core = state.github.core();
     let runs = match core.list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha)) {
         Ok(list) => latest_check_runs_by_name(list.check_runs),
@@ -513,6 +528,13 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
     };
     let statuses = latest_statuses_by_context(history.clone());
     let required = required_context_names(state, pr);
+    let expected = expected::expected_contexts(state, pr, &required);
+    let source_of = |name: &str| {
+        expected
+            .get(name)
+            .copied()
+            .unwrap_or(expected::CheckSource::Reported)
+    };
     let mut passing = 0;
     let mut failing = 0;
     let mut pending = 0;
@@ -543,10 +565,14 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
                 .map(|_| report_link_label(&run.name)),
             web_url: check_web_url(pr, &run.name, run.details_url.as_deref()),
             required: is_required,
+            source: source_of(&run.name).wire_name(),
+            state: bucket,
             advisory: (!is_required).then(|| check_advisory(pr, &run.name)),
             started_at: Some(run.started_at.to_rfc3339()),
             completed_at: run.completed_at.map(|at| at.to_rfc3339()),
             running: None,
+            waiting_seconds: None,
+            claim: None,
         });
     }
     for status in &statuses {
@@ -567,11 +593,56 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
             web_url_label: status.target_url.as_ref().map(|_| "View log"),
             web_url: status.target_url.clone(),
             required: is_required,
+            source: source_of(&status.context).wire_name(),
+            state: status_state(&status.state),
             advisory: (!is_required).then(|| check_advisory(pr, &status.context)),
             started_at: started.map(|at| at.to_rfc3339()),
             completed_at: completed.map(|at| at.to_rfc3339()),
             running: None,
+            waiting_seconds: None,
+            claim: None,
         });
+    }
+    // Every context something expects and nothing reported: the row GitHub
+    // spells "Expected - Waiting for status to be reported". Counted apart
+    // from the reported buckets, so no caller reads an expectation as a
+    // conclusion.
+    let mut expected_rows = 0;
+    let reported: BTreeSet<String> = checks.iter().map(|check| check.name.clone()).collect();
+    let unreported: Vec<(&String, &expected::CheckSource)> = expected
+        .iter()
+        .filter(|(name, _)| !reported.contains(name.as_str()))
+        .collect();
+    if !unreported.is_empty() {
+        let since = expected::head_waiting_since(state, pr);
+        let waited = u64::try_from((Utc::now() - since).num_seconds().max(0)).unwrap_or(0);
+        let claim = expected::gate_claim(state, pr, viewer);
+        for (name, source) in unreported {
+            expected_rows += 1;
+            let is_required = required.contains(name);
+            checks.push(PullRequestCheck {
+                id: format!("expected:{name}"),
+                name: name.clone(),
+                kind: "expected",
+                status: EXPECTED_STATE.to_string(),
+                conclusion: None,
+                details_url: None,
+                title: Some("Expected - waiting for a status to be reported".to_string()),
+                description: Some(expectation_reason(pr, name, *source)),
+                details_text: None,
+                web_url_label: None,
+                web_url: None,
+                required: is_required,
+                source: source.wire_name(),
+                state: EXPECTED_STATE,
+                advisory: (!is_required).then(|| check_advisory(pr, name)),
+                started_at: None,
+                completed_at: None,
+                running: None,
+                waiting_seconds: Some(waited),
+                claim: claim.clone(),
+            });
+        }
     }
     if let Some((reporter, gate)) = running_gate(state, pr) {
         let index = gate_check_index(&checks, &statuses, &reporter);
@@ -580,7 +651,10 @@ pub(super) fn checks_for_pr(state: &WebState, pr: &PullRequest) -> PullRequestCh
         }
     }
     PullRequestChecks {
-        total: u32::try_from(checks.len()).unwrap_or(u32::MAX),
+        // Reported rows only: a count of conclusions, which an expectation is
+        // not. `expected` carries the rest.
+        total: u32::try_from(checks.len() - expected_rows).unwrap_or(u32::MAX),
+        expected: u32::try_from(expected_rows).unwrap_or(u32::MAX),
         passing,
         failing,
         pending,
@@ -700,7 +774,36 @@ pub(in crate::web) fn required_context_names(
     names
 }
 
-const JANKURAI_PROOF: &str = "jankurai/proof";
+pub(super) const JANKURAI_PROOF: &str = "jankurai/proof";
+
+/// How a commit status reads as a row state. `error` stays its own word: a
+/// reporter that errored said something different from a run that failed.
+fn status_state(state: &CommitStatusState) -> &'static str {
+    match state {
+        CommitStatusState::Success => "success",
+        CommitStatusState::Pending => "pending",
+        CommitStatusState::Failure => "failure",
+        CommitStatusState::Error => "error",
+    }
+}
+
+/// Why a row with no report is on the tab at all, in one sentence a reader can
+/// act on.
+fn expectation_reason(pr: &PullRequest, name: &str, source: expected::CheckSource) -> String {
+    match source {
+        expected::CheckSource::Protection => format!(
+            "The protection rule of `{}` requires `{name}`, and nothing has reported it on \
+             this head yet.",
+            pr.base.ref_name
+        ),
+        expected::CheckSource::CiConfig => format!(
+            "`{}` declares `{name}` on `{}`, and nothing has reported it on this head yet.",
+            crate::ci_bridge::audit_queue::CI_DECLARATION_PATH,
+            pr.base.ref_name
+        ),
+        expected::CheckSource::Reported => format!("`{name}` has reported nothing on this head."),
+    }
+}
 
 /// Why a check that is not required does not block the merge.
 fn check_advisory(pr: &PullRequest, name: &str) -> CheckAdvisory {

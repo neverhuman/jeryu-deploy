@@ -89,7 +89,10 @@ pub(in crate::web) struct PullRequestDiffHunk {
 
 #[derive(Debug, Clone, Serialize)]
 struct PullRequestChecks {
+    /// Rows a reporter actually posted on the head.
     total: u32,
+    /// Rows something expects and nothing has reported yet.
+    expected: u32,
     passing: u32,
     failing: u32,
     pending: u32,
@@ -125,6 +128,13 @@ struct PullRequestCheck {
     web_url: Option<String>,
     /// Whether the base branch requires this context before a merge.
     required: bool,
+    /// Where the row comes from: `required_by_protection`,
+    /// `declared_by_ci_config`, or `reported_only`.
+    source: &'static str,
+    /// The row's state in its own vocabulary: `expected-not-reported`,
+    /// `pending`, `success`, `failure`, `error` (or the bucket a check run
+    /// settled in). [`Self::status`] keeps the older spelling.
+    state: &'static str,
     /// Why a check is not required, said on its row (`None` when required).
     advisory: Option<CheckAdvisory>,
     /// When this check's newest run started: a check run's own start, or the
@@ -136,6 +146,14 @@ struct PullRequestCheck {
     /// The gate pass working on this check right now, if a runner reports one.
     #[serde(skip_serializing_if = "Option::is_none")]
     running: Option<RunningGate>,
+    /// How long this head has waited for a row nothing has reported, in
+    /// seconds; `None` on a reported row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waiting_seconds: Option<u64>,
+    /// What the forge knows about a gate working on this head, on a row
+    /// nothing has reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claim: Option<expected::GateClaim>,
 }
 
 /// A gate runner's pass on the PR head, from its heartbeat, with how long
@@ -331,12 +349,13 @@ pub(super) async fn diff(
 
 pub(super) async fn checks(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
 ) -> AxumResponse {
     let Some((_, pr)) = resolve_pr(&state, &id, number) else {
         return not_found("load pull request checks", "pull request not found");
     };
-    Json(checks_for_pr(&state, &pr)).into_response()
+    Json(checks_for_pr_as(&state, &pr, Some(&account.login))).into_response()
 }
 
 pub(super) async fn threads(
@@ -1372,9 +1391,13 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
 
 pub(in crate::web) mod diff;
 pub(in crate::web) mod landed;
+
 pub(in crate::web) mod owner_paths;
+mod expected;
 mod posture;
 
+#[cfg(test)]
+pub(super) use expected::lane_names as lane_names_for_test;
 pub(crate) use posture::audit_gate_enforced_for;
 pub(super) use posture::required_context_names;
 #[cfg(test)]
@@ -1382,8 +1405,9 @@ use posture::required_contexts_with_enforcement;
 #[cfg(test)]
 pub(super) use posture::{audit_gate_repo_listed, audit_merge_enforced_value};
 use posture::{
-    checks_for_pr, comment_input, commit_tree_sha, passport, passport_blockers, passport_hash,
-    required_contexts, review_posture, review_state, reviews_for_pr, threads_for_pr, web_pr_state,
+    checks_for_pr, checks_for_pr_as, comment_input, commit_tree_sha, passport, passport_blockers,
+    passport_hash, required_contexts, review_posture, review_state, reviews_for_pr, threads_for_pr,
+    web_pr_state,
 };
 
 fn not_found(purpose: &'static str, message: &str) -> AxumResponse {
