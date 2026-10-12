@@ -12,6 +12,7 @@
 
 mod access;
 mod assignment;
+pub(crate) mod comments;
 mod heartbeats;
 mod landing;
 mod migration_sequence;
@@ -51,6 +52,7 @@ use super::pipeline::{self, NewEvent};
 use super::strict_query::StrictQuery;
 use super::usage;
 use super::workcells_support::{TypedError, typed_error};
+use comments::{CommentRequest, CommentsResponse};
 use heartbeats::HeartbeatStore;
 #[cfg(test)]
 pub(crate) use heartbeats::migrate_through as migrate_shift_store_through;
@@ -58,7 +60,7 @@ pub(crate) use heartbeats::{
     HEALTHY_MS, StoredHeartbeat, migrate as migrate_shift_store, rfc3339_ms,
 };
 pub use migration_sequence::shift_store_migrations;
-use queue::{Queue, WriteError, commit_change, discover};
+use queue::{Queue, WriteError, commit_change, commit_change_at, discover};
 pub(crate) use queue::{git as run_git, resolve as resolve_commit};
 use todo_file::{MODES, TodoFile, iso, new_id};
 use types::*;
@@ -941,12 +943,7 @@ pub(crate) async fn todo_action(
             );
             Json(todo.to_api(Utc::now())).into_response()
         }
-        Err(WriteError::Rejected(Refused::NotFound)) => shift_error(
-            StatusCode::NOT_FOUND,
-            "shift_todo_not_found",
-            &format!("no todo {id:?} in family {family:?}"),
-            "list todos with GET /api/v1/shift/todos?family=",
-        ),
+        Err(WriteError::Rejected(Refused::NotFound)) => todo_not_found(&id, &family),
         Err(WriteError::Rejected(Refused::Invalid(reason))) => bad_request(&reason),
         Err(WriteError::Rejected(Refused::Forbidden(reason))) => shift_error(
             StatusCode::FORBIDDEN,
@@ -969,6 +966,129 @@ pub(crate) async fn todo_action(
         ),
         Err(WriteError::Git(reason)) => git_failure(&reason),
     }
+}
+
+/// `GET /api/v1/shift/todos/:family/:id/comments`
+pub(crate) async fn list_comments(
+    State(state): State<Arc<WebState>>,
+    AxumPath((family, id)): AxumPath<(String, String)>,
+) -> AxumResponse {
+    let queue = match find_queue(&state, &family) {
+        Ok(q) => q,
+        Err(resp) => return *resp,
+    };
+    let todos = match queue_todos(&state, &queue) {
+        Ok(todos) => todos,
+        Err(err) => {
+            return shift_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "shift_queue_read_failed",
+                &err,
+                "check the queue repo on disk",
+            );
+        }
+    };
+    if !todos.iter().any(|q| q.todo.id == id) {
+        return todo_not_found(&id, &family);
+    }
+    let text = queue::show_file(
+        &state.repo_manager.config().git_bin,
+        &queue.path,
+        &queue.head,
+        &comments::path_for(&id),
+    );
+    let comments = text
+        .as_deref()
+        .map(comments::parse_thread)
+        .unwrap_or_default();
+    Json(CommentsResponse {
+        family: queue.family.name.clone(),
+        todo_id: id,
+        total: comments.len(),
+        comments,
+    })
+    .into_response()
+}
+
+/// `POST /api/v1/shift/todos/:family/:id/comments`
+///
+/// Appends to the todo's thread and touches nothing else: the todo file is not
+/// part of the commit, so status, note, lease and attempts are as they were.
+pub(crate) async fn post_comment(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath((family, id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> AxumResponse {
+    let request: CommentRequest = match parse(&body) {
+        Ok(r) => r,
+        Err(resp) => return *resp,
+    };
+    let queue = match find_queue(&state, &family) {
+        Ok(q) => q,
+        Err(resp) => return *resp,
+    };
+    // The id names a file in the commit, so only an id that cannot leave
+    // `comments/` is written; every todoq id is one.
+    if !comments::id_is_safe(&id) {
+        return bad_request("todo id must be letters, digits, dashes or underscores");
+    }
+    let now = Utc::now();
+    let comment = match comments::comment_from(&request, &account.login, &iso(now)) {
+        Ok(comment) => comment,
+        Err(reason) => return bad_request(&reason),
+    };
+    enum Refused {
+        NotFound,
+    }
+    let git_bin = state.repo_manager.config().git_bin.clone();
+    let message = format!("comment on {id} by {}/web", account.login);
+    let result = commit_change_at(
+        &state.repo_manager,
+        &queue,
+        &account.login,
+        &message,
+        |commit, existing| {
+            if !existing.iter().any(|q| q.todo.id == id) {
+                return Err(Refused::NotFound);
+            }
+            let path = comments::path_for(&id);
+            // Re-read at the commit this pass builds on: a thread that grew
+            // while a CAS race was lost keeps every comment it had.
+            let thread = queue::show_file(&git_bin, &queue.path, commit, &path);
+            let text = comments::append(thread.as_deref(), &comment);
+            Ok((vec![(path, Some(text))], ()))
+        },
+    );
+    match result {
+        Ok(()) => {
+            pipeline::emit(
+                &state,
+                NewEvent {
+                    actor: Some(format!("{}/web", account.login)),
+                    family: Some(queue.family.name.clone()),
+                    todo_id: Some(id.clone()),
+                    reason: Some(comment.body.clone()),
+                    ..NewEvent::forge(
+                        "todo.commented",
+                        format!("comment by {} on {id}", account.login),
+                    )
+                },
+            );
+            (StatusCode::CREATED, Json(comment)).into_response()
+        }
+        Err(WriteError::Rejected(Refused::NotFound)) => todo_not_found(&id, &family),
+        Err(WriteError::Git(reason)) => git_failure(&reason),
+    }
+}
+
+fn todo_not_found(id: &str, family: &str) -> AxumResponse {
+    shift_error(
+        StatusCode::NOT_FOUND,
+        "shift_todo_not_found",
+        &format!("no todo {id:?} in family {family:?}"),
+        "list todos with GET /api/v1/shift/todos?family=",
+    )
 }
 
 fn heartbeat_from(request: HeartbeatRequest) -> Result<Heartbeat, String> {

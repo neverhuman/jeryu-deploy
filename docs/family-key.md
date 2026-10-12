@@ -17,6 +17,7 @@ accepts either spelling and answers with the canonical key.
 | `GET /api/v1/shift/families` | — | `families[].name`, `families[].label` |
 | `GET|PUT /api/v1/release-board/:family` | path, body `family` | `family`, `family_label` |
 | `POST /api/v1/shift/todos/:family/:id/action`, `POST /api/v1/shift/shifts/:family/pr` | path | — |
+| `GET|POST /api/v1/shift/todos/:family/:id/comments` | path | `family` |
 
 Rules a client can rely on:
 

@@ -152,7 +152,8 @@ pub(crate) fn resolve(git_bin: &str, dir: &Path, rev: &str) -> Option<String> {
     .filter(|oid| !oid.is_empty())
 }
 
-fn show_file(git_bin: &str, dir: &Path, commit: &str, path: &str) -> Option<String> {
+/// One file's text at `commit`; `None` when the tree has no such path.
+pub(crate) fn show_file(git_bin: &str, dir: &Path, commit: &str, path: &str) -> Option<String> {
     let spec = format!("{commit}:{path}");
     git(git_bin, dir, &["cat-file", "blob", &spec], &[], None)
         .ok()
@@ -299,6 +300,21 @@ pub(crate) fn commit_change<T, E>(
     message: &str,
     mut mutate: impl FnMut(&[QueuedTodo]) -> Result<(Vec<Change>, T), E>,
 ) -> Result<T, WriteError<E>> {
+    commit_change_at(manager, queue, actor, message, |_commit, todos| {
+        mutate(todos)
+    })
+}
+
+/// `commit_change` for a write that reads a file the todos do not carry: the
+/// mutation is handed the commit it was read from, so a file it appends to
+/// (a comment thread) is re-read from the new head when a CAS race retries.
+pub(crate) fn commit_change_at<T, E>(
+    manager: &RepoManager,
+    queue: &Queue,
+    actor: &str,
+    message: &str,
+    mut mutate: impl FnMut(&str, &[QueuedTodo]) -> Result<(Vec<Change>, T), E>,
+) -> Result<T, WriteError<E>> {
     let git_bin = manager.config().git_bin.clone();
     let repository = manager
         .resolve_parts(&queue.owner, &queue.repo)
@@ -309,7 +325,7 @@ pub(crate) fn commit_change<T, E>(
         let old = resolve(&git_bin, &queue.path, QUEUE_REF)
             .ok_or_else(|| WriteError::Git("queue branch vanished".to_string()))?;
         let todos = read_todos(&git_bin, &queue.path, &old).map_err(WriteError::Git)?;
-        let (changes, result) = mutate(&todos).map_err(WriteError::Rejected)?;
+        let (changes, result) = mutate(&old, &todos).map_err(WriteError::Rejected)?;
         let new = build_commit(&git_bin, &queue.path, &old, actor, message, &changes)
             .map_err(WriteError::Git)?;
         match refs.update_ref(

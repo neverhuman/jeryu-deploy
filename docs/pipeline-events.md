@@ -129,6 +129,7 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 | Kind | When |
 |---|---|
 | `todo.filed`, `todo.action` | a todo is filed through `POST /api/v1/shift/todos` (the web filing form), or released/blocked/finished/closed/parked/edited/re-prioritised from the web. A todo pushed straight into the queue repository with git never reaches a forge route and emits nothing: `todoq`'s `todo.claimed` is the first event on it |
+| `todo.commented` | a comment is appended to a todo's thread (see [Todo comments](#todo-comments)); `reason` is the comment body |
 | `worker.stage` | a worker slot's state, stage or todo differs from its previous heartbeat; summary like `w1 jeryu: agent -> gate on <todo>`. An unchanged beat, or an idle slot appearing, emits nothing |
 | `shift.pr_opened` | the Shift page opened a shift's review PR |
 | `pr.opened`, `pr.review`, `pr.approved`, `pr.merged` | pull request steps on the v1 routes and the GitHub-compatible edge; `pr.review` has `outcome` `approve`, `request_changes` or `comment`, and `needs_human` for `request_changes`. Tagged with `family` and `shift` when the head is a shift branch. `pr.approved` is the one-click route (`POST /api/v1/repos/{id}/pulls/{number}/approve`) only: an approval sent as a review -- the v1 reviews route, the `gh`-compatible `POST /api/v3/repos/{owner}/{repo}/pulls/{number}/reviews`, pr-redteam -- is `pr.review` with `outcome = approve`, so a client that reviews rather than one-click-approves produces no `pr.approved` at all |
@@ -598,6 +599,29 @@ moves a `done` todo.
 | `edit` | `title?`, `body?`, `repos?` | overwrites the fields given. A repo the family config does not list is `422`; a title and repos together triage the todo |
 | `priority` | `value` 1..4 | |
 | `mode` | `value` `now` or `night` | |
+
+### Todo comments
+
+A todo's `note` is one field every action overwrites, so context a todo gains
+later — a second incident, a measurement, an owner's reply — has its own
+append-only thread:
+
+- `GET /api/v1/shift/todos/:family/:id/comments` lists it, oldest first:
+  `{"family", "todo_id", "comments": [{"author", "at", "body"}], "total"}`.
+  Any logged-in account reads it.
+- `POST /api/v1/shift/todos/:family/:id/comments` takes `{"body"}` (markdown,
+  non-empty, at most 16384 characters) and answers `201` with the stored
+  comment. Admin-only, like every other shift write. The author is the
+  authenticated account and `at` is the server's time; neither is taken from
+  the body.
+
+A thread is a file on the queue branch beside the todos,
+`comments/<todo-id>.jsonl`, one JSON object per line, appended with the same
+compare-and-swap push the actions use. So a worker that clones the queue reads
+the thread as text, and a forge restart keeps it. A comment never touches the
+todo file: status, note, lease and attempts are what they were, and a status
+action afterwards keeps the thread. A todo the queue does not have is `404
+shift_todo_not_found` on both methods.
 
 ## Pins
 

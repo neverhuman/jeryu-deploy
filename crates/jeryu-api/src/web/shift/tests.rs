@@ -2042,4 +2042,224 @@ async fn rework_edits_reject_self_missing_duplicate_and_cyclic_targets_without_m
         .find(|todo| todo["id"] == ids[0])
         .unwrap();
     assert_eq!(original["reworks"], json!([]));
+/// One bad line in a thread hides itself, not the comments around it, and an
+/// append keeps the file one comment per line.
+#[test]
+fn a_thread_reads_every_comment_it_can_and_appends_one_line() {
+    use super::comments::{Comment, append, comment_from, parse_thread};
+
+    let thread = concat!(
+        "{\"author\":\"alice\",\"at\":\"2026-10-12T18:00:00Z\",\"body\":\"first\\nline two\"}\n",
+        "not a comment\n",
+        "\n",
+        "{\"author\":\"bob\",\"at\":\"2026-10-12T18:05:00Z\",\"body\":\"second\"}\n",
+    );
+    let comments = parse_thread(thread);
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[0].body, "first\nline two");
+    assert_eq!(comments[1].author, "bob");
+
+    let added = Comment {
+        author: "carol".into(),
+        at: "2026-10-12T18:10:00Z".into(),
+        body: "third".into(),
+    };
+    let grown = append(Some(thread), &added);
+    assert_eq!(grown.lines().count(), 5, "{grown}");
+    assert_eq!(parse_thread(&grown).len(), 3);
+    assert_eq!(
+        append(None, &added),
+        "{\"author\":\"carol\",\"at\":\"2026-10-12T18:10:00Z\",\"body\":\"third\"}\n",
+        "a first comment starts the file"
+    );
+
+    let request = super::comments::CommentRequest {
+        body: "\n  spaced  \n".to_string(),
+    };
+    let made = comment_from(&request, "alice", "2026-10-12T18:00:00Z").unwrap();
+    assert_eq!(made.body, "  spaced");
+    assert_eq!(made.author, "alice");
+    for blank in ["", "   ", "\n\n"] {
+        let request = super::comments::CommentRequest {
+            body: blank.to_string(),
+        };
+        assert!(
+            comment_from(&request, "alice", "now").is_err(),
+            "an empty comment is not a comment"
+        );
+    }
+    let long = super::comments::CommentRequest {
+        body: "x".repeat(super::comments::MAX_BODY_CHARS + 1),
+    };
+    assert!(comment_from(&long, "alice", "now").is_err());
+}
+
+/// The comment thread of a todo: appended through the API, listed oldest
+/// first, stored beside the todo on the queue branch, and untouched by the
+/// status action that follows it.
+#[tokio::test]
+async fn todo_comments_append_to_the_queue_and_leave_the_todo_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("bob", "bob-password", UserRole::User)
+        .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let user = core
+        .create_personal_access_token("bob", "t", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new_with_git_storage(core.clone(), dir.path().to_path_buf())
+            .with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let call = |method, uri: &str, token: &str, body| {
+        router.clone().oneshot(request(method, uri, token, body))
+    };
+    let id = "20260919-010000-abcdef";
+    let thread = format!("/api/v1/shift/todos/jeryu/{id}/comments");
+
+    // A todo nobody has commented on has an empty thread, which any login reads.
+    let empty = call(HttpMethod::GET, &thread, &user, None).await.unwrap();
+    assert_eq!(empty.status(), StatusCode::OK);
+    let empty = body_json(empty).await;
+    assert_eq!(empty["comments"].as_array().unwrap().len(), 0);
+    assert_eq!(empty["total"], 0);
+    assert_eq!(empty["todo_id"], id);
+
+    // Writing the queue is admin-only, as every other shift write is.
+    let denied = call(
+        HttpMethod::POST,
+        &thread,
+        &user,
+        Some(json!({"body": "nope"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let posted = call(
+        HttpMethod::POST,
+        &thread,
+        &admin,
+        Some(json!({"body": "## Second outage\n\nThe crash loop came back."})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(posted.status(), StatusCode::CREATED);
+    let posted = body_json(posted).await;
+    assert_eq!(posted["author"], "alice", "the author is the caller");
+    assert_eq!(
+        posted["body"],
+        "## Second outage\n\nThe crash loop came back."
+    );
+    assert!(
+        posted["at"].as_str().unwrap().ends_with('Z'),
+        "the server stamps the time: {posted}"
+    );
+
+    let second = call(
+        HttpMethod::POST,
+        &thread,
+        &admin,
+        Some(json!({"body": "Measured 40s of downtime."})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.status(), StatusCode::CREATED);
+
+    let listed = body_json(call(HttpMethod::GET, &thread, &user, None).await.unwrap()).await;
+    assert_eq!(listed["total"], 2);
+    assert_eq!(
+        listed["comments"][0]["body"],
+        "## Second outage\n\nThe crash loop came back."
+    );
+    assert_eq!(
+        listed["comments"][1]["body"], "Measured 40s of downtime.",
+        "newest last"
+    );
+
+    // An empty body is a mistake, not a comment; a todo that does not exist
+    // is a 404 on both methods.
+    let blank = call(
+        HttpMethod::POST,
+        &thread,
+        &admin,
+        Some(json!({"body": "  "})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(blank.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    for method in [HttpMethod::GET, HttpMethod::POST] {
+        let missing = call(
+            method,
+            "/api/v1/shift/todos/jeryu/20260101-000000-nothere/comments",
+            &admin,
+            Some(json!({"body": "x"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_json(missing).await["code"], "shift_todo_not_found");
+    }
+
+    // The thread is a file on the queue branch, so a worker that clones the
+    // queue reads it; the todo file itself is byte-for-byte as it was.
+    let manager = RepoManager::new(GitdConfig::new(dir.path()));
+    let queue = discover(&manager).remove(0);
+    let head = resolve("git", &queue.path, QUEUE_REF).unwrap();
+    let stored =
+        super::queue::show_file("git", &queue.path, &head, &format!("comments/{id}.jsonl"))
+            .expect("the thread is committed");
+    assert_eq!(super::comments::parse_thread(&stored).len(), 2);
+    assert!(stored.contains("The crash loop came back."), "{stored}");
+    let before = read_todos("git", &queue.path, &head)
+        .unwrap()
+        .into_iter()
+        .find(|q| q.todo.id == id)
+        .unwrap();
+    assert_eq!(
+        before.todo.dump(),
+        CURRENT,
+        "a comment changes no status, note, lease or attempt"
+    );
+
+    // A status action after a comment rewrites the todo and keeps the thread.
+    let acted = call(
+        HttpMethod::POST,
+        &format!("/api/v1/shift/todos/jeryu/{id}/action"),
+        &admin,
+        Some(json!({"action": "edit", "body": "Do the thing, twice.", "note": "fixed"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(acted.status(), StatusCode::OK);
+    let after = body_json(call(HttpMethod::GET, &thread, &user, None).await.unwrap()).await;
+    assert_eq!(after["total"], 2, "the action kept every comment");
+    let listing = body_json(
+        call(
+            HttpMethod::GET,
+            "/api/v1/shift/todos?family=jeryu",
+            &user,
+            None,
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    let todo = listing["todos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == id)
+        .unwrap()
+        .clone();
+    assert_eq!(todo["note"], "fixed");
+    assert_eq!(todo["body"], "Do the thing, twice.");
 }
