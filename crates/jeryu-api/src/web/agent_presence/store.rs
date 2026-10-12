@@ -97,7 +97,11 @@ impl PresenceStore {
         inner
             .conn
             .query_row(
-                &format!("SELECT {COLUMNS} FROM agent_presence WHERE session_id = ?1"),
+                "SELECT session_id, reporter, agent, model, host, operator, lane, branch,
+                        title, state, repos_json, families_json, started_ms, last_active_ms,
+                        ttl_seconds, received_ms, expires_ms, ended_ms, cost_usd, tokens_json,
+                        links_json
+                   FROM agent_presence WHERE session_id = ?1",
                 params![session_id],
                 read_row,
             )
@@ -206,12 +210,16 @@ impl PresenceStore {
         let inner = self.inner.lock().expect("agent presence mutex poisoned");
         let mut stmt = inner
             .conn
-            .prepare(&format!(
-                "SELECT {COLUMNS} FROM agent_presence
+            .prepare(
+                "SELECT session_id, reporter, agent, model, host, operator, lane, branch,
+                        title, state, repos_json, families_json, started_ms, last_active_ms,
+                        ttl_seconds, received_ms, expires_ms, ended_ms, cost_usd, tokens_json,
+                        links_json
+                   FROM agent_presence
                   WHERE (ended_ms IS NOT NULL AND ended_ms >= ?1)
                      OR (ended_ms IS NULL AND expires_ms >= ?1)
-                  ORDER BY session_id"
-            ))
+                  ORDER BY session_id",
+            )
             .map_err(|err| err.to_string())?;
         let rows = stmt
             .query_map(params![now_ms - LINGER_MS], read_row)
@@ -232,10 +240,6 @@ impl PresenceStore {
     }
 }
 
-const COLUMNS: &str = "session_id, reporter, agent, model, host, operator, lane, branch, title,
-    state, repos_json, families_json, started_ms, last_active_ms, ttl_seconds, received_ms,
-    expires_ms, ended_ms, cost_usd, tokens_json, links_json";
-
 fn to_json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("presence column serializes")
 }
@@ -244,6 +248,7 @@ fn from_json<T: serde::de::DeserializeOwned + Default>(raw: Option<String>) -> O
     raw.map(|raw| serde_json::from_str(&raw).unwrap_or_default())
 }
 
+/// One row of either select, which both list the columns in table order.
 fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PresenceRow> {
     let state: String = row.get(9)?;
     Ok(PresenceRow {
