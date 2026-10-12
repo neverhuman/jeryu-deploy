@@ -13,7 +13,9 @@ use tower::ServiceExt;
 use super::tests::{body_json, fixture, request};
 use crate::web::{WebState, app};
 
-const PEOPLE: &str = "/api/v1/shift/families/jeryu/people";
+fn people_path(id: &str) -> String {
+    format!("/api/v1/shift/todos/jeryu/{id}/people")
+}
 
 struct Site {
     router: axum::Router,
@@ -102,8 +104,32 @@ impl Site {
         self.call(HttpMethod::POST, uri, token, Some(body)).await
     }
 
-    async fn people(&self, token: &str) -> Vec<String> {
-        let (status, body) = self.call(HttpMethod::GET, PEOPLE, token, None).await;
+    /// File a todo and block it for a person, the state people take work on.
+    async fn blocked_todo(&self) -> String {
+        let (status, filed) = self
+            .act(
+                "/api/v1/shift/todos",
+                &self.admin,
+                json!({"family": "jeryu", "text": "Rotate the signing key", "mode": "now"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{filed}");
+        let id = filed["id"].as_str().unwrap().to_string();
+        let (status, blocked) = self
+            .act(
+                &format!("/api/v1/shift/todos/jeryu/{id}/action"),
+                &self.admin,
+                json!({"action": "block", "note": "needs root on the build host"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{blocked}");
+        id
+    }
+
+    async fn people(&self, token: &str, id: &str) -> Vec<String> {
+        let (status, body) = self
+            .call(HttpMethod::GET, &people_path(id), token, None)
+            .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         body.as_array()
             .unwrap()
@@ -138,7 +164,7 @@ async fn any_person_claims_hands_over_and_finishes_a_blocked_todo() {
 
     // The picker lists people who can work in the family: not the reporter
     // login (automation) and not carl (no grant).
-    let people = site.people(&site.ada).await;
+    let people = site.people(&site.ada, &id).await;
     assert_eq!(people, ["ada", "alice", "bea"]);
 
     // carl merely signed up: no claim, no finish, no list of the forge's users.
@@ -146,7 +172,9 @@ async fn any_person_claims_hands_over_and_finishes_a_blocked_todo() {
         let (status, refused) = site.act(&action, &site.carl, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
     }
-    let (status, _) = site.call(HttpMethod::GET, PEOPLE, &site.carl, None).await;
+    let (status, _) = site
+        .call(HttpMethod::GET, &people_path(&id), &site.carl, None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     // Nobody can hand the todo to carl either: he cannot work on it.
@@ -286,7 +314,8 @@ async fn an_admin_marks_accounts_as_automation_and_nobody_else_can() {
     assert_eq!(bea["kind"], "service");
     assert_eq!(bea["kind_source"], "set");
     assert_eq!(bea["kind_updated_by"], "alice");
-    assert_eq!(site.people(&site.ada).await, ["ada", "alice"]);
+    let id = site.blocked_todo().await;
+    assert_eq!(site.people(&site.ada, &id).await, ["ada", "alice"]);
 
     // A login the configuration names stays automation even if an admin marks
     // it a person: its credential is held by a machine.
@@ -320,4 +349,63 @@ async fn an_admin_marks_accounts_as_automation_and_nobody_else_can() {
         )
         .await;
     assert!(status.is_client_error(), "{status}");
+}
+
+/// `done` cannot be undone, so a person never finishes work an administrator
+/// set aside; and a holder who stops being a person holds nothing.
+#[tokio::test]
+async fn a_person_cannot_finish_parked_work_and_a_lapsed_holder_frees_the_todo() {
+    let dir = tempfile::tempdir().unwrap();
+    let site = site(dir.path());
+    let id = site.blocked_todo().await;
+    let action = format!("/api/v1/shift/todos/jeryu/{id}/action");
+    let (status, claimed) = site
+        .act(&action, &site.ada, json!({"action": "claim"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+
+    // An admin parks it; ada still holds it but may no longer finish it.
+    let (status, parked) = site
+        .act(&action, &site.admin, json!({"action": "park"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{parked}");
+    let (status, refused) = site
+        .act(&action, &site.ada, json!({"action": "done"}))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["code"], "todo_action_forbidden");
+    // Giving it back is still hers to do.
+    let (status, back) = site
+        .act(&action, &site.ada, json!({"action": "unassign"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{back}");
+
+    // Blocked again and claimed by ada; then ada's login is marked automation.
+    let (status, _) = site
+        .act(
+            &action,
+            &site.admin,
+            json!({"action": "block", "note": "again"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = site
+        .act(&action, &site.ada, json!({"action": "claim"}))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = site
+        .call(
+            HttpMethod::PUT,
+            "/api/v1/admin/users/ada/kind",
+            &site.admin,
+            Some(json!({"kind": "service"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    // ada holds nothing now: bea may claim the todo.
+    let (status, taken) = site
+        .act(&action, &site.bea, json!({"action": "claim"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{taken}");
+    assert_eq!(taken["assignee"], "bea");
 }

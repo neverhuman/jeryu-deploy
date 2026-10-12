@@ -18,10 +18,11 @@
 //! A bot, or an account marked as automation (see `web::people`), never takes
 //! a todo on: the point of an assignee is that a person has it.
 //!
-//! todoq's side of the bargain (`Todo.is_claimable` is false while `assignee`
-//! is set) ships with todoq itself; until a worker host runs it, an assigned
-//! open todo can still be claimed by a worker, which the lease checks in the
-//! handler then protect.
+//! A person who is not an administrator takes on or finishes only `blocked`
+//! and `handoff` todos (`PEOPLE_STATUSES`), which no worker claims, so the
+//! rule holds whichever todoq version a worker host runs. todoq additionally
+//! skips any todo with an assignee (`Todo.is_claimable`), which keeps an
+//! administrator's assignment of open work out of the pool once it ships.
 
 use serde_json::Value;
 
@@ -69,17 +70,35 @@ pub(crate) fn may_attempt(action: &str, caller: Caller<'_>) -> Result<(), Denied
     )))
 }
 
-/// Whether `caller` may run `action` on `todo` at all. `works_here` says
-/// whether they can write to the todo's code. State rules (a done todo cannot
-/// be claimed, say) are `apply`'s business and answer 422.
+/// What the handler found out about the caller and the todo's holder.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Standing {
+    /// The caller can write to the todo's code (see `access.rs`).
+    pub works_here: bool,
+    /// The stored assignee is still an active person. One who was
+    /// deactivated or marked as automation holds nothing: the todo is free.
+    pub holder_active: bool,
+}
+
+/// The statuses a person who is not an administrator may take on or finish:
+/// work that stopped for a person. No worker claims these (todoq claims only
+/// `open` and lapsed `claimed` todos), so a person and a worker never meet on
+/// one even before todoq skips assigned todos; and a todo an administrator
+/// parked or closed stays theirs, since `done` cannot be undone.
+const PEOPLE_STATUSES: &[TodoStatus] = &[TodoStatus::Blocked, TodoStatus::Handoff];
+
+/// Whether `caller` may run `action` on `todo` at all. State rules (a done
+/// todo cannot be claimed, say) are `apply`'s business and answer 422.
 pub(crate) fn authorize(
     todo: &TodoFile,
     action: &str,
     caller: Caller<'_>,
-    works_here: bool,
+    standing: Standing,
 ) -> Result<(), Denied> {
-    let holds = !todo.assignee.is_empty() && todo.assignee == caller.login;
-    let free = todo.assignee.is_empty();
+    let held = !todo.assignee.is_empty() && standing.holder_active;
+    let holds = held && todo.assignee == caller.login;
+    let free = !held;
+    let works_here = standing.works_here;
     if action == "claim" && !caller.person {
         return Err(Denied(
             "only a person can claim a todo; bots and automation accounts work through the queue"
@@ -102,17 +121,18 @@ pub(crate) fn authorize(
         ));
     }
     let holder = || {
-        if todo.assignee.is_empty() {
+        if !held {
             "nobody".to_string()
         } else {
             todo.assignee.clone()
         }
     };
-    // An administrator parked it on purpose; taking it on is theirs to undo.
-    if matches!(action, "claim" | "assign") && todo.status == TodoStatus::Parked {
-        return Err(Denied(
-            "an administrator parked this todo; ask them to release it first".to_string(),
-        ));
+    if matches!(action, "claim" | "assign" | "done") && !PEOPLE_STATUSES.contains(&todo.status) {
+        return Err(Denied(format!(
+            "a {} todo is not waiting on a person; only blocked or handed-off todos can be \
+             taken on or finished here, the rest belong to the workers and administrators",
+            todo.status.as_str()
+        )));
     }
     match action {
         "claim" if free || holds => Ok(()),
@@ -169,8 +189,8 @@ pub(crate) fn apply(
             let Some(login) = assignable(&target) else {
                 return Err(format!(
                     "{target:?} is not an active person who can work on this todo; pick \
-                     someone from GET /api/v1/shift/families/{}/people",
-                    todo.family
+                     someone from GET /api/v1/shift/todos/{}/{}/people",
+                    todo.family, todo.id
                 ));
             };
             // The stored login is the account store's, never the request's
@@ -212,6 +232,15 @@ mod tests {
             .expect("request")
     }
 
+    const HERE: Standing = Standing {
+        works_here: true,
+        holder_active: true,
+    };
+    const ELSEWHERE: Standing = Standing {
+        works_here: false,
+        holder_active: true,
+    };
+
     const ADA: Caller<'static> = Caller {
         login: "ada",
         admin: false,
@@ -241,9 +270,9 @@ mod tests {
     #[test]
     fn a_person_claims_a_free_todo_but_not_one_another_user_holds() {
         let free = todo("", TodoStatus::Blocked);
-        assert!(authorize(&free, "claim", ADA, true).is_ok());
+        assert!(authorize(&free, "claim", ADA, HERE).is_ok());
         let held = todo("bea", TodoStatus::Blocked);
-        let denied = authorize(&held, "claim", ADA, true).expect_err("another user holds it");
+        let denied = authorize(&held, "claim", ADA, HERE).expect_err("another user holds it");
         assert!(denied.0.contains("bea already has"), "{denied:?}");
     }
 
@@ -258,7 +287,7 @@ mod tests {
                 "{action} must be refused before the lookup"
             );
             assert!(
-                authorize(&mine, action, ADA, true).is_err(),
+                authorize(&mine, action, ADA, HERE).is_err(),
                 "{action} must stay admin-only"
             );
         }
@@ -269,17 +298,17 @@ mod tests {
         let held = todo("ada", TodoStatus::Blocked);
         for action in ["done", "unassign", "assign"] {
             assert!(
-                authorize(&held, action, ADA, true).is_ok(),
+                authorize(&held, action, ADA, HERE).is_ok(),
                 "{action} by holder"
             );
             assert!(
-                authorize(&held, action, BEA, true).is_err(),
+                authorize(&held, action, BEA, HERE).is_err(),
                 "{action} by another user must be forbidden"
             );
         }
         let free = todo("", TodoStatus::Blocked);
         assert!(
-            authorize(&free, "done", ADA, true).is_err(),
+            authorize(&free, "done", ADA, HERE).is_err(),
             "done needs a holder"
         );
     }
@@ -287,19 +316,19 @@ mod tests {
     #[test]
     fn bots_and_automation_never_take_a_todo() {
         let free = todo("", TodoStatus::Open);
-        assert!(authorize(&free, "claim", BUILD_BOT, true).is_err());
-        assert!(authorize(&free, "claim", OTHER_USER_BOT, true).is_err());
-        assert!(authorize(&free, "assign", OTHER_USER_BOT, true).is_err());
+        assert!(authorize(&free, "claim", BUILD_BOT, HERE).is_err());
+        assert!(authorize(&free, "claim", OTHER_USER_BOT, HERE).is_err());
+        assert!(authorize(&free, "assign", OTHER_USER_BOT, HERE).is_err());
         // An administrator's automation keeps its admin actions.
-        assert!(authorize(&free, "assign", BUILD_BOT, true).is_ok());
-        assert!(authorize(&free, "release", BUILD_BOT, true).is_ok());
+        assert!(authorize(&free, "assign", BUILD_BOT, HERE).is_ok());
+        assert!(authorize(&free, "release", BUILD_BOT, HERE).is_ok());
     }
 
     #[test]
     fn an_admin_may_reassign_a_todo_someone_else_holds() {
         let held = todo("bea", TodoStatus::Blocked);
-        assert!(authorize(&held, "assign", ROOT, true).is_ok());
-        assert!(authorize(&held, "unassign", ROOT, true).is_ok());
+        assert!(authorize(&held, "assign", ROOT, HERE).is_ok());
+        assert!(authorize(&held, "unassign", ROOT, HERE).is_ok());
     }
 
     #[test]
@@ -346,19 +375,60 @@ mod tests {
         // An account that only signed up, or cannot read a private family.
         let free = todo("", TodoStatus::Blocked);
         for action in ["claim", "assign", "done", "unassign"] {
-            let denied = authorize(&free, action, ADA, false).expect_err(action);
+            let denied = authorize(&free, action, ADA, ELSEWHERE).expect_err(action);
             assert!(denied.0.contains("write access"), "{denied:?}");
         }
         // Administrators are not limited by grants.
-        assert!(authorize(&free, "claim", ROOT, false).is_ok());
+        assert!(authorize(&free, "claim", ROOT, ELSEWHERE).is_ok());
     }
 
     #[test]
-    fn a_parked_todo_is_left_to_the_administrator_who_parked_it() {
-        let parked = todo("", TodoStatus::Parked);
-        assert!(authorize(&parked, "claim", ADA, true).is_err());
-        assert!(authorize(&parked, "assign", ADA, true).is_err());
-        assert!(authorize(&parked, "claim", ROOT, true).is_ok());
+    fn a_person_takes_on_or_finishes_only_work_that_stopped_for_a_person() {
+        // Parked, closed, open and claimed todos belong to admins and workers;
+        // done cannot be undone, so a person never finishes them.
+        for status in [
+            TodoStatus::Parked,
+            TodoStatus::Closed,
+            TodoStatus::Open,
+            TodoStatus::Claimed,
+        ] {
+            let mine = todo("ada", status);
+            let free = todo("", status);
+            assert!(
+                authorize(&free, "claim", ADA, HERE).is_err(),
+                "claim {status:?}"
+            );
+            assert!(
+                authorize(&free, "assign", ADA, HERE).is_err(),
+                "assign {status:?}"
+            );
+            assert!(
+                authorize(&mine, "done", ADA, HERE).is_err(),
+                "done {status:?}"
+            );
+            // Giving a todo back is always allowed to its holder.
+            assert!(
+                authorize(&mine, "unassign", ADA, HERE).is_ok(),
+                "unassign {status:?}"
+            );
+            assert!(
+                authorize(&free, "claim", ROOT, HERE).is_ok(),
+                "admin {status:?}"
+            );
+        }
+        let handoff = todo("", TodoStatus::Handoff);
+        assert!(authorize(&handoff, "claim", ADA, HERE).is_ok());
+    }
+
+    #[test]
+    fn a_holder_who_is_no_longer_an_active_person_holds_nothing() {
+        let stale = todo("gone", TodoStatus::Blocked);
+        let lapsed = Standing {
+            works_here: true,
+            holder_active: false,
+        };
+        assert!(authorize(&stale, "claim", ADA, lapsed).is_ok());
+        assert!(authorize(&stale, "claim", ADA, HERE).is_err());
     }
 
     #[test]

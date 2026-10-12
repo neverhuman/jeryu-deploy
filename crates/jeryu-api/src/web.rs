@@ -1151,16 +1151,16 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         ("/api/v1/shift/families", get(shift::families)),
         (
-            "/api/v1/shift/families/:family/people",
-            get(shift::family_people),
-        ),
-        (
             "/api/v1/shift/todos",
             get(shift::list_todos).post(shift::file_todos),
         ),
         (
             "/api/v1/shift/todos/:family/:id/action",
             post(shift::todo_action),
+        ),
+        (
+            "/api/v1/shift/todos/:family/:id/people",
+            get(shift::todo_people),
         ),
         ("/api/v1/shift/heartbeat", post(shift::heartbeat)),
         ("/api/v1/shift/workers", get(shift::workers)),

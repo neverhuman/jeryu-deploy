@@ -1006,11 +1006,9 @@ may be older than the client.
 
 ## Taking a todo on
 
-Any item about a todo can be picked up by a person, not only by the workers.
-A todo carries an optional `assignee` (a forge login, front-matter key
-`assignee`), and todoq never claims a todo that has one (todoq's
-`Todo.is_claimable`; until a worker host runs that version, the lease checks
-below keep a person and a worker apart). Through
+A todo that stopped for a person (`blocked` or `handoff`) can be picked up by
+any person who can work on it, not only by an administrator. A todo carries an
+optional `assignee` (a forge login, front-matter key `assignee`). Through
 `POST /api/v1/shift/todos/<family>/<id>/action`:
 
 | Action | Who | Effect |
@@ -1021,18 +1019,31 @@ below keep a person and a worker apart). Through
 | `{"action": "done"}` | the assignee or an admin | finishes it |
 | `{"action": "release"}` | admin | back to the workers; clears the assignee |
 
-"Can work on it" means write access to a repository the todo names, or to any
-of the family's repositories when it names none. An account with no grant —
-one that only signed up, or that cannot read a private family — can take
-nothing on and is not offered as an assignee. The stored assignee is the
-account store's login, never the request's spelling of it.
+A person who is not an admin may `claim`, `assign` and `done` only a `blocked`
+or `handoff` todo. No worker claims those (todoq claims only `open` and lapsed
+`claimed` todos), so a person and a worker never meet on one, whichever todoq
+version a worker host runs; and `done` cannot be undone, so work an admin
+parked, closed or left to the workers is never finished by anyone else.
+todoq also skips any todo with an assignee (`Todo.is_claimable`), which keeps
+an admin's assignment of open work out of the pool.
 
-A parked todo is left to the administrators: only they claim or assign it.
+"Can work on it" means write access to a repository the todo names. A todo
+that names none (untriaged) could be about any of the family's repositories,
+so it needs write access to every one this forge hosts; a grant on one
+repository never reaches work on a sibling. An account with no grant — one
+that only signed up, or that cannot read a private family — can take nothing
+on and is not offered as an assignee. The stored assignee is the account
+store's login, never the request's spelling of it, and an assignee who is no
+longer an active person (deactivated, or marked as automation) holds nothing:
+the todo is free to claim again.
+
 Every other action stays admin-only and answers `403 todo_action_forbidden` to
 anyone else, before the todo is looked up. A todo a worker is running (live
 lease) answers `409 claim_live` to `claim`, `assign` and a non-admin's `done`,
 as it does to `release`; only an admin's `{"force": true}` overrides it. Bots
-and accounts that are automation never take a todo on.
+and accounts that are automation never take a todo on. A person's action is
+committed to the family's queue repository under their login, whatever their
+grants on that repository: the queue's writers are the family's people.
 
 An account is automation when an admin marks it `service`
 (`PUT /api/v1/admin/users/<login>/kind` with `{"kind": "service"}`) or the
@@ -1040,11 +1051,12 @@ instance configuration names it: `JERYU_SHIFT_PR_AUTHOR`,
 `JERYU_SHIFT_REPORTERS`, `JERYU_REVIEW_IDENTITY`, `JERYU_MERGE_IDENTITY`,
 `JERYU_AUTOMATION_IDENTITIES`, `JERYU_CI_PUBLISHERS`, `JERYU_JANKURAI_SCORERS`
 or `JERYU_DEPLOYERS`; the configuration wins over a stored mark, since such a
-login's credential is held by a machine. The check fails closed: if the stored marks cannot be
-read, nobody counts as a person. `GET /api/v1/admin/users` reports each
-account's `kind` and `kind_source` (`set`, `config` or `default`).
+login's credential is held by a machine. The check fails closed: if the stored
+marks cannot be read, nobody counts as a person. `GET /api/v1/admin/users`
+reports each account's `kind` and `kind_source` (`set`, `config` or
+`default`).
 
-`GET /api/v1/shift/families/<family>/people` lists the active people who can
-work in the family, for an "assign to" picker. Only an admin or someone who
-can work in the family may read it, so signing up does not reveal the forge's
-users.
+`GET /api/v1/shift/todos/<family>/<id>/people` lists the active people who
+can work on that todo, for an "assign to" picker. Only an admin or someone who
+can work on the todo may read it, and it never reaches past the todo's own
+repositories, so it shows no more than the caller's own grants do.

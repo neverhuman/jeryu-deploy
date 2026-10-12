@@ -695,31 +695,43 @@ pub(crate) fn apply_action(
     Ok(())
 }
 
-/// `GET /api/v1/shift/families/:family/people`: the people a todo in this
-/// family can be handed to — active people who can write to its code — for
-/// the "assign to" picker. Only an administrator or someone who can work in
-/// the family may list them, so an account cannot enumerate the forge's users
-/// by signing up.
-pub(crate) async fn family_people(
+/// `GET /api/v1/shift/todos/:family/:id/people`: who this todo can be
+/// handed to — active people who can write to its code — for the "assign to"
+/// picker. Only an administrator or someone who can work on the todo may list
+/// them, and the list never reaches past the todo's own repositories, so it
+/// discloses no more than the caller's own grants already show.
+pub(crate) async fn todo_people(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
-    AxumPath(family): AxumPath<String>,
+    AxumPath((family, id)): AxumPath<(String, String)>,
 ) -> AxumResponse {
     let queue = match find_queue(&state, &family) {
         Ok(q) => q,
         Err(resp) => return *resp,
     };
-    let repos = access::work_repos(&state, &queue, &[]);
+    let todos = match queue_todos(&state, &queue) {
+        Ok(todos) => todos,
+        Err(reason) => return git_failure(&reason),
+    };
+    let Some(found) = todos.iter().find(|q| q.todo.id == id) else {
+        return shift_error(
+            StatusCode::NOT_FOUND,
+            "shift_todo_not_found",
+            &format!("no todo {id:?} in family {family:?}"),
+            "list todos with GET /api/v1/shift/todos?family=",
+        );
+    };
+    let scope = access::work_scope(&state, &queue, &found.todo.repos);
     let admin = account.role == UserRole::Admin;
-    if !admin && !access::may_work(&state, &repos, &account.login) {
+    if !admin && !access::may_work(&state, &scope, &account.login) {
         return shift_error(
             StatusCode::FORBIDDEN,
             "todo_action_forbidden",
-            &format!("you cannot work in family {family:?}, so you cannot hand its todos on"),
-            "ask an administrator for write access to one of the family's repositories",
+            &format!("you cannot work on todo {id:?}, so you cannot hand it on"),
+            "ask an administrator for write access to the todo's repositories",
         );
     }
-    match people::active_people(&state, |login| access::may_work(&state, &repos, login)) {
+    match people::active_people(&state, |login| access::may_work(&state, &scope, login)) {
         Ok(people) => Json(people).into_response(),
         Err(error) => people::storage_error(&error),
     }
@@ -791,9 +803,16 @@ pub(crate) async fn todo_action(
             // explicit `force` says the admin means to take it back.
             // The repositories the todo's work is in, and whether the caller
             // can write to them: people act only on work they are trusted with.
-            let repos = access::work_repos(&state, &queue, &found.todo.repos);
-            let works_here = caller.admin || access::may_work(&state, &repos, caller.login);
-            assignment::authorize(&found.todo, &request.action, caller, works_here)
+            let scope = access::work_scope(&state, &queue, &found.todo.repos);
+            let standing = assignment::Standing {
+                works_here: caller.admin || access::may_work(&state, &scope, caller.login),
+                // A holder who was deactivated or marked as automation since
+                // holds nothing; the todo is free again (fails closed: an
+                // unreadable kind is not a person).
+                holder_active: found.todo.assignee.is_empty()
+                    || people::assignable_person(&state, &found.todo.assignee).is_some(),
+            };
+            assignment::authorize(&found.todo, &request.action, caller, standing)
                 .map_err(|denied| Refused::Forbidden(denied.0))?;
             // Taking on a todo a worker is running would have a person and a
             // worker on it at once, so it waits for the lease like a release;
@@ -809,7 +828,7 @@ pub(crate) async fn todo_action(
             if assignment::ASSIGNMENT_ACTIONS.contains(&request.action.as_str()) {
                 assignment::apply(&mut todo, &request, caller, |login| {
                     people::assignable_person(&state, login)
-                        .filter(|login| access::may_work(&state, &repos, login))
+                        .filter(|login| access::may_work(&state, &scope, login))
                 })
                 .map_err(Refused::Invalid)?;
             } else {
