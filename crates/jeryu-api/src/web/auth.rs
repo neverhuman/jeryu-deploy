@@ -1296,7 +1296,22 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || pins_path(path)
         || trace_path(path)
         || yield_path(path)
+        || activity_reads_path(path)
         || audit_path(path)
+}
+
+/// The Activity histogram counts events by family and kind, and usage reports live
+/// token spend per worker slot: both read the event log's contents, so like the log
+/// itself they are for global admins (a non-admin could otherwise enumerate family
+/// keys, private repositories included, through the family filter's 422).
+fn activity_reads_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/v1/events/histogram"
+            | "/api/v1/events/histogram/"
+            | "/api/v1/usage"
+            | "/api/v1/usage/"
+    )
 }
 
 /// Reporting a worker slot is the one shift write a worker-pool host makes, so

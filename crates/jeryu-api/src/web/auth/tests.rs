@@ -215,6 +215,21 @@ fn admin_allow_list_matches_the_route_table() {
 
     // Shift reads are open, shift writes admin-only; event reads admin-only.
     assert!(!admin_only_request(&Method::GET, "/api/v1/shift/todos"));
+    // The Activity reads carry the event log's contents: admin-only, every method.
+    for route in [
+        "/api/v1/events/histogram",
+        "/api/v1/usage",
+        "/api/v1/usage/",
+    ] {
+        for method in [Method::GET, Method::HEAD, Method::POST] {
+            assert!(admin_only_request(&method, route), "{method} {route}");
+        }
+    }
+    assert!(!admin_only_request(&Method::GET, "/api/v1/usages"));
+    assert!(!admin_only_request(
+        &Method::GET,
+        "/api/v1/events/histogramx"
+    ));
     assert!(admin_only_request(&Method::POST, "/api/v1/shift/todos"));
     assert!(admin_only_request(&Method::GET, "/api/v1/events"));
     assert!(!admin_only_request(&Method::POST, "/api/v1/events"));
