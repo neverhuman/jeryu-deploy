@@ -3,8 +3,8 @@
 ## Unreleased
 
 - `GET /api/v1/repos/:id/merge-queue` gives a building entry `gate_started_at`:
-  when a gate first reported on its queue commit, or `null` while it waits for
-  a gate runner. The merge box said "the gate is running" from the enqueue on,
+  when a gate first reported on its queue commit after the enqueue, or `null`
+  while it waits for a gate runner. The merge box said "the gate is running" from the enqueue on,
   even when no runner had picked the entry up.
 - The gate's `cargo test` keeps test temp directories on tmpfs (`/dev/shm`, or
   `JERYU_CI_TEST_TMPDIR`) when one is writable. Every web test opens a fresh

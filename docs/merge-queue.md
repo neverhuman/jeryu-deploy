@@ -165,11 +165,12 @@ Endpoints: `POST`/`DELETE /api/v1/repos/:id/pulls/:n/queue`,
 
 `GET /api/v1/repos/:id/merge-queue` also gives each building entry
 `gate_started_at`: the earliest status or check run on its queue commit among
-the base's required contexts (any context when it requires none), or `null`
-while no gate runner has taken the entry. The page shows "waiting for a gate
-runner" until then, and times the gate from that moment rather than from the
-enqueue. The all-repository listing omits it, because the runner polls that
-listing on every tick and it stays an index read.
+the base's required contexts (any context when it requires none), posted at or
+after `enqueued_at`, or `null` while no gate runner has taken the entry. Reports
+from before the enqueue never count: a PR already on the base tip is queued as
+its own head, which carries the PR's earlier CI. The all-repository listing
+omits the field, because the runner polls that listing on every tick and it
+stays an index read.
 
 Moving the store into jeryu-core (for history queries and the PR journey view)
 is a follow-up.
