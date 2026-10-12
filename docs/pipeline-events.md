@@ -16,6 +16,9 @@ tools. This page is the contract that makes it visible in one place:
   to the deployment that ships it. It answers "where is this".
 - **`/api/v1/yield`**: what the agent factory spent against what reached main.
   It answers "what does a merged change cost".
+- **`/api/v1/flow`**: how much work sits at each step of the line, how long it
+  waits there, where it loops back and which step is the bottleneck. It
+  answers "where does the time go". Contract: `docs/flow.md`.
 
 JSON is snake_case. Every refusal on these routes is a typed JSON error
 (`code`, `message`, `reason`, `repair_hint`, `common_fixes`, `docs_url`),
@@ -27,7 +30,9 @@ Implementation: `crates/jeryu-api/src/web/pipeline.rs` and
 `crates/jeryu-api/src/web/pipeline/` (store, emit points, attention rules,
 the work trace), `crates/jeryu-api/src/web/shift/truth.rs` and
 `shift/visibility.rs`, `crates/jeryu-api/src/web/yields.rs` and `yields/`,
-`db/migrations/0002_pipeline_events.sql`, `db/migrations/0010_cost_ledger.sql`.
+`crates/jeryu-api/src/web/flow.rs` and `flow/` (the station route, the
+projection and the Flow report), `db/migrations/0002_pipeline_events.sql`,
+`db/migrations/0010_cost_ledger.sql`, `db/migrations/0011_flow_ledger.sql`.
 
 ## Access
 
@@ -41,6 +46,7 @@ the work trace), `crates/jeryu-api/src/web/shift/truth.rs` and
 | `GET /api/v1/pins` | global admins |
 | `GET /api/v1/trace` | global admins |
 | `GET /api/v1/yield` | global admins |
+| `GET /api/v1/flow` | global admins |
 | WebSocket scope `pipeline` | global admins |
 
 Reads are admin-only in v1 because events and attention items carry todo
@@ -103,6 +109,15 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 | `queue.enqueued`, `queue.building`, `queue.landed`, `queue.failed`, `queue.dequeued`, `queue.refused` | merge-queue transitions. `queue.building` is a rebuild (moved base, or a retry after a red gate). `queue.landed` is followed by `pr.merged` with `detail.via = "merge_queue"`. `queue.refused` means the PR could not be replayed onto the base and somebody has to rebase it; it is also persisted as a `dequeued` entry whose `refusal_code` is the forge code, which is what raises `queue_refused` in the attention inbox |
 | `gate.started`, `gate.finished`, `review.started`, `review.finished` | a runner heartbeat's `current` or `last` differs from that runner's previous beat (`review.*` for the `redteam` label; never for the `automation` label, see [Runner heartbeats](#runner-heartbeats)). A reviewer verdict of `hold`, `failed`, `publication_rejected` or `too_large` sets `needs_human` |
 | `deploy.created`, `deploy.status` | a write to the Deployments API; `outcome` is the deployment status state, `needs_human` for `failure` and `error`; `reason` is the status description, which `deploy-release.sh` ends with the last meaningful line of switch.sh's output on failure. The status request may also carry `log_path` (the operator's kept switch log on the release host) and `log_tail`: the Deployments API stores neither, and the event's `detail` carries both (the tail cut to its last 20 lines and at most 6000 bytes of JSON, so the event fits the 8 KiB `detail` limit) |
+
+### Flow ledger
+
+Every stored event is also projected into `flow_ledger` in the same
+transaction: one row per lot per station visit, which is what
+`GET /api/v1/flow` reports from. Like the cost ledger it is never pruned, and
+like it a repeated `event_id` writes nothing. The stations, the event kinds
+that move a lot between them and the replay that rebuilds the table are
+`docs/flow.md`; migration `0011_flow_ledger.sql`.
 
 ### Cost ledger
 

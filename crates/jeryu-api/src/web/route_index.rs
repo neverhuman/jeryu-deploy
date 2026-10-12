@@ -255,6 +255,7 @@ fn query_params(path: &str) -> &'static [&'static str] {
         "/api/v1/events/histogram" => keys::<super::pipeline::HistogramQuery>(),
         "/api/v1/usage" => keys::<super::pipeline::UsageQuery>(),
         "/api/v1/yield" => keys::<super::yields::YieldQuery>(),
+        "/api/v1/flow" => keys::<super::flow::FlowQuery>(),
         "/api/v1/merge-queue" => keys::<super::merge_queue::QueueListQuery>(),
         "/api/v1/repos/:id/merge-queue" => keys::<super::merge_queue::QueuePageQuery>(),
         "/api/v1/shift/todos" => keys::<super::shift::TodosQuery>(),
@@ -385,6 +386,7 @@ mod tests {
             "/api/v1/audit",
             "/api/v1/agent-runs",
             "/api/v1/yield",
+            "/api/v1/flow",
         ] {
             assert!(
                 !query_params(path).is_empty(),

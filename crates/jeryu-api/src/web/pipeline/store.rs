@@ -3,7 +3,9 @@
 //! Append-only: rows are inserted and, after 30 days, pruned (at most once an
 //! hour, on write); nothing updates a row. An event that carries a `cost_usd`
 //! is also written to `cost_ledger` (`db/migrations/0010_cost_ledger.sql`),
-//! which is never pruned. The schema comes from the reviewed
+//! and every event is projected into `flow_ledger`
+//! (`db/migrations/0011_flow_ledger.sql`, the fold in `web/flow/project.rs`);
+//! neither ledger is ever pruned. The schema comes from the reviewed
 //! `db/migrations/0002_pipeline_events.sql`, applied by the shift migration
 //! runner. The store holds its own connection to the file the heartbeat store
 //! also uses; sqlite serialises the two writers and `busy_timeout` covers the
@@ -15,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
+use super::super::flow::{Station, Visit, project};
 use super::super::shift::{migrate_shift_store, rfc3339_ms};
 use super::types::{Event, EventsQuery, NewEvent};
 
@@ -66,6 +69,7 @@ impl EventStore {
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|err| err.to_string())?;
         migrate_shift_store(&conn)?;
+        replay_flow_ledger(&conn)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
                 conn,
@@ -170,6 +174,23 @@ impl EventStore {
             )
             .map_err(|err| err.to_string())?;
         }
+        // The flow projection commits with the event too: a station visit
+        // is never in the ledger without the event that moved it, nor an
+        // event in the log without the visits it opened.
+        project::apply(
+            &tx,
+            &project::EventView {
+                seq,
+                ts_ms: now_ms,
+                kind: &event.kind,
+                outcome: event.outcome.as_deref(),
+                family: event.family.as_deref(),
+                repo: event.repo.as_deref(),
+                pr: event.pr,
+                todo_id: event.todo_id.as_deref(),
+                shift: event.shift.as_deref(),
+            },
+        )?;
         tx.commit().map_err(|err| err.to_string())?;
         if now_ms - inner.last_prune_ms >= PRUNE_EVERY_MS {
             inner
@@ -329,6 +350,55 @@ impl EventStore {
             .map_err(|err| err.to_string())
     }
 
+    /// Every station visit the flow ledger holds for `family` (every family
+    /// when it is `None`), oldest first. The ledger is never pruned, so this
+    /// reads visits older than the event log keeps.
+    pub(crate) fn flow_visits(&self, family: Option<&str>) -> Result<Vec<Visit>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner
+            .conn
+            .prepare_cached(
+                "SELECT lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to
+                   FROM flow_ledger
+                  WHERE ?1 IS NULL OR family = ?1
+                  ORDER BY seq",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![family], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut visits = Vec::new();
+        for row in rows {
+            let (station, rework_to, lot_id, entered_ms, started_ms, left_ms, direction) =
+                row.map_err(|err| err.to_string())?;
+            // A row naming a station this binary does not know is left out
+            // rather than guessed at.
+            let Some(station) = Station::parse(&station) else {
+                continue;
+            };
+            visits.push(Visit {
+                lot_id,
+                station,
+                entered_ms,
+                started_ms,
+                left_ms,
+                direction,
+                rework_to: rework_to.as_deref().and_then(Station::parse),
+            });
+        }
+        Ok(visits)
+    }
+
     /// Every family the log has an event for, canonical keys, sorted.
     pub(crate) fn families(&self) -> Result<Vec<String>, String> {
         let inner = self.inner.lock().expect("pipeline event mutex poisoned");
@@ -447,4 +517,32 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<Event> {
         log_url: row.get(20)?,
         detail: detail.and_then(|d| serde_json::from_str(&d).ok()),
     })
+}
+
+/// Build `flow_ledger` from every event the log still holds, once.
+///
+/// The projection is a Rust fold over the event sequence, so migration 0011
+/// can only create the table; this is its backfill. The `flow_ledger_replay`
+/// row it writes is what makes it happen exactly once: a restart finds the
+/// row and leaves the visits it already built alone. A projection bug is
+/// fixed by truncating both tables, which makes the next start replay again.
+fn replay_flow_ledger(conn: &Connection) -> Result<(), String> {
+    let replayed: i64 = conn
+        .query_row("SELECT COUNT(*) FROM flow_ledger_replay", [], |row| {
+            row.get(0)
+        })
+        .map_err(|err| err.to_string())?;
+    if replayed > 0 {
+        return Ok(());
+    }
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    let (events, visits) = project::replay(&tx)?;
+    tx.execute(
+        "INSERT INTO flow_ledger_replay (replayed_ms, events, visits) VALUES (?1, ?2, ?3)",
+        params![chrono::Utc::now().timestamp_millis(), events, visits],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())
 }

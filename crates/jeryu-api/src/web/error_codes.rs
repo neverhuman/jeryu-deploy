@@ -195,6 +195,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         422,
         "no product family of that name: the filter would have matched nothing",
     ),
+    entry(
+        "flow_read_failed",
+        500,
+        "the flow ledger behind the Flow report could not be read",
+    ),
     entry("forbidden", 403, "the account may not perform this request"),
     entry(
         "forge_branch_protection",

@@ -1,0 +1,923 @@
+//! Flow: real event sequences through the projection, then the report and the
+//! route they answer with.
+//!
+//! Every test here drives `EventStore::insert` with the events a real lot
+//! produces and asserts the numbers that come out, not the shape: a lot that
+//! runs Queue to Deploy, a red gate that loops back to Work, a held review, a
+//! refused merge-queue replay, a killed attempt and a blocked todo.
+
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use axum::http::{Request as HttpRequest, StatusCode, header};
+use jeryu_core::{ForgeCore, UserRole};
+use rusqlite::{Connection, params};
+use serde_json::Value;
+use tower::ServiceExt;
+
+use super::report::{FLOW_SCHEMA, Request, build};
+use super::{Station, Visit};
+use crate::web::pipeline::{EventStore, NewEvent};
+use crate::web::shift::migrate_shift_store_through;
+use crate::web::{WebState, app};
+
+const MINUTE: i64 = 60 * 1000;
+const START: i64 = 1_760_000_000_000;
+
+/// A store in a fresh temporary directory, with the directory kept alive.
+fn store() -> (tempfile::TempDir, EventStore) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = EventStore::open(&dir.path().join("shift.sqlite")).unwrap();
+    (dir, store)
+}
+
+/// One posted event, at the millisecond the server stored it.
+struct Post<'a> {
+    kind: &'a str,
+    outcome: Option<&'a str>,
+    todo: Option<&'a str>,
+    pr: Option<i64>,
+    shift: Option<&'a str>,
+    at_ms: i64,
+}
+
+fn post(store: &EventStore, event: &Post<'_>) {
+    store
+        .insert(
+            "operator",
+            &NewEvent {
+                source: "todoq".to_string(),
+                kind: event.kind.to_string(),
+                summary: format!("{} at {}", event.kind, event.at_ms),
+                outcome: event.outcome.map(str::to_string),
+                family: Some("acme".to_string()),
+                repo: event.pr.map(|_| "acme/widget".to_string()),
+                pr: event.pr,
+                todo_id: event.todo.map(str::to_string),
+                shift: event.shift.map(str::to_string),
+                ..NewEvent::default()
+            },
+            event.at_ms,
+        )
+        .unwrap();
+}
+
+/// A whole lot, Queue to Deploy, with no loop anywhere: filed at `base_ms`,
+/// every station taking the same handful of minutes. With
+/// `pin` the work is carried into its consumer by a pin bump; without it the
+/// repository releases itself and the lot never visits Pin.
+///
+/// The events are posted oldest first, as the log holds them.
+fn forward_lot(store: &EventStore, todo: &str, pr: i64, base_ms: i64, pin: bool) {
+    let shift = format!("dayshift/{todo}");
+    let mut steps: Vec<(&str, Option<&str>, i64, bool, bool)> = vec![
+        ("todo.filed", None, 0, false, false),
+        ("todo.claimed", None, 2, false, false),
+        ("worker.stage", None, 3, false, false),
+        ("todo.attempt_finished", Some("done"), 13, false, true),
+        ("pr.opened", None, 15, true, true),
+        ("review.started", None, 16, true, false),
+        ("gate.started", None, 17, true, false),
+        ("review.finished", Some("approve"), 20, true, false),
+        ("gate.finished", Some("success"), 23, true, false),
+        ("queue.enqueued", None, 24, true, false),
+        ("queue.landed", None, 30, true, false),
+        ("release.staged", None, 40, true, false),
+        ("deploy.created", None, 41, true, false),
+        ("deploy.status", Some("success"), 45, true, false),
+    ];
+    if pin {
+        steps.push(("pin.bump_opened", None, 32, false, false));
+    }
+    steps.sort_by_key(|(_, _, offset, _, _)| *offset);
+    for (kind, outcome, offset, carry_pr, carry_shift) in steps {
+        post(
+            store,
+            &Post {
+                kind,
+                outcome,
+                todo: Some(todo),
+                pr: carry_pr.then_some(pr),
+                shift: carry_shift.then_some(shift.as_str()),
+                at_ms: base_ms + offset * MINUTE,
+            },
+        );
+    }
+}
+
+fn visits_of(store: &EventStore) -> Vec<Visit> {
+    store.flow_visits(Some("acme")).unwrap()
+}
+
+fn at(visits: &[Visit], station: Station) -> Vec<&Visit> {
+    visits
+        .iter()
+        .filter(|visit| visit.station == station)
+        .collect()
+}
+
+fn report_of(store: &EventStore, now_minutes: i64) -> Value {
+    let request = Request {
+        family: Some("acme".to_string()),
+        days: 28,
+        now_ms: START + now_minutes * MINUTE,
+    };
+    serde_json::to_value(build(&request, &visits_of(store))).unwrap()
+}
+
+fn station(report: &Value, id: &str) -> Value {
+    report["stations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|station| station["id"] == id)
+        .unwrap()
+        .clone()
+}
+
+/// The one lot that flows: every station is visited once, in order, and the
+/// durations are the ones the events describe.
+#[test]
+fn a_lot_that_flows_leaves_one_forward_visit_per_station() {
+    let (_dir, store) = store();
+    forward_lot(&store, "20261012-000001-aaaaaa", 7, START, false);
+    let visits = visits_of(&store);
+
+    for station in Station::ALL {
+        let own = at(&visits, station);
+        if station == Station::Pin {
+            // The repository releases itself: Pin is not on this lot's route
+            // and is left out of its numbers.
+            assert!(own.is_empty(), "nothing pinned this work");
+            continue;
+        }
+        assert_eq!(own.len(), 1, "{} visited once", station.id());
+        assert_eq!(own[0].direction, "forward", "{} left forward", station.id());
+    }
+    // Queue: filed at 0, claimed at 2.
+    let queue = at(&visits, Station::Queue)[0];
+    assert_eq!(queue.started_ms, Some(START + 2 * MINUTE));
+    assert_eq!(queue.left_ms, Some(START + 2 * MINUTE));
+    // Work: claimed at 2, the agent picked it up at 3, done at 13.
+    let work = at(&visits, Station::Work)[0];
+    assert_eq!(work.entered_ms, START + 2 * MINUTE);
+    assert_eq!(work.started_ms, Some(START + 3 * MINUTE));
+    assert_eq!(work.left_ms, Some(START + 13 * MINUTE));
+    // Shift: landed at 13, the shift pull request opened at 15.
+    // Shift's tool is the pull request opener, a timer with no start signal:
+    // the visit starts on arrival, so the whole wait is process time.
+    let shift = at(&visits, Station::Shift)[0];
+    assert_eq!(shift.entered_ms, START + 13 * MINUTE);
+    assert_eq!(shift.started_ms, Some(START + 13 * MINUTE));
+    assert_eq!(shift.left_ms, Some(START + 15 * MINUTE));
+    // Merge was entered when the head was approved and green, not before.
+    let merge = at(&visits, Station::Merge)[0];
+    assert_eq!(merge.entered_ms, START + 23 * MINUTE, "green at 23");
+    assert_eq!(
+        merge.started_ms,
+        Some(START + 24 * MINUTE),
+        "enqueued at 24"
+    );
+    assert_eq!(merge.left_ms, Some(START + 30 * MINUTE), "landed at 30");
+    let deploy = at(&visits, Station::Deploy)[0];
+    assert_eq!(deploy.left_ms, Some(START + 45 * MINUTE));
+    // Nothing is left on the line.
+    assert!(visits.iter().all(|visit| visit.left_ms.is_some()));
+}
+
+/// A red gate sends the lot back to Work; it comes back and lands. The Gate
+/// station then has two visits and the loop is countable.
+#[test]
+fn a_red_gate_loops_back_to_work_and_the_lot_returns() {
+    let (_dir, store) = store();
+    let todo = "20261012-000002-bbbbbb";
+    let shift = "dayshift/red";
+    let steps: &[(&str, Option<&str>, i64, bool)] = &[
+        ("todo.filed", None, 0, false),
+        ("todo.claimed", None, 1, false),
+        ("worker.stage", None, 2, false),
+        ("todo.attempt_finished", Some("done"), 10, false),
+        ("pr.opened", None, 11, true),
+        ("gate.started", None, 12, true),
+        ("gate.finished", Some("failure"), 20, true),
+        // Back at Work: a second attempt, a new head, a green gate.
+        ("worker.stage", None, 21, false),
+        ("todo.attempt_finished", Some("done"), 30, false),
+        ("pr.opened", None, 31, true),
+        ("gate.started", None, 32, true),
+        ("gate.finished", Some("success"), 38, true),
+        ("pr.review", Some("approve"), 39, true),
+        ("pr.merged", None, 40, true),
+    ];
+    for (kind, outcome, minute, carry_pr) in steps {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome: *outcome,
+                todo: Some(todo),
+                pr: carry_pr.then_some(9),
+                shift: Some(shift),
+                at_ms: START + (*minute) * MINUTE,
+            },
+        );
+    }
+    let visits = visits_of(&store);
+    let gates = at(&visits, Station::Gate);
+    assert_eq!(gates.len(), 2, "two gate visits, one per head");
+    assert_eq!(gates[0].direction, "rework");
+    assert_eq!(gates[0].rework_to, Some(Station::Work));
+    assert_eq!(gates[0].left_ms, Some(START + 20 * MINUTE));
+    assert_eq!(gates[1].direction, "forward");
+
+    let work = at(&visits, Station::Work);
+    assert_eq!(work.len(), 2, "the red gate opened a second Work visit");
+    assert_eq!(work[1].entered_ms, START + 20 * MINUTE);
+    assert_eq!(work[1].left_ms, Some(START + 30 * MINUTE));
+    assert_eq!(
+        at(&visits, Station::Merge)[0].left_ms,
+        Some(START + 40 * MINUTE)
+    );
+
+    // The station report counts the loop and says the lot did not pass first
+    // time, with the rate over the visits that left.
+    let report = report_of(&store, 60);
+    let gate = station(&report, "gate");
+    assert_eq!(gate["rework"][0]["to"], "work");
+    assert_eq!(gate["rework"][0]["count"], 1);
+    assert_eq!(gate["rework"][0]["rate"], 0.5, "one of the two that left");
+}
+
+/// A reviewer that holds sends the work back; the todoq attempt that is
+/// blocked is held at Work until a person releases it.
+#[test]
+fn a_held_review_reworks_and_a_blocked_todo_is_held_at_work() {
+    let (_dir, store) = store();
+    let held = "20261012-000003-cccccc";
+    for (kind, outcome, minute, carry_pr) in [
+        ("todo.filed", None, 0, false),
+        ("todo.claimed", None, 1, false),
+        ("todo.attempt_finished", Some("done"), 9, false),
+        ("pr.opened", None, 10, true),
+        ("review.started", None, 11, true),
+        ("review.finished", Some("hold"), 18, true),
+    ] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: Some(held),
+                pr: carry_pr.then_some(11),
+                shift: Some("dayshift/held"),
+                at_ms: START + (minute) * MINUTE,
+            },
+        );
+    }
+    let blocked = "20261012-000004-dddddd";
+    for (kind, outcome, minute) in [
+        ("todo.filed", None, 0),
+        ("todo.claimed", None, 2),
+        ("worker.stage", None, 3),
+        ("todo.attempt_finished", Some("blocked"), 20),
+    ] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: Some(blocked),
+                pr: None,
+                shift: None,
+                at_ms: START + (minute) * MINUTE,
+            },
+        );
+    }
+
+    let visits = visits_of(&store);
+    let review = at(&visits, Station::Review);
+    assert_eq!(review.len(), 1);
+    assert_eq!(review[0].direction, "rework");
+    assert_eq!(review[0].rework_to, Some(Station::Work));
+
+    let work: Vec<&Visit> = at(&visits, Station::Work)
+        .into_iter()
+        .filter(|visit| visit.lot_id == blocked)
+        .collect();
+    assert_eq!(work.len(), 1);
+    assert_eq!(
+        work[0].direction, "hold",
+        "a blocked todo is held, not gone"
+    );
+    assert!(work[0].left_ms.is_none(), "a held lot has not left");
+
+    // Work holds one lot and waits on the one the reviewer sent back.
+    let report = report_of(&store, 30);
+    let work = station(&report, "work");
+    assert_eq!(work["wip"]["held"], 1);
+    assert_eq!(work["wip"]["waiting"], 1, "the reworked lot is waiting");
+    assert_eq!(work["wip"]["active"], 0);
+    assert_eq!(
+        work["oldest_wait_s"],
+        (30 - 2) * 60,
+        "the held lot has been at Work since it was claimed at 2"
+    );
+
+    // A held lot has no ETA: its next step is a person.
+    let held_lot = report["lots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|lot| lot["lot_id"] == blocked)
+        .unwrap()
+        .clone();
+    assert_eq!(held_lot["state"], "held");
+    assert!(held_lot["eta_s"].is_null());
+    assert!(held_lot["slowest_ahead"].is_null());
+
+    // The person releases it and it is waiting for a slot again.
+    post(
+        &store,
+        &Post {
+            kind: "todo.action",
+            outcome: Some("released"),
+            todo: Some(blocked),
+            pr: None,
+            shift: None,
+            at_ms: START + (25) * MINUTE,
+        },
+    );
+    let report = report_of(&store, 30);
+    let work = station(&report, "work");
+    assert_eq!(work["wip"]["held"], 0);
+    // The slot still had it when the hold went on, so it is working again,
+    // beside the lot the reviewer sent back.
+    assert_eq!(work["wip"]["active"], 1);
+    assert_eq!(work["wip"]["waiting"], 1);
+}
+
+/// A refused merge-queue replay and a killed attempt are both rework: one
+/// sends the lot from Merge back to Work, the other from Work to Queue.
+#[test]
+fn a_refused_replay_and_a_killed_attempt_both_loop_back() {
+    let (_dir, store) = store();
+    let refused = "20261012-000005-eeeeee";
+    for (kind, outcome, minute, carry_pr) in [
+        ("todo.filed", None, 0, false),
+        ("todo.claimed", None, 1, false),
+        ("todo.attempt_finished", Some("done"), 8, false),
+        ("pr.opened", None, 9, true),
+        ("review.finished", Some("approve"), 12, true),
+        ("gate.finished", Some("success"), 13, true),
+        ("queue.enqueued", None, 14, true),
+        ("queue.refused", None, 19, true),
+    ] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: Some(refused),
+                pr: carry_pr.then_some(13),
+                shift: Some("dayshift/refused"),
+                at_ms: START + (minute) * MINUTE,
+            },
+        );
+    }
+    let killed = "20261012-000006-ffffff";
+    for (kind, outcome, minute) in [
+        ("todo.filed", None, 0),
+        ("todo.claimed", None, 1),
+        ("worker.stage", None, 2),
+        ("todo.attempt_finished", Some("killed"), 15),
+    ] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: Some(killed),
+                pr: None,
+                shift: None,
+                at_ms: START + (minute) * MINUTE,
+            },
+        );
+    }
+
+    let visits = visits_of(&store);
+    let merge: Vec<&Visit> = at(&visits, Station::Merge)
+        .into_iter()
+        .filter(|visit| visit.lot_id == refused)
+        .collect();
+    assert_eq!(merge.len(), 1);
+    assert_eq!(merge[0].direction, "rework");
+    assert_eq!(merge[0].rework_to, Some(Station::Work));
+    assert_eq!(merge[0].started_ms, Some(START + 14 * MINUTE));
+    assert_eq!(merge[0].left_ms, Some(START + 19 * MINUTE));
+
+    let queue: Vec<&Visit> = at(&visits, Station::Queue)
+        .into_iter()
+        .filter(|visit| visit.lot_id == killed)
+        .collect();
+    assert_eq!(queue.len(), 2, "the killed attempt requeued the todo");
+    assert!(queue[1].left_ms.is_none(), "it waits for another slot");
+    let work: Vec<&Visit> = at(&visits, Station::Work)
+        .into_iter()
+        .filter(|visit| visit.lot_id == killed)
+        .collect();
+    assert_eq!(work[0].direction, "rework");
+    assert_eq!(work[0].rework_to, Some(Station::Queue));
+
+    let report = report_of(&store, 30);
+    let merge = station(&report, "merge");
+    assert_eq!(merge["rework"][0]["to"], "work");
+    assert_eq!(merge["rework"][0]["count"], 1);
+    assert_eq!(merge["rework"][0]["rate"], 1.0, "nothing else left Merge");
+    assert_eq!(merge["first_pass_rate"], Value::Null, "nothing passed yet");
+    let work = station(&report, "work");
+    assert_eq!(work["rework"][0]["to"], "queue");
+}
+
+/// A pull request no todo carries is its own lot, and the todo that lands it
+/// adopts it, so the same work is never counted twice.
+#[test]
+fn a_pull_request_lot_is_adopted_by_the_todo_that_carries_it() {
+    let (_dir, store) = store();
+    for (kind, outcome, minute) in [
+        ("pr.opened", None, 0),
+        ("review.finished", Some("approve"), 5),
+        ("gate.finished", Some("success"), 6),
+    ] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: None,
+                pr: Some(21),
+                shift: None,
+                at_ms: START + (minute) * MINUTE,
+            },
+        );
+    }
+    let lots: Vec<String> = visits_of(&store).iter().map(|v| v.lot_id.clone()).collect();
+    assert!(
+        lots.iter().all(|lot| lot == "acme/widget#21"),
+        "{lots:?} is the pull request's own lot"
+    );
+
+    post(
+        &store,
+        &Post {
+            kind: "pr.merged",
+            outcome: None,
+            todo: Some("20261012-000007-777777"),
+            pr: Some(21),
+            shift: None,
+            at_ms: START + (9) * MINUTE,
+        },
+    );
+    let lots: Vec<String> = visits_of(&store).iter().map(|v| v.lot_id.clone()).collect();
+    assert!(
+        lots.iter().all(|lot| lot == "20261012-000007-777777"),
+        "{lots:?} is one lot, the todo's"
+    );
+    let after = visits_of(&store);
+    let stage = at(&after, Station::Stage);
+    assert_eq!(stage.len(), 1, "the merge put it on one Stage visit");
+}
+
+/// A shift pull request names no todo, so the branch is the join: it moves
+/// every lot whose work landed on that shift from Shift to Review and Gate.
+#[test]
+fn a_shift_pull_request_moves_every_lot_on_its_branch() {
+    let (_dir, store) = store();
+    let shift = "dayshift/2026-10-12";
+    for todo in ["20261012-000041-aaaaaa", "20261012-000042-bbbbbb"] {
+        for (kind, outcome, minute) in [
+            ("todo.filed", None, 0),
+            ("todo.claimed", None, 1),
+            ("todo.attempt_finished", Some("done"), 8),
+        ] {
+            post(
+                &store,
+                &Post {
+                    kind,
+                    outcome,
+                    todo: Some(todo),
+                    pr: None,
+                    shift: Some(shift),
+                    at_ms: START + minute * MINUTE,
+                },
+            );
+        }
+    }
+    assert_eq!(at(&visits_of(&store), Station::Shift).len(), 2);
+
+    post(
+        &store,
+        &Post {
+            kind: "shift.pr_opened",
+            outcome: None,
+            todo: None,
+            pr: Some(31),
+            shift: Some(shift),
+            at_ms: START + 10 * MINUTE,
+        },
+    );
+    let visits = visits_of(&store);
+    for station in [Station::Review, Station::Gate] {
+        let own = at(&visits, station);
+        assert_eq!(own.len(), 2, "both lots reached {}", station.id());
+    }
+    for visit in at(&visits, Station::Shift) {
+        assert_eq!(visit.direction, "forward");
+        assert_eq!(visit.left_ms, Some(START + 10 * MINUTE));
+    }
+    // Both lots are now one pull request's worth of work, and each is still
+    // its own lot.
+    let lots: BTreeSet<&str> = visits.iter().map(|visit| visit.lot_id.as_str()).collect();
+    assert_eq!(lots.len(), 2, "{lots:?}");
+}
+
+/// Enough lots give every station percentiles, a bottleneck and an ETA; a
+/// station with fewer than three samples is null and says why.
+#[test]
+fn percentiles_the_bottleneck_and_an_eta_come_from_the_samples() {
+    let (_dir, store) = store();
+    for (index, todo) in [
+        "20261012-000011-aaaaaa",
+        "20261012-000012-bbbbbb",
+        "20261012-000013-cccccc",
+        "20261012-000014-dddddd",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        forward_lot(
+            &store,
+            todo,
+            100 + index as i64,
+            START + index as i64 * 60 * MINUTE,
+            false,
+        );
+    }
+    let report = report_of(&store, 24 * 60);
+
+    // Every lot takes the same minutes, so both percentiles are that number.
+    let work = station(&report, "work");
+    assert_eq!(
+        work["queue_s"]["p50"], 60,
+        "claimed one minute after filing"
+    );
+    assert_eq!(work["process_s"]["p50"], 10 * 60);
+    assert_eq!(work["process_s"]["p90"], 10 * 60);
+    assert_eq!(work["first_pass_rate"], 1.0);
+    assert!(work["rework"].as_array().unwrap().is_empty());
+    assert_eq!(work["throughput_per_hour"], 0.01, "four lots in 28 days");
+
+    // Stage's tool is the release timer: no queue, and the whole wait from
+    // the merge at 30 to the staged release at 40 is process time.
+    let stage = station(&report, "stage");
+    assert_eq!(stage["queue_s"]["p50"], 0);
+    assert_eq!(stage["process_s"]["p50"], 10 * 60);
+    // Queue holds the most lot-hours of waiting: two minutes for a slot,
+    // longer than any other station's queue.
+    let queue = station(&report, "queue");
+    assert_eq!(queue["queue_s"]["p50"], 2 * 60);
+    assert_eq!(queue["bottleneck"], true);
+    assert_eq!(stage["bottleneck"], false);
+    assert_eq!(
+        report["stations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|station| station["bottleneck"] == true)
+            .count(),
+        1,
+        "one bottleneck"
+    );
+
+    // The line finished four lots, each 45 minutes from filing to deployed.
+    assert_eq!(report["line"]["finished"], 4);
+    assert_eq!(report["line"]["wip"], 0);
+    assert_eq!(report["line"]["cycle_s"]["p50"], 45 * 60);
+    assert!(
+        report["line"]["x_factor"]["p50"].as_f64().unwrap() > 1.0,
+        "the line waits as well as works"
+    );
+
+    // Pin is on the route but nothing pinned anything: it is unknown, not
+    // zero, and it says why.
+    let pin = station(&report, "pin");
+    assert!(pin["queue_s"].is_null());
+    assert_eq!(pin["wip"]["waiting"], 0);
+    assert!(
+        pin["unknown"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|unknown| unknown["metric"] == "all" && unknown["reason"] == "no_events"),
+        "{pin}"
+    );
+    // Capacity waits on the heartbeat half of Flow, and says so.
+    assert!(pin["capacity"].is_null());
+    assert!(
+        pin["unknown"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|unknown| unknown["reason"] == "no_heartbeat")
+    );
+
+    // A fifth lot now in flight gets an ETA from the four that went before,
+    // and Pin, which has no estimate, is why it is unknown further down.
+    post(
+        &store,
+        &Post {
+            kind: "todo.filed",
+            outcome: None,
+            todo: Some("20261012-000015-eeeeee"),
+            pr: None,
+            shift: None,
+            at_ms: START + (24 * 60) * MINUTE,
+        },
+    );
+    let report = report_of(&store, 24 * 60 + 1);
+    let waiting = report["lots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|lot| lot["lot_id"] == "20261012-000015-eeeeee")
+        .unwrap()
+        .clone();
+    assert_eq!(waiting["state"], "waiting");
+    assert_eq!(waiting["station"], "queue");
+    assert!(
+        waiting["eta_s"].is_null(),
+        "Pin has no estimate, so the ETA is unknown rather than optimistic"
+    );
+}
+
+/// Three lots that all pass through Pin give every station on the route an
+/// estimate, and then an in-flight lot has a real ETA and a slowest station.
+#[test]
+fn an_eta_sums_the_stations_still_ahead() {
+    let (_dir, store) = store();
+    for (index, todo) in [
+        "20261012-000021-aaaaaa",
+        "20261012-000022-bbbbbb",
+        "20261012-000023-cccccc",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        forward_lot(
+            &store,
+            todo,
+            200 + index as i64,
+            START + index as i64 * 60 * MINUTE,
+            true,
+        );
+    }
+    let report = report_of(&store, 24 * 60);
+    assert_eq!(station(&report, "pin")["process_s"]["p50"], 8 * 60);
+
+    // A lot that has just been claimed: Work takes a minute of queue and ten
+    // of process, and every station after it adds its own p50.
+    post(
+        &store,
+        &Post {
+            kind: "todo.filed",
+            outcome: None,
+            todo: Some("20261012-000024-dddddd"),
+            pr: None,
+            shift: None,
+            at_ms: START + (24 * 60) * MINUTE,
+        },
+    );
+    post(
+        &store,
+        &Post {
+            kind: "todo.claimed",
+            outcome: None,
+            todo: Some("20261012-000024-dddddd"),
+            pr: None,
+            shift: None,
+            at_ms: START + (24 * 60 + 2) * MINUTE,
+        },
+    );
+    let report = report_of(&store, 24 * 60 + 4);
+    let lot = report["lots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|lot| lot["lot_id"] == "20261012-000024-dddddd")
+        .unwrap()
+        .clone();
+    assert_eq!(lot["station"], "work");
+    let eta = lot["eta_s"]["p50"]
+        .as_i64()
+        .expect("every station has a p50");
+    assert!(eta > 0, "{lot}");
+    // Work's own eleven minutes less the two already spent (540), plus the
+    // p50 of every station still ahead: Shift 120, Review 300, Gate 480,
+    // Merge 420, Pin 480, Stage 600, Deploy 300.
+    assert_eq!(eta, 540 + 120 + 300 + 480 + 420 + 480 + 600 + 300);
+    // Work itself, at eleven minutes, is the slowest station the lot still
+    // has to get through; Stage, at ten, is the slowest one after it.
+    assert_eq!(lot["slowest_ahead"], "work");
+}
+
+/// The projection is a pure function of the event sequence: a store an older
+/// binary left (through 0010) is replayed into visits on the first open, and
+/// opening it again replays nothing twice.
+#[test]
+fn the_migration_replays_every_retained_event_into_an_empty_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shift.sqlite");
+    {
+        let conn = Connection::open(&path).unwrap();
+        migrate_shift_store_through(&conn, 10).unwrap();
+        let missing: bool = conn
+            .query_row(
+                "SELECT COUNT(*) = 0 FROM sqlite_master WHERE name = 'flow_ledger'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(missing, "version 10 has no flow ledger");
+        for (minute, kind, outcome) in [
+            (0, "todo.filed", None),
+            (1, "todo.claimed", None),
+            (2, "worker.stage", None),
+            (9, "todo.attempt_finished", Some("done")),
+        ] {
+            conn.execute(
+                "INSERT INTO pipeline_events (ts_ms, source, kind, reporter, family, todo_id,
+                   outcome, summary)
+                 VALUES (?1, 'todoq', ?2, 'operator', 'acme', '20261012-000099-999999', ?3, 's')",
+                params![START + minute * MINUTE, kind, outcome],
+            )
+            .unwrap();
+        }
+    }
+    let store = EventStore::open(&path).unwrap();
+    let visits = visits_of(&store);
+    assert_eq!(visits.len(), 3, "queue, work and the shift it landed on");
+    assert_eq!(
+        at(&visits, Station::Work)[0].left_ms,
+        Some(START + 9 * MINUTE)
+    );
+    let replays: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM flow_ledger_replay", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(replays, 1);
+    drop(store);
+
+    let store = EventStore::open(&path).unwrap();
+    assert_eq!(
+        visits_of(&store).len(),
+        3,
+        "a restart replays nothing twice"
+    );
+}
+
+fn get(uri: &str, token: &str) -> HttpRequest<axum::body::Body> {
+    HttpRequest::builder()
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+async fn json_of(response: axum::response::Response) -> Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+/// The route: admin-only, strict about its window, and answering numbers that
+/// are not all zero while the ledger holds visits.
+#[tokio::test]
+async fn flow_route_is_admin_only_refuses_bad_windows_and_answers_real_numbers() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    core.create_account("bob", "bob-password", UserRole::User)
+        .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let user = core
+        .create_personal_access_token("bob", "t", None)
+        .unwrap()
+        .secret;
+    let state = WebState::new_with_git_storage(core, dir.path().to_path_buf())
+        .with_auth(true, false, false);
+    let now = chrono::Utc::now().timestamp_millis();
+    for (index, todo) in [
+        "20261012-000031-aaaaaa",
+        "20261012-000032-bbbbbb",
+        "20261012-000033-cccccc",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // Anchored to now, so the lots are inside every window the route
+        // offers.
+        forward_lot(
+            &state.events,
+            todo,
+            300 + index as i64,
+            now - (3 - index as i64) * 60 * MINUTE,
+            false,
+        );
+    }
+    // One lot still in flight, so the live numbers are not all history.
+    state
+        .events
+        .insert(
+            "operator",
+            &NewEvent {
+                source: "todoq".to_string(),
+                kind: "todo.filed".to_string(),
+                summary: "filed".to_string(),
+                family: Some("acme".to_string()),
+                todo_id: Some("20261012-000034-dddddd".to_string()),
+                ..NewEvent::default()
+            },
+            now,
+        )
+        .unwrap();
+    let router = app(state, Path::new("/tmp/jeryu-no-spa"));
+    let call = |uri: &str, token: &str| router.clone().oneshot(get(uri, token));
+
+    let refused = call("/api/v1/flow", &user).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json_of(refused).await["code"], "permission_denied");
+
+    for bad in [
+        "/api/v1/flow?days=14",
+        "/api/v1/flow?days=seven",
+        "/api/v1/flow?window=30d",
+        "/api/v1/flow?days=7&window=28d",
+        "/api/v1/flow?dayss=7",
+    ] {
+        let response = call(bad, &admin).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+        let body = json_of(response).await;
+        assert_eq!(body["code"], "invalid_query", "{bad}");
+        assert!(body["repair_hint"].is_string(), "{bad}: house error shape");
+    }
+    let unknown = call("/api/v1/flow?family=initech", &admin).await.unwrap();
+    assert_eq!(unknown.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_of(unknown).await["code"], "family_unknown");
+
+    let response = call("/api/v1/flow?family=acme-split&window=7d", &admin)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["schema_version"], FLOW_SCHEMA);
+    assert_eq!(body["family"], "acme", "either spelling, canonical back");
+    assert_eq!(body["days"], 7);
+    assert_eq!(body["stations"].as_array().unwrap().len(), 9);
+    assert_eq!(
+        body["stations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|station| station["id"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        Station::ALL.map(Station::id).to_vec(),
+        "the route in order"
+    );
+
+    // Events exist, so the answer cannot be nine all-zero stations.
+    let alive = body["stations"].as_array().unwrap().iter().any(|station| {
+        station["queue_s"]["p50"].as_i64().unwrap_or(0) > 0
+            || station["process_s"]["p50"].as_i64().unwrap_or(0) > 0
+            || station["wip"]["waiting"].as_u64().unwrap_or(0) > 0
+    });
+    assert!(
+        alive,
+        "a projected ledger never reports an idle line: {body}"
+    );
+    assert_eq!(body["line"]["finished"], 3);
+    assert_eq!(body["line"]["wip"], 1, "the lot still in the queue");
+    assert_eq!(station(&body, "queue")["wip"]["waiting"], 1);
+    assert_eq!(body["lots"][0]["lot_id"], "20261012-000034-dddddd");
+    assert_eq!(body["lots"][0]["href"], "/work/20261012-000034-dddddd");
+
+    // A window that ends before anything happened keeps the live state and
+    // drops the history.
+    let narrow = json_of(call("/api/v1/flow?days=7", &admin).await.unwrap()).await;
+    assert_eq!(narrow["window"]["until"], narrow["generated_at"]);
+}

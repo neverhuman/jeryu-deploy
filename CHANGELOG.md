@@ -21,8 +21,19 @@
   and the setup-script proxy keep working for existing bot hosts.
 - Design for Flow (`docs/flow.md`, ADR 0004): the delivery line as stations,
   with WIP, queue and process time, rework loops, holds, the bottleneck and the
-  runners behind each station, built from the event log and heartbeats. Docs only;
-  nothing is built yet.
+  runners behind each station, built from the event log and heartbeats.
+- Flow, step 1: the flow ledger and `GET /api/v1/flow` (admin-only). Every
+  pipeline event is projected into `flow_ledger` in the same transaction as
+  the event (migration `0011_flow_ledger.sql`; the first start after it
+  replays every event the log still holds), one row per lot per station
+  visit, so a rework loop is countable and a 90-day window outlives the log's
+  30-day prune. The report answers, over `?days=7|28|90` (or `?window=7d`)
+  and `family`: WIP waiting/active/held and the oldest wait per station,
+  queue and process time as p50 and p90, throughput, first-pass rate, rework
+  back along the line, the bottleneck, line cycle time and X-factor, and the
+  oldest 20 lots at each station with an ETA and the slowest station still
+  ahead of them. A metric with fewer than three samples is null and listed in
+  the station's `unknown` with its reason. `docs/flow.md`.
 - `GET /api/v1/yield` (admin-only) reports what the agent factory spent against
   what reached main: cost per merged change with a 95% interval, yield
   (main spend over main plus scrap), first-pass rate, review and triage share,

@@ -2,8 +2,9 @@
 
 Where work sits on the delivery line, how long it waits at each step, where it
 loops back, and which step is the bottleneck. Decision record:
-[ADR 0004](adr/0004-flow-shows-where-work-sits-and-backs-up.md). Status: design;
-nothing below is built yet.
+[ADR 0004](adr/0004-flow-shows-where-work-sits-and-backs-up.md). Status: the
+flow ledger and `GET /api/v1/flow` are built (build order step 1); the layout
+route and the page are not.
 
 The page is `/flow` with two modes from one model: **Live** (what is where now,
 and how it has flowed over a window) and **Layout** (the same stations with the
@@ -44,6 +45,11 @@ numbers.
 | 7 | Pin | `pinned` | merged, consumer pin behind | `pin.bump_opened` | the pin reaches the work | `auto-pin` (`automation`) | Pin on `pin.bump_failed` |
 | 8 | Stage | `staged` | pinned (or merged when self-releasing) | — | `release.staged` carries the work | `auto-stage` (`automation`) | Stage on `release.stage_failed` |
 | 9 | Deploy | `deployed` | staged | `deploy.created` | `deploy.status` `success` carries the work | a person (`deploy`) | Stage on `failure`, `error` |
+
+Shift and Stage have no "Starts when": their tool is a timer that is already
+running, so the visit starts when the lot arrives, its queue time is zero and
+the whole wait is process time. The alternative — both unknown — would take
+every ETA down the line with them.
 
 Known gaps, shown as unknown until closed:
 
@@ -91,22 +97,36 @@ A table in the shift store, projected from events as they are stored (the same
 transaction as the event, like the cost ledger), never pruned:
 
 ```
-flow_ledger(lot_id, family, repo, pr, todo_id, station, entered_ms, started_ms,
-            left_ms, outcome, direction, source_seq_first, source_seq_last)
+flow_ledger(lot_id, family, repo, pr, todo_id, shift, station, entered_ms,
+            started_ms, left_ms, outcome, direction, rework_to,
+            source_seq_first, source_seq_last)
 ```
 
 - `lot_id` is the todo id, or `<owner>/<repo>#<pr>` for a pull request no todo carries.
-- `direction` is `forward`, `rework` (with the station it went back to) or `hold`.
+- `direction` is `open` while the visit is in flight, `hold` when a person must
+  act before the lot can move, and `forward` or `rework` once it left;
+  `rework_to` names the station a rework visit went back to.
+- `shift` is what joins a shift pull request to the lots it carries:
+  `pr.opened` names no todo, so the projection moves every lot still at Shift
+  on that branch. A pull request lot (`<owner>/<repo>#<pr>`) is rewritten onto
+  the todo's lot as soon as one event names both.
 - One open row per lot per station visit; rework opens a new visit, so a lot
   that went round the gate twice has two Gate rows and the loop is countable.
-- The projection is a pure function of the event sequence. A migration creates
-  the table and a replay builds it from every event the log still holds; a
-  projection bug is fixed by truncating and replaying, never by editing rows.
+- The projection is a pure function of the event sequence. Migration
+  `0011_flow_ledger.sql` creates the table and the first start after it replays
+  every event the log still holds, recording the replay in `flow_ledger_replay`
+  so it happens once; a projection bug is fixed by truncating both tables and
+  restarting, never by editing rows. Implementation:
+  `crates/jeryu-api/src/web/flow/project.rs` (the fold),
+  `flow/report.rs` (the arithmetic), `flow/stations.rs` (the route).
 
 ## API
 
 `GET /api/v1/flow` (admin-only, like `/api/v1/yield`). Query: `family`,
-`window` (`7d`, `28d`, `90d`; default `28d`).
+`window` (`7d`, `28d`, `90d`; default `28d`) or the same window as `days`
+(`7`, `28`, `90`), which is what the page sends. Any other value, the two
+spellings disagreeing, or a key the route does not read is
+`422 invalid_query`; an unknown family is `422 family_unknown`.
 
 ```jsonc
 {
@@ -119,9 +139,10 @@ flow_ledger(lot_id, family, repo, pr, todo_id, station, entered_ms, started_ms,
       "queue_s": { "p50": 322, "p90": 1500 }, "process_s": { "p50": 397, "p90": 640 },
       "throughput_per_hour": 4.2, "first_pass_rate": 0.81,
       "rework": [ { "to": "work", "count": 9, "rate": 0.19 } ],
-      "capacity": { "tools": ["build-1/slot0", "build-1/slot1"], "reporting": 2,
-                    "busy": 2, "expected": 4 },
-      "utilization": 0.93, "bottleneck": true, "unknown": [] }
+      "capacity": null,   // and "utilization": null until the layout route lands:
+      "utilization": null, // capacity is read from heartbeats, not from the ledger
+      "bottleneck": true,
+      "unknown": [ { "metric": "capacity", "reason": "no_heartbeat" } ] }
   ],
   "line": { "cycle_s": { "p50": 0, "p90": 0 }, "x_factor": { "p50": 0, "p90": 0 },
             "wip": 0, "finished": 0 },
@@ -139,8 +160,9 @@ with fewer reporting tools than expected, or a tool whose beats show it
 failing, is flagged.
 
 Both answer `422` for bad parameters and never invent a number: unknowns are
-listed per station in `unknown` with the reason (`no_events`, `no_heartbeat`,
-`too_few_samples`).
+listed per station in `unknown` as `{metric, reason}`, the reason being
+`no_events` (nothing has ever reached the station; `metric` is then `all`),
+`no_heartbeat` or `too_few_samples`.
 
 ## The page
 
@@ -166,9 +188,9 @@ listed per station in `unknown` with the reason (`no_events`, `no_heartbeat`,
 
 ## Build order
 
-1. **Ledger and Live API** (jeryu-deploy): migration, projection on insert,
-   replay of the retained log, `GET /api/v1/flow`, ETA per lot. Tests drive
-   event sequences through the projection, including rework and holds.
+1. **Ledger and Live API** (jeryu-deploy) — built: migration, projection on
+   insert, replay of the retained log, `GET /api/v1/flow`, ETA per lot. Tests
+   drive event sequences through the projection, including rework and holds.
 2. **Layout API** (jeryu-deploy): `GET /api/v1/flow/layout` from heartbeats and
    the expected-capacity settings.
 3. **Flow page, Live** (jeryu-web), against 1.
