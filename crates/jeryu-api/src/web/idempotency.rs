@@ -339,11 +339,26 @@ fn applies(method: &Method, path: &str) -> bool {
         && !returns_a_secret(path)
 }
 
-/// Bot enrollment, key rotation, agent-token issue and token exchange answer
-/// with a secret that is shown once. A kept answer would store that secret in
-/// the idempotency store for a day, so these routes are never kept.
+/// Bot enrollment, key rotation, agent-token issue, token exchange and token
+/// refresh answer with a secret. A kept answer would store that secret in the
+/// idempotency store for a day, so exactly these routes are never kept; the
+/// other bot routes (suspend, revoke, token revoke) keep their replay.
 fn returns_a_secret(path: &str) -> bool {
-    path == "/api/v1/bots" || path.starts_with("/api/v1/bots/") || path.starts_with("/api/v1/bot/")
+    if matches!(
+        path,
+        "/api/v1/bots" | "/api/v1/bot/token" | "/api/v1/bot/token/refresh"
+    ) {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("/api/v1/bots/") else {
+        return false;
+    };
+    let mut segments = rest.split('/');
+    let _bot_id = segments.next();
+    matches!(
+        (segments.next(), segments.next()),
+        (Some("keys"), None) | (Some("tokens"), None)
+    )
 }
 
 fn key_is_valid(key: &HeaderValue) -> bool {
@@ -405,6 +420,28 @@ fn replayed(reply: KeptReply) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_routes_that_answer_with_a_secret_are_never_kept() {
+        for path in [
+            "/api/v1/bots",
+            "/api/v1/bots/4f1c/keys",
+            "/api/v1/bots/4f1c/tokens",
+            "/api/v1/bot/token",
+            "/api/v1/bot/token/refresh",
+        ] {
+            assert!(returns_a_secret(path), "{path}");
+            assert!(!applies(&Method::POST, path), "{path}");
+        }
+        for path in [
+            "/api/v1/bots/4f1c/suspend",
+            "/api/v1/bots/4f1c/revoke",
+            "/api/v1/bots/4f1c/tokens/abc/revoke",
+        ] {
+            assert!(!returns_a_secret(path), "{path}");
+            assert!(applies(&Method::POST, path), "{path}");
+        }
+    }
     use axum::Router;
     use axum::middleware::from_fn_with_state;
     use axum::routing::post;

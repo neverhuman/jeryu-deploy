@@ -1248,7 +1248,9 @@ fn password_change_allowed_path(path: &str) -> bool {
 /// Local-dev trust: an unauthenticated loopback caller acts as the local admin.
 /// A request that carries a forwarding header came through a proxy, and a proxy
 /// on the same host connects from loopback, so such a request is never trusted
-/// this way. The header can only withhold trust, never grant it.
+/// this way. The header can only withhold trust, never grant it. This is
+/// defense in depth, not a boundary: a proxy that sends no such header still
+/// looks local, so local-dev trust must never be enabled behind an edge.
 pub(crate) fn local_dev_trusted(
     state: &WebState,
     peer: Option<SocketAddr>,
@@ -1258,14 +1260,19 @@ pub(crate) fn local_dev_trusted(
 }
 
 fn forwarded(headers: &HeaderMap) -> bool {
-    [
+    const NAMES: [&str; 7] = [
         "forwarded",
-        "x-forwarded-for",
-        "x-forwarded-host",
+        "via",
         "x-real-ip",
-    ]
-    .iter()
-    .any(|name| headers.contains_key(*name))
+        "x-client-ip",
+        "true-client-ip",
+        "cf-connecting-ip",
+        "x-envoy-external-address",
+    ];
+    headers.keys().any(|name| {
+        let name = name.as_str();
+        name.starts_with("x-forwarded-") || NAMES.contains(&name)
+    })
 }
 
 fn websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -1640,9 +1647,33 @@ fn anonymous_account() -> AccountSummary {
 /// Direct peers whose personal access tokens may use MCP, from
 /// `JERYU_MCP_PERSONAL_TOKEN_PEERS`. Unset or empty means none.
 pub(super) fn mcp_personal_token_peers_from_env() -> Vec<IpAddr> {
-    std::env::var("JERYU_MCP_PERSONAL_TOKEN_PEERS")
-        .map(|raw| parse_trusted_proxies(&raw))
-        .unwrap_or_default()
+    let raw = std::env::var("JERYU_MCP_PERSONAL_TOKEN_PEERS").unwrap_or_default();
+    let (peers, rejected) = parse_mcp_personal_token_peers(&raw);
+    for entry in rejected {
+        eprintln!(
+            "jeryu-api: JERYU_MCP_PERSONAL_TOKEN_PEERS ignores {entry:?}: list single \
+             IP addresses, and never the unspecified address"
+        );
+    }
+    peers
+}
+
+/// Single IP addresses only. The unspecified address is refused: a request with
+/// no known peer reads as `0.0.0.0`, so listing it would admit every such request.
+pub(super) fn parse_mcp_personal_token_peers(raw: &str) -> (Vec<IpAddr>, Vec<String>) {
+    let mut peers = Vec::new();
+    let mut rejected = Vec::new();
+    for entry in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        match entry.parse::<IpAddr>() {
+            Ok(ip) if !ip.is_unspecified() => peers.push(ip),
+            _ => rejected.push(entry.to_string()),
+        }
+    }
+    (peers, rejected)
 }
 
 fn mcp_path(path: &str) -> bool {

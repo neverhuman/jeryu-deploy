@@ -1493,3 +1493,51 @@ async fn local_dev_trust_is_withheld_from_proxied_requests() {
         );
     }
 }
+
+#[test]
+fn local_trust_and_mcp_peer_list_reject_proxies_and_unspecified_peers() {
+    use std::net::SocketAddr;
+
+    let state = WebState::new(jeryu_core::ForgeCore::new()).with_auth(true, true, false);
+    let loopback: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+    let plain = axum::http::HeaderMap::new();
+    assert!(super::super::auth::local_dev_trusted(
+        &state,
+        Some(loopback),
+        &plain
+    ));
+    for name in [
+        "forwarded",
+        "via",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-forwarded-port",
+        "x-real-ip",
+        "x-client-ip",
+        "true-client-ip",
+        "cf-connecting-ip",
+        "x-envoy-external-address",
+    ] {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::HeaderName::from_static(name),
+            axum::http::HeaderValue::from_static("203.0.113.7"),
+        );
+        assert!(
+            !super::super::auth::local_dev_trusted(&state, Some(loopback), &headers),
+            "{name} must withhold local trust"
+        );
+    }
+
+    let (peers, rejected) = super::super::auth::parse_mcp_personal_token_peers(
+        "127.0.0.1, 0.0.0.0, ::, 127.0.0.0/8, nope, ::1",
+    );
+    assert_eq!(
+        peers,
+        vec![
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap(),
+            "::1".parse().unwrap()
+        ]
+    );
+    assert_eq!(rejected, vec!["0.0.0.0", "::", "127.0.0.0/8", "nope"]);
+}

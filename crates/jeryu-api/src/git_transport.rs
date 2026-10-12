@@ -493,7 +493,7 @@ fn authorize_git_core(
     repo: &str,
     write: bool,
 ) -> Result<(), Box<AxumResponse>> {
-    if !state.auth_required || (state.trust_local_dev && peer.ip().is_loopback()) {
+    if !state.auth_required || crate::web::auth::local_dev_trusted(state, Some(peer), headers) {
         return Ok(());
     }
     // Use the transport resolver's identity for every authorization decision.

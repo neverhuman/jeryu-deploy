@@ -144,10 +144,12 @@ carries every right of its account, is refused on `/mcp`; this trusts no request
 header, so a public edge can expose `/mcp` as it is. A site that wants personal
 tokens on MCP for local tools lists their direct peer addresses in
 `JERYU_MCP_PERSONAL_TOKEN_PEERS` (empty by default). Never list a proxy's
-address, and note that a proxy on the same host connects from loopback. For the
-same reason, local-dev trust (`JERYU_WEB_TRUST_LOCAL`) is withheld from any
-request that carries a forwarding header; do not enable it on a forge an edge
-exposes. `/mcp/bot` is the same endpoint for bot access tokens and
+address, and note that a proxy on the same host connects from loopback. List single
+addresses: ranges and the unspecified address (`0.0.0.0`, `::`) are refused
+with a warning at startup. For the same reason, never enable local-dev trust
+(`JERYU_WEB_TRUST_LOCAL`) on a forge an edge exposes. Requests carrying a
+forwarding header are refused local-dev trust as a second line of defense
+only; a proxy that adds no such header still looks local. `/mcp/bot` is the same endpoint for bot access tokens and
 stays for existing bot hosts. An edge that still blocks `/mcp` can keep only the
 bot mount open:
 

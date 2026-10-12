@@ -557,7 +557,11 @@ pub(super) fn record_bot_http(
     status: StatusCode,
 ) {
     let mut action = format!("{method} {path}");
-    if action.contains("jbk_") || action.contains("jbr_") || action.contains("eyJ") {
+    if action.contains("jbk_")
+        || action.contains("jbr_")
+        || action.contains("jat_")
+        || action.contains("eyJ")
+    {
         return;
     }
     action.truncate(120);

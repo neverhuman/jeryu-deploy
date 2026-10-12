@@ -73,9 +73,12 @@ working, unchanged, for hosts that already use them.
   the enrollment key, which had the same exposure, already worked this way.
 - Opening `/mcp` on a public edge becomes safe once this ships: no public caller
   reaches an admin tool without an admin login. Local-dev trust (an
-  unauthenticated loopback caller acting as the local admin) is withheld from
-  any request carrying a forwarding header, so a proxy on the same host cannot
-  inherit it; never enable local-dev trust on a forge an edge exposes.
+  unauthenticated loopback caller acting as the local admin) must never be
+  enabled on a forge an edge exposes: a proxy on the same host connects from
+  loopback. As defense in depth only, the API, the GitHub edge and git
+  transport withhold local-dev trust from any request carrying a forwarding
+  header (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP` and the common CDN
+  variants); a proxy that sends none of them still looks local.
 - Secrets that are shown once (enrollment keys, agent tokens, exchanged tokens)
   are never kept by the idempotency store.
 - Existing personal-token MCP callers on the forge host stop working until the
