@@ -925,3 +925,92 @@ fn a_red_main_makes_the_repository_summary_failing() {
         "the next green head ends the red interval"
     );
 }
+
+/// A fast-forward merge moves the default branch onto a commit that was
+/// already scored under the pull request's topic branch, and the push audit
+/// does not re-score a commit it already covered. The list badge must follow
+/// the default branch's HEAD commit, not the branch name the score was filed
+/// under, or every fast-forward merge leaves a stale score on /repos.
+#[test]
+fn repo_list_score_follows_the_default_branch_head_after_a_fast_forward() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let storage = tempdir().expect("git storage dir");
+    let bare = storage.path().join("jeryu").join("jeryu.git");
+    std::fs::create_dir_all(&bare).expect("create bare dir");
+    let git = |args: &[&str], cwd: &Path| git_in(cwd, args);
+    git(&["init", "--quiet", "--bare", "-b", "main"], &bare);
+    let work = storage.path().join("ff-work");
+    std::fs::create_dir_all(&work).expect("create work dir");
+    git(&["init", "--quiet", "-b", "topic"], &work);
+    std::fs::write(work.join("README.md"), "ff\n").expect("write file");
+    git(&["add", "README.md"], &work);
+    git(&["commit", "--quiet", "-m", "topic work"], &work);
+    let head = git(&["rev-parse", "HEAD"], &work);
+    git(
+        &[
+            "push",
+            "--quiet",
+            bare.to_str().expect("bare utf8"),
+            "topic",
+        ],
+        &work,
+    );
+
+    // An older audit of main, then the topic-branch audit of the head that is
+    // about to become main.
+    core.record_jankurai_score(
+        "jeryu",
+        "jeryu",
+        jeryu_core::RecordJankuraiScoreRequest {
+            branch: "main".to_string(),
+            commit_sha: "older-main-sha".to_string(),
+            score: Some(76),
+            decision: "scored".to_string(),
+            ..jeryu_core::RecordJankuraiScoreRequest::default()
+        },
+    )
+    .unwrap();
+    core.record_jankurai_score(
+        "jeryu",
+        "jeryu",
+        jeryu_core::RecordJankuraiScoreRequest {
+            branch: "topic".to_string(),
+            commit_sha: head.clone(),
+            score: Some(88),
+            decision: "scored".to_string(),
+            ..jeryu_core::RecordJankuraiScoreRequest::default()
+        },
+    )
+    .unwrap();
+
+    let state = WebState::new_with_git_storage(core.clone(), storage.path().to_path_buf());
+    // Before the merge main still points nowhere: the default-branch score wins.
+    assert_eq!(
+        repo_list_response(&state).repositories[0].jankurai_score,
+        Some(76),
+        "with no main head the newest default-branch score is the fallback"
+    );
+
+    // Fast-forward main onto the scored head. No second audit is recorded.
+    git(&["update-ref", "refs/heads/main", &head], &bare);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(summary.jankurai_score, Some(88));
+    assert_eq!(summary.jankurai_decision.as_deref(), Some("scored"));
+    assert_eq!(
+        core.list_jankurai_scores("jeryu", "jeryu", None, Some(&head))
+            .unwrap()
+            .len(),
+        1,
+        "the covered head keeps its single audit record"
+    );
+}

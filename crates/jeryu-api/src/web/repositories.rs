@@ -919,12 +919,14 @@ fn summary(state: &WebState, repo: &Repository, main_red: bool) -> RepositorySum
         Ok(runs) => runs.check_runs,
         Err(_) => Vec::new(),
     };
-    let latest_score =
+    let default_head = default_branch_head(state, repo);
+    let latest_score = head_jankurai_score(state, repo, default_head.as_deref()).or_else(|| {
         state
             .github
             .core()
-            .latest_jankurai_score(&repo.owner, &repo.name, &repo.default_branch);
-    let current = current_check_runs(state, repo, &pulls, &checks);
+            .latest_jankurai_score(&repo.owner, &repo.name, &repo.default_branch)
+    });
+    let current = current_check_runs(&pulls, &checks, default_head.as_deref());
     let failing_checks = current
         .iter()
         .filter(|check| {
@@ -1074,18 +1076,16 @@ fn pull_is_open(pr: &PullRequest) -> bool {
 /// failures from retired seeding), so health and the list badges must only
 /// see the newest verdict per check name on a sha that is still live.
 fn current_check_runs<'a>(
-    state: &WebState,
-    repo: &Repository,
     pulls: &[PullRequest],
     checks: &'a [CheckRun],
+    default_head: Option<&str>,
 ) -> Vec<&'a CheckRun> {
-    let default_head = default_branch_head(state, repo);
     let mut relevant: BTreeSet<&str> = pulls
         .iter()
         .filter(|pr| pull_is_open(pr))
         .map(|pr| pr.head.sha.as_str())
         .collect();
-    if let Some(sha) = default_head.as_deref() {
+    if let Some(sha) = default_head {
         relevant.insert(sha);
     }
     let mut latest: BTreeMap<(&str, &str), &CheckRun> = BTreeMap::new();
@@ -1190,6 +1190,29 @@ pub(super) fn mirror_status(checks: &[CheckRun]) -> Option<RepositoryMirrorStatu
         }),
         last_success_at: latest_success.map(run_time),
     })
+}
+
+/// Newest score recorded for the default branch's current head, whatever
+/// branch it was recorded under.
+///
+/// A fast-forward merge moves the default branch onto a commit that was
+/// already audited on the pull request's topic branch, and that audit is never
+/// repeated under the `main` branch name. Keying on the head commit instead of
+/// the branch name keeps the badge on the code the default branch actually
+/// points at.
+fn head_jankurai_score(
+    state: &WebState,
+    repo: &Repository,
+    default_head: Option<&str>,
+) -> Option<jeryu_core::JankuraiScore> {
+    let sha = default_head?;
+    state
+        .github
+        .core()
+        .list_jankurai_scores(&repo.owner, &repo.name, None, Some(sha))
+        .ok()?
+        .into_iter()
+        .next()
 }
 
 /// Resolve the default-branch head commit, tolerating repos with no bare
