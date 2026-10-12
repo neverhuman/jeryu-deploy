@@ -1,9 +1,15 @@
 //! Which forge accounts are people and which are automation.
 //!
 //! An account is a person unless an administrator marks it `service`, or the
-//! instance already names it as automation in its configuration (the shift
-//! pull-request author, a `JERYU_SHIFT_REPORTERS` login). Account-owned bots
-//! (`/api/v1/bots`) are not accounts at all and never appear here.
+//! instance already names it as automation in its configuration: the shift
+//! pull-request author, a `JERYU_SHIFT_REPORTERS` login, the review and merge
+//! identities, or a login in `JERYU_AUTOMATION_IDENTITIES`,
+//! `JERYU_CI_PUBLISHERS`, `JERYU_JANKURAI_SCORERS` or `JERYU_DEPLOYERS`.
+//! Account-owned bots (`/api/v1/bots`) are not accounts at all.
+//!
+//! Whether an account is a person is a security decision (only people take
+//! todos on), so it fails closed: when the marks cannot be read, nobody
+//! counts as a person.
 //!
 //! The mark is kept per login in `site_settings` under `account_kind:<login>`,
 //! so it needs no migration of its own and records who set it and when.
@@ -11,8 +17,9 @@
 //! - `GET /api/v1/admin/users`: every account with its `kind` and where the
 //!   kind came from (`kind_source`: `set`, `config` or `default`).
 //! - `PUT /api/v1/admin/users/:login/kind`: `{"kind": "human" | "service"}`.
-//! - `GET /api/v1/people`: active people, for "assign to" pickers. Any
-//!   logged-in account may read it; it carries logins and display names only.
+//!
+//! The "assign to" picker lists people per family, and only to callers who
+//! can work in it: `GET /api/v1/shift/families/:family/people` (`shift.rs`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -99,49 +106,86 @@ fn stored_kinds(state: &WebState) -> Result<HashMap<String, Kind>, String> {
 
 /// True when the instance's own configuration names `login` as automation.
 fn configured_service(state: &WebState, login: &str) -> bool {
+    use super::auth::{
+        AUTOMATION_IDENTITIES, CI_PUBLISHERS, DEPLOYERS, JANKURAI_SCORERS, MERGE_IDENTITY,
+        REVIEW_IDENTITY,
+    };
+    let named = |logins: &[String]| logins.iter().any(|named| named == login);
     state.shift.pr_author.as_deref() == Some(login)
-        || state
-            .shift
-            .reporters
-            .iter()
-            .any(|reporter| reporter == login)
+        || named(&state.shift.reporters)
+        || REVIEW_IDENTITY.configured() == Some(login)
+        || MERGE_IDENTITY.configured() == Some(login)
+        || named(AUTOMATION_IDENTITIES.configured())
+        || named(CI_PUBLISHERS.configured())
+        || named(JANKURAI_SCORERS.configured())
+        || named(DEPLOYERS.configured())
 }
 
+/// The instance configuration wins over a stored mark: a login it names as
+/// automation stays automation even if an administrator marked it a person,
+/// because that login's credential is held by a machine.
 fn resolve(state: &WebState, stored: &HashMap<String, Kind>, login: &str) -> Kind {
-    if let Some(kind) = stored.get(login) {
-        return kind.clone();
-    }
-    let (kind, source) = if configured_service(state, login) {
-        (AccountKind::Service, KindSource::Config)
-    } else {
-        (AccountKind::Human, KindSource::Default)
-    };
-    Kind {
+    let unset = |kind, source| Kind {
         kind,
         source,
         updated_by: None,
         updated_at: None,
+    };
+    if configured_service(state, login) {
+        return unset(AccountKind::Service, KindSource::Config);
+    }
+    match stored.get(login) {
+        Some(kind) => kind.clone(),
+        None => unset(AccountKind::Human, KindSource::Default),
     }
 }
 
-/// The kind of one account. A store that cannot be read counts as "no mark",
-/// so a configured automation login still reads as automation.
-pub(crate) fn kind_of(state: &WebState, login: &str) -> Kind {
-    let stored = stored_kinds(state).unwrap_or_default();
-    resolve(state, &stored, login)
+/// The kind of one account, or the store error that kept it from being read.
+pub(crate) fn kind_of(state: &WebState, login: &str) -> Result<Kind, String> {
+    let stored = stored_kinds(state)?;
+    Ok(resolve(state, &stored, login))
 }
 
-/// An active account that is a person: the only kind of account a todo can
-/// be assigned to.
-pub(crate) fn is_assignable_person(state: &WebState, login: &str) -> bool {
-    state
+/// True only when `login` is known to be a person. A store that cannot be
+/// read answers false: an account marked as automation must never be let
+/// through because its mark was unreadable.
+pub(crate) fn is_person(state: &WebState, login: &str) -> bool {
+    kind_of(state, login).is_ok_and(|kind| kind.kind == AccountKind::Human)
+}
+
+/// The canonical login of an active account that is a person, the only kind
+/// of account a todo can be assigned to. The login is the one the account
+/// store returns, never the caller's spelling of it.
+pub(crate) fn assignable_person(state: &WebState, login: &str) -> Option<String> {
+    let account = state.core.get_account(login).ok()?;
+    (account.status == AccountStatus::Active && is_person(state, &account.login))
+        .then_some(account.login)
+}
+
+/// Active people, sorted by login, kept by `keep`. A store that cannot be
+/// read is an error, not an empty list.
+pub(crate) fn active_people(
+    state: &WebState,
+    keep: impl Fn(&str) -> bool,
+) -> Result<Vec<Person>, String> {
+    let stored = stored_kinds(state)?;
+    let mut people: Vec<Person> = state
         .core
-        .get_account(login)
-        .is_ok_and(|account| account.status == AccountStatus::Active)
-        && kind_of(state, login).kind == AccountKind::Human
+        .list_accounts()
+        .into_iter()
+        .filter(|user| user.status == AccountStatus::Active)
+        .filter(|user| resolve(state, &stored, &user.login).kind == AccountKind::Human)
+        .filter(|user| keep(&user.login))
+        .map(|user| Person {
+            display_name: user.display_name.clone(),
+            login: user.login,
+        })
+        .collect();
+    people.sort_by(|a, b| a.login.cmp(&b.login));
+    Ok(people)
 }
 
-fn storage_error(error: &str) -> AxumResponse {
+pub(crate) fn storage_error(error: &str) -> AxumResponse {
     api_error(
         StatusCode::INTERNAL_SERVER_ERROR,
         "storage_failed",
@@ -224,32 +268,14 @@ pub(crate) async fn admin_set_kind(
     {
         return storage_error(&error);
     }
-    Json(with_kind(&user, &kind_of(&state, &user.login))).into_response()
+    match kind_of(&state, &user.login) {
+        Ok(kind) => Json(with_kind(&user, &kind)).into_response(),
+        Err(error) => storage_error(&error),
+    }
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Person {
     pub login: String,
     pub display_name: String,
-}
-
-/// `GET /api/v1/people`: active accounts that are people, by login.
-pub(crate) async fn people(State(state): State<Arc<WebState>>) -> AxumResponse {
-    let stored = match stored_kinds(&state) {
-        Ok(stored) => stored,
-        Err(error) => return storage_error(&error),
-    };
-    let mut people: Vec<Person> = state
-        .core
-        .list_accounts()
-        .into_iter()
-        .filter(|user| user.status == AccountStatus::Active)
-        .filter(|user| resolve(&state, &stored, &user.login).kind == AccountKind::Human)
-        .map(|user| Person {
-            display_name: user.display_name.clone(),
-            login: user.login,
-        })
-        .collect();
-    people.sort_by(|a, b| a.login.cmp(&b.login));
-    Json(people).into_response()
 }

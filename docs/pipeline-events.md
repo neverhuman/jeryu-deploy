@@ -1008,26 +1008,43 @@ may be older than the client.
 
 Any item about a todo can be picked up by a person, not only by the workers.
 A todo carries an optional `assignee` (a forge login, front-matter key
-`assignee`), and todoq never claims a todo that has one. Through
+`assignee`), and todoq never claims a todo that has one (todoq's
+`Todo.is_claimable`; until a worker host runs that version, the lease checks
+below keep a person and a worker apart). Through
 `POST /api/v1/shift/todos/<family>/<id>/action`:
 
 | Action | Who | Effect |
 |---|---|---|
-| `{"action": "claim"}` | any person, when nobody has the todo | the caller becomes the assignee |
-| `{"action": "assign", "value": "<login>"}` | any person when nobody has it, the assignee, or an admin | hands it to another active person |
+| `{"action": "claim"}` | a person who can work on it, when nobody has it | the caller becomes the assignee |
+| `{"action": "assign", "value": "<login>"}` | a person who can work on it when nobody has it or they hold it; an admin | hands it to another person who can work on it |
 | `{"action": "unassign"}` | the assignee or an admin | nobody has it again |
 | `{"action": "done"}` | the assignee or an admin | finishes it |
 | `{"action": "release"}` | admin | back to the workers; clears the assignee |
 
-Every other action stays admin-only and answers `403 todo_action_forbidden` to
-anyone else. A todo a worker is running (live lease) answers `409 claim_live`
-to `claim` and `assign` as it does to `release`; only an admin's
-`{"force": true}` overrides it. Bots and accounts marked as automation never
-take a todo on.
+"Can work on it" means write access to a repository the todo names, or to any
+of the family's repositories when it names none. An account with no grant —
+one that only signed up, or that cannot read a private family — can take
+nothing on and is not offered as an assignee. The stored assignee is the
+account store's login, never the request's spelling of it.
 
-Who counts as a person: every account, unless an admin marks it `service`
+A parked todo is left to the administrators: only they claim or assign it.
+Every other action stays admin-only and answers `403 todo_action_forbidden` to
+anyone else, before the todo is looked up. A todo a worker is running (live
+lease) answers `409 claim_live` to `claim`, `assign` and a non-admin's `done`,
+as it does to `release`; only an admin's `{"force": true}` overrides it. Bots
+and accounts that are automation never take a todo on.
+
+An account is automation when an admin marks it `service`
 (`PUT /api/v1/admin/users/<login>/kind` with `{"kind": "service"}`) or the
-instance configuration names it as automation (`JERYU_SHIFT_PR_AUTHOR`,
-`JERYU_SHIFT_REPORTERS`). `GET /api/v1/admin/users` reports each account's
-`kind` and `kind_source` (`set`, `config` or `default`); `GET /api/v1/people`
-lists the active people for an "assign to" picker.
+instance configuration names it: `JERYU_SHIFT_PR_AUTHOR`,
+`JERYU_SHIFT_REPORTERS`, `JERYU_REVIEW_IDENTITY`, `JERYU_MERGE_IDENTITY`,
+`JERYU_AUTOMATION_IDENTITIES`, `JERYU_CI_PUBLISHERS`, `JERYU_JANKURAI_SCORERS`
+or `JERYU_DEPLOYERS`; the configuration wins over a stored mark, since such a
+login's credential is held by a machine. The check fails closed: if the stored marks cannot be
+read, nobody counts as a person. `GET /api/v1/admin/users` reports each
+account's `kind` and `kind_source` (`set`, `config` or `default`).
+
+`GET /api/v1/shift/families/<family>/people` lists the active people who can
+work in the family, for an "assign to" picker. Only an admin or someone who
+can work in the family may read it, so signing up does not reveal the forge's
+users.

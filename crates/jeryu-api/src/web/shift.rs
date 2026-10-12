@@ -10,6 +10,7 @@
 //! from and written to the hosted `<family>-todo` bare repos directly; see
 //! `queue.rs`. Heartbeat history is kept in `<data_dir>/shift.sqlite`.
 
+mod access;
 mod assignment;
 mod heartbeats;
 pub(crate) mod queue;
@@ -694,6 +695,36 @@ pub(crate) fn apply_action(
     Ok(())
 }
 
+/// `GET /api/v1/shift/families/:family/people`: the people a todo in this
+/// family can be handed to — active people who can write to its code — for
+/// the "assign to" picker. Only an administrator or someone who can work in
+/// the family may list them, so an account cannot enumerate the forge's users
+/// by signing up.
+pub(crate) async fn family_people(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath(family): AxumPath<String>,
+) -> AxumResponse {
+    let queue = match find_queue(&state, &family) {
+        Ok(q) => q,
+        Err(resp) => return *resp,
+    };
+    let repos = access::work_repos(&state, &queue, &[]);
+    let admin = account.role == UserRole::Admin;
+    if !admin && !access::may_work(&state, &repos, &account.login) {
+        return shift_error(
+            StatusCode::FORBIDDEN,
+            "todo_action_forbidden",
+            &format!("you cannot work in family {family:?}, so you cannot hand its todos on"),
+            "ask an administrator for write access to one of the family's repositories",
+        );
+    }
+    match people::active_people(&state, |login| access::may_work(&state, &repos, login)) {
+        Ok(people) => Json(people).into_response(),
+        Err(error) => people::storage_error(&error),
+    }
+}
+
 /// `POST /api/v1/shift/todos/:family/:id/action`
 pub(crate) async fn todo_action(
     State(state): State<Arc<WebState>>,
@@ -705,9 +736,10 @@ pub(crate) async fn todo_action(
     let caller = assignment::Caller {
         login: &account.login,
         admin: account.role == UserRole::Admin,
+        // Fails closed: an unreadable kind is not a person.
         person: bot.is_none()
             && account.login != ANONYMOUS_LOGIN
-            && people::kind_of(&state, &account.login).kind == people::AccountKind::Human,
+            && people::is_person(&state, &account.login),
     };
     let request: TodoActionRequest = match parse(&body) {
         Ok(r) => r,
@@ -757,11 +789,17 @@ pub(crate) async fn todo_action(
             // Releasing it would open work that is already being done, so a
             // second worker claims it and two attempts run at once; only an
             // explicit `force` says the admin means to take it back.
-            assignment::authorize(&found.todo, &request.action, caller)
+            // The repositories the todo's work is in, and whether the caller
+            // can write to them: people act only on work they are trusted with.
+            let repos = access::work_repos(&state, &queue, &found.todo.repos);
+            let works_here = caller.admin || access::may_work(&state, &repos, caller.login);
+            assignment::authorize(&found.todo, &request.action, caller, works_here)
                 .map_err(|denied| Refused::Forbidden(denied.0))?;
             // Taking on a todo a worker is running would have a person and a
-            // worker on it at once, so it waits for the lease like a release.
-            let takes = matches!(request.action.as_str(), "release" | "claim" | "assign");
+            // worker on it at once, so it waits for the lease like a release;
+            // so does a person finishing it, which would end the worker's run.
+            let takes = matches!(request.action.as_str(), "release" | "claim" | "assign")
+                || (request.action == "done" && !caller.admin);
             // Only an administrator may take work back from a live worker.
             let forced = request.force && caller.admin;
             if takes && !forced && found.todo.lease_live(now) {
@@ -770,7 +808,8 @@ pub(crate) async fn todo_action(
             let mut todo = found.todo.clone();
             if assignment::ASSIGNMENT_ACTIONS.contains(&request.action.as_str()) {
                 assignment::apply(&mut todo, &request, caller, |login| {
-                    people::is_assignable_person(&state, login)
+                    people::assignable_person(&state, login)
+                        .filter(|login| access::may_work(&state, &repos, login))
                 })
                 .map_err(Refused::Invalid)?;
             } else {

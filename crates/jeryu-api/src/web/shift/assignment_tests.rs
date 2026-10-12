@@ -1,22 +1,27 @@
-//! Taking a todo on, through the full router with auth on: any person claims,
-//! hands over and finishes a todo; another user, a reporter login and a
-//! non-admin asking for an admin action are forbidden.
+//! Taking a todo on, through the full router with auth on: a person with write
+//! access to the family's code claims, hands over and finishes a todo; another
+//! user, an account with no grant (one that merely signed up), a reporter
+//! login and a non-admin asking for an admin action are forbidden.
 
 use std::path::Path;
 
 use axum::http::{Method as HttpMethod, StatusCode};
-use jeryu_core::{ForgeCore, UserRole};
+use jeryu_core::{CreateRepositoryRequest, ForgeCore, RepoAccessLevel, UserRole};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::tests::{body_json, fixture, request};
 use crate::web::{WebState, app};
 
+const PEOPLE: &str = "/api/v1/shift/families/jeryu/people";
+
 struct Site {
     router: axum::Router,
     admin: String,
     ada: String,
     bea: String,
+    /// Signed up, no grant on any family repository.
+    carl: String,
     reporter: String,
 }
 
@@ -25,16 +30,43 @@ fn site(dir: &Path) -> Site {
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    for login in ["ada", "bea", "ci-bot"] {
+    for login in ["ada", "bea", "carl", "ci-bot"] {
         core.create_account(login, &format!("{login}-password"), UserRole::User)
             .unwrap();
+    }
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "jeryu-deploy".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    // ada and bea work on the family's code; carl and ci-bot have no grant.
+    for login in ["ada", "bea"] {
+        core.grant_repo_access(
+            "alice",
+            login,
+            "jeryu",
+            "jeryu-deploy",
+            RepoAccessLevel::Write,
+        )
+        .unwrap();
     }
     let token = |login: &str| {
         core.create_personal_access_token(login, "t", None)
             .unwrap()
             .secret
     };
-    let (admin, ada, bea, reporter) = (token("alice"), token("ada"), token("bea"), token("ci-bot"));
+    let (admin, ada, bea, carl, reporter) = (
+        token("alice"),
+        token("ada"),
+        token("bea"),
+        token("carl"),
+        token("ci-bot"),
+    );
     let router = app(
         WebState::new_with_git_storage(core, dir.to_path_buf()).with_auth(true, false, false),
         Path::new("/tmp/jeryu-no-spa"),
@@ -44,6 +76,7 @@ fn site(dir: &Path) -> Site {
         admin,
         ada,
         bea,
+        carl,
         reporter,
     }
 }
@@ -70,9 +103,7 @@ impl Site {
     }
 
     async fn people(&self, token: &str) -> Vec<String> {
-        let (status, body) = self
-            .call(HttpMethod::GET, "/api/v1/people", token, None)
-            .await;
+        let (status, body) = self.call(HttpMethod::GET, PEOPLE, token, None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         body.as_array()
             .unwrap()
@@ -105,9 +136,28 @@ async fn any_person_claims_hands_over_and_finishes_a_blocked_todo() {
         .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The picker lists people; the configured reporter login is automation.
+    // The picker lists people who can work in the family: not the reporter
+    // login (automation) and not carl (no grant).
     let people = site.people(&site.ada).await;
     assert_eq!(people, ["ada", "alice", "bea"]);
+
+    // carl merely signed up: no claim, no finish, no list of the forge's users.
+    for body in [json!({"action": "claim"}), json!({"action": "done"})] {
+        let (status, refused) = site.act(&action, &site.carl, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    }
+    let (status, _) = site.call(HttpMethod::GET, PEOPLE, &site.carl, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Nobody can hand the todo to carl either: he cannot work on it.
+    let (status, refused) = site
+        .act(
+            &action,
+            &site.admin,
+            json!({"action": "assign", "value": "carl"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
 
     // A reporter (automation) and a non-admin asking for an admin action are
     // forbidden, and nothing changes.
@@ -237,6 +287,20 @@ async fn an_admin_marks_accounts_as_automation_and_nobody_else_can() {
     assert_eq!(bea["kind_source"], "set");
     assert_eq!(bea["kind_updated_by"], "alice");
     assert_eq!(site.people(&site.ada).await, ["ada", "alice"]);
+
+    // A login the configuration names stays automation even if an admin marks
+    // it a person: its credential is held by a machine.
+    let (status, ci) = site
+        .call(
+            HttpMethod::PUT,
+            "/api/v1/admin/users/ci-bot/kind",
+            &site.admin,
+            Some(json!({"kind": "human"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{ci}");
+    assert_eq!(ci["kind"], "service");
+    assert_eq!(ci["kind_source"], "config");
 
     let (status, _) = site
         .call(

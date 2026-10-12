@@ -899,7 +899,6 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/admin/users/:login/kind",
             axum::routing::put(people::admin_set_kind),
         ),
-        ("/api/v1/people", get(people::people)),
         (
             "/api/v1/admin/users/:login/reset-password",
             post(auth::admin_reset_password),
@@ -1126,7 +1125,9 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             post(tool_proposals::decide),
         ),
         // Shift pages: todoq family queues, slot heartbeats, shift branches.
-        // Reads need a login; every POST is admin-only (auth::admin_only_request).
+        // Reads need a login; every POST is admin-only (auth::admin_only_request)
+        // except the heartbeat and the todo action route, which their handlers
+        // decide (shift.rs, shift/assignment.rs).
         (
             "/api/v1/events",
             get(pipeline::list_events).post(pipeline::post_events),
@@ -1149,6 +1150,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             get(release_board::get_board).put(release_board::put_board),
         ),
         ("/api/v1/shift/families", get(shift::families)),
+        (
+            "/api/v1/shift/families/:family/people",
+            get(shift::family_people),
+        ),
         (
             "/api/v1/shift/todos",
             get(shift::list_todos).post(shift::file_todos),

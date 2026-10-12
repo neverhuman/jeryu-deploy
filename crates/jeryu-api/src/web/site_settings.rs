@@ -1,10 +1,12 @@
 //! Instance-wide settings an administrator sets from the web UI, kept in
 //! `<data_dir>/shift.sqlite` (`site_settings`, `db/migrations/0005_site_settings.sql`).
 //!
-//! The one key today is `internal_wiki`: the repository the left navigation
-//! links to as the instance's wiki. It is stored by repository id, so a rename
-//! or move keeps it, and resolved on every read, so a deleted repository reads
-//! as unset instead of leaving a dead link.
+//! `internal_wiki` is the repository the left navigation links to as the
+//! instance's wiki. It is stored by repository id, so a rename or move keeps
+//! it, and resolved on every read, so a deleted repository reads as unset
+//! instead of leaving a dead link. The table also holds one
+//! `account_kind:<login>` row per account an administrator marked as a person
+//! or as automation (see `people.rs`); this module's routes never read those.
 //!
 //! - `GET /api/v1/site-settings`: what the navigation needs, for any caller.
 //!   The wiki is reported only to a caller who may read that repository, so a
