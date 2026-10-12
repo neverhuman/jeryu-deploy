@@ -40,6 +40,10 @@ authority. Durable detail is intentionally routed rather than duplicated:
 - Flow, the delivery line as stations (where work sits, waits and loops back,
   and the runners behind each station), design and build order: `docs/flow.md`
   (decision: `docs/adr/0004-flow-shows-where-work-sits-and-backs-up.md`).
+- Agent presence, every coding agent working on a repository (reported
+  sessions, agent runs, gate runners, reviewers, queue workers):
+  `docs/agent-presence.md`
+  (decision: `docs/adr/0006-agent-presence-on-the-repo-agents-tab.md`).
 
 Governed Jankurai rotations run the closed projection integration test, the
 hostile-identity shell verifier, full score, and protected-base diff audit

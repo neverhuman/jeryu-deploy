@@ -29,6 +29,7 @@ Paged routes: `/api/v1/repos`, `/api/v1/repos/:id/pulls`,
 `/api/v1/repos/:id/commits`, `/api/v1/shift/todos`, `/api/v1/audit`,
 `/api/v1/releases`, `/api/v1/mirrors`, `/api/v1/settings`,
 `/api/v1/agent-runs`, `/api/v1/repos/:id/agent-runs`,
+`/api/v1/agent-presence`, `/api/v1/repos/:id/agent-presence`,
 `/api/v1/control-plane/status`, `/api/v1/merge-queue`,
 `/api/v1/repos/:id/merge-queue`, `/api/v1/attention` and `/api/v1/events`.
 `/api/v1/attention` keeps its `counts` over every item the filter kept, not

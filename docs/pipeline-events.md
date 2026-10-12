@@ -40,6 +40,7 @@ projection and the Flow report), `db/migrations/0002_pipeline_events.sql`,
 |---|---|
 | `POST /api/v1/events` | a global admin, or a login in `JERYU_EVENT_REPORTERS` (comma-separated site setting, e.g. `ci-bot,review-bot`) |
 | `POST /api/v1/shift/heartbeat` | a global admin, or a login in `JERYU_SHIFT_REPORTERS` (comma-separated site setting, e.g. `fleet-bot,pool-bot`) |
+| `POST /api/v1/agent-presence` | a global admin or a login in `JERYU_PRESENCE_REPORTERS` for any scope; any other login for repositories it can write (`docs/agent-presence.md`) |
 | `GET /api/v1/events` | global admins |
 | `GET /api/v1/attention` | global admins |
 | `GET`, `POST /api/v1/attention/acks` | global admins |

@@ -6,6 +6,16 @@
   when a gate first reported on its queue commit after the enqueue, or `null`
   while it waits for a gate runner. The merge box said "the gate is running" from the enqueue on,
   even when no runner had picked the entry up.
+- Agent presence (`docs/agent-presence.md`, ADR 0006): coding agents report
+  their sessions with `POST /api/v1/agent-presence` (end with `DELETE
+  /api/v1/agent-presence/{session_id}`), and `GET
+  /api/v1/repos/{id}/agent-presence` lists every agent on a repository:
+  reported sessions naming it or its family, running agent runs, gate runners
+  and reviewers on it, and working queue slots, with same-branch collisions
+  marked. `GET /api/v1/agent-presence?family=` serves a family page. Ordinary
+  logins report only repositories they can write; admins and the logins in
+  `JERYU_PRESENCE_REPORTERS` (no default) report any scope. Stored in
+  `shift.sqlite` (migration `0012_agent_presence`).
 - The gate's `cargo test` keeps test temp directories on tmpfs (`/dev/shm`, or
   `JERYU_CI_TEST_TMPDIR`) when one is writable. Every web test opens a fresh
   SQLite forge, and its migrations fsync: about 2.2s per fixture on disk and
