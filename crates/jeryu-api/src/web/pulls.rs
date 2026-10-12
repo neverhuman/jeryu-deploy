@@ -872,15 +872,6 @@ fn detail_for_pr(
 /// merge passport passes (with the blocker messages when it does not), and the
 /// names of the required contexts, which the queue also requires on the
 /// queued commit before landing it.
-/// The contexts `pr`'s base requires, by name, without building its merge
-/// passport: what the merge queue reads to tell a gate that started.
-pub(super) fn required_context_names(state: &WebState, pr: &PullRequest) -> Vec<String> {
-    required_contexts(state, pr)
-        .into_iter()
-        .map(|context| context.name)
-        .collect()
-}
-
 pub(super) fn queue_gate(state: &WebState, pr: &PullRequest) -> (bool, Vec<String>, Vec<String>) {
     let required = required_contexts(state, pr);
     let detail = detail_for_pr_with_required_contexts(state, pr, &required, None);
@@ -1250,6 +1241,7 @@ pub(in crate::web) mod diff;
 mod posture;
 
 pub(crate) use posture::audit_gate_enforced_for;
+pub(super) use posture::required_context_names;
 #[cfg(test)]
 use posture::required_contexts_with_enforcement;
 #[cfg(test)]

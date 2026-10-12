@@ -612,20 +612,30 @@ pub(super) async fn list_repo(
 }
 
 /// A listed entry, and for a building one `gate_started_at`: when a gate first
-/// reported on its queue commit, or null while no gate runner has taken it.
-/// Without it a reader cannot tell an entry waiting for a free runner from one
-/// being gated. Only this per-repository listing carries it: the runner polls
-/// `list_all` on every tick, which stays an index read.
+/// reported on its queue commit after the enqueue, or null while no gate runner
+/// has taken it. Without it a reader cannot tell an entry waiting for a free
+/// runner from one being gated. Only this per-repository listing carries it:
+/// the runner polls `list_all` on every tick, which stays an index read.
 fn with_gate_started_at(state: &WebState, owner: &str, repo: &str, entry: QueueEntry) -> Value {
     let building = entry.state == QueueState::Building;
     let started = building
         .then(|| {
+            let enqueued = chrono::DateTime::parse_from_rfc3339(&entry.enqueued_at)
+                .ok()?
+                .with_timezone(&chrono::Utc);
             let pr = state
                 .core
                 .get_pull_request(owner, repo, entry.number)
                 .ok()?;
             let required = super::pulls::required_context_names(state, &pr);
-            gate_started_at(&state.core, owner, repo, &entry.queue_sha, &required)
+            gate_started_at(
+                &state.core,
+                owner,
+                repo,
+                &entry.queue_sha,
+                &required,
+                enqueued,
+            )
         })
         .flatten();
     let mut value = serde_json::to_value(&entry).unwrap_or(Value::Null);
@@ -639,17 +649,21 @@ fn with_gate_started_at(state: &WebState, owner: &str, repo: &str, entry: QueueE
 }
 
 /// The earliest commit status or check run on `sha` among `required` (among
-/// every context when the base requires none). A gate posts its pending status
-/// as it starts, and the queue commit is the forge's own, so nothing else has
-/// reported on it before a gate.
+/// every context when the base requires none, as the gate verdict also counts
+/// any reported context then) that was posted at or after `since`, the enqueue.
+/// The queue commit is not always the forge's own: a PR already on the base tip
+/// lands as itself, so `sha` is the PR head and carries the PR's own CI reports
+/// from before the enqueue. Those say nothing about a queue gate, so only a
+/// report from the enqueue on counts.
 pub(crate) fn gate_started_at(
     core: &jeryu_core::ForgeCore,
     owner: &str,
     repo: &str,
     sha: &str,
-    required: &[String],
+    required: &std::collections::BTreeSet<String>,
+    since: chrono::DateTime<chrono::Utc>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let counts = |name: &str| required.is_empty() || required.iter().any(|r| r == name);
+    let counts = |name: &str| required.is_empty() || required.contains(name);
     let statuses = core.combined_status(owner, repo, sha).ok()?.statuses;
     let checks = core
         .list_check_runs(owner, repo, Some(sha))
@@ -665,6 +679,7 @@ pub(crate) fn gate_started_at(
                 .filter(|check| counts(&check.name))
                 .map(|check| check.started_at),
         )
+        .filter(|at| *at >= since)
         .min()
 }
 

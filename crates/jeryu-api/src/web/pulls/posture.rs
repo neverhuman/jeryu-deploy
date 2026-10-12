@@ -664,7 +664,13 @@ fn gate_check_index(
 
 /// The contexts the base branch waits for: its protection rule's required
 /// checks, plus `jankurai/proof` when the rule or the merge enforcement asks.
-fn required_context_names(state: &WebState, pr: &PullRequest) -> BTreeSet<String> {
+/// Only genuine context names: a protection rule that cannot be read gives
+/// none, never a synthetic posture name. The merge queue reads it per building
+/// entry, so it stays a protection read and an environment check.
+pub(in crate::web) fn required_context_names(
+    state: &WebState,
+    pr: &PullRequest,
+) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     if let Ok(rule) =
         state
