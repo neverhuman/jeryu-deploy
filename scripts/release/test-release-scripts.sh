@@ -979,6 +979,91 @@ ok "stage-release --json prints one line, --dry-run builds nothing, --prev overr
 
 # -h and --help on every release script print its header and exit 0 without running anything:
 # the network, git, docker, service and file tools on PATH are tripwires.
+# --- release-action.sh: the steps a deployer asks for, by hand or through the forge's queue ---
+# Stand-ins: a local bare repo whose deploy-release.sh records how it was called, a release.env the
+# script must read by itself, and curl that plays the forge's release-actions routes. The forge
+# never sends a command: each ask is checked again and mapped to a fixed step.
+R="$T/ra"; mkdir -p "$R/bin" "$R/src/scripts/release" "$R/stage"
+cat >"$R/src/scripts/release/deploy-release.sh" <<EOF
+#!/usr/bin/env bash
+echo "DEPLOYED \$* build=\${JERYU_BUILD_HOST:-unset} git=\${JERYU_DEPLOY_GIT:+set}"
+[ -e "$R/deploy-fails" ] && { echo "switch.sh exited 3" >&2; exit 3; }
+exit 0
+EOF
+chmod +x "$R/src/scripts/release/deploy-release.sh"
+git -C "$R/src" init -q -b main
+git -C "$R/src" -c user.name=t -c user.email=t@t add .
+git -C "$R/src" -c user.name=t -c user.email=t@t commit -q -m deploy
+git clone -q --bare "$R/src" "$R/remote.git"
+printf 'JERYU_BUILD_HOST=build-1\nJERYU_DEPLOY_TOKEN_FILE=%s\n' "$R/token" >"$R/release.env"
+echo "not-a-real-token" >"$R/token"
+cat >"$R/bin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$R/curl-args"
+case "\$*" in
+  *"/api/v1/runners/heartbeat"*) echo '{}' ;;
+  *"release-actions?state=pending"*) cat "$R/pending.json" ;;
+  *"/claim"*) [ -e "$R/claimed" ] && { echo '{"code":"already_claimed"}'; exit 22; }; touch "$R/claimed"; echo '{}' ;;
+  *"/result"*) prev=""; for a in "\$@"; do [ "\$prev" = --data-binary ] && printf '%s\n' "\$a" >>"$R/results.jsonl"; prev="\$a"; done; echo 200 ;;
+  *) echo '{}' ;;
+esac
+EOF
+chmod +x "$R/bin/curl"
+action() {
+  # Settings already in the environment win over release.env, so clear the ones the file must supply.
+  env -u JERYU_BUILD_HOST -u JERYU_DEPLOY_TOKEN_FILE \
+    PATH="$R/bin:$PATH" JERYU_RELEASE_ENV="$R/release.env" JERYU_DEPLOY_REMOTE="$R/remote.git" \
+    JERYU_DEPLOY_REPO=acme/forge-deploy JERYU_RELEASE_ACTIONS_STATE="$R/state" \
+    JERYU_AUTO_STAGE_STATE="$R/stage" JERYU_FORGE_URL="https://forge.invalid" \
+    bash "$here/release-action.sh" "$@"
+}
+rel="prod-20261012T171717Z-f1b1fb4-unsigned"
+
+for bad in "prod-1; reboot" "../../etc/passwd" "prod-20261012T171717Z-F1B1FB4-unsigned"; do
+  rc=0; action deploy "$bad" >/dev/null 2>&1 || rc=$?
+  [[ $rc == 64 ]] || fail "release-action deployed a malformed release id '$bad' (exit $rc)"
+done
+rc=0; action reboot >/dev/null 2>&1 || rc=$?
+[[ $rc == 64 ]] || fail "release-action ran an unknown step (exit $rc)"
+ok "release-action refuses a malformed release id and an unknown step"
+
+out="$(action deploy "$rel" --dry-run 2>&1)" || fail "a dry-run deploy failed: $out"
+grep -q "DEPLOYED --dry-run $rel build=build-1 git=set" <<<"$out" \
+  || fail "deploy did not run main's deploy-release.sh with release.env and the history cache: $out"
+ok "release-action deploy runs main's deploy-release.sh from any directory with release.env loaded"
+
+# The forge asks for another repository's release: not this host's to run, never claimed.
+jq -n --arg rel "$rel" '{actions: [{id: "ra-20261012T180000Z-1", action: "deploy", repo: "acme/other",
+  release: $rel, requested_by: "operator", requested_at: "2026-10-12T18:00:00Z"}]}' >"$R/pending.json"
+action poll >/dev/null 2>&1 || fail "poll failed on another repository's ask"
+! grep -q "/claim" "$R/curl-args" || fail "poll claimed an ask for another repository"
+grep -q "/api/v1/runners/heartbeat" "$R/curl-args" || fail "poll sent no heartbeat"
+ok "release-action poll beats, and leaves an ask for another repository alone"
+
+jq -n --arg rel "$rel" '{actions: [{id: "ra-20261012T180500Z-2", action: "deploy", repo: "acme/forge-deploy",
+  release: $rel, requested_by: "operator", requested_at: "2026-10-12T18:05:00Z"}]}' >"$R/pending.json"
+action poll >/dev/null 2>&1 || fail "poll failed on a deploy ask"
+grep -q "release-actions/ra-20261012T180500Z-2/claim" "$R/curl-args" || fail "poll did not claim the ask"
+[[ "$(jq -r '.ok' "$R/results.jsonl" | tail -1)" == true ]] || fail "poll did not report the deploy as done"
+tail -n 1 "$R/results.jsonl" | jq -r '.log_tail' | grep -q "DEPLOYED $rel build=build-1" \
+  || fail "the reported log tail is not the deploy's own output"
+ok "release-action poll claims a deploy ask, runs it, and reports it with its log"
+
+# Claimed elsewhere first: nothing runs. Then a failing deploy is reported as failed.
+: >"$R/results.jsonl"
+action poll >/dev/null 2>&1 || fail "poll failed when the ask was already claimed"
+[[ ! -s "$R/results.jsonl" ]] || fail "poll ran an ask another poller had claimed"
+rm -f "$R/claimed"; touch "$R/deploy-fails"
+action poll >/dev/null 2>&1 || fail "poll itself failed on a failing deploy"
+[[ "$(jq -r '.ok' "$R/results.jsonl" | tail -1)" == false ]] || fail "a failed deploy was reported as done"
+tail -n 1 "$R/results.jsonl" | jq -r '.message' | grep -q "^exit 3" || fail "the failure does not say how it ended"
+rm -f "$R/claimed" "$R/deploy-fails"
+jq -n '{actions: [{id: "ra-20261012T181000Z-3", action: "shell", repo: "acme/forge-deploy",
+  requested_by: "operator", requested_at: "2026-10-12T18:10:00Z"}]}' >"$R/pending.json"
+action poll >/dev/null 2>&1 || fail "poll failed on an unknown action"
+[[ "$(jq -r '.ok' "$R/results.jsonl" | tail -1)" == false ]] || fail "an unknown action was reported as done"
+ok "release-action poll runs an ask once, and reports a failed or unknown step as failed"
+
 mkdir -p "$T/tripwire"
 for c in ssh scp curl git mkdir install docker systemctl; do
   printf '#!/bin/sh\necho "tripwire: %s ran" >&2; exit 97\n' "$c" >"$T/tripwire/$c"; chmod +x "$T/tripwire/$c"

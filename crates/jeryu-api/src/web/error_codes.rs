@@ -95,6 +95,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the workcell state does not allow this agent run step",
     ),
     entry(
+        "already_claimed",
+        409,
+        "the release action is no longer pending; another poller claimed it",
+    ),
+    entry(
         "already_exists",
         409,
         "the resource the request would create already exists",
@@ -382,12 +387,22 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         406,
         "the Accept header excludes the JSON this route answers",
     ),
+    entry(
+        "not_claimed",
+        409,
+        "only a claimed release action takes a result",
+    ),
     entry("not_found", 404, "the requested entity was not found"),
     entry("not_open", 409, "the pull request is not open"),
     entry(
         "not_queued",
         409,
         "the pull request is not in the merge queue",
+    ),
+    entry(
+        "not_staged",
+        409,
+        "the forge has no record of this release being staged for the repository",
     ),
     entry(
         "origin_denied",

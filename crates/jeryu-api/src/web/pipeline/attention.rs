@@ -193,6 +193,10 @@ pub(crate) struct ApiCall {
     /// The request body, left out of the JSON when the route takes none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<Value>,
+    /// What the confirm step says before the call is sent, when the default
+    /// ("<label> now? The forge acts straight away.") would not be true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -409,6 +413,7 @@ pub(super) fn open_shift_pr_call(family: &str, branch: &str) -> ApiCall {
         method: "POST",
         path: format!("/api/v1/shift/shifts/{family}/pr"),
         body: Some(json!({ "branch": branch })),
+        confirm: None,
     }
 }
 
@@ -419,6 +424,7 @@ pub(super) fn todo_action_call(family: &str, id: &str, action: &str) -> ApiCall 
         method: "POST",
         path: format!("/api/v1/shift/todos/{family}/{id}/action"),
         body: Some(json!({ "action": action })),
+        confirm: None,
     }
 }
 
@@ -429,6 +435,7 @@ pub(super) fn enqueue_call(repo: &str, number: u64) -> ApiCall {
         method: "POST",
         path: format!("/api/v1/repos/{repo}/pulls/{number}/queue"),
         body: None,
+        confirm: None,
     }
 }
 
@@ -440,6 +447,7 @@ pub(super) fn regate_call(repo: &str, number: u64) -> ApiCall {
         method: "POST",
         path: format!("/api/v1/repos/{repo}/pulls/{number}/regate"),
         body: None,
+        confirm: None,
     }
 }
 
@@ -450,6 +458,41 @@ pub(super) fn ready_for_review_call(repo: &str, number: u64) -> ApiCall {
         method: "POST",
         path: format!("/api/v1/repos/{repo}/pulls/{number}/ready"),
         body: None,
+        confirm: None,
+    }
+}
+
+/// `POST /api/v1/release-actions`: ask the release host to deploy a staged
+/// release (`release_actions`). The host runs it, not the forge, so the
+/// confirm step says so.
+pub(super) fn deploy_call(repo: &str, release: &str) -> ApiCall {
+    ApiCall {
+        method: "POST",
+        path: "/api/v1/release-actions".to_string(),
+        body: Some(json!({ "action": "deploy", "repo": repo, "release": release })),
+        confirm: Some(format!(
+            "Deploy {release} to production? The release host picks this up within 30 \
+             seconds and switches the forge, which restarts it; the page reconnects by itself."
+        )),
+    }
+}
+
+/// `POST /api/v1/release-actions`: ask the release host to run auto-pin now,
+/// after forgetting its give-up on `head` when one is named.
+pub(super) fn auto_pin_call(repo: &str, head: Option<&str>) -> ApiCall {
+    let body = match head {
+        Some(head) => json!({ "action": "auto_pin_retry", "repo": repo, "head": head }),
+        None => json!({ "action": "auto_pin", "repo": repo }),
+    };
+    ApiCall {
+        method: "POST",
+        path: "/api/v1/release-actions".to_string(),
+        body: Some(body),
+        confirm: Some(
+            "Run auto-pin now? The release host starts it within 30 seconds; it builds the web \
+             bundle and opens the pin bump pull request."
+                .to_string(),
+        ),
     }
 }
 
@@ -812,7 +855,8 @@ fn board_facts(state: &WebState) -> Vec<BoardFacts> {
 /// Everything waiting on a person right now, most urgent first.
 pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse {
     let mut items = Vec::new();
-    let hosts = Hosts::from_env();
+    let mut hosts = Hosts::from_env();
+    hosts.release_queue = crate::web::release_actions::ReleaseQueue::snapshot(state, now);
     let families: Vec<FamilySnapshot> = super::super::shift::attention_snapshot(state, now);
     let workers = super::super::shift::worker_rows(state, now);
     let mut waiting = Vec::new();

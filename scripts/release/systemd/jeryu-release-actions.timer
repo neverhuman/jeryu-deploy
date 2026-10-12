@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the forge every 30 seconds for release steps a deployer asked for
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

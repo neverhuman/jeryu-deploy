@@ -41,6 +41,7 @@ mod pull_origin;
 mod pulls;
 pub(crate) mod pushed_after_merge;
 mod regate;
+mod release_actions;
 mod release_board;
 mod repo_address;
 mod repo_admin;
@@ -182,6 +183,9 @@ pub(crate) struct WebState {
     pub(crate) merge_attempts: merge_attempts::MergeAttemptStore,
     /// Re-gate requests the gate runner reads each tick (`regate`).
     pub(crate) regate_requests: regate::RegateStore,
+    /// Release steps a deployer asked for, which the release host's poller
+    /// claims and performs (`release_actions`).
+    pub(crate) release_actions: release_actions::ReleaseActionStore,
     /// Heads that became gateable, long-polled by the gate runner so a push
     /// starts its gate without waiting for the runner's next tick
     /// (`gate_wanted`).
@@ -404,6 +408,7 @@ impl WebState {
             merge_queue: Arc::default(),
             merge_attempts: merge_attempts::MergeAttemptStore::default(),
             regate_requests: regate::RegateStore::default(),
+            release_actions: release_actions::ReleaseActionStore::default(),
             gate_wanted: gate_wanted::GateWantedStore::default(),
             idempotency: idempotency::IdempotencyStore::open(&shift_path)
                 .expect("open idempotency key store"),
@@ -1227,6 +1232,19 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/repos/:id/automation", get(repo_automation::show)),
         ("/api/v1/merge-queue", get(merge_queue::list_all)),
         ("/api/v1/gate-regate", get(regate::list)),
+        // A deployer asks for a release step; the release host claims and runs it.
+        (
+            "/api/v1/release-actions",
+            post(release_actions::request).get(release_actions::list),
+        ),
+        (
+            "/api/v1/release-actions/:id/claim",
+            post(release_actions::claim),
+        ),
+        (
+            "/api/v1/release-actions/:id/result",
+            post(release_actions::result),
+        ),
         // Heads that became gateable since the runner last asked, long-polled.
         ("/api/v1/gate-wanted", get(gate_wanted::list)),
         (

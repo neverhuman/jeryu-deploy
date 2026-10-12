@@ -10,7 +10,8 @@ const RELEASE_ENV: &str = "JERYU_RELEASE_HOST";
 const GATE_ENV: &str = "JERYU_GATE_HOST";
 const FORGE_ENV: &str = "JERYU_FORGE_HOST";
 
-/// The machines an operator is sent to, by role.
+/// The machines an operator is sent to, by role, and what the release host can
+/// be asked to do for them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Hosts {
     /// Runs auto-pin, auto-stage, `deploy-release.sh` and the todoq workers.
@@ -19,6 +20,9 @@ pub(crate) struct Hosts {
     pub gate: String,
     /// Runs the forge itself; mirror pushes leave from here.
     pub forge: String,
+    /// Release steps the release host performs when asked (its poller is live)
+    /// and the asks still open; empty unless the inbox fills it from the forge.
+    pub release_queue: crate::web::release_actions::ReleaseQueue,
 }
 
 impl Default for Hosts {
@@ -46,6 +50,7 @@ impl Hosts {
             release: role(RELEASE_ENV, "the release host"),
             gate: role(GATE_ENV, "the gate host"),
             forge: role(FORGE_ENV, "the forge host"),
+            release_queue: Default::default(),
         }
     }
 

@@ -2257,6 +2257,60 @@ fn a_failed_deploy_that_left_production_on_the_same_release_is_only_a_watch() {
     assert_eq!(items[0].severity, Severity::Critical);
 }
 
+/// With a release host polling for asks, a staged release is one click: the
+/// row's button asks for that exact release, and once asked the row says who
+/// asked and offers no second button. Without a poller it is the command only.
+#[test]
+fn a_staged_release_is_a_button_while_the_release_host_polls_for_asks() {
+    let next = "01dfe680a6de5e02da4e9aa7821534742aa46d7e";
+    let staged = release_event(10, "release.staged", next, "2026-09-19T13:03:26Z", false);
+    let release = "prod-20260919T130210Z-01dfe68-unsigned";
+
+    let no_poller = release_items(slice(&staged), &[], &[], &hosts());
+    assert_eq!(no_poller[0].action.api, None);
+    assert!(no_poller[0].action.command.is_some());
+
+    let mut polled = hosts();
+    polled.release_queue.poller = true;
+    let items = release_items(slice(&staged), &[], &[], &polled);
+    let api = items[0].action.api.as_ref().expect("a deploy button");
+    assert_eq!(api.path, "/api/v1/release-actions");
+    assert_eq!(
+        api.body,
+        Some(json!({"action": "deploy", "repo": "jeryu/jeryu-deploy", "release": release}))
+    );
+    assert!(api.confirm.as_deref().is_some_and(|c| c.contains(release)));
+    // The copyable command stays beside it, for a release host without a poller.
+    assert!(items[0].action.command.is_some());
+
+    polled
+        .release_queue
+        .open
+        .push(crate::web::release_actions::ReleaseAction {
+            id: "ra-1".into(),
+            action: crate::web::release_actions::ActionKind::Deploy,
+            repo: "jeryu/jeryu-deploy".into(),
+            release: Some(release.into()),
+            head: None,
+            state: crate::web::release_actions::ActionState::Pending,
+            requested_by: "operator".into(),
+            requested_at: "2026-09-19T13:10:00Z".into(),
+            claimed_by: None,
+            claimed_at: None,
+            finished_at: None,
+            message: None,
+            log_tail: None,
+        });
+    let asked = release_items(slice(&staged), &[], &[], &polled);
+    assert_eq!(asked[0].action.api, None);
+    assert_eq!(asked[0].action.label, "Deploy requested");
+    assert!(
+        asked[0].reason.contains("Asked by operator at 13:10Z"),
+        "{}",
+        asked[0].reason
+    );
+}
+
 /// A release staged in one repository must not hide one staged in another:
 /// each repository's newest staging brings its own item.
 #[test]

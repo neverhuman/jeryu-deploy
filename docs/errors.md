@@ -84,6 +84,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `agent_run_path_denied` | 403 | the agent run path is outside the allowed slice |
 | `agent_run_repo_source_use_sessions` | 422 | repository agent runs start through the repo sessions route |
 | `agent_run_workcell_state_denied` | 409 | the workcell state does not allow this agent run step |
+| `already_claimed` | 409 | the release action is no longer pending; another poller claimed it |
 | `already_exists` | 409 | the resource the request would create already exists |
 | `api_route_not_found` | 404 | no API route matches the request path |
 | `approval_blocked_jankurai_proof` | 409 | `jankurai/proof` on this head fails, has not run, or has not finished, and this repository is under the gate |
@@ -152,9 +153,11 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `needs_reconciliation` | 409 | a bot operation with this key is still in progress |
 | `not_a_file` | 422 | the path names a directory, not a file |
 | `not_acceptable` | 406 | the Accept header excludes the JSON this route answers |
+| `not_claimed` | 409 | only a claimed release action takes a result |
 | `not_found` | 404 | the requested entity was not found |
 | `not_open` | 409 | the pull request is not open |
 | `not_queued` | 409 | the pull request is not in the merge queue |
+| `not_staged` | 409 | the forge has no record of this release being staged for the repository |
 | `origin_denied` | 403 | a cookie-authenticated WebSocket came from another origin |
 | `password_change_required` | 403 | the account must change its password first |
 | `payload_too_large` | 413 | the request body is larger than this route accepts |

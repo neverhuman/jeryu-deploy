@@ -170,11 +170,17 @@ if (( rc == 0 )) && [[ "$rel" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}-unsigned$ 
   printf '%s\t%s\t%s\n' "$main" "$rel" "$(date -u +%FT%TZ)" >>"$state/staged.tsv"
   echo "$rel" >"$state/latest"
   rm -f "$state/failures/$main"
-  say "STAGED $rel; deploy with: scripts/release/deploy-release.sh $rel"
+  # The whole step, runnable as shown: the installed release-action.sh loads the site settings and
+  # works from any directory (install-release-actions.sh). Without it, the path inside a checkout.
+  deploy_line="scripts/release/deploy-release.sh $rel"
+  # shellcheck disable=SC2088 # a line for a person to paste, so `~` stays literal
+  [ ! -x "$HOME/.local/share/jeryu-release-actions/release-action.sh" ] \
+    || deploy_line="~/.local/share/jeryu-release-actions/release-action.sh deploy $rel"
+  say "STAGED $rel; deploy with: $deploy_line"
   emit release.staged false "auto-stage:staged:$rel" \
     "staged $rel from main ${main:0:12}; waiting for a deploy" \
     "$(jq -n --arg release "$rel" --arg previous "${live#jeryu-}" \
-      --arg command "scripts/release/deploy-release.sh $rel" \
+      --arg command "$deploy_line" \
       '{release: $release, previous_release: $previous, deploy_command: $command}')" "$seconds"
 else
   echo "$attempt" >"$state/failures/$main"

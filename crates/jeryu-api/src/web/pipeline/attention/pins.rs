@@ -167,6 +167,14 @@ fn pin_item(
             format!(" The shipped web UI pin has been behind green {dependency} main for {age}.")
         })
     };
+    // The button that asks the release host to run auto-pin: only while a
+    // poller is live and no auto-pin ask is already open.
+    let asked = hosts.release_queue.open_auto_pin();
+    let pin_call = |head: Option<&str>| {
+        (hosts.release_queue.poller && asked.is_none())
+            .then(|| super::auto_pin_call(&consumer.repo, head))
+    };
+    let asked_note = asked.map_or_else(String::new, |ask| format!(" {}", ask.progress()));
     let draft = match (pin.kind, &pin.bump_pr) {
         ("tag", _) => Draft {
             id,
@@ -294,11 +302,11 @@ fn pin_item(
                 reason: format!(
                     "{failure}. auto-pin stopped retrying {dependency} {head7}, so no bump pull \
                      request comes until its give-up marker is cleared; its log is \
-                     `journalctl --user -u {AUTO_PIN_UNIT} -n 30`. {waiting}"
+                     `journalctl --user -u {AUTO_PIN_UNIT} -n 30`. {waiting}{asked_note}"
                 ),
                 href: releases_href(&consumer.repo),
                 label: "Clear the give-up and retry auto-pin",
-                api: None,
+                api: pin_call(Some(head)),
                 command: Some(Shell {
                     line: format!(
                         "rm -f {AUTO_PIN_FAILURES}/{head} && systemctl --user start {AUTO_PIN_UNIT}"
@@ -336,13 +344,13 @@ fn pin_item(
                 "{}. The auto-pin timer should have opened this bump and has not. Starting it \
                  builds the web bundle, changes the two lock fields (`commit` and \
                  `web_dist_sha256` for {dependency} in {}) and opens the pull request; its log \
-                 is `journalctl --user -u {AUTO_PIN_UNIT} -n 30`. {waiting}",
+                 is `journalctl --user -u {AUTO_PIN_UNIT} -n 30`. {waiting}{asked_note}",
                 auto_pin_state(pin, pin_events),
                 pin.source
             ),
             href: releases_href(&consumer.repo),
             label: "Run auto-pin now",
-            api: None,
+            api: pin_call(None),
             command: Some(Shell {
                 line: format!("systemctl --user start {AUTO_PIN_UNIT}"),
                 run_in: Hosts::anywhere(&hosts.release),

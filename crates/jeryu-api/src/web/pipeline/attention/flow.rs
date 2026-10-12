@@ -1170,16 +1170,38 @@ fn staging_items(
                 .and_then(|detail| detail["deploy_command"].as_str())
                 .map(|line| Shell {
                     line: line.to_string(),
-                    // The command is a path inside the repository that staged
-                    // the release, which the event names.
-                    run_in: match event.repo.as_deref() {
-                        Some(repo) => Hosts::checkout(&hosts.release, repo),
-                        None => format!(
-                            "{}, in a checkout of the repository that staged it",
-                            hosts.release
-                        ),
+                    run_in: if line.starts_with('/') || line.starts_with("~/") {
+                        // An installed launcher (`release-action.sh deploy`)
+                        // loads the site settings itself and runs anywhere.
+                        Hosts::anywhere(&hosts.release)
+                    } else {
+                        // A path inside the repository that staged the
+                        // release, which the event names.
+                        match event.repo.as_deref() {
+                            Some(repo) => Hosts::checkout(&hosts.release, repo),
+                            None => format!(
+                                "{}, in a checkout of the repository that staged it",
+                                hosts.release
+                            ),
+                        }
                     },
                 });
+            // The button: only with a release host polling for asks, a real
+            // release id and a repository to name, and not while an ask for
+            // this release is already waiting or running.
+            let asked = event
+                .repo
+                .as_deref()
+                .and_then(|repo| hosts.release_queue.open_deploy(repo, release));
+            let api = match (event.repo.as_deref(), asked) {
+                (Some(repo), None)
+                    if hosts.release_queue.poller
+                        && crate::web::release_actions::is_release_id(release) =>
+                {
+                    Some(super::deploy_call(repo, release))
+                }
+                _ => None,
+            };
             let mut item = Draft {
                 // The release name alone is not an identity across
                 // repositories, and the id is what an acknowledgement hides.
@@ -1193,16 +1215,21 @@ fn staging_items(
                 reason: format!(
                     "Production still runs {}. This release is built from a commit whose \
                      gate is green and is already on the production host; nothing switches \
-                     until the deploy command is run.{}",
+                     until it is deployed.{}{}",
                     live.map_or_else(
                         || "an earlier build".to_string(),
                         |(sha, _)| sha.chars().take(10).collect()
                     ),
-                    failed_attempt(facts, release)
+                    failed_attempt(facts, release),
+                    asked.map_or_else(String::new, |ask| format!(" {}", ask.progress()))
                 ),
                 href: "/releases".to_string(),
-                label: "Deploy the staged release",
-                api: None,
+                label: if asked.is_some() {
+                    "Deploy requested"
+                } else {
+                    "Deploy the staged release"
+                },
+                api,
                 command,
             }
             .build();

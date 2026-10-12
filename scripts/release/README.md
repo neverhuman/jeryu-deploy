@@ -267,3 +267,23 @@ Every tick, idle ones included, ends with one runner heartbeat (`<host>/auto-sta
 `automation`, no `pr`), so `/runners` shows the timer alive and whether it last `staged` a commit,
 is `waiting` for main's gate, or `failed`. Best-effort like the events; `JERYU_AUTO_STAGE_BEAT=0`
 turns it off.
+
+## Deploying from the forge (release actions)
+
+`release-action.sh` is the release host's side of the attention inbox's **Deploy** and **Run
+auto-pin now** buttons, and also the one-line way to run those steps by hand from any directory:
+
+```sh
+~/.local/share/jeryu-release-actions/release-action.sh deploy <release> [--dry-run]
+~/.local/share/jeryu-release-actions/release-action.sh auto-pin
+```
+
+It fills unset settings from `~/.config/jeryu/release.env` itself, takes `deploy-release.sh` from
+main (keeping its own copy of the history for the downgrade check), and waits for auto-stage's lock,
+so no shell needs `cd`, `set -a; . release.env` or a check that auto-stage is idle.
+Install it with `scripts/release/install-release-actions.sh`: that also enables
+`jeryu-release-actions.timer`, which every 30 seconds sends a heartbeat (`<host>/release-actions`)
+and runs one step a deployer asked for. The forge offers the buttons only while that heartbeat is
+fresh, and auto-stage names the installed script in its "deploy with" line once it exists. The
+forge never sends a command, only one of three named steps, which this script checks again. How the
+asks work is in [`docs/release-actions.md`](../../docs/release-actions.md).

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the release steps a deployer asked for on the forge (deploy, auto-pin)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# install-release-actions.sh points this at an installed copy of release-action.sh, which reads
+# ~/.config/jeryu/release.env itself.
+ExecStart=%h/.local/share/jeryu-release-actions/release-action.sh poll
+# A deploy waits for auto-stage (up to 45 min) and then switches the forge.
+TimeoutStartSec=75min
