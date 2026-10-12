@@ -371,7 +371,7 @@ impl WebState {
             auth_required: false,
             trust_local_dev: true,
             secure_cookies: false,
-            mcp_personal_token_peers: auth::mcp_personal_token_peers_from_env(),
+            mcp_personal_token_peers: Vec::new(),
             auth_rate_limits: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -383,7 +383,6 @@ impl WebState {
         self
     }
 
-    #[cfg(test)]
     fn with_mcp_personal_token_peers(mut self, peers: Vec<std::net::IpAddr>) -> Self {
         self.mcp_personal_token_peers = peers;
         self
@@ -668,7 +667,8 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
         config.auth_required,
         config.trust_local_dev,
         config.secure_cookies,
-    );
+    )
+    .with_mcp_personal_token_peers(auth::mcp_personal_token_peers_from_env());
     bootstrap_public_accounts(&state, &config.data_dir)?;
     bot_token::install_signing_key(&config.data_dir)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;

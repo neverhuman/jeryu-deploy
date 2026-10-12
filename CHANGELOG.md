@@ -12,7 +12,9 @@
   default; no request header is trusted), so an edge can expose it.
   Local-dev trust is withheld from requests carrying a forwarding header, and
   routes that answer with a once-shown secret (bot enrollment, key rotation,
-  agent tokens, token exchange) are never kept by the idempotency store. `/mcp/bot`, the token exchange
+  agent tokens, token exchange and refresh) keep only a placeholder in the
+  idempotency store: a retry with the same key answers 409
+  `idempotent_secret_withheld` and does not run the write twice. `/mcp/bot`, the token exchange
   and the setup-script proxy keep working for existing bot hosts.
 - Design for Flow (`docs/flow.md`, ADR 0004): the delivery line as stations,
   with WIP, queue and process time, rework loops, holds, the bottleneck and the

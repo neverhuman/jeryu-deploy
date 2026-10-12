@@ -255,6 +255,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the Idempotency-Key store could not be read",
     ),
     entry(
+        "idempotent_secret_withheld",
+        409,
+        "this request already ran; its once-shown secret is not kept",
+    ),
+    entry(
         "insufficient_scope",
         403,
         "the bot grant does not allow this request",

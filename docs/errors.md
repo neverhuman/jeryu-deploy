@@ -120,6 +120,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `idempotency_key_in_flight` | 409 | a request with this Idempotency-Key is still running |
 | `idempotency_key_reused` | 422 | the Idempotency-Key was already used for a different request |
 | `idempotency_store_failed` | 500 | the Idempotency-Key store could not be read |
+| `idempotent_secret_withheld` | 409 | this request already ran; its once-shown secret is not kept |
 | `insufficient_scope` | 403 | the bot grant does not allow this request |
 | `internal_error` | 500 | the server failed while handling the request |
 | `invalid_branch` | 422 | the branch name is not valid |
@@ -300,7 +301,11 @@ hours answers the kept reply again with `Idempotent-Replayed: true` and does not
 run the write twice. A repeat while the first still runs answers
 `idempotency_key_in_flight` (retry later); the same key on a different request
 answers `idempotency_key_reused` (use a fresh key). 5xx answers are not kept, so
-a retry after a server error runs the write. The keys are kept in
+a retry after a server error runs the write. A write whose answer holds a
+once-shown secret (bot enrollment, key rotation, agent tokens, token exchange
+and refresh) keeps only a placeholder: a repeat answers 409
+`idempotent_secret_withheld` and still does not run the write twice, and the
+secret never reaches the store. The keys are kept in
 `<data_dir>/shift.sqlite`, so a retry that arrives after a restart or a deploy
 still replays the first answer; when that store cannot be read the write is
 refused with `idempotency_store_failed` rather than run a second time. `PUT`,

@@ -868,8 +868,9 @@ pub(super) async fn gate(
         return api_error(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
-            "MCP needs a scoped agent token (POST /api/v1/bots/{id}/tokens), not a \
-             personal access token",
+            "MCP needs a scoped agent token (POST /api/v1/bots/{id}/tokens); a personal \
+             access token is accepted only from a peer listed in \
+             JERYU_MCP_PERSONAL_TOKEN_PEERS",
         );
     }
     if request.uri().path() == "/api/v1/bot/whoami" && auth.bot.is_none() {

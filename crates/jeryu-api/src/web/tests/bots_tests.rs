@@ -1264,6 +1264,20 @@ async fn agent_tokens_act_as_the_bot_on_rest_and_one_mcp() {
         admin.is_empty(),
         "admin tools offered to an agent token: {admin:?}"
     );
+    // Named too, so a tool reclassified by mistake still fails here.
+    for admin_tool in [
+        "jeryu.agent_work.start",
+        "jeryu.agent_work.control",
+        "jeryu.tool_finder.scan",
+        "jeryu.control_plane.status",
+        "jeryu.get_system_snapshot",
+        "jeryu.runner_fabric.status",
+    ] {
+        assert!(
+            !names.contains(&admin_tool),
+            "{admin_tool} offered to an agent token"
+        );
+    }
 
     // A standard client sends no routing headers and an older protocol
     // version: the one endpoint still answers, offering its own version.
@@ -1427,9 +1441,10 @@ async fn token_routes_answer_only_the_owner_and_keep_no_secret() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
     }
 
-    // The same Idempotency-Key twice issues two tokens: the answer, which holds
-    // a secret, is never kept and replayed.
-    let mut issued = Vec::new();
+    // The same Idempotency-Key twice runs the write once. The first answer holds
+    // the token; the kept answer is a placeholder, so the secret is never stored
+    // and a retry gets 409 instead of a second token.
+    let mut answers = Vec::new();
     for _ in 0..2 {
         let response = router
             .clone()
@@ -1446,14 +1461,29 @@ async fn token_routes_answer_only_the_owner_and_keep_no_secret() {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
+        let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        issued.push(body["token"].as_str().unwrap().to_string());
+        answers.push((status, String::from_utf8_lossy(&bytes).to_string()));
     }
-    assert_ne!(issued[0], issued[1]);
+    assert_eq!(answers[0].0, StatusCode::CREATED, "{}", answers[0].1);
+    let first: Value = serde_json::from_str(&answers[0].1).unwrap();
+    let token = first["token"].as_str().unwrap();
+    assert_eq!(answers[1].0, StatusCode::CONFLICT, "{}", answers[1].1);
+    assert!(answers[1].1.contains("idempotent_secret_withheld"));
+    assert!(!answers[1].1.contains(token));
+    let (status, body, _) = send(
+        &router,
+        HttpMethod::GET,
+        &tokens,
+        Some(&eve),
+        Some("127.0.0.1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["tokens"].as_array().unwrap().len(), 1, "{body}");
 }
 
 #[tokio::test]

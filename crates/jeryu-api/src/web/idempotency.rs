@@ -273,6 +273,7 @@ pub(super) async fn replay(
             "a request with an Idempotency-Key may carry at most 16 MiB",
         );
     };
+    let secret_route = returns_a_secret(parts.uri.path());
     let scope = scope(&parts.headers, &key);
     let fingerprint = fingerprint(&parts.method, &parts.uri, &body);
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -319,15 +320,16 @@ pub(super) async fn replay(
             "response body could not be read",
         );
     };
-    store.keep(
-        &scope,
-        &KeptReply {
+    let kept = if secret_route && parts.status.is_success() {
+        secret_withheld_reply()
+    } else {
+        KeptReply {
             status: parts.status,
             headers: parts.headers.clone(),
             body: bytes.clone(),
-        },
-        chrono::Utc::now().timestamp_millis(),
-    );
+        }
+    };
+    store.keep(&scope, &kept, chrono::Utc::now().timestamp_millis());
     Response::from_parts(parts, Body::from(bytes))
 }
 
@@ -336,13 +338,12 @@ fn applies(method: &Method, path: &str) -> bool {
         && ["/api/v1/", "/repos/", "/api/v3/repos/"]
             .iter()
             .any(|prefix| path.starts_with(prefix))
-        && !returns_a_secret(path)
 }
 
 /// Bot enrollment, key rotation, agent-token issue, token exchange and token
-/// refresh answer with a secret. A kept answer would store that secret in the
-/// idempotency store for a day, so exactly these routes are never kept; the
-/// other bot routes (suspend, revoke, token revoke) keep their replay.
+/// refresh answer with a secret. Their successful answer is not kept as is: a
+/// placeholder without the secret is, so a retry with the same key still does
+/// not run the write twice, and the secret never reaches the store.
 fn returns_a_secret(path: &str) -> bool {
     if matches!(
         path,
@@ -407,6 +408,26 @@ fn fingerprint(method: &Method, uri: &axum::http::Uri, body: &[u8]) -> [u8; 32] 
     digest.finalize().into()
 }
 
+/// What a retry of a secret-returning write gets: the write already ran, and
+/// its secret was shown once and is not kept.
+fn secret_withheld_reply() -> KeptReply {
+    let body = serde_json::json!({
+        "code": "idempotent_secret_withheld",
+        "message": "this request already ran with this Idempotency-Key; its answer held a \
+                    secret that is shown once and is not kept",
+    });
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    KeptReply {
+        status: StatusCode::CONFLICT,
+        headers,
+        body: Bytes::from(body.to_string()),
+    }
+}
+
 fn replayed(reply: KeptReply) -> Response {
     let mut response = Response::new(Body::from(reply.body));
     *response.status_mut() = reply.status;
@@ -431,7 +452,7 @@ mod tests {
             "/api/v1/bot/token/refresh",
         ] {
             assert!(returns_a_secret(path), "{path}");
-            assert!(!applies(&Method::POST, path), "{path}");
+            assert!(applies(&Method::POST, path), "{path}");
         }
         for path in [
             "/api/v1/bots/4f1c/suspend",
