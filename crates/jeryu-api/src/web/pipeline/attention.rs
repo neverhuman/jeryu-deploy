@@ -63,10 +63,11 @@ pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_ite
 pub(crate) use pins::pin_items;
 pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
-/// `v1.1` added `action.api`, `v1.2` the optional `budget` and `v1.3` the
-/// optional `pulls`: every earlier field is unchanged, so a client written
-/// against `v1` reads a `v1.3` answer as it always did.
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.3";
+/// `v1.1` added `action.api`, `v1.2` the optional `budget`, `v1.3` the
+/// optional `pulls` and `v1.4` the optional `assignee`: every earlier field is
+/// unchanged, so a client written against `v1` reads a `v1.4` answer as it
+/// always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.4";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -258,6 +259,10 @@ pub(crate) struct Item {
     /// requests; the key is absent on every other item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pulls: Option<Vec<PullLink>>,
+    /// Set on a todo item when a person has taken the todo on; the key is
+    /// absent on every other item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
     pub href: String,
     pub action: Action,
     pub next_step: String,
@@ -315,6 +320,7 @@ impl Draft<'_> {
             shift: None,
             budget: None,
             pulls: None,
+            assignee: None,
             href: self.href,
             action: match self.command {
                 Some(shell) => Action {

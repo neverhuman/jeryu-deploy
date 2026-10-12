@@ -529,16 +529,6 @@ pub(super) async fn delete_token(
     }
 }
 
-pub(super) async fn admin_users(
-    State(state): State<Arc<WebState>>,
-    Extension(account): Extension<AccountSummary>,
-) -> AxumResponse {
-    if account.role != UserRole::Admin {
-        return forbidden("admin role required");
-    }
-    Json(state.core.list_accounts()).into_response()
-}
-
 /// `POST /api/v1/admin/users` — add a forge identity with its role and hand
 /// back a one-time password, so an operator never edits the account store by
 /// hand with the service stopped.
@@ -1342,7 +1332,8 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
     admin_only_path(path)
         || (path.starts_with("/api/v1/shift/")
             && unsafe_method(method)
-            && !shift_heartbeat_path(path))
+            && !shift_heartbeat_path(path)
+            && !shift_todo_action_path(path))
         || (pipeline_events_path(path) && !unsafe_method(method))
         || (release_board_path(path) && !unsafe_method(method))
         || attention_path(path)
@@ -1373,6 +1364,17 @@ fn activity_reads_path(path: &str) -> bool {
 /// like runner heartbeats. Every other shift write stays admin-only.
 fn shift_heartbeat_path(path: &str) -> bool {
     path == "/api/v1/shift/heartbeat" || path == "/api/v1/shift/heartbeat/"
+}
+
+/// `POST /api/v1/shift/todos/:family/:id/action` is decided in the handler:
+/// any person may claim, assign, unassign or finish a todo they hold, and every
+/// other action stays admin-only (see `shift/assignment.rs`).
+fn shift_todo_action_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/v1/shift/todos/") else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
+    matches!(segments.as_slice(), [family, id, "action"] if !family.is_empty() && !id.is_empty())
 }
 
 /// Reading the pipeline event log is admin-only: events carry todo titles,

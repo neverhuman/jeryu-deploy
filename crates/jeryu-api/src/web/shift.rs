@@ -1,13 +1,16 @@
 //! Shift pages API: todoq family queues, slot heartbeats, and shift branches.
 //!
 //! Routes live under `/api/v1/shift/`. Reads need any logged-in account;
-//! every POST is admin-only (see `auth::admin_only_request`) except
-//! `POST /api/v1/shift/heartbeat`, which the handler opens to the logins named
-//! in `JERYU_SHIFT_REPORTERS` as well, so a worker-pool host reports its slots
-//! without holding an admin token. Queues are read
+//! every POST is admin-only (see `auth::admin_only_request`) except two the
+//! handlers decide: `POST /api/v1/shift/heartbeat`, which is open to the logins
+//! named in `JERYU_SHIFT_REPORTERS` as well, so a worker-pool host reports its
+//! slots without holding an admin token; and the todo action route, where any
+//! person may claim, assign, unassign or finish a todo (see `assignment.rs`)
+//! and every other action stays admin-only. Queues are read
 //! from and written to the hosted `<family>-todo` bare repos directly; see
 //! `queue.rs`. Heartbeat history is kept in `<data_dir>/shift.sqlite`.
 
+mod assignment;
 mod heartbeats;
 pub(crate) mod queue;
 mod shifts;
@@ -16,6 +19,8 @@ mod truth;
 mod types;
 mod visibility;
 
+#[cfg(test)]
+mod assignment_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
@@ -32,10 +37,13 @@ use axum::extract::{Extension, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::{DateTime, Utc};
-use jeryu_core::AccountSummary;
+use jeryu_core::{AccountSummary, UserRole};
 use serde_json::{Value, json};
 
 use super::WebState;
+use super::auth::ANONYMOUS_LOGIN;
+use super::bot_token::BotPrincipal;
+use super::people;
 use super::pipeline::{self, NewEvent};
 use super::strict_query::StrictQuery;
 use super::workcells_support::{TypedError, typed_error};
@@ -567,6 +575,9 @@ pub(crate) fn apply_action(
             todo.lease_until.clear();
             todo.park_until.clear();
             todo.attempts = 0;
+            // Released work goes back to the workers, and todoq never claims a
+            // todo somebody holds.
+            todo.assignee.clear();
             // The note said why the todo stopped, which a released todo is no
             // longer: it is open work again. A release with a note says why it
             // was taken back, and one without leaves no reason at all rather
@@ -676,7 +687,7 @@ pub(crate) fn apply_action(
         other => {
             return Err(format!(
                 "unknown action {other:?}; use release, block, done, close, park, edit, \
-                 priority or mode"
+                 priority, mode, claim, assign or unassign"
             ));
         }
     }
@@ -687,13 +698,31 @@ pub(crate) fn apply_action(
 pub(crate) async fn todo_action(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
+    bot: Option<Extension<BotPrincipal>>,
     AxumPath((family, id)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> AxumResponse {
+    let caller = assignment::Caller {
+        login: &account.login,
+        admin: account.role == UserRole::Admin,
+        person: bot.is_none()
+            && account.login != ANONYMOUS_LOGIN
+            && people::kind_of(&state, &account.login).kind == people::AccountKind::Human,
+    };
     let request: TodoActionRequest = match parse(&body) {
         Ok(r) => r,
         Err(resp) => return *resp,
     };
+    // Refuse what the caller could never do before looking anything up, so an
+    // admin-only action answers 403 whether or not the todo exists.
+    if let Err(denied) = assignment::may_attempt(&request.action, caller) {
+        return shift_error(
+            StatusCode::FORBIDDEN,
+            "todo_action_forbidden",
+            &denied.0,
+            "an administrator can run every todo action",
+        );
+    }
     let queue = match find_queue(&state, &family) {
         Ok(q) => q,
         Err(resp) => return *resp,
@@ -710,6 +739,8 @@ pub(crate) async fn todo_action(
         Invalid(String),
         /// A release of a todo a worker is still running, with no `force`.
         ClaimLive(String),
+        /// The caller may not run this action on this todo.
+        Forbidden(String),
     }
     let now = Utc::now();
     let result = commit_change(
@@ -726,11 +757,25 @@ pub(crate) async fn todo_action(
             // Releasing it would open work that is already being done, so a
             // second worker claims it and two attempts run at once; only an
             // explicit `force` says the admin means to take it back.
-            if request.action == "release" && !request.force && found.todo.lease_live(now) {
+            assignment::authorize(&found.todo, &request.action, caller)
+                .map_err(|denied| Refused::Forbidden(denied.0))?;
+            // Taking on a todo a worker is running would have a person and a
+            // worker on it at once, so it waits for the lease like a release.
+            let takes = matches!(request.action.as_str(), "release" | "claim" | "assign");
+            // Only an administrator may take work back from a live worker.
+            let forced = request.force && caller.admin;
+            if takes && !forced && found.todo.lease_live(now) {
                 return Err(Refused::ClaimLive(found.todo.claim_by.clone()));
             }
             let mut todo = found.todo.clone();
-            apply_action(&mut todo, &request, &family_repos).map_err(Refused::Invalid)?;
+            if assignment::ASSIGNMENT_ACTIONS.contains(&request.action.as_str()) {
+                assignment::apply(&mut todo, &request, caller, |login| {
+                    people::is_assignable_person(&state, login)
+                })
+                .map_err(Refused::Invalid)?;
+            } else {
+                apply_action(&mut todo, &request, &family_repos).map_err(Refused::Invalid)?;
+            }
             Ok((vec![(found.path.clone(), Some(todo.dump()))], todo))
         },
     );
@@ -751,6 +796,7 @@ pub(crate) async fn todo_action(
                         "action": request.action,
                         "value": request.value,
                         "status": todo.status,
+                        "assignee": todo.assignee,
                     })),
                     ..NewEvent::forge(
                         "todo.action",
@@ -767,6 +813,12 @@ pub(crate) async fn todo_action(
             "list todos with GET /api/v1/shift/todos?family=",
         ),
         Err(WriteError::Rejected(Refused::Invalid(reason))) => bad_request(&reason),
+        Err(WriteError::Rejected(Refused::Forbidden(reason))) => shift_error(
+            StatusCode::FORBIDDEN,
+            "todo_action_forbidden",
+            &reason,
+            "an administrator can run every todo action",
+        ),
         Err(WriteError::Rejected(Refused::ClaimLive(claim_by))) => shift_error(
             StatusCode::CONFLICT,
             "claim_live",
@@ -778,7 +830,7 @@ pub(crate) async fn todo_action(
                     claim_by.as_str()
                 }
             ),
-            "wait for the lease to run out, or release with {\"force\": true}",
+            "wait for the lease to run out, or repeat the action with {\"force\": true}",
         ),
         Err(WriteError::Git(reason)) => git_failure(&reason),
     }

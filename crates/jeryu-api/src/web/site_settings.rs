@@ -70,6 +70,32 @@ impl SiteSettingsStore {
         .map_err(|err| err.to_string())
     }
 
+    /// Every stored key that starts with `prefix`, with its setting, in key
+    /// order. Used by per-account settings (`account_kind:<login>`).
+    pub(crate) fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, StoredSetting)>, String> {
+        let conn = self.inner.lock().expect("site settings mutex poisoned");
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, value, updated_ms, updated_by FROM site_settings
+                 WHERE substr(key, 1, length(?1)) = ?1 ORDER BY key",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![prefix], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    StoredSetting {
+                        value: row.get(1)?,
+                        updated_ms: row.get(2)?,
+                        updated_by: row.get(3)?,
+                    },
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())
+    }
+
     /// Store `value` under `key`, or remove the key when `value` is `None`.
     pub(crate) fn set(
         &self,

@@ -259,7 +259,7 @@ for 10 seconds), never from old events, so an item disappears when its cause
 is fixed.
 
 ```json
-{"schema_version": "jeryu.attention/v1.3", "generated_at": "...",
+{"schema_version": "jeryu.attention/v1.4", "generated_at": "...",
  "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1},
  "total": 4, "page": {"limit": 100, "page": 1, "total": 4, "has_more": false}}
 ```
@@ -333,9 +333,11 @@ that wants linear history, deciding a title.
 | `queue_failed` | the same: the entry is retried by queueing it again once the reason is fixed |
 | `queue_refused` (a code with no step of its own) | the same |
 
-The schema version says `v1.3` because `action.api` (`v1.1`), `budget`
-(`v1.2`) and `pulls` (`v1.3`) are additive: every field of `v1` is unchanged,
-so a client written against `v1` reads a `v1.3` answer as it always did.
+The schema version says `v1.4` because `action.api` (`v1.1`), `budget`
+(`v1.2`), `pulls` (`v1.3`) and `assignee` (`v1.4`) are additive: every field
+of `v1` is unchanged, so a client written against `v1` reads a `v1.4` answer
+as it always did. `assignee` is set on a todo item when a person has taken the
+todo on (see "Taking a todo on" below).
 `pulls` is set on `pr_branch_campaign` only, where one row stands for several
 pull requests, and each entry is `{"repo": "owner/name", "number": 7, "href":
 "..."}`.
@@ -1001,3 +1003,31 @@ may be older than the client.
   prints "already live" and exits 0, recording no deployment (`--json` answers
   `already_live: true` with null ids). `switch.sh` is the same no-op when it is
   run on its own.
+
+## Taking a todo on
+
+Any item about a todo can be picked up by a person, not only by the workers.
+A todo carries an optional `assignee` (a forge login, front-matter key
+`assignee`), and todoq never claims a todo that has one. Through
+`POST /api/v1/shift/todos/<family>/<id>/action`:
+
+| Action | Who | Effect |
+|---|---|---|
+| `{"action": "claim"}` | any person, when nobody has the todo | the caller becomes the assignee |
+| `{"action": "assign", "value": "<login>"}` | any person when nobody has it, the assignee, or an admin | hands it to another active person |
+| `{"action": "unassign"}` | the assignee or an admin | nobody has it again |
+| `{"action": "done"}` | the assignee or an admin | finishes it |
+| `{"action": "release"}` | admin | back to the workers; clears the assignee |
+
+Every other action stays admin-only and answers `403 todo_action_forbidden` to
+anyone else. A todo a worker is running (live lease) answers `409 claim_live`
+to `claim` and `assign` as it does to `release`; only an admin's
+`{"force": true}` overrides it. Bots and accounts marked as automation never
+take a todo on.
+
+Who counts as a person: every account, unless an admin marks it `service`
+(`PUT /api/v1/admin/users/<login>/kind` with `{"kind": "service"}`) or the
+instance configuration names it as automation (`JERYU_SHIFT_PR_AUTHOR`,
+`JERYU_SHIFT_REPORTERS`). `GET /api/v1/admin/users` reports each account's
+`kind` and `kind_source` (`set`, `config` or `default`); `GET /api/v1/people`
+lists the active people for an "assign to" picker.

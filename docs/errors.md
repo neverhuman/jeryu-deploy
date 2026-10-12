@@ -68,6 +68,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 
 | code | status | summary |
 | --- | --- | --- |
+| `account_not_found` | 404 | no forge account has that login |
 | `agent_run_control_closed` | 409 | the agent run no longer accepts control messages |
 | `agent_run_control_not_held` | 409 | another client holds the control lease for this terminal |
 | `agent_run_control_unavailable` | 409 | the agent run has no live control channel |
@@ -200,6 +201,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `shift_todo_not_found` | 404 | the shift todo was not found |
 | `storage_failed` | 500 | the storage backend failed |
 | `task_not_granted` | 403 | the bot grant does not allow this task |
+| `todo_action_forbidden` | 403 | the caller may not run that action on the todo |
 | `tool_build_feedback_reason_required` | 422 | tool-build feedback needs a reason |
 | `tool_build_invalid_request` | 422 | the tool-build request failed validation |
 | `tool_build_store_unavailable` | 424 | the tool-build codegraph store is unavailable |

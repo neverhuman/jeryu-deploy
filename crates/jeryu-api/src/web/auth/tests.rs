@@ -231,6 +231,24 @@ fn admin_allow_list_matches_the_route_table() {
         "/api/v1/events/histogramx"
     ));
     assert!(admin_only_request(&Method::POST, "/api/v1/shift/todos"));
+    // The todo action route is decided in the handler (people may claim);
+    // look-alike paths stay admin-only.
+    assert!(!admin_only_request(
+        &Method::POST,
+        "/api/v1/shift/todos/acme/20260101-000000-aaaaaa/action"
+    ));
+    assert!(admin_only_request(
+        &Method::POST,
+        "/api/v1/shift/todos/acme/action"
+    ));
+    assert!(admin_only_request(
+        &Method::POST,
+        "/api/v1/shift/todos/acme/20260101-000000-aaaaaa/action/x"
+    ));
+    assert!(admin_only_request(
+        &Method::PUT,
+        "/api/v1/admin/users/ada/kind"
+    ));
     assert!(admin_only_request(&Method::GET, "/api/v1/events"));
     assert!(!admin_only_request(&Method::POST, "/api/v1/events"));
     assert!(admin_only_request(&Method::GET, "/api/v1/attention"));

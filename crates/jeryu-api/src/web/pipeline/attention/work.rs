@@ -279,6 +279,7 @@ pub(crate) fn todo_items(
             };
             item.family = Some(family.to_string());
             item.todo_id = Some(todo.id.clone());
+            item.assignee = todo.assignee.clone();
             item.shift = Some(todo.shift.clone()).filter(|shift| !shift.is_empty());
             items.push(item);
         }

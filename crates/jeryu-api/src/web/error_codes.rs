@@ -22,6 +22,7 @@ const fn entry(code: &'static str, status: u16, summary: &'static str) -> ErrorC
 
 /// Every code, sorted by name.
 pub(crate) const ERROR_CODES: &[ErrorCode] = &[
+    entry("account_not_found", 404, "no forge account has that login"),
     entry(
         "agent_run_control_closed",
         409,
@@ -601,6 +602,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "task_not_granted",
         403,
         "the bot grant does not allow this task",
+    ),
+    entry(
+        "todo_action_forbidden",
+        403,
+        "the caller may not run that action on the todo",
     ),
     entry(
         "tool_build_feedback_reason_required",

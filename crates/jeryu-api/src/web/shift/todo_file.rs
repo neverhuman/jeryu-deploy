@@ -34,6 +34,7 @@ const ORDER: &[&str] = &[
     "merged",
     "note",
     "park_until",
+    "assignee",
     "triaged",
     "worked_by",
 ];
@@ -64,6 +65,10 @@ pub(crate) struct TodoFile {
     /// with no date. Written only when it is set, so a file todoq wrote
     /// without the key round-trips byte-for-byte.
     pub park_until: String,
+    /// The person who has taken the todo on (a forge login), empty when
+    /// nobody has. todoq never claims a todo with an assignee. Written only
+    /// when set, like `park_until`, so older files round-trip unchanged.
+    pub assignee: String,
     pub triaged: bool,
     /// Attempt records kept as raw TOML so their key order round-trips.
     pub worked_by: Vec<Value>,
@@ -94,6 +99,7 @@ impl TodoFile {
             merged: false,
             note: String::new(),
             park_until: String::new(),
+            assignee: String::new(),
             triaged: true,
             worked_by: Vec::new(),
             extra: Vec::new(),
@@ -178,6 +184,7 @@ impl TodoFile {
         todo.merged = take("merged").and_then(Value::as_bool).unwrap_or(false);
         todo.note = text_of("note");
         todo.park_until = text_of("park_until");
+        todo.assignee = text_of("assignee");
         todo.triaged = take("triaged").and_then(Value::as_bool).unwrap_or(true);
         todo.worked_by = take("worked_by")
             .and_then(Value::as_array)
@@ -252,6 +259,9 @@ impl TodoFile {
         if !self.park_until.is_empty() {
             out.push_str(&format!("park_until = {}\n", quote(&self.park_until)));
         }
+        if !self.assignee.is_empty() {
+            out.push_str(&format!("assignee = {}\n", quote(&self.assignee)));
+        }
         for (key, value) in &self.extra {
             out.push_str(&format!("{key} = {}\n", render(value)));
         }
@@ -317,6 +327,7 @@ impl TodoFile {
                 .and_then(|(_, value)| number(value)),
             note: self.note.clone(),
             park_until: self.park_until.clone(),
+            assignee: (!self.assignee.is_empty()).then(|| self.assignee.clone()),
             block_kind: BlockKind::derive(
                 self.status,
                 &self.title,

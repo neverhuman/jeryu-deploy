@@ -25,6 +25,7 @@ mod merge_queue;
 pub(crate) mod mirror_reconcile;
 mod operator_resources;
 mod paging;
+mod people;
 pub(crate) use merge_queue::{gate_verdict, is_queue_owned_ref, rebase_onto};
 mod mcp_backend;
 mod permissions;
@@ -883,7 +884,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         (
             "/api/v1/admin/users",
-            get(auth::admin_users).post(auth::admin_create_user),
+            get(people::admin_users).post(auth::admin_create_user),
         ),
         ("/api/v1/admin/waitlist", get(auth::admin_waitlist)),
         (
@@ -894,6 +895,11 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/site-settings",
             get(site_settings::get_site_settings),
         ),
+        (
+            "/api/v1/admin/users/:login/kind",
+            axum::routing::put(people::admin_set_kind),
+        ),
+        ("/api/v1/people", get(people::people)),
         (
             "/api/v1/admin/users/:login/reset-password",
             post(auth::admin_reset_password),

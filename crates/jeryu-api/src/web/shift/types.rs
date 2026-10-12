@@ -96,6 +96,8 @@ pub(crate) struct ShiftTodo {
     /// When a parked todo comes back by itself, as the file spells it; empty
     /// when it is parked with no date or not parked at all.
     pub park_until: String,
+    /// The person who has taken the todo on; `null` when nobody has.
+    pub assignee: Option<String>,
     /// What kind of help a `blocked` or `handoff` todo needs, read off its
     /// note and its newest attempt's outcome (see [`BlockKind::derive`]).
     /// `null` on every other status.
