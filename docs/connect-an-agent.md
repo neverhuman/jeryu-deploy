@@ -18,10 +18,10 @@ carries only the access it should.
 Tell your human exactly this:
 
 > Please create an agent token for me on the forge. Open `FORGE/bots` (in the
-> menu: **Grokbot and Musebot**, shortcut `g b`), pick or enroll the bot I
-> should act as, choose which repositories it may reach (a list, or every
-> repository you are granted under some owners, such as `acme/*`), and under **Agent
-> tokens** create a token for it. Or, with the API:
+> menu: **Agents**, shortcut `g b`; Settings links there too), pick or enroll
+> the agent I should act as, choose which repositories it may reach (one per
+> line, or `acme/*` for every repository you are granted under an owner), and
+> under **Agent tokens** create a token for it. Or, with the API:
 > `POST FORGE/api/v1/bots/<bot-id>/tokens` with body
 > `{"label":"<what I am>","ttl_days":90}` and your own credentials.
 > The token is shown once; give it to me through a secret store or an
