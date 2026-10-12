@@ -821,3 +821,70 @@ async fn the_queue_says_on_the_timeline_that_it_skipped_a_draft_once_per_head() 
     assert_eq!(enqueue().await.status(), StatusCode::CONFLICT);
     assert_eq!(skipped(&state).len(), 1);
 }
+
+#[tokio::test]
+async fn the_repository_listing_says_when_a_gate_started_on_a_building_entry() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    fx.advance_main("other.txt", "other\n");
+    let (_, body) = fx.enqueue().await;
+    let queue_sha = body["queue_sha"].as_str().unwrap().to_string();
+    let listed = || async {
+        let response = merge_queue::list_repo(
+            State(fx.state.clone()),
+            AxumPath(fx.repo_id.clone()),
+            strict_query::StrictQuery(serde_json::from_value(json!({})).unwrap()),
+        )
+        .await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        body["entries"][0].clone()
+    };
+
+    // Queued, and no gate has reported on the replay: waiting for a runner.
+    let entry = listed().await;
+    assert_eq!(entry["state"], "building", "{entry}");
+    assert!(entry["gate_started_at"].is_null(), "{entry}");
+    assert!(entry.as_object().unwrap().contains_key("gate_started_at"));
+
+    // The gate posts its pending status as it starts.
+    fx.status(&queue_sha, CommitStatusState::Pending);
+    let started = listed().await["gate_started_at"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let posted = fx
+        .state
+        .core
+        .combined_status("alice", "jeryu", &queue_sha)
+        .unwrap()
+        .statuses[0]
+        .created_at;
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339(&started).unwrap(),
+        posted
+    );
+    // A later report never moves the start.
+    fx.status(&queue_sha, CommitStatusState::Success);
+    merge_queue::tick(&fx.state);
+    let entry = listed().await;
+    assert_eq!(entry["state"], "landed", "{entry}");
+    assert!(
+        !entry.as_object().unwrap().contains_key("gate_started_at"),
+        "only a building entry carries it: {entry}"
+    );
+}
+
+#[test]
+fn a_gate_start_counts_only_the_required_contexts() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    fx.status(&fx.head, CommitStatusState::Pending);
+    let core = &fx.state.core;
+    let required = vec!["ci/fast".to_string()];
+    assert!(merge_queue::gate_started_at(core, "alice", "jeryu", &fx.head, &required).is_some());
+    let other = vec!["other/required".to_string()];
+    assert!(merge_queue::gate_started_at(core, "alice", "jeryu", &fx.head, &other).is_none());
+    // A base that requires nothing counts any report.
+    assert!(merge_queue::gate_started_at(core, "alice", "jeryu", &fx.head, &[]).is_some());
+}

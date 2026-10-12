@@ -603,7 +603,69 @@ pub(super) async fn list_repo(
     let entries = state
         .merge_queue
         .entries(&state, |entry| entry.repo == full);
-    queue_page(page, entries)
+    let (entries, info) = page.apply(entries);
+    let entries: Vec<Value> = entries
+        .into_iter()
+        .map(|entry| with_gate_started_at(&state, &repo.owner, &repo.name, entry))
+        .collect();
+    Json(json!({ "entries": entries, "total": info.total, "page": info })).into_response()
+}
+
+/// A listed entry, and for a building one `gate_started_at`: when a gate first
+/// reported on its queue commit, or null while no gate runner has taken it.
+/// Without it a reader cannot tell an entry waiting for a free runner from one
+/// being gated. Only this per-repository listing carries it: the runner polls
+/// `list_all` on every tick, which stays an index read.
+fn with_gate_started_at(state: &WebState, owner: &str, repo: &str, entry: QueueEntry) -> Value {
+    let building = entry.state == QueueState::Building;
+    let started = building
+        .then(|| {
+            let pr = state
+                .core
+                .get_pull_request(owner, repo, entry.number)
+                .ok()?;
+            let required = super::pulls::required_context_names(state, &pr);
+            gate_started_at(&state.core, owner, repo, &entry.queue_sha, &required)
+        })
+        .flatten();
+    let mut value = serde_json::to_value(&entry).unwrap_or(Value::Null);
+    if building && let Some(object) = value.as_object_mut() {
+        object.insert(
+            "gate_started_at".to_string(),
+            started.map_or(Value::Null, |at| Value::String(at.to_rfc3339())),
+        );
+    }
+    value
+}
+
+/// The earliest commit status or check run on `sha` among `required` (among
+/// every context when the base requires none). A gate posts its pending status
+/// as it starts, and the queue commit is the forge's own, so nothing else has
+/// reported on it before a gate.
+pub(crate) fn gate_started_at(
+    core: &jeryu_core::ForgeCore,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    required: &[String],
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let counts = |name: &str| required.is_empty() || required.iter().any(|r| r == name);
+    let statuses = core.combined_status(owner, repo, sha).ok()?.statuses;
+    let checks = core
+        .list_check_runs(owner, repo, Some(sha))
+        .ok()?
+        .check_runs;
+    statuses
+        .iter()
+        .filter(|status| counts(&status.context))
+        .map(|status| status.created_at)
+        .chain(
+            checks
+                .iter()
+                .filter(|check| counts(&check.name))
+                .map(|check| check.started_at),
+        )
+        .min()
 }
 
 /// One page of queue entries, carrying the `total` and `page` object every
