@@ -487,6 +487,84 @@ fn helper_branches_normalize_tty_time_and_check_states() {
 }
 
 #[test]
+fn a_head_summary_counts_only_the_newest_run_of_each_check() {
+    let start = Utc::now() - chrono::Duration::minutes(10);
+    let run = |id: u128, name: &str, minute: i64, status: CheckRunStatus, conclusion| {
+        let at = start + chrono::Duration::minutes(minute);
+        CheckRun {
+            id: Uuid::from_u128(id),
+            owner: "acme".to_string(),
+            repo: "widgets".to_string(),
+            name: name.to_string(),
+            head_sha: "head".to_string(),
+            completed_at: (status == CheckRunStatus::Completed).then_some(at),
+            status,
+            conclusion,
+            started_at: at,
+            details_url: None,
+            output: None,
+        }
+    };
+    let checks = vec![
+        // The pending proof posted at push time, then its verdict.
+        run(1, "proof", 0, CheckRunStatus::InProgress, None),
+        run(
+            2,
+            "proof",
+            3,
+            CheckRunStatus::Completed,
+            Some(CheckConclusion::Success),
+        ),
+        // A gate that failed, then went green on retry.
+        run(
+            3,
+            "required",
+            1,
+            CheckRunStatus::Completed,
+            Some(CheckConclusion::Failure),
+        ),
+        run(
+            4,
+            "required",
+            5,
+            CheckRunStatus::Completed,
+            Some(CheckConclusion::Success),
+        ),
+        // A gate that passed, then failed on a later run.
+        run(
+            5,
+            "lint",
+            1,
+            CheckRunStatus::Completed,
+            Some(CheckConclusion::Success),
+        ),
+        run(
+            6,
+            "lint",
+            4,
+            CheckRunStatus::Completed,
+            Some(CheckConclusion::Failure),
+        ),
+    ];
+    let summary = summarize_checks(&checks);
+    assert_eq!(summary.total, 3);
+    assert_eq!(summary.running, 0);
+    assert_eq!(summary.queued, 0);
+    assert_eq!(summary.successful, 2);
+    assert_eq!(summary.failing, 1);
+    assert!(!summary.missing);
+
+    let rerun = run(7, "proof", 2, CheckRunStatus::InProgress, None);
+    let summary = summarize_checks(&[checks[1].clone(), rerun]);
+    assert_eq!(
+        summary.running, 0,
+        "a verdict outranks an earlier pending row"
+    );
+    let summary = summarize_checks(&[]);
+    assert!(summary.missing);
+}
+
+#[test]
 fn tui_read_model_pools_match_the_live_runner_fabric() {
     let state = seeded_state();
     let now = Utc::now();

@@ -4,7 +4,31 @@ use jeryu_core::{CheckConclusion, CheckRun, CheckRunStatus, check_conclusion_wir
 
 use super::*;
 
+/// The run that speaks for each check name on a head: the newest one, picked
+/// the way branch protection picks it (`completed_at`, else `started_at`).
+///
+/// Core's check list is append-only, so a head gathers one row per attempt: a
+/// pending proof check and then its verdict, or a failed gate and then
+/// its green retry. Counting every row would show the head running and failing
+/// forever after it went green.
+pub(crate) fn latest_check_per_name(checks: &[CheckRun]) -> Vec<CheckRun> {
+    let mut latest: BTreeMap<&str, &CheckRun> = BTreeMap::new();
+    for check in checks {
+        let key = check.completed_at.unwrap_or(check.started_at);
+        latest
+            .entry(check.name.as_str())
+            .and_modify(|current| {
+                if key >= current.completed_at.unwrap_or(current.started_at) {
+                    *current = check;
+                }
+            })
+            .or_insert(check);
+    }
+    latest.into_values().cloned().collect()
+}
+
 pub(crate) fn summarize_checks(checks: &[CheckRun]) -> CheckSummary {
+    let checks = latest_check_per_name(checks);
     let queued = checks
         .iter()
         .filter(|check| check.status == CheckRunStatus::Queued)
