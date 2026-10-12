@@ -121,22 +121,27 @@ pub(crate) async fn flow(
         }
     };
     let now = Utc::now().timestamp_millis();
+    let since_ms = report::window_start(now, days);
     let read_family = family.clone();
     let worker_state = state.clone();
     let read = tokio::task::spawn_blocking(move || {
-        worker_state.events.flow_visits(read_family.as_deref())
+        let reached = worker_state.events.flow_reached(read_family.as_deref())?;
+        let visits = worker_state
+            .events
+            .flow_visits(read_family.as_deref(), since_ms)?;
+        Ok::<_, String>((visits, reached))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok(visits) => {
+        Ok((visits, reached)) => {
             let request = Request {
                 family,
                 days,
                 now_ms: now,
             };
-            Json(report::build(&request, &visits)).into_response()
+            Json(report::build(&request, &visits, &reached)).into_response()
         }
         Err(reason) => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,

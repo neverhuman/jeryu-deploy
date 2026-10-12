@@ -24,7 +24,7 @@ mechanism = "replay bounded by pipeline_events 30-day retention"
 value = "one pass over at most 30 days of events"
 
 [rollback]
-plan = "stop the server, DROP TABLE flow_ledger, DROP TABLE flow_ledger_replay and delete version 11 from shift_schema_migrations"
+plan = "stop the server, DROP TABLE flow_ledger, DROP TABLE flow_ledger_events, DROP TABLE flow_ledger_replay and delete version 11 from shift_schema_migrations"
 backup = "sqlite3 shift.sqlite '.backup flow-ledger.sqlite' before rollback; visits older than the log's 30-day retention exist nowhere else"
 
 [verify]

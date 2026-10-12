@@ -115,9 +115,15 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 Every stored event is also projected into `flow_ledger` in the same
 transaction: one row per lot per station visit, which is what
 `GET /api/v1/flow` reports from. Like the cost ledger it is never pruned, and
-like it a repeated `event_id` writes nothing. The stations, the event kinds
-that move a lot between them and the replay that rebuilds the table are
-`docs/flow.md`; migration `0011_flow_ledger.sql`.
+like it a repeated `event_id` writes nothing: `flow_ledger_events` keeps every
+`(reporter, event_id)` the projection folded in, so an event re-posted after
+the log pruned it is stored in the log again but moves no lot a second time.
+A shift pull request moves only the lots of its own repository (and family)
+on that shift branch. Each in-flight lot's ETA sums the stations ahead that
+have an estimate; the ones that do not are listed in `eta_unknown_stations`
+and `eta_partial` is `true`. The stations, the event kinds that move a lot
+between them and the replay that rebuilds the table are `docs/flow.md`;
+migration `0011_flow_ledger.sql`.
 
 ### Cost ledger
 

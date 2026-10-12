@@ -87,9 +87,17 @@ Each in-flight lot gets an estimate: the remaining queue and process p50 of the
 stations still ahead of it (with the p90 sum as the pessimistic bound), plus,
 for its current station, the station's p50 minus the time it has already spent
 there (never below zero). A lot on hold has no ETA: its next step is a person.
-A station with no estimate makes the whole ETA unknown rather than optimistic.
-The in-flight page and the pull request page show the ETA and name the slowest
-remaining station. This replaces a separate per-stage estimator.
+
+A station ahead with no estimate (fewer than 3 samples, or never reached) is
+never guessed at and never silently counted as zero. It is named in
+`eta_unknown_stations` (route order, the current station included) and left
+out of the sums; `eta_s` is then the sum over the stations that do have an
+estimate and `eta_partial` is `true`: the ETA is a lower bound that says which
+stations it does not cover. With no estimate anywhere ahead, `eta_s` is null
+and every station ahead is listed. `slowest_ahead` is the slowest of the
+stations with an estimate. The in-flight page and the pull request page show
+the ETA, mark a partial one with the stations it leaves out, and name the
+slowest remaining station. This replaces a separate per-stage estimator.
 
 ## The flow ledger
 
@@ -108,15 +116,36 @@ flow_ledger(lot_id, family, repo, pr, todo_id, shift, station, entered_ms,
   `rework_to` names the station a rework visit went back to.
 - `shift` is what joins a shift pull request to the lots it carries:
   `pr.opened` names no todo, so the projection moves every lot still at Shift
-  on that branch. A pull request lot (`<owner>/<repo>#<pr>`) is rewritten onto
+  on that branch **in the pull request's repository** (and family, when the
+  event names one). Shift branch names (`dayshift/<date>`) are shared by
+  every repository and family, so the branch alone is never the join: a lot
+  that recorded no repository is not swept, and a pull request never stamps
+  its repository or number onto a visit recorded against another repository.
+  Later events on that pull request (review, gate, merge) move every lot it
+  carries.
+  A pull request lot (`<owner>/<repo>#<pr>`) is rewritten onto
   the todo's lot as soon as one event names both.
 - One open row per lot per station visit; rework opens a new visit, so a lot
   that went round the gate twice has two Gate rows and the loop is countable.
 - The projection is a pure function of the event sequence. Migration
   `0011_flow_ledger.sql` creates the table and the first start after it replays
   every event the log still holds, recording the replay in `flow_ledger_replay`
-  so it happens once; a projection bug is fixed by truncating both tables and
-  restarting, never by editing rows. Implementation:
+  so it happens once; a projection bug is fixed by truncating `flow_ledger`,
+  `flow_ledger_events` and `flow_ledger_replay` and restarting, never by
+  editing rows.
+- The projection counts an event once per `(reporter, event_id)`, for good:
+  `flow_ledger_events` records every event id it folded in and is never
+  pruned, so an event re-posted after the log's 30-day prune (which makes the
+  log accept it again) moves nothing a second time. An event without an
+  `event_id` cannot be recognised and is always projected.
+- A request reads only the visits of lots still on the line or that left a
+  station inside the requested window (`flow_ledger_left` and
+  `flow_ledger_lot` indexes), for the requested family; the read is the only
+  part done under the event store's lock. A lot that finished before the
+  window is never read, so the cost of a request follows the window, not the
+  age of the ledger. Whether a station was ever reached (`no_events` versus a
+  window with no samples) is one indexed probe per station
+  (`flow_ledger_station_family`), not a read of its history. Implementation:
   `crates/jeryu-api/src/web/flow/project.rs` (the fold),
   `flow/report.rs` (the arithmetic), `flow/stations.rs` (the route).
 
@@ -147,7 +176,9 @@ spellings disagreeing, or a key the route does not read is
   "line": { "cycle_s": { "p50": 0, "p90": 0 }, "x_factor": { "p50": 0, "p90": 0 },
             "wip": 0, "finished": 0 },
   "lots": [ { "lot_id": "...", "station": "gate", "state": "waiting",
-              "since": "...", "eta_s": { "p50": 0, "p90": 0 }, "slowest_ahead": "deploy",
+              "since": "...", "eta_s": { "p50": 0, "p90": 0 },
+              "eta_partial": true, "eta_unknown_stations": [ "pin" ],
+              "slowest_ahead": "deploy",
               "href": "/work/<id>" } ]   // the oldest 20 per station
 }
 ```

@@ -11,6 +11,7 @@
 //! also uses; sqlite serialises the two writers and `busy_timeout` covers the
 //! overlap.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -181,6 +182,8 @@ impl EventStore {
             &tx,
             &project::EventView {
                 seq,
+                reporter,
+                event_id: event.event_id.as_deref(),
                 ts_ms: now_ms,
                 kind: &event.kind,
                 outcome: event.outcome.as_deref(),
@@ -350,37 +353,69 @@ impl EventStore {
             .map_err(|err| err.to_string())
     }
 
-    /// Every station visit the flow ledger holds for `family` (every family
-    /// when it is `None`), oldest first. The ledger is never pruned, so this
-    /// reads visits older than the event log keeps.
-    pub(crate) fn flow_visits(&self, family: Option<&str>) -> Result<Vec<Visit>, String> {
-        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
-        let mut stmt = inner
-            .conn
-            .prepare_cached(
-                "SELECT lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to
-                   FROM flow_ledger
-                  WHERE ?1 IS NULL OR family = ?1
-                  ORDER BY seq",
-            )
-            .map_err(|err| err.to_string())?;
-        let rows = stmt
-            .query_map(params![family], |row| {
-                Ok((
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, String>(5)?,
-                ))
-            })
-            .map_err(|err| err.to_string())?;
-        let mut visits = Vec::new();
-        for row in rows {
-            let (station, rework_to, lot_id, entered_ms, started_ms, left_ms, direction) =
-                row.map_err(|err| err.to_string())?;
+    /// The station visits `GET /api/v1/flow` needs for `family` (every family
+    /// when it is `None`) over a window that starts at `since_ms`, oldest
+    /// first.
+    ///
+    /// The bound: every visit of every lot that is still on the line (a visit
+    /// with no `left_ms`) or that left a station at or after `since_ms`, and
+    /// nothing else. That is exactly what the report reads, because every
+    /// window metric is keyed on a visit that started or left inside the
+    /// window (a visit cannot start in the window and leave before it), and
+    /// the per-lot figures (cycle time, X-factor, first pass, ETA) read whole
+    /// lots, which the `lot_id IN` keeps whole. A lot that finished before the
+    /// window is never read, so a request costs the window's lots plus the
+    /// work in flight, not the ledger's lifetime; `flow_ledger_left` and
+    /// `flow_ledger_lot` serve the two halves. The event-writer mutex is held
+    /// only while the rows are read: parsing and the arithmetic run after it
+    /// is released.
+    pub(crate) fn flow_visits(
+        &self,
+        family: Option<&str>,
+        since_ms: i64,
+    ) -> Result<Vec<Visit>, String> {
+        type Row = (
+            String,
+            String,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            String,
+            Option<String>,
+        );
+        let rows: Vec<Row> = {
+            let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+            let mut stmt = inner
+                .conn
+                .prepare_cached(
+                    "SELECT lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to
+                       FROM flow_ledger
+                      WHERE (?1 IS NULL OR family = ?1)
+                        AND lot_id IN (
+                            SELECT lot_id FROM flow_ledger
+                             WHERE (left_ms IS NULL OR left_ms >= ?2)
+                               AND (?1 IS NULL OR family = ?1))
+                      ORDER BY seq",
+                )
+                .map_err(|err| err.to_string())?;
+            let rows = stmt
+                .query_map(params![family, since_ms], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                })
+                .map_err(|err| err.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|err| err.to_string())?
+        };
+        let mut visits = Vec::with_capacity(rows.len());
+        for (lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to) in rows {
             // A row naming a station this binary does not know is left out
             // rather than guessed at.
             let Some(station) = Station::parse(&station) else {
@@ -397,6 +432,34 @@ impl EventStore {
             });
         }
         Ok(visits)
+    }
+
+    /// Every station a lot of `family` (any family when `None`) has ever
+    /// visited, whether or not the visit is in the window [`Self::flow_visits`]
+    /// reads. One indexed probe per station (`flow_ledger_station_family`),
+    /// each stopping at its first row.
+    pub(crate) fn flow_reached(&self, family: Option<&str>) -> Result<BTreeSet<Station>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let sql = if family.is_some() {
+            "SELECT 1 FROM flow_ledger WHERE station = ?1 AND family = ?2 LIMIT 1"
+        } else {
+            "SELECT 1 FROM flow_ledger WHERE station = ?1 AND ?2 IS NULL LIMIT 1"
+        };
+        let mut stmt = inner
+            .conn
+            .prepare_cached(sql)
+            .map_err(|err| err.to_string())?;
+        let mut reached = BTreeSet::new();
+        for station in Station::ALL {
+            let hit = stmt
+                .query_row(params![station.id(), family], |row| row.get::<_, i64>(0))
+                .optional()
+                .map_err(|err| err.to_string())?;
+            if hit.is_some() {
+                reached.insert(station);
+            }
+        }
+        Ok(reached)
     }
 
     /// Every family the log has an event for, canonical keys, sorted.
@@ -525,7 +588,8 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<Event> {
 /// can only create the table; this is its backfill. The `flow_ledger_replay`
 /// row it writes is what makes it happen exactly once: a restart finds the
 /// row and leaves the visits it already built alone. A projection bug is
-/// fixed by truncating both tables, which makes the next start replay again.
+/// fixed by truncating `flow_ledger`, `flow_ledger_events` and
+/// `flow_ledger_replay`, which makes the next start replay again.
 fn replay_flow_ledger(conn: &Connection) -> Result<(), String> {
     let replayed: i64 = conn
         .query_row("SELECT COUNT(*) FROM flow_ledger_replay", [], |row| {

@@ -15,7 +15,7 @@ use rusqlite::{Connection, params};
 use serde_json::Value;
 use tower::ServiceExt;
 
-use super::report::{FLOW_SCHEMA, Request, build};
+use super::report::{FLOW_SCHEMA, Request, build, window_start};
 use super::{Station, Visit};
 use crate::web::pipeline::{EventStore, NewEvent};
 use crate::web::shift::migrate_shift_store_through;
@@ -41,7 +41,14 @@ struct Post<'a> {
     at_ms: i64,
 }
 
+/// Post an `acme/widget` event of family `acme`. Todo events carry their
+/// repository as todoq posts them, which is what lets a shift pull request of
+/// that repository find them.
 fn post(store: &EventStore, event: &Post<'_>) {
+    post_as(store, "acme", Some("acme/widget"), event);
+}
+
+fn post_as(store: &EventStore, family: &str, repo: Option<&str>, event: &Post<'_>) {
     store
         .insert(
             "operator",
@@ -50,8 +57,8 @@ fn post(store: &EventStore, event: &Post<'_>) {
                 kind: event.kind.to_string(),
                 summary: format!("{} at {}", event.kind, event.at_ms),
                 outcome: event.outcome.map(str::to_string),
-                family: Some("acme".to_string()),
-                repo: event.pr.map(|_| "acme/widget".to_string()),
+                family: Some(family.to_string()),
+                repo: repo.map(str::to_string),
                 pr: event.pr,
                 todo_id: event.todo.map(str::to_string),
                 shift: event.shift.map(str::to_string),
@@ -105,8 +112,10 @@ fn forward_lot(store: &EventStore, todo: &str, pr: i64, base_ms: i64, pin: bool)
     }
 }
 
+/// Every visit of family `acme`: a window starting at the epoch reads the
+/// whole ledger.
 fn visits_of(store: &EventStore) -> Vec<Visit> {
-    store.flow_visits(Some("acme")).unwrap()
+    store.flow_visits(Some("acme"), 0).unwrap()
 }
 
 fn at(visits: &[Visit], station: Station) -> Vec<&Visit> {
@@ -116,13 +125,17 @@ fn at(visits: &[Visit], station: Station) -> Vec<&Visit> {
         .collect()
 }
 
+/// The 28-day report, read with the same window bound the route uses.
 fn report_of(store: &EventStore, now_minutes: i64) -> Value {
     let request = Request {
         family: Some("acme".to_string()),
         days: 28,
         now_ms: START + now_minutes * MINUTE,
     };
-    serde_json::to_value(build(&request, &visits_of(store))).unwrap()
+    let since = window_start(request.now_ms, request.days);
+    let visits = store.flow_visits(Some("acme"), since).unwrap();
+    let reached = store.flow_reached(Some("acme")).unwrap();
+    serde_json::to_value(build(&request, &visits, &reached)).unwrap()
 }
 
 fn station(report: &Value, id: &str) -> Value {
@@ -334,6 +347,11 @@ fn a_held_review_reworks_and_a_blocked_todo_is_held_at_work() {
     assert_eq!(held_lot["state"], "held");
     assert!(held_lot["eta_s"].is_null());
     assert!(held_lot["slowest_ahead"].is_null());
+    assert_eq!(
+        held_lot["eta_partial"], false,
+        "no ETA is not a partial one"
+    );
+    assert_eq!(held_lot["eta_unknown_stations"], serde_json::json!([]));
 
     // The person releases it and it is waiting for a slot again.
     post(
@@ -630,8 +648,9 @@ fn percentiles_the_bottleneck_and_an_eta_come_from_the_samples() {
             .any(|unknown| unknown["reason"] == "no_heartbeat")
     );
 
-    // A fifth lot now in flight gets an ETA from the four that went before,
-    // and Pin, which has no estimate, is why it is unknown further down.
+    // A fifth lot now in flight gets an ETA from the four that went before.
+    // Pin has no estimate: it is named, left out of the sum, and the ETA says
+    // it is partial rather than being dropped or counting Pin as zero.
     post(
         &store,
         &Post {
@@ -653,9 +672,49 @@ fn percentiles_the_bottleneck_and_an_eta_come_from_the_samples() {
         .clone();
     assert_eq!(waiting["state"], "waiting");
     assert_eq!(waiting["station"], "queue");
-    assert!(
-        waiting["eta_s"].is_null(),
-        "Pin has no estimate, so the ETA is unknown rather than optimistic"
+    assert_eq!(waiting["eta_partial"], true, "{waiting}");
+    assert_eq!(
+        waiting["eta_unknown_stations"],
+        serde_json::json!(["pin"]),
+        "Pin has no estimate, so the ETA names it instead of guessing"
+    );
+    // Queue's two minutes less the one already spent (60), plus every other
+    // station with an estimate: Work 660, Shift 120, Review 300, Gate 480,
+    // Merge 420, Stage 600, Deploy 300. Pin contributes nothing.
+    let sum = 60 + 660 + 120 + 300 + 480 + 420 + 600 + 300;
+    assert_eq!(waiting["eta_s"]["p50"], sum, "{waiting}");
+    assert_eq!(
+        waiting["eta_s"]["p90"], sum,
+        "every lot took the same minutes"
+    );
+    assert_eq!(waiting["slowest_ahead"], "work");
+}
+
+/// With no estimate anywhere ahead there is no ETA, and every station the
+/// lot still has to pass is named.
+#[test]
+fn an_eta_with_no_estimate_ahead_is_null_and_names_every_station() {
+    let (_dir, store) = store();
+    post(
+        &store,
+        &Post {
+            kind: "todo.filed",
+            outcome: None,
+            todo: Some("20261012-000016-ffffff"),
+            pr: None,
+            shift: None,
+            at_ms: START,
+        },
+    );
+    let report = report_of(&store, 5);
+    let lot = &report["lots"][0];
+    assert_eq!(lot["station"], "queue");
+    assert!(lot["eta_s"].is_null(), "{lot}");
+    assert!(lot["slowest_ahead"].is_null(), "{lot}");
+    assert_eq!(lot["eta_partial"], true);
+    assert_eq!(
+        lot["eta_unknown_stations"],
+        serde_json::json!(Station::ALL.map(Station::id).to_vec())
     );
 }
 
@@ -724,6 +783,8 @@ fn an_eta_sums_the_stations_still_ahead() {
     // p50 of every station still ahead: Shift 120, Review 300, Gate 480,
     // Merge 420, Pin 480, Stage 600, Deploy 300.
     assert_eq!(eta, 540 + 120 + 300 + 480 + 420 + 480 + 600 + 300);
+    assert_eq!(lot["eta_partial"], false, "every station ahead has one");
+    assert_eq!(lot["eta_unknown_stations"], serde_json::json!([]));
     // Work itself, at eleven minutes, is the slowest station the lot still
     // has to get through; Stage, at ten, is the slowest one after it.
     assert_eq!(lot["slowest_ahead"], "work");
@@ -784,6 +845,402 @@ fn the_migration_replays_every_retained_event_into_an_empty_ledger() {
         3,
         "a restart replays nothing twice"
     );
+}
+
+/// `(station, direction, repo, pr)` of every visit of `lot`, oldest first,
+/// read straight from the ledger.
+fn ledger_rows(
+    dir: &tempfile::TempDir,
+    lot: &str,
+) -> Vec<(String, String, Option<String>, Option<i64>)> {
+    let conn = Connection::open(dir.path().join("shift.sqlite")).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT station, direction, repo, pr FROM flow_ledger WHERE lot_id = ?1 ORDER BY seq",
+        )
+        .unwrap();
+    stmt.query_map(params![lot], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+}
+
+/// Shift branch names are shared by every repository and family. A shift pull
+/// request of one repository moves only that repository's lots on the branch:
+/// the other repository of the same family, the other family's repository of
+/// the same name, and a lot that recorded no repository all stay at Shift
+/// with no pull request stamped on them.
+#[test]
+fn a_shift_pull_request_moves_only_its_own_repositorys_lots() {
+    let (dir, store) = store();
+    let shift = "dayshift/2026-10-12";
+    let app_lots = ["20261012-000051-aaaaaa", "20261012-000052-bbbbbb"];
+    let web_lot = "20261012-000053-cccccc";
+    let globex_lot = "20261012-000054-dddddd";
+    let no_repo_lot = "20261012-000055-eeeeee";
+    let landed: [(&str, &str, Option<&str>); 5] = [
+        (app_lots[0], "acme", Some("acme/app")),
+        (app_lots[1], "acme", Some("acme/app")),
+        (web_lot, "acme", Some("acme/web")),
+        // Another family, a repository of the same short name.
+        (globex_lot, "globex", Some("globex/app")),
+        (no_repo_lot, "acme", None),
+    ];
+    for (todo, family, repo) in landed {
+        for (kind, outcome, minute) in [
+            ("todo.filed", None, 0),
+            ("todo.claimed", None, 1),
+            ("todo.attempt_finished", Some("done"), 8),
+        ] {
+            post_as(
+                &store,
+                family,
+                repo,
+                &Post {
+                    kind,
+                    outcome,
+                    todo: Some(todo),
+                    pr: None,
+                    shift: Some(shift),
+                    at_ms: START + minute * MINUTE,
+                },
+            );
+        }
+    }
+
+    let untouched = |lot: &str| {
+        let rows = ledger_rows(&dir, lot);
+        let at_shift: Vec<_> = rows.iter().filter(|row| row.0 == "shift").collect();
+        assert_eq!(at_shift.len(), 1, "{lot}: {rows:?}");
+        assert_eq!(at_shift[0].1, "open", "{lot} is still at Shift: {rows:?}");
+        assert!(
+            rows.iter().all(|row| row.3.is_none()),
+            "{lot} carries no pull request: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .all(|row| !matches!(row.0.as_str(), "review" | "gate" | "merge" | "stage")),
+            "{lot} never went past Shift: {rows:?}"
+        );
+    };
+
+    // acme/app's shift pull request opens.
+    post_as(
+        &store,
+        "acme",
+        Some("acme/app"),
+        &Post {
+            kind: "shift.pr_opened",
+            outcome: None,
+            todo: None,
+            pr: Some(31),
+            shift: Some(shift),
+            at_ms: START + 10 * MINUTE,
+        },
+    );
+    for lot in app_lots {
+        let rows = ledger_rows(&dir, lot);
+        let shift_row = rows.iter().find(|row| row.0 == "shift").unwrap();
+        assert_eq!(shift_row.1, "forward", "{lot}: {rows:?}");
+        for station in ["review", "gate"] {
+            let row = rows.iter().find(|row| row.0 == station).unwrap();
+            assert_eq!(row.2.as_deref(), Some("acme/app"), "{lot}: {rows:?}");
+            assert_eq!(row.3, Some(31), "{lot}: {rows:?}");
+        }
+    }
+    for lot in [web_lot, globex_lot, no_repo_lot] {
+        untouched(lot);
+    }
+    // The other repository's and family's rows keep their own repository.
+    assert!(
+        ledger_rows(&dir, web_lot)
+            .iter()
+            .all(|row| row.2.as_deref() == Some("acme/web"))
+    );
+    assert!(
+        ledger_rows(&dir, globex_lot)
+            .iter()
+            .all(|row| row.2.as_deref() == Some("globex/app"))
+    );
+
+    // The pull request goes green, is approved and merges: both of its lots
+    // reach Stage, and nothing else moves.
+    for (kind, outcome, minute) in [
+        ("gate.finished", Some("success"), 14),
+        ("pr.review", Some("approve"), 15),
+        ("pr.merged", None, 20),
+    ] {
+        post_as(
+            &store,
+            "acme",
+            Some("acme/app"),
+            &Post {
+                kind,
+                outcome,
+                todo: None,
+                pr: Some(31),
+                shift: Some(shift),
+                at_ms: START + minute * MINUTE,
+            },
+        );
+    }
+    for lot in app_lots {
+        let rows = ledger_rows(&dir, lot);
+        let merge = rows.iter().find(|row| row.0 == "merge").unwrap();
+        assert_eq!(merge.1, "forward", "{lot}: {rows:?}");
+        let stage = rows.iter().find(|row| row.0 == "stage").unwrap();
+        assert_eq!(stage.1, "open", "{lot} is waiting to be staged: {rows:?}");
+    }
+    for lot in [web_lot, globex_lot, no_repo_lot] {
+        untouched(lot);
+    }
+}
+
+/// An event re-posted under the same `event_id` after the log pruned the
+/// first copy is stored in the log again, but the ledger counts it once.
+#[test]
+fn an_event_reposted_after_the_prune_is_projected_once() {
+    let (_dir, store) = store();
+    let todo = "20261012-000061-aaaaaa";
+    let insert = |kind: &str, outcome: Option<&str>, event_id: &str, at_ms: i64| {
+        store
+            .insert(
+                "operator",
+                &NewEvent {
+                    source: "todoq".to_string(),
+                    kind: kind.to_string(),
+                    summary: kind.to_string(),
+                    event_id: Some(event_id.to_string()),
+                    outcome: outcome.map(str::to_string),
+                    family: Some("acme".to_string()),
+                    repo: Some("acme/widget".to_string()),
+                    todo_id: Some(todo.to_string()),
+                    ..NewEvent::default()
+                },
+                at_ms,
+            )
+            .unwrap()
+    };
+    insert("todo.filed", None, "filed-1", START);
+    insert("todo.claimed", None, "claimed-1", START + MINUTE);
+    insert(
+        "todo.attempt_finished",
+        Some("done"),
+        "done-1",
+        START + 9 * MINUTE,
+    );
+    let before = visits_of(&store);
+    assert_eq!(before.len(), 3, "queue, work and shift: {before:?}");
+
+    // A month and a day later, an unrelated event triggers the prune.
+    let later = START + 31 * 24 * 60 * MINUTE;
+    store
+        .insert(
+            "operator",
+            &NewEvent {
+                source: "todoq".to_string(),
+                kind: "worker.error".to_string(),
+                summary: "unrelated".to_string(),
+                ..NewEvent::default()
+            },
+            later,
+        )
+        .unwrap();
+    // The producer posts the claim again under its old id. The log has
+    // forgotten it and stores it as new...
+    let again = insert("todo.claimed", None, "claimed-1", later + MINUTE);
+    assert!(!again.duplicate, "the log pruned the first copy");
+    // ...and the same goes for the attempt that finished.
+    let again = insert(
+        "todo.attempt_finished",
+        Some("done"),
+        "done-1",
+        later + 2 * MINUTE,
+    );
+    assert!(!again.duplicate);
+
+    let after = visits_of(&store);
+    assert_eq!(after, before, "no second Queue, Work or Shift visit");
+    for station in [Station::Queue, Station::Work, Station::Shift] {
+        assert_eq!(at(&after, station).len(), 1, "{}", station.id());
+    }
+}
+
+/// The route reads only the lots still on the line or that left a station
+/// inside its window, and the report it builds from them is the report the
+/// whole ledger would give.
+#[test]
+fn a_report_reads_only_the_window_and_answers_as_the_whole_ledger_would() {
+    let (_dir, store) = store();
+    let day = 24 * 60 * MINUTE;
+    // Finished sixty days before the report: outside every 28-day window.
+    forward_lot(&store, "20261012-000071-aaaaaa", 401, START, true);
+    // Filed sixty days ago too, and still waiting for its review.
+    let stuck = "20261012-000072-bbbbbb";
+    for (kind, outcome, minute, pr) in [
+        ("todo.filed", None, 0, None),
+        ("todo.claimed", None, 1, None),
+        ("todo.attempt_finished", Some("done"), 8, None),
+        ("pr.opened", None, 9, Some(402)),
+    ] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: Some(stuck),
+                pr,
+                shift: Some("dayshift/stuck"),
+                at_ms: START + minute * MINUTE,
+            },
+        );
+    }
+    // A lot that went round the gate sixty days ago and only deployed inside
+    // the window: its old loop still counts against first pass.
+    let looped = "20261012-000073-cccccc";
+    for (kind, outcome, at_ms, pr) in [
+        ("todo.filed", None, START, None),
+        ("todo.claimed", None, START + MINUTE, None),
+        (
+            "todo.attempt_finished",
+            Some("done"),
+            START + 5 * MINUTE,
+            None,
+        ),
+        ("pr.opened", None, START + 6 * MINUTE, Some(403)),
+        (
+            "gate.finished",
+            Some("failure"),
+            START + 7 * MINUTE,
+            Some(403),
+        ),
+        ("worker.stage", None, START + 50 * day, None),
+        (
+            "todo.attempt_finished",
+            Some("done"),
+            START + 50 * day + MINUTE,
+            None,
+        ),
+        ("pr.opened", None, START + 50 * day + 2 * MINUTE, Some(403)),
+        (
+            "gate.finished",
+            Some("success"),
+            START + 50 * day + 3 * MINUTE,
+            Some(403),
+        ),
+        (
+            "pr.review",
+            Some("approve"),
+            START + 50 * day + 4 * MINUTE,
+            Some(403),
+        ),
+        ("pr.merged", None, START + 50 * day + 5 * MINUTE, Some(403)),
+        (
+            "release.staged",
+            None,
+            START + 50 * day + 6 * MINUTE,
+            Some(403),
+        ),
+        (
+            "deploy.created",
+            None,
+            START + 50 * day + 7 * MINUTE,
+            Some(403),
+        ),
+        (
+            "deploy.status",
+            Some("success"),
+            START + 50 * day + 8 * MINUTE,
+            Some(403),
+        ),
+    ] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: Some(looped),
+                pr,
+                shift: Some("dayshift/looped"),
+                at_ms,
+            },
+        );
+    }
+    for (index, todo) in [
+        "20261012-000074-dddddd",
+        "20261012-000075-eeeeee",
+        "20261012-000076-ffffff",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        forward_lot(
+            &store,
+            todo,
+            404 + index as i64,
+            START + 55 * day + index as i64 * 60 * MINUTE,
+            false,
+        );
+    }
+
+    let request = Request {
+        family: Some("acme".to_string()),
+        days: 28,
+        now_ms: START + 60 * day,
+    };
+    let since = window_start(request.now_ms, request.days);
+    let bounded = store.flow_visits(Some("acme"), since).unwrap();
+    let lots: BTreeSet<&str> = bounded.iter().map(|visit| visit.lot_id.as_str()).collect();
+    assert!(
+        !lots.contains("20261012-000071-aaaaaa"),
+        "a lot that finished before the window is not read"
+    );
+    assert!(lots.contains(stuck), "work still on the line is read");
+    assert_eq!(
+        bounded
+            .iter()
+            .filter(|visit| visit.lot_id == looped)
+            .count(),
+        visits_of(&store)
+            .iter()
+            .filter(|visit| visit.lot_id == looped)
+            .count(),
+        "a lot in the window is read whole, its old loop included"
+    );
+    assert_eq!(lots.len(), 5, "{lots:?}");
+
+    let whole = visits_of(&store);
+    assert!(whole.len() > bounded.len());
+    let reached = store.flow_reached(Some("acme")).unwrap();
+    assert!(
+        reached.contains(&Station::Pin),
+        "only the lot outside the window was pinned, and Pin was still reached"
+    );
+    let every: BTreeSet<Station> = whole.iter().map(|visit| visit.station).collect();
+    assert_eq!(reached, every);
+    let report = serde_json::to_value(build(&request, &bounded, &reached)).unwrap();
+    assert_eq!(
+        report,
+        serde_json::to_value(build(&request, &whole, &every)).unwrap(),
+        "the bound changes what is read, never the answer"
+    );
+    // Pin's only visit is older than the window: it says the window has no
+    // samples, not that nothing ever reached it.
+    let pin = station(&report, "pin");
+    assert!(
+        pin["unknown"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|unknown| unknown["metric"] != "all"),
+        "{pin}"
+    );
+    // And the loop sixty days ago still costs the gate its first pass.
+    assert_eq!(station(&report, "gate")["first_pass_rate"], 0.75);
+    // A family with no lots reached nothing.
+    assert!(store.flow_reached(Some("globex")).unwrap().is_empty());
 }
 
 fn get(uri: &str, token: &str) -> HttpRequest<axum::body::Body> {

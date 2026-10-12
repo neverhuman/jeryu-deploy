@@ -120,6 +120,10 @@ pub(crate) fn steps(kind: &str, outcome: Option<&str>) -> Vec<Step> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EventView<'a> {
     pub seq: i64,
+    /// Who posted the event and the id it gave it: together the key that
+    /// makes the projection count an event once, however often it is posted.
+    pub reporter: &'a str,
+    pub event_id: Option<&'a str>,
     pub ts_ms: i64,
     pub kind: &'a str,
     pub outcome: Option<&'a str>,
@@ -135,6 +139,9 @@ pub(crate) struct EventView<'a> {
 pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), String> {
     let steps = steps(event.kind, event.outcome);
     if steps.is_empty() {
+        return Ok(());
+    }
+    if !first_projection(conn, event)? {
         return Ok(());
     }
     for lot in lots_for(conn, event)? {
@@ -159,13 +166,36 @@ pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), Stri
     Ok(())
 }
 
+/// Whether this is the first time the event reaches the projection.
+///
+/// The event log refuses a repeated `(reporter, event_id)` only while it still
+/// holds the first copy; after the 30-day prune the same event is stored again
+/// under a new `seq`. `flow_ledger_events` is never pruned, so an event the
+/// ledger has already folded in is skipped, the way `cost_ledger`'s unique key
+/// counts a re-posted cost once. An event without an `event_id` cannot be
+/// recognised again and is always projected.
+fn first_projection(conn: &Connection, event: &EventView<'_>) -> Result<bool, String> {
+    let Some(event_id) = event.event_id.filter(|id| !id.is_empty()) else {
+        return Ok(true);
+    };
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO flow_ledger_events (reporter, event_id, seq)
+             VALUES (?1, ?2, ?3)",
+            params![event.reporter, event_id, event.seq],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(inserted == 1)
+}
+
 /// Every event the log still holds, projected into an empty ledger, oldest
 /// first. Answers how many events were read and how many visits they opened.
 /// The caller records the replay so it happens exactly once.
 pub(crate) fn replay(conn: &Connection) -> Result<(i64, i64), String> {
     let mut stmt = conn
         .prepare(
-            "SELECT seq, ts_ms, kind, outcome, family, repo, pr, todo_id, shift
+            "SELECT seq, ts_ms, kind, outcome, family, repo, pr, todo_id, shift,
+                    reporter, event_id
                FROM pipeline_events ORDER BY seq",
         )
         .map_err(|err| err.to_string())?;
@@ -181,6 +211,8 @@ pub(crate) fn replay(conn: &Connection) -> Result<(i64, i64), String> {
                 row.get::<_, Option<i64>>(6)?,
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         })
         .map_err(|err| err.to_string())?
@@ -188,12 +220,14 @@ pub(crate) fn replay(conn: &Connection) -> Result<(i64, i64), String> {
         .map_err(|err| err.to_string())?;
     drop(stmt);
     let mut read = 0;
-    for (seq, ts_ms, kind, outcome, family, repo, pr, todo_id, shift) in &rows {
+    for (seq, ts_ms, kind, outcome, family, repo, pr, todo_id, shift, reporter, event_id) in &rows {
         read += 1;
         apply(
             conn,
             &EventView {
                 seq: *seq,
+                reporter,
+                event_id: event_id.as_deref(),
                 ts_ms: *ts_ms,
                 kind,
                 outcome: outcome.as_deref(),
@@ -227,7 +261,9 @@ struct Lot {
 /// request's visits are rewritten onto the todo's lot, which is the same
 /// `Todo:` trailer join `GET /api/v1/trace` makes. A shift pull request names
 /// no todo at all, so it moves every lot whose work landed on that shift
-/// branch and is still at Shift.
+/// branch *of the same repository* (and family, when the event names one)
+/// and is still at Shift. Shift branch names are shared by every repository
+/// and family, so the branch alone is never the join.
 fn lots_for(conn: &Connection, event: &EventView<'_>) -> Result<Vec<Lot>, String> {
     if let Some(todo_id) = event.todo_id.map(str::trim).filter(|id| !id.is_empty()) {
         let lot = Lot {
@@ -244,7 +280,7 @@ fn lots_for(conn: &Connection, event: &EventView<'_>) -> Result<Vec<Lot>, String
     if let (Some(repo), Some(pr)) = (event.repo, event.pr) {
         // A shift pull request is the work of the lots on its branch.
         if let Some(shift) = event.shift.map(str::trim).filter(|s| !s.is_empty()) {
-            let carried = open_at_shift(conn, shift)?;
+            let carried = open_at_shift(conn, shift, repo, event.family)?;
             if !carried.is_empty() {
                 for lot in &carried {
                     bind_pr(conn, &lot.id, repo, pr)?;
@@ -259,35 +295,49 @@ fn lots_for(conn: &Connection, event: &EventView<'_>) -> Result<Vec<Lot>, String
                     .collect());
             }
         }
-        let id = lot_of_pr(conn, repo, pr)?.unwrap_or_else(|| format!("{repo}#{pr}"));
-        let todo_id = conn
-            .query_row(
-                "SELECT todo_id FROM flow_ledger WHERE lot_id = ?1 AND todo_id IS NOT NULL
-                  ORDER BY seq LIMIT 1",
-                params![id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|err| err.to_string())?;
-        return Ok(vec![Lot {
-            id,
-            repo: Some(repo.to_string()),
-            pr: Some(pr),
-            todo_id,
-        }]);
+        // Every lot the pull request already carries: one for an ordinary
+        // pull request, every lot its shift swept for a shift pull request.
+        let mut ids = lots_of_pr(conn, repo, pr)?;
+        if ids.is_empty() {
+            ids.push(format!("{repo}#{pr}"));
+        }
+        let mut lots = Vec::with_capacity(ids.len());
+        for id in ids {
+            let todo_id = conn
+                .query_row(
+                    "SELECT todo_id FROM flow_ledger WHERE lot_id = ?1 AND todo_id IS NOT NULL
+                      ORDER BY seq LIMIT 1",
+                    params![id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|err| err.to_string())?;
+            lots.push(Lot {
+                id,
+                repo: Some(repo.to_string()),
+                pr: Some(pr),
+                todo_id,
+            });
+        }
+        return Ok(lots);
     }
     Ok(Vec::new())
 }
 
-/// The lot the visits of `repo#pr` belong to.
-fn lot_of_pr(conn: &Connection, repo: &str, pr: i64) -> Result<Option<String>, String> {
-    conn.query_row(
-        "SELECT lot_id FROM flow_ledger WHERE repo = ?1 AND pr = ?2 ORDER BY seq LIMIT 1",
-        params![repo, pr],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()
-    .map_err(|err| err.to_string())
+/// The lots the visits of `repo#pr` belong to, in the order they first
+/// named it.
+fn lots_of_pr(conn: &Connection, repo: &str, pr: i64) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT lot_id FROM flow_ledger WHERE repo = ?1 AND pr = ?2
+              GROUP BY lot_id ORDER BY MIN(seq)",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(params![repo, pr], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
 }
 
 /// Rewrite the visits of a pull-request-only lot onto the todo that carries
@@ -304,26 +354,39 @@ fn adopt(conn: &Connection, todo_id: &str, repo: &str, pr: i64) -> Result<(), St
     bind_pr(conn, todo_id, repo, pr)
 }
 
-/// Name the pull request on every visit of a lot that has none yet.
+/// Name the pull request on every visit of a lot that has none yet. A visit
+/// that already names another repository keeps it: a pull request never
+/// relabels work recorded against a different repository.
 fn bind_pr(conn: &Connection, lot_id: &str, repo: &str, pr: i64) -> Result<(), String> {
     conn.execute(
-        "UPDATE flow_ledger SET repo = ?2, pr = ?3 WHERE lot_id = ?1 AND pr IS NULL",
+        "UPDATE flow_ledger SET repo = ?2, pr = ?3
+          WHERE lot_id = ?1 AND pr IS NULL AND (repo IS NULL OR repo = ?2)",
         params![lot_id, repo, pr],
     )
     .map_err(|err| err.to_string())?;
     Ok(())
 }
 
-/// The lots whose work landed on `shift` and is still waiting at Shift.
-fn open_at_shift(conn: &Connection, shift: &str) -> Result<Vec<Lot>, String> {
+/// The lots of `repo` whose work landed on `shift` and is still waiting at
+/// Shift. A lot that recorded no repository is never swept: the branch name
+/// alone cannot say which repository's pull request carries it. When the
+/// event names a family the lot must be of that family too.
+fn open_at_shift(
+    conn: &Connection,
+    shift: &str,
+    repo: &str,
+    family: Option<&str>,
+) -> Result<Vec<Lot>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT lot_id, repo, pr, todo_id FROM flow_ledger
-              WHERE shift = ?1 AND station = 'shift' AND left_ms IS NULL ORDER BY seq",
+              WHERE shift = ?1 AND station = 'shift' AND left_ms IS NULL
+                AND repo = ?2 AND (?3 IS NULL OR family = ?3)
+              ORDER BY seq",
         )
         .map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map(params![shift], |row| {
+        .query_map(params![shift, repo, family], |row| {
             Ok(Lot {
                 id: row.get(0)?,
                 repo: row.get(1)?,

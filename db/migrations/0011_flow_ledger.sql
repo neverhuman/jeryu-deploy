@@ -16,7 +16,17 @@
 --
 -- `shift` is not in the design's column list but the projection needs it:
 -- `pr.opened` carries no todo id, so the only join from a shift pull request
--- back to the lots it carries is the shift branch the work landed on.
+-- back to the lots it carries is the shift branch the work landed on. Shift
+-- branch names are shared by every repository and family, so the join is
+-- the branch *and* the repository (and the family, when the event names
+-- one): a lot that recorded no repository is never swept by a shift PR.
+--
+-- flow_ledger_events is the projection's idempotency key, never pruned like
+-- the ledger: one row per (reporter, event_id) the projection has folded in.
+-- The event log forgets an event_id when it prunes the row after 30 days, so
+-- a producer re-posting the same event later would otherwise be projected a
+-- second time and count a second visit; cost_ledger's unique key answers the
+-- same problem for spend.
 --
 -- `direction` is `open` while the visit is in flight, `hold` when a person
 -- must act before it can move, and `forward` or `rework` once it left;
@@ -30,7 +40,8 @@
 -- released; numbering is a zero-padded 4-digit sequence.
 --
 -- Rollback: stop the server, then `DROP TABLE flow_ledger`, `DROP TABLE
--- flow_ledger_replay` and delete version 11 from shift_schema_migrations.
+-- flow_ledger_events`, `DROP TABLE flow_ledger_replay` and delete version 11
+-- from shift_schema_migrations.
 -- Nothing of record is lost: the ledger is derived, and the next start
 -- replays it from the events the log still holds. Take a copy first (sqlite3
 -- shift.sqlite '.backup flow-ledger.sqlite') to keep visits older than the
@@ -39,9 +50,9 @@
 -- sequence, so the replay runs in EventStore::open as soon as this migration
 -- has applied: it reads pipeline_events oldest first, projects every event
 -- into the empty table and records one flow_ledger_replay row, which is what
--- makes it happen exactly once. A projection bug is fixed by truncating both
--- tables and restarting, never by editing rows.
--- Lock safety: two new tables and their indexes; creation takes milliseconds
+-- makes it happen exactly once. A projection bug is fixed by truncating all
+-- three tables and restarting, never by editing rows.
+-- Lock safety: three new tables and their indexes; creation takes milliseconds
 -- and touches no existing row. The replay that follows is bounded by the
 -- 30-day retention of pipeline_events, so it reads at most a month of events,
 -- once, in one transaction.
@@ -87,6 +98,26 @@ CREATE INDEX IF NOT EXISTS flow_ledger_shift
 
 CREATE INDEX IF NOT EXISTS flow_ledger_repo_pr
     ON flow_ledger (repo, pr);
+
+-- GET /api/v1/flow reads only the lots still on the line or that left a
+-- station inside its window (at most 90 days): this index finds them
+-- without scanning the never-pruned ledger.
+CREATE INDEX IF NOT EXISTS flow_ledger_left
+    ON flow_ledger (left_ms);
+
+-- Whether a family's lots ever reached a station (a station only visited
+-- before the window is "reached", not "no_events"): one probe per station.
+CREATE INDEX IF NOT EXISTS flow_ledger_station_family
+    ON flow_ledger (station, family);
+
+-- One row per event the projection has folded in, so an event re-posted
+-- after the event log pruned it is not projected twice.
+CREATE TABLE IF NOT EXISTS flow_ledger_events (
+    reporter TEXT    NOT NULL,
+    event_id TEXT    NOT NULL,
+    seq      INTEGER NOT NULL,
+    PRIMARY KEY (reporter, event_id)
+);
 
 -- One row once the replay has run, so a restart never projects the retained
 -- log a second time on top of the visits it already built.

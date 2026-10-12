@@ -122,7 +122,15 @@ pub(crate) struct LotReport {
     /// `waiting`, `active` or `held`.
     pub state: &'static str,
     pub since: String,
+    /// The sum over the stations ahead that have an estimate; null when
+    /// none has one (and for a held lot).
     pub eta_s: Option<Pair>,
+    /// True when `eta_unknown_stations` is not empty: `eta_s` leaves out the
+    /// stations named there and is a lower bound, not the whole remaining time.
+    pub eta_partial: bool,
+    /// The stations still ahead (the current one included) with no queue or
+    /// process estimate, in route order. Their time is not in `eta_s`.
+    pub eta_unknown_stations: Vec<&'static str>,
     pub slowest_ahead: Option<&'static str>,
     pub href: String,
 }
@@ -206,9 +214,25 @@ fn station_p90(station: &StationReport) -> Option<i64> {
     Some(station.queue_s?.p90 + station.process_s?.p90)
 }
 
+/// The first millisecond of a `days` window that ends at `now_ms`: the bound
+/// `EventStore::flow_visits` reads from and the report counts from.
+pub(crate) fn window_start(now_ms: i64, days: i64) -> i64 {
+    now_ms - days * 24 * 60 * 60 * 1000
+}
+
 /// The Flow report for the visits of one family.
-pub(crate) fn build(request: &Request, visits: &[Visit]) -> FlowReport {
-    let since_ms = request.now_ms - request.days * 24 * 60 * 60 * 1000;
+///
+/// `visits` may be only the window's share of the ledger (see
+/// `EventStore::flow_visits`); `reached` is every station the family's lots
+/// have ever visited, so a station whose visits all predate the window still
+/// reads as reached (its window metrics `no_events`) rather than as a station
+/// nothing has ever reached.
+pub(crate) fn build(
+    request: &Request,
+    visits: &[Visit],
+    reached: &BTreeSet<Station>,
+) -> FlowReport {
+    let since_ms = window_start(request.now_ms, request.days);
     let in_window = |ms: i64| ms >= since_ms && ms <= request.now_ms;
     let hours = request.days as f64 * 24.0;
 
@@ -219,7 +243,8 @@ pub(crate) fn build(request: &Request, visits: &[Visit]) -> FlowReport {
                 .iter()
                 .filter(|visit| visit.station == station)
                 .collect();
-            station_report(station, &own, request.now_ms, &in_window, hours)
+            let ever = !own.is_empty() || reached.contains(&station);
+            station_report(station, &own, ever, request.now_ms, &in_window, hours)
         })
         .collect();
     mark_bottleneck(&mut stations);
@@ -242,6 +267,7 @@ pub(crate) fn build(request: &Request, visits: &[Visit]) -> FlowReport {
 fn station_report(
     station: Station,
     own: &[&Visit],
+    ever: bool,
     now_ms: i64,
     in_window: &impl Fn(i64) -> bool,
     hours: f64,
@@ -265,7 +291,7 @@ fn station_report(
             reason: "no_heartbeat",
         }],
     };
-    if own.is_empty() {
+    if !ever {
         report.unknown.insert(
             0,
             Unknown {
@@ -449,9 +475,9 @@ fn lots(visits: &[Visit], stations: &[StationReport], now_ms: i64) -> Vec<LotRep
             .collect();
         open.sort_by_key(|visit| (visit.entered_ms, visit.lot_id.clone()));
         for visit in open.into_iter().take(LOTS_PER_STATION) {
-            let (eta, slowest) = if visit.held() {
+            let eta = if visit.held() {
                 // A held lot's next step is a person, not a station.
-                (None, None)
+                Eta::default()
             } else {
                 eta(station, visit, stations, now_ms)
             };
@@ -466,8 +492,10 @@ fn lots(visits: &[Visit], stations: &[StationReport], now_ms: i64) -> Vec<LotRep
                     "waiting"
                 },
                 since: rfc3339_ms(visit.entered_ms),
-                eta_s: eta,
-                slowest_ahead: slowest,
+                eta_partial: !eta.unknown.is_empty(),
+                eta_s: eta.known,
+                eta_unknown_stations: eta.unknown,
+                slowest_ahead: eta.slowest,
                 href: format!("/work/{}", visit.lot_id),
             });
         }
@@ -475,33 +503,46 @@ fn lots(visits: &[Visit], stations: &[StationReport], now_ms: i64) -> Vec<LotRep
     lots
 }
 
+/// What [`eta`] answers for one lot.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Eta {
+    /// The sum over the stations ahead that have an estimate.
+    known: Option<Pair>,
+    /// The stations ahead that have none, in route order.
+    unknown: Vec<&'static str>,
+    /// The slowest of the stations ahead that have an estimate.
+    slowest: Option<&'static str>,
+}
+
 /// How long one lot still has, and which station ahead of it is the slowest.
 ///
 /// The remaining time is this station's own p50 less the time already spent
 /// here (never below zero) plus the p50 of every station still ahead, with
-/// the p90s as the pessimistic bound. A station with no estimate makes the
-/// whole ETA unknown rather than optimistic.
-fn eta(
-    at: Station,
-    visit: &Visit,
-    stations: &[StationReport],
-    now_ms: i64,
-) -> (Option<Pair>, Option<&'static str>) {
-    let ahead: Vec<&StationReport> = stations
-        .iter()
-        .filter(|station| station.order >= at.order())
-        .collect();
+/// the p90s as the pessimistic bound. A station with no estimate is never
+/// guessed at: it is named in `unknown` and left out of the sums, so the
+/// answer is a partial ETA that says which stations it does not cover, rather
+/// than either an optimistic total or nothing at all. With no estimate
+/// anywhere ahead there is no ETA.
+fn eta(at: Station, visit: &Visit, stations: &[StationReport], now_ms: i64) -> Eta {
+    let mut answer = Eta::default();
     let mut p50 = 0;
     let mut p90 = 0;
-    let mut slowest: Option<(&'static str, i64)> = None;
-    for station in ahead {
+    let mut known = false;
+    let mut worst = 0;
+    for station in stations
+        .iter()
+        .filter(|station| station.order >= at.order())
+    {
         let (Some(station_p50), Some(station_p90)) = (station_p50(station), station_p90(station))
         else {
-            return (None, None);
+            answer.unknown.push(station.id);
+            continue;
         };
-        if slowest.is_none_or(|(_, worst)| station_p50 > worst) {
-            slowest = Some((station.id, station_p50));
+        if !known || station_p50 > worst {
+            answer.slowest = Some(station.id);
+            worst = station_p50;
         }
+        known = true;
         if station.id == at.id() {
             let spent = seconds(now_ms - visit.entered_ms);
             p50 += (station_p50 - spent).max(0);
@@ -511,5 +552,8 @@ fn eta(
             p90 += station_p90;
         }
     }
-    (Some(Pair { p50, p90 }), slowest.map(|(station, _)| station))
+    if known {
+        answer.known = Some(Pair { p50, p90 });
+    }
+    answer
 }
