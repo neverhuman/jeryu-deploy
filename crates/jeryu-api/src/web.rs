@@ -67,7 +67,7 @@ mod workcells_support;
 mod ws;
 mod yields;
 
-pub use bots::render_bot_setup_script;
+pub use bots::{bot_kind_is_valid, render_bot_setup_script};
 /// Whether the `jankurai/proof` gate binds for a repository. The push path
 /// reads it too: a repository may not turn off an audit the site enforces.
 pub(crate) use pulls::audit_gate_enforced_for;

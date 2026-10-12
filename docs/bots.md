@@ -1,10 +1,12 @@
-# Grokbots and Musebots
+# Account bots (agents)
 
-A bot is a credential that an account owns and hands to an agent. A Grokbot
-(`grok`) is meant for a general-purpose agent that drives MCP. A Musebot
-(`muse`) is meant for a worker that runs from an env file. Both kinds
-authenticate the same way and get the same rights. The display name is a
-label only; it never authorizes anything.
+A bot is a credential that an account owns and hands to an agent. Every bot
+has a **kind**: a free-form label naming what drives it. `grok` (shown as
+Grokbot) is meant for a general-purpose agent that drives MCP; `muse` (shown
+as Musebot) for a worker that runs from an env file; any other kind, such as
+`agent` (the default) or `claude-code`, is shown as given. A kind matches
+`^[a-z][a-z0-9-]{0,31}$`. Every kind authenticates the same way and gets the
+same rights: neither the kind nor the display name ever authorizes anything.
 
 ## What a bot may do
 
@@ -13,6 +15,12 @@ again on every request against the owner's current grants.
 
 - **Reach** is one of:
   - `general`: every repository the owner has an explicit grant on;
+  - `owners`: every repository of 1 to 20 listed owners (accounts or
+    organizations) on which the owner has an explicit grant, including
+    repositories created later, for example
+    `{"mode":"owners","owners":["acme"]}` for everything granted under
+    `acme/*`. A public repository without a grant is not in reach. Names are
+    trimmed, lowercased and deduplicated, and each must exist on the forge;
   - `repositories`: a list of at most 100 `{owner, name}` pairs;
   - `task`: one issue, pull request or branch in one repository. Writes must
     target that task; reads anywhere in that repository are allowed.
@@ -38,6 +46,19 @@ curl -s -X POST https://forge.example/api/v1/bots \
        "reach":{"mode":"repositories","repos":[{"owner":"acme","name":"widgets"}]}}' \
   > atlas.enroll.json && chmod 600 atlas.enroll.json
 ```
+
+`kind` may be left out; it is then `agent`. A kind that does not match
+`^[a-z][a-z0-9-]{0,31}$` is refused with `invalid_bot_kind`, and an owners
+reach that is empty, names more than 20 distinct owners, or names an unknown
+owner with `invalid_reach_owners` (both 422). A whole family:
+
+```
+  -d '{"slug":"family","display_name":"Family",
+       "reach":{"mode":"owners","owners":["acme"]}}'
+```
+
+A repository's bot roster shows an owners bot as reaching that repository
+only; the other owners it lists are not shown there.
 
 The response holds `bot`, `key_id`, `enrollment_key` and `setup_script`. The
 key is shown once. It stays valid until it is rotated or revoked, so treat it as
@@ -110,9 +131,11 @@ The script writes `~/.jeryu/bots/<slug>/` (mode 0700), exchanges the key, and
 starts a loopback-only proxy on an OS-assigned port. It does not touch
 `~/.config/gh` or any shared token file.
 
-- **Grokbot:** the script prints an MCP server entry such as
+- **Grokbot, and every kind other than `muse`:** the script prints an MCP
+  server entry such as
   `{"mcpServers":{"jeryu":{"url":"http://127.0.0.1:<port>/mcp/<local-secret>"}}}`.
-  Add it to the agent's MCP configuration.
+  Add it to the agent's MCP configuration. Only `grok` also warns that every
+  Grokbot of the account shares the computer.
 - **Musebot:** the script writes `~/.jeryu/bots/<slug>/jeryu-bot.env`; load it
   with `set -a; . ~/.jeryu/bots/<slug>/jeryu-bot.env; set +a`.
 - **gh and git, either kind:** `. ~/.jeryu/bots/<slug>/client.env` points

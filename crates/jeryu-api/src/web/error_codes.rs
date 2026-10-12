@@ -280,6 +280,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         500,
         "the server failed while handling the request",
     ),
+    entry(
+        "invalid_bot_kind",
+        422,
+        "the bot kind does not match ^[a-z][a-z0-9-]{0,31}$",
+    ),
     entry("invalid_branch", 422, "the branch name is not valid"),
     entry("invalid_compare", 422, "the compare range is not valid"),
     entry(
@@ -306,6 +311,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "invalid_query",
         422,
         "the query string does not match this route",
+    ),
+    entry(
+        "invalid_reach_owners",
+        422,
+        "an owners reach needs 1 to 20 distinct owners that exist on this forge",
     ),
     entry("invalid_ref", 422, "the git ref is not valid"),
     entry(

@@ -1,4 +1,4 @@
-//! `jeryu bot`: print the setup script for one Grokbot or Musebot.
+//! `jeryu bot`: print the setup script for one account bot.
 //!
 //! The script is the same text the enroll response returns. A re-run omits
 //! the enrollment key, so the key is not printed again. The key is read from
@@ -6,21 +6,19 @@
 
 use std::io::{Read, Write};
 
-use jeryu_api::web::render_bot_setup_script;
+use jeryu_api::web::{bot_kind_is_valid, render_bot_setup_script};
 
 use crate::cli::BotSetupArgs;
 use crate::client::{ClientError, ClientResult};
 use crate::commands::render;
 
 pub(crate) fn run(json: bool, args: BotSetupArgs, out: &mut dyn Write) -> ClientResult<()> {
-    let kind = match args.kind.as_str() {
-        "grok" | "muse" => args.kind.as_str(),
-        _ => {
-            return Err(ClientError::Invalid(
-                "kind must be grok or muse".to_string(),
-            ));
-        }
-    };
+    let kind = args.kind.as_str();
+    if !bot_kind_is_valid(kind) {
+        return Err(ClientError::Invalid(
+            "kind must match ^[a-z][a-z0-9-]{0,31}$ (for example grok, muse, or agent)".to_string(),
+        ));
+    }
     if args.slug.trim().is_empty() {
         return Err(ClientError::Invalid("slug is required".to_string()));
     }

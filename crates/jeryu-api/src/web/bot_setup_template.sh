@@ -427,8 +427,11 @@ printf '%s\n' "$exports" > "$DIR/client.env"
 chmod 600 "$DIR/client.env"
 printf '%s\n' "$exports" >&2
 printf '%s\n' "Refresh gh and git without MCP traffic: python3 \"$DIR/broker.py\" refresh-clients" >&2
-if [ "$KIND" = "grok" ]; then
-  echo "warning: every Grokbot on one account shares this computer, its files, and its credentials" >&2
+if [ "$KIND" != "muse" ]; then
+  # Grok and every other kind: an mcpServers entry any MCP client can read.
+  if [ "$KIND" = "grok" ]; then
+    echo "warning: every Grokbot on one account shares this computer, its files, and its credentials" >&2
+  fi
   printf '%s\n' "{\"mcpServers\":{\"jeryu\":{\"url\":\"http://127.0.0.1:${PORT}/mcp/${SECRET}\"}}}"
 else
   cat > "$DIR/jeryu-bot.env" <<EOF

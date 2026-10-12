@@ -12,7 +12,8 @@ use clap::{Args, Subcommand, ValueEnum};
 /// `jeryu bot`: print the script a Grokbot or Musebot runs once.
 #[derive(Debug, Args)]
 pub struct BotSetupArgs {
-    /// `grok` or `muse`.
+    /// Bot kind, matching `^[a-z][a-z0-9-]{0,31}$`: `grok`, `muse`, or any
+    /// other label such as `agent`.
     #[arg(long)]
     pub kind: String,
 

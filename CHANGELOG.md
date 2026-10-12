@@ -22,6 +22,18 @@
   logins report only repositories they can write; admins and the logins in
   `JERYU_PRESENCE_REPORTERS` (no default) report any scope. Stored in
   `shift.sqlite` (migration `0012_agent_presence`).
+- Owners reach and free-form bot kinds (ADR 0006; needs jeryu-core with
+  migration 0021). `POST /api/v1/bots` accepts
+  `"reach":{"mode":"owners","owners":["acme"]}`: every repository of the listed
+  owners that the bot's owner holds an explicit grant on, including later
+  ones. `kind` is optional (default `agent`) and may be any
+  `^[a-z][a-z0-9-]{0,31}$`; `grok` and `muse` behave as before. New error
+  codes `invalid_bot_kind` and `invalid_reach_owners` (422). `GET
+  /api/v1/bots`, enroll, whoami and the bot JWT carry the kind as given;
+  whoami's `kind` stays the display label (`Grokbot`, `Musebot`, or the kind).
+  The setup script prints an `mcpServers` entry for every kind but `muse`, and
+  `jeryu bot --kind` takes any valid kind.
+
 - The gate's `cargo test` keeps test temp directories on tmpfs (`/dev/shm`, or
   `JERYU_CI_TEST_TMPDIR`) when one is writable. Every web test opens a fresh
   SQLite forge, and its migrations fsync: about 2.2s per fixture on disk and

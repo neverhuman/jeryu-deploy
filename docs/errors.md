@@ -126,6 +126,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `idempotent_secret_withheld` | 409 | this request already ran; its once-shown secret is not kept |
 | `insufficient_scope` | 403 | the bot grant does not allow this request |
 | `internal_error` | 500 | the server failed while handling the request |
+| `invalid_bot_kind` | 422 | the bot kind does not match ^[a-z][a-z0-9-]{0,31}$ |
 | `invalid_branch` | 422 | the branch name is not valid |
 | `invalid_compare` | 422 | the compare range is not valid |
 | `invalid_input` | 422 | the request failed boundary validation |
@@ -133,6 +134,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_page_parameter` | 422 | limit, per_page or page is outside the accepted range |
 | `invalid_path_parameter` | 422 | a path parameter has the wrong shape for this route |
 | `invalid_query` | 422 | the query string does not match this route |
+| `invalid_reach_owners` | 422 | an owners reach needs 1 to 20 distinct owners that exist on this forge |
 | `invalid_ref` | 422 | the git ref is not valid |
 | `invalid_request` | 422 | credentials must not be passed as query parameters |
 | `invalid_session_id` | 422 | an agent_id or run_id has a character a ref may not carry |

@@ -210,7 +210,7 @@ async fn managed_launch_bot_rejection_leaves_no_pending_operation() {
             "guard-owner",
             "guard",
             "Guard",
-            jeryu_core::BotKind::Grok,
+            jeryu_core::BotKind::GROK,
             jeryu_core::BotReach::General,
         )
         .expect("fixture enrollment");

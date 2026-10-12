@@ -12,7 +12,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use hmac::{Hmac, KeyInit, Mac};
-use jeryu_core::{AccountSummary, BotKind, BotSession, UserRole};
+use jeryu_core::{AccountSummary, BotSession, UserRole};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use uuid::Uuid;
@@ -98,10 +98,7 @@ pub(super) fn issue_access_token(session: &BotSession, audience: &str) -> Result
     };
     let key = signing_key()?;
     let now = Utc::now().timestamp();
-    let kind = match session.bot.kind {
-        BotKind::Grok => "grok",
-        BotKind::Muse => "muse",
-    };
+    let kind = session.bot.kind.as_str();
     let payload = json!({
         "iss": audience,
         "aud": audience,

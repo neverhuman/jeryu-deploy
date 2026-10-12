@@ -121,14 +121,14 @@ async fn bot_tokens_honor_reach_and_refuse_admin_inheritance() {
     )
     .unwrap();
     let general = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let repo_bot = core
         .enroll_bot(
             "ada",
             "repo",
             "Repo",
-            BotKind::Muse,
+            BotKind::MUSE,
             BotReach::Repositories {
                 repos: vec![BotRepoRef {
                     owner: "ada".to_string(),
@@ -142,7 +142,7 @@ async fn bot_tokens_honor_reach_and_refuse_admin_inheritance() {
             "ada",
             "task",
             "Task",
-            BotKind::Grok,
+            BotKind::GROK,
             BotReach::Task {
                 repo: BotRepoRef {
                     owner: "ada".to_string(),
@@ -322,7 +322,7 @@ async fn refresh_audience_revocation_and_query_credentials() {
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let router = router_for(core.clone());
 
@@ -424,7 +424,7 @@ async fn bot_mcp_mount_hides_admin_tools_and_requires_repo() {
     core.create_account("ada", "ada-password-1", UserRole::Admin)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -512,14 +512,14 @@ async fn bots_cannot_change_the_repository_or_widen_a_branch_task() {
     core.grant_repo_access("bea", "bea", "bea", "widgets", RepoAccessLevel::Write)
         .unwrap();
     let general = core
-        .enroll_bot("bea", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("bea", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let branch_bot = core
         .enroll_bot(
             "bea",
             "feat",
             "Feat",
-            BotKind::Grok,
+            BotKind::GROK,
             BotReach::Task {
                 repo: BotRepoRef {
                     owner: "bea".to_string(),
@@ -635,7 +635,7 @@ async fn bot_token_and_refresh_routes_rate_limit_after_ten() {
     let core = jeryu_core::ForgeCore::new();
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
-    core.enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+    core.enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let router = router_for(core);
     let token_body = r#"{"enrollment_key":"jbk_live.nope.nope","aud":"http://127.0.0.1"}"#;
@@ -684,7 +684,7 @@ async fn refresh_rotates_through_the_route_and_reuse_is_refused() {
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -784,7 +784,7 @@ async fn git_smart_http_denies_a_bot_bearer_outside_its_grant() {
     core.create_repository("ada", repo("open", false)).unwrap();
     core.create_repository("ada", repo("vault", true)).unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let state = WebState::new_with_git_storage(core, root.path().to_path_buf())
         .with_auth(true, false, false);
@@ -860,7 +860,7 @@ async fn bot_mcp_hides_admin_tools_and_denies_an_admin_call() {
     core.create_account("ada", "ada-password-1", UserRole::Admin)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -980,7 +980,7 @@ async fn bot_session_rejects_args_env_and_url() {
     core.grant_repo_access("ada", "ada", "ada", "widgets", RepoAccessLevel::Write)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let router = router_for(core.clone());
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -1057,7 +1057,7 @@ async fn hmac_tampered_bot_token_is_refused() {
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -1095,7 +1095,7 @@ async fn non_hs256_bot_token_is_refused() {
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::Grok, BotReach::General)
+        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -1134,7 +1134,7 @@ async fn agent_tokens_act_as_the_bot_on_rest_and_one_mcp() {
             "dee",
             "atlas",
             "Atlas",
-            BotKind::Grok,
+            BotKind::GROK,
             BotReach::Repositories {
                 repos: vec![BotRepoRef {
                     owner: "dee".to_string(),
@@ -1411,7 +1411,7 @@ async fn token_routes_answer_only_the_owner_and_keep_no_secret() {
     core.grant_repo_access("eve", "eve", "eve", "widgets", RepoAccessLevel::Write)
         .unwrap();
     let bot = core
-        .enroll_bot("eve", "atlas", "Atlas", BotKind::Muse, BotReach::General)
+        .enroll_bot("eve", "atlas", "Atlas", BotKind::MUSE, BotReach::General)
         .unwrap();
     let eve = core
         .create_personal_access_token("eve", "owner", None)

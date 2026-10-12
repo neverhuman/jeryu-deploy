@@ -32,6 +32,7 @@ mod agent_presence_tests;
 mod agent_run_access_tests;
 mod auth_tests;
 mod bot_setup_script;
+mod bots_owner_reach_tests;
 mod bots_tests;
 mod control_plane_tests;
 mod discovery_tests;

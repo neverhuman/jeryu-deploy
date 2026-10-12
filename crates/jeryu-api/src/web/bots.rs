@@ -41,11 +41,15 @@ pub(super) async fn enroll(
     let Some(display_name) = text(&fields, "display_name") else {
         return invalid_body();
     };
-    let Some(kind) = fields
-        .get("kind")
-        .and_then(|value| serde_json::from_value::<BotKind>(value.clone()).ok())
-    else {
-        return invalid_body();
+    // `kind` is a free-form label and grants nothing; omitted or null is
+    // `agent`. Anything else must match `^[a-z][a-z0-9-]{0,31}$`.
+    let kind = match fields.get("kind") {
+        None | Some(Value::Null) => BotKind::default(),
+        Some(Value::String(kind)) => match BotKind::parse(kind) {
+            Ok(kind) => kind,
+            Err(error) => return map_bot_error(error),
+        },
+        Some(_) => return invalid_kind(),
     };
     let Some(reach) = fields
         .get("reach")
@@ -309,7 +313,15 @@ pub(super) fn map_bot_error(error: ForgeError) -> AxumResponse {
             bot_token::invalid_credential()
         }
         ForgeError::Validation(message) => {
-            api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_input", &message)
+            let code = [BotKind::INVALID_CODE, BotReach::INVALID_OWNERS_CODE]
+                .into_iter()
+                .find(|code| {
+                    message
+                        .strip_prefix(code)
+                        .is_some_and(|rest| rest.starts_with(':'))
+                })
+                .unwrap_or("invalid_input");
+            api_error(StatusCode::UNPROCESSABLE_ENTITY, code, &message)
         }
         ForgeError::Conflict(message)
             if ForgeError::machine_text(&message) == "idempotency_conflict" =>
@@ -382,12 +394,8 @@ pub(super) fn body_digest(body: &[u8]) -> String {
 fn enrollment_response(headers: &HeaderMap, enrollment: &BotEnrollment) -> AxumResponse {
     let forge =
         bot_token::request_base_url(headers).unwrap_or_else(|| "http://127.0.0.1:8787".to_string());
-    let kind = match enrollment.bot.kind {
-        BotKind::Grok => "grok",
-        BotKind::Muse => "muse",
-    };
     let setup_script = render_bot_setup_script(
-        kind,
+        enrollment.bot.kind.as_str(),
         &enrollment.bot.slug,
         &forge,
         Some(&enrollment.enrollment_key),
@@ -451,6 +459,14 @@ fn bad_audience() -> AxumResponse {
         StatusCode::BAD_REQUEST,
         "invalid_input",
         "audience is not an acceptable forge origin",
+    )
+}
+
+fn invalid_kind() -> AxumResponse {
+    api_error(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        BotKind::INVALID_CODE,
+        "bot kind must be a string matching ^[a-z][a-z0-9-]{0,31}$",
     )
 }
 
@@ -584,7 +600,10 @@ pub(super) fn record_bot_http(
 
 /// Self-contained setup script. `enrollment_key` is embedded only for the
 /// enroll response; a re-run reads the 0600 file and does not print the key.
-/// `kind` is `grok` or `muse`.
+/// `kind` is the bot's kind. `muse` writes an env file and prints a skill
+/// stub. Every other kind prints an `mcpServers` entry for the loopback proxy,
+/// which any MCP client reads; `grok` also warns that its bots share the
+/// computer. Callers validate the kind (`bot_kind_is_valid`).
 ///
 /// The script writes gh config and the merge token under
 /// `~/.jeryu/bots/<slug>/` and binds its own loopback port. It does not write
@@ -595,11 +614,13 @@ pub fn render_bot_setup_script(
     forge_url: &str,
     enrollment_key: Option<&str>,
 ) -> String {
-    let (label, kind_name) = if kind == "grok" {
-        ("Grokbot", "grok")
-    } else {
-        ("Musebot", "muse")
+    // Callers pass a validated kind; every value is shell-quoted below.
+    let label = match kind {
+        "grok" => "Grokbot",
+        "muse" => "Musebot",
+        other => other,
     };
+    let kind_name = kind;
     let enrollment = match enrollment_key {
         Some(key) => shell_quote(key),
         None => "\"${BOT_ENROLLMENT_KEY:-}\"".to_string(),
@@ -610,6 +631,11 @@ pub fn render_bot_setup_script(
         .replace("@@KIND@@", &shell_quote(kind_name))
         .replace("@@LABEL@@", &shell_quote(label))
         .replace("@@ENROLLMENT@@", &enrollment)
+}
+
+/// Whether `kind` is a valid bot kind: `^[a-z][a-z0-9-]{0,31}$`.
+pub fn bot_kind_is_valid(kind: &str) -> bool {
+    BotKind::is_valid(kind)
 }
 
 fn shell_quote(value: &str) -> String {

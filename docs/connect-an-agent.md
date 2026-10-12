@@ -19,7 +19,8 @@ Tell your human exactly this:
 
 > Please create an agent token for me on the forge. Open `FORGE/bots` (in the
 > menu: **Grokbot and Musebot**, shortcut `g b`), pick or enroll the bot I
-> should act as, choose which repositories it may reach, and under **Agent
+> should act as, choose which repositories it may reach (a list, or every
+> repository you are granted under some owners, such as `acme/*`), and under **Agent
 > tokens** create a token for it. Or, with the API:
 > `POST FORGE/api/v1/bots/<bot-id>/tokens` with body
 > `{"label":"<what I am>","ttl_days":90}` and your own credentials.
@@ -77,7 +78,11 @@ with the header `Authorization: Bearer <token>`. No proxy or helper is needed.
 ## 4. Check that it works
 
 1. `GET FORGE/api/v1/bot/whoami` with the header returns your bot's kind, slug,
-   owner and reach. That reach is the list of repositories you may use.
+   owner and reach. That reach says which repositories you may use: `general`
+   (every repository your human is granted), `owners` (every granted
+   repository under the listed owners, `{"mode":"owners","owners":["acme"]}`
+   meaning `acme/*`), `repositories` (an explicit list), or `task` (one issue,
+   pull request or branch).
 2. Through MCP, `initialize` and then `tools/list`. Expect a handful of
    tools: code navigation and search, codegraph queries, and the tool
    registry summary. Tools that name a repository work only inside your
