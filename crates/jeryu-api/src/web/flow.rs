@@ -71,7 +71,14 @@ fn days(query: &FlowQuery) -> Result<i64, String> {
     let mut chosen: Option<i64> = None;
     for (key, value) in [("days", text(&query.days)), ("window", text(&query.window))] {
         let Some(value) = value else { continue };
-        let stripped = value.strip_suffix('d').unwrap_or(&value);
+        // `days` is a bare number and `window` ends in `d`, as documented.
+        let stripped = if key == "window" {
+            value
+                .strip_suffix('d')
+                .ok_or_else(|| format!("window: {value:?} is not 7d, 28d or 90d"))?
+        } else {
+            value.as_str()
+        };
         one_of(key, stripped, &allowed)?;
         let value: i64 = stripped
             .parse()

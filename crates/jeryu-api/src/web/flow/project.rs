@@ -144,7 +144,15 @@ pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), Stri
     if !first_projection(conn, event)? {
         return Ok(());
     }
-    for lot in lots_for(conn, event)? {
+    for (lot, joined) in lots_for(conn, event)? {
+        // A lot that joins an open pull request's new head leaves Shift and
+        // waits for review of that head, as it would have had it been on the
+        // branch when the pull request opened.
+        if joined && !steps.contains(&Step::Leave(Station::Shift)) {
+            for step in [Step::Leave(Station::Shift), Step::Enter(Station::Review)] {
+                apply_step(conn, event, &lot, step)?;
+            }
+        }
         for step in &steps {
             apply_step(conn, event, &lot, *step)?;
         }
@@ -264,7 +272,17 @@ struct Lot {
 /// branch *of the same repository* (and family, when the event names one)
 /// and is still at Shift. Shift branch names are shared by every repository
 /// and family, so the branch alone is never the join.
-fn lots_for(conn: &Connection, event: &EventView<'_>) -> Result<Vec<Lot>, String> {
+/// Event kinds that bring a head to a shift pull request, and so may carry
+/// the lots waiting at Shift onto it.
+fn sweeps_shift(kind: &str) -> bool {
+    matches!(
+        kind,
+        "shift.pr_opened" | "pr.opened" | "pr.ready_for_review" | "gate.started"
+    )
+}
+
+/// Each lot an event moves, and whether this event swept it off Shift.
+fn lots_for(conn: &Connection, event: &EventView<'_>) -> Result<Vec<(Lot, bool)>, String> {
     if let Some(todo_id) = event.todo_id.map(str::trim).filter(|id| !id.is_empty()) {
         let lot = Lot {
             id: todo_id.to_string(),
@@ -275,34 +293,37 @@ fn lots_for(conn: &Connection, event: &EventView<'_>) -> Result<Vec<Lot>, String
         if let (Some(repo), Some(pr)) = (event.repo, event.pr) {
             adopt(conn, todo_id, repo, pr)?;
         }
-        return Ok(vec![lot]);
+        return Ok(vec![(lot, false)]);
     }
     if let (Some(repo), Some(pr)) = (event.repo, event.pr) {
-        // A shift pull request is the work of the lots on its branch.
-        if let Some(shift) = event.shift.map(str::trim).filter(|s| !s.is_empty()) {
-            let carried = open_at_shift(conn, shift, repo, event.family)?;
-            if !carried.is_empty() {
-                for lot in &carried {
-                    bind_pr(conn, &lot.id, repo, pr)?;
-                }
-                return Ok(carried
-                    .into_iter()
-                    .map(|lot| Lot {
-                        repo: Some(repo.to_string()),
-                        pr: Some(pr),
-                        ..lot
-                    })
-                    .collect());
+        // A shift pull request is the work of the lots on its branch. Only an
+        // event that brings a head (the pull request opening, or a head
+        // joining the gate) sweeps the lots waiting at Shift onto it; a later
+        // verdict on an older head must not move a lot that head never held.
+        let mut swept = Vec::new();
+        if sweeps_shift(event.kind)
+            && let Some(shift) = event.shift.map(str::trim).filter(|s| !s.is_empty())
+        {
+            swept = open_at_shift(conn, shift, repo, event.family)?;
+            for lot in &swept {
+                bind_pr(conn, &lot.id, repo, pr)?;
             }
         }
         // Every lot the pull request already carries: one for an ordinary
         // pull request, every lot its shift swept for a shift pull request.
+        // The sweep is added to them, never in place of them.
         let mut ids = lots_of_pr(conn, repo, pr)?;
+        for lot in &swept {
+            if !ids.contains(&lot.id) {
+                ids.push(lot.id.clone());
+            }
+        }
         if ids.is_empty() {
             ids.push(format!("{repo}#{pr}"));
         }
         let mut lots = Vec::with_capacity(ids.len());
         for id in ids {
+            let joined = swept.iter().any(|lot| lot.id == id);
             let todo_id = conn
                 .query_row(
                     "SELECT todo_id FROM flow_ledger WHERE lot_id = ?1 AND todo_id IS NOT NULL
@@ -312,12 +333,15 @@ fn lots_for(conn: &Connection, event: &EventView<'_>) -> Result<Vec<Lot>, String
                 )
                 .optional()
                 .map_err(|err| err.to_string())?;
-            lots.push(Lot {
-                id,
-                repo: Some(repo.to_string()),
-                pr: Some(pr),
-                todo_id,
-            });
+            lots.push((
+                Lot {
+                    id,
+                    repo: Some(repo.to_string()),
+                    pr: Some(pr),
+                    todo_id,
+                },
+                joined,
+            ));
         }
         return Ok(lots);
     }

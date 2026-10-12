@@ -70,7 +70,15 @@ impl EventStore {
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|err| err.to_string())?;
         migrate_shift_store(&conn)?;
-        replay_flow_ledger(&conn)?;
+        // A failed replay must not keep the event log from starting: its
+        // transaction rolls back, no replay is recorded, and the next start
+        // tries again. Until then Flow answers from what the insert path has
+        // projected since.
+        if let Err(err) = replay_flow_ledger(&conn) {
+            eprintln!(
+                "jeryu-api pipeline: flow ledger replay failed, retried at next start: {err}"
+            );
+        }
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
                 conn,

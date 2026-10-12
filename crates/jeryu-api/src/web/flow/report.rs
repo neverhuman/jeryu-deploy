@@ -496,11 +496,42 @@ fn lots(visits: &[Visit], stations: &[StationReport], now_ms: i64) -> Vec<LotRep
                 eta_s: eta.known,
                 eta_unknown_stations: eta.unknown,
                 slowest_ahead: eta.slowest,
-                href: format!("/work/{}", visit.lot_id),
+                href: lot_href(&visit.lot_id),
             });
         }
     }
     lots
+}
+
+/// Where a lot opens in the web app. A todo's lot is its Work page; a pull
+/// request no todo carries (`<owner>/<repo>#<n>`) opens that pull request.
+pub(super) fn lot_href(lot_id: &str) -> String {
+    if let Some((repo, number)) = lot_id.rsplit_once('#')
+        && let Some((owner, name)) = repo.rsplit_once('/')
+        && !owner.is_empty()
+        && !name.is_empty()
+        && number.parse::<u64>().is_ok()
+    {
+        return format!(
+            "/{}/{}/pull/{number}",
+            path_segment(owner),
+            path_segment(name)
+        );
+    }
+    format!("/work/{}", path_segment(lot_id))
+}
+
+/// One URL path segment: unreserved bytes kept, everything else escaped.
+fn path_segment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// What [`eta`] answers for one lot.

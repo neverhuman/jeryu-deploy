@@ -15,7 +15,7 @@ use rusqlite::{Connection, params};
 use serde_json::Value;
 use tower::ServiceExt;
 
-use super::report::{FLOW_SCHEMA, Request, build, window_start};
+use super::report::{FLOW_SCHEMA, Request, build, lot_href, window_start};
 use super::{Station, Visit};
 use crate::web::pipeline::{EventStore, NewEvent};
 use crate::web::shift::migrate_shift_store_through;
@@ -558,6 +558,112 @@ fn a_shift_pull_request_moves_every_lot_on_its_branch() {
     assert_eq!(lots.len(), 2, "{lots:?}");
 }
 
+/// A todo that lands on a shift branch after its pull request opened is not
+/// the open head's work: a verdict on that head moves the lots the pull request
+/// carries, and the lot waits at Shift until a head that holds it is gated.
+#[test]
+fn a_later_todo_on_an_open_shift_pull_request_waits_for_the_next_head() {
+    let (_dir, store) = store();
+    let shift = "dayshift/2026-10-12";
+    let finish = |todo: &str, done_at: i64| {
+        for (kind, outcome, minute) in [
+            ("todo.filed", None, 0),
+            ("todo.claimed", None, 1),
+            ("todo.attempt_finished", Some("done"), done_at),
+        ] {
+            post(
+                &store,
+                &Post {
+                    kind,
+                    outcome,
+                    todo: Some(todo),
+                    pr: None,
+                    shift: Some(shift),
+                    at_ms: START + minute * MINUTE,
+                },
+            );
+        }
+    };
+    let on_pr = |kind: &str, outcome: Option<&str>, minute: i64| {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: None,
+                pr: Some(31),
+                shift: Some(shift),
+                at_ms: START + minute * MINUTE,
+            },
+        );
+    };
+    let (a, b, c) = (
+        "20261012-000041-aaaaaa",
+        "20261012-000042-bbbbbb",
+        "20261012-000043-cccccc",
+    );
+    finish(a, 8);
+    finish(b, 8);
+    on_pr("shift.pr_opened", None, 10);
+    finish(c, 12);
+    on_pr("gate.finished", Some("success"), 14);
+
+    let visits = visits_of(&store);
+    let of = |lot: &str, station: Station| -> Vec<Visit> {
+        at(&visits, station)
+            .into_iter()
+            .filter(|visit| visit.lot_id == lot)
+            .cloned()
+            .collect()
+    };
+    for lot in [a, b] {
+        let gate = of(lot, Station::Gate);
+        assert_eq!(gate.len(), 1, "{lot} has one gate visit");
+        assert_eq!(
+            gate[0].left_ms,
+            Some(START + 14 * MINUTE),
+            "{lot} left the gate"
+        );
+    }
+    // C was not in the gated head: it is still at Shift and nowhere else.
+    assert!(of(c, Station::Gate).is_empty());
+    assert!(of(c, Station::Review).is_empty());
+    assert_eq!(of(c, Station::Shift)[0].left_ms, None);
+
+    // The next head holds C: gating it carries C onto the pull request.
+    on_pr("gate.started", None, 16);
+    let visits = visits_of(&store);
+    let of = |lot: &str, station: Station| -> Vec<Visit> {
+        at(&visits, station)
+            .into_iter()
+            .filter(|visit| visit.lot_id == lot)
+            .cloned()
+            .collect()
+    };
+    assert_eq!(of(c, Station::Shift)[0].left_ms, Some(START + 16 * MINUTE));
+    assert_eq!(of(c, Station::Review).len(), 1);
+    assert_eq!(of(c, Station::Gate).len(), 1);
+    // A and B are still the pull request's lots, not dropped by the sweep.
+    for lot in [a, b] {
+        assert_eq!(
+            of(lot, Station::Review).len(),
+            1,
+            "{lot} still under review"
+        );
+    }
+}
+
+#[test]
+fn a_lot_links_to_its_todo_or_to_its_pull_request() {
+    assert_eq!(
+        lot_href("20261012-000041-aaaaaa"),
+        "/work/20261012-000041-aaaaaa"
+    );
+    assert_eq!(lot_href("acme/widget#31"), "/acme/widget/pull/31");
+    assert_eq!(lot_href("acme/team/widget#7"), "/acme%2Fteam/widget/pull/7");
+    assert_eq!(lot_href("odd lot#x"), "/work/odd%20lot%23x");
+}
+
 /// Enough lots give every station percentiles, a bottleneck and an ETA; a
 /// station with fewer than three samples is null and says why.
 #[test]
@@ -1000,6 +1106,44 @@ fn a_shift_pull_request_moves_only_its_own_repositorys_lots() {
 
 /// An event re-posted under the same `event_id` after the log pruned the
 /// first copy is stored in the log again, but the ledger counts it once.
+/// A replay that fails leaves the store usable and records nothing, so the
+/// next start replays again.
+#[test]
+fn a_failed_replay_does_not_stop_the_store_from_opening() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shift.sqlite");
+    {
+        let store = EventStore::open(&path).unwrap();
+        forward_lot(&store, "20261012-000051-dddddd", 51, START, false);
+    }
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "DELETE FROM flow_ledger;
+             DELETE FROM flow_ledger_events;
+             DELETE FROM flow_ledger_replay;
+             CREATE TRIGGER refuse_flow BEFORE INSERT ON flow_ledger
+               BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+    }
+    let store = EventStore::open(&path).expect("a failed replay still opens the store");
+    assert!(visits_of(&store).is_empty());
+    drop(store);
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let replays: i64 = conn
+        .query_row("SELECT COUNT(*) FROM flow_ledger_replay", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(replays, 0, "a failed replay is retried at the next start");
+    conn.execute_batch("DROP TRIGGER refuse_flow;").unwrap();
+    drop(conn);
+    let store = EventStore::open(&path).unwrap();
+    assert!(!visits_of(&store).is_empty(), "the retry replays the log");
+}
+
 #[test]
 fn an_event_reposted_after_the_prune_is_projected_once() {
     let (_dir, store) = store();
@@ -1325,6 +1469,8 @@ async fn flow_route_is_admin_only_refuses_bad_windows_and_answers_real_numbers()
         "/api/v1/flow?days=seven",
         "/api/v1/flow?window=30d",
         "/api/v1/flow?days=7&window=28d",
+        "/api/v1/flow?days=7d",
+        "/api/v1/flow?window=7",
         "/api/v1/flow?dayss=7",
     ] {
         let response = call(bad, &admin).await.unwrap();
