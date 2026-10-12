@@ -260,6 +260,8 @@ fn query_params(path: &str) -> &'static [&'static str] {
         "/api/v1/repos/:id/merge-queue" => keys::<super::merge_queue::QueuePageQuery>(),
         "/api/v1/shift/todos" => keys::<super::shift::TodosQuery>(),
         "/api/v1/shift/workers" => keys::<super::shift::WorkersQuery>(),
+        "/api/v1/agent-presence" => keys::<super::agent_presence::PresenceOverviewQuery>(),
+        "/api/v1/repos/:id/agent-presence" => keys::<super::agent_presence::PresenceRepoQuery>(),
         "/api/v1/search" => &["q"],
         "/api/v1/audit"
         | "/api/v1/agent-runs"

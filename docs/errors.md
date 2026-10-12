@@ -157,6 +157,13 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `permission_denied` | 403 | the account lacks the permission this request needs |
 | `pins_collect_failed` | 500 | the deploy pins could not be collected |
 | `policy_denied` | 403 | a repository policy blocks this request |
+| `presence_invalid_request` | 422 | the agent presence beat failed validation |
+| `presence_repo_unknown` | 422 | the beat names a repository this forge does not host, or one the caller cannot see |
+| `presence_scope_empty` | 422 | an agent presence beat must name at least one repository or family |
+| `presence_scope_forbidden` | 403 | the login may not report a session on that repository or family |
+| `presence_session_not_found` | 404 | no agent presence session has that id |
+| `presence_session_owned` | 409 | another login registered this agent presence session |
+| `presence_store_failed` | 500 | the agent presence store could not be read or written |
 | `pull_approve_invalid_request` | 422 | the approval body failed validation |
 | `pull_comment_body_required` | 422 | a pull request comment needs a body |
 | `pull_comment_invalid_request` | 422 | the pull request comment body failed validation |

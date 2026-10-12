@@ -404,6 +404,41 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "a repository policy blocks this request",
     ),
     entry(
+        "presence_invalid_request",
+        422,
+        "the agent presence beat failed validation",
+    ),
+    entry(
+        "presence_repo_unknown",
+        422,
+        "the beat names a repository this forge does not host, or one the caller cannot see",
+    ),
+    entry(
+        "presence_scope_empty",
+        422,
+        "an agent presence beat must name at least one repository or family",
+    ),
+    entry(
+        "presence_scope_forbidden",
+        403,
+        "the login may not report a session on that repository or family",
+    ),
+    entry(
+        "presence_session_not_found",
+        404,
+        "no agent presence session has that id",
+    ),
+    entry(
+        "presence_session_owned",
+        409,
+        "another login registered this agent presence session",
+    ),
+    entry(
+        "presence_store_failed",
+        500,
+        "the agent presence store could not be read or written",
+    ),
+    entry(
         "pull_approve_invalid_request",
         422,
         "the approval body failed validation",

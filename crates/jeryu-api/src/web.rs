@@ -1,5 +1,6 @@
 //! Axum HTTP/WebSocket edge for the local live Jeryu API.
 
+mod agent_presence;
 mod agent_runs;
 pub(crate) mod auth;
 pub(crate) mod bot_token;
@@ -158,6 +159,9 @@ pub(crate) struct WebState {
     /// durable run intents in `<data_dir>/shift.sqlite` (`agent_run_intents`)
     /// that every acknowledged run id comes from.
     pub(crate) agent_runs: agent_runs::AgentRunStore,
+    /// Reported coding-agent sessions (`<data_dir>/shift.sqlite`,
+    /// `agent_presence`) and the logins that may report any scope.
+    pub(crate) agent_presence: agent_presence::AgentPresenceState,
     /// Live PR gate runners, fed by `POST /api/v1/runners/heartbeat`.
     pub(crate) gate_runners: control_plane::GateRunnerStore,
     /// Family release boards, fed by `PUT /api/v1/release-board/:family`.
@@ -341,6 +345,7 @@ impl WebState {
             workcells: Arc::new(Mutex::new(WorkcellManager::new())),
             agent_runs: agent_runs::AgentRunStore::open(&shift_path)
                 .expect("open agent run intent store"),
+            agent_presence: agent_presence::AgentPresenceState::open(&shift_path),
             gate_runners: control_plane::GateRunnerStore::from_env(),
             release_boards: release_board::ReleaseBoardStore::from_env(),
             merge_queue: Arc::default(),
@@ -911,6 +916,17 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/admin/repos/:owner/:repo/grants/:login",
             post(auth::admin_grant_repo).delete(auth::admin_revoke_repo),
         ),
+        // Coding agents report their sessions here; the handler decides who
+        // may report what (docs/agent-presence.md). Not under /agent-runs,
+        // which is admin-only by path.
+        (
+            "/api/v1/agent-presence",
+            get(agent_presence::overview).post(agent_presence::beat),
+        ),
+        (
+            "/api/v1/agent-presence/:session_id",
+            axum::routing::delete(agent_presence::end),
+        ),
         (
             "/api/v1/agent-runs",
             get(agent_runs::list).post(agent_runs::start),
@@ -976,6 +992,12 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/repos/:id/bots", get(bots::roster)),
         ("/api/v1/repos/:id/bot-activity", get(bots::activity)),
         ("/api/v1/repos/:id/agent-runs", get(sessions::list)),
+        // Every coding agent on the repository, reported or forge-side
+        // (docs/agent-presence.md).
+        (
+            "/api/v1/repos/:id/agent-presence",
+            get(agent_presence::repo_list),
+        ),
         (
             "/api/v1/repos/:id/work",
             get(work::repo_list).post(work::repo_create),

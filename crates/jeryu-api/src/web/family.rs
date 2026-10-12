@@ -83,6 +83,18 @@ pub(crate) fn known(state: &WebState) -> BTreeSet<String> {
     families
 }
 
+/// Every hosted repository whose family is `key` (a canonical key), by the
+/// same rule the repository list's `?family=` filter uses.
+pub(crate) fn repositories(state: &WebState, key: &str) -> Vec<jeryu_core::Repository> {
+    state
+        .github
+        .core()
+        .list_repositories(None)
+        .into_iter()
+        .filter(|repo| super::repositories::effective_family(state, repo).as_deref() == Some(key))
+        .collect()
+}
+
 /// The typed 400 for a family the forge does not know.
 pub(crate) fn unknown(state: &WebState, raw: &str) -> AxumResponse {
     let known: Vec<String> = known(state).into_iter().collect();
