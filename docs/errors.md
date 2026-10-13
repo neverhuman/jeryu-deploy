@@ -510,6 +510,8 @@ and its output drained) are status frames, not errors.
 
 Receive-pack rejects command preludes it cannot parse, duplicate refs, and pushes
 with more than 64 ref updates before Git changes a ref. Split larger batches.
+Git's exact flush-only HTTP connection probe is preserved without a PR read;
+an empty body or a flush followed by garbage is refused.
 One PR listing supplies every merged-branch guard and at most 16 branch notices;
 a side-band message points to Needs you when additional notices were omitted.
 

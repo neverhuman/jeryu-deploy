@@ -32,7 +32,9 @@ pub(super) fn commands(body: &[u8]) -> Result<Vec<ReceivePackCommand>, Box<Respo
             "receive-pack commands could not be parsed",
         )
     })?;
-    if commands.is_empty() || commands.len() > MAX_PUSH_REFS {
+    // Git's large HTTP pushes use a flush-only connection probe. It names
+    // no refs. Preserve only that exact no-op, never an unparsed body.
+    if (commands.is_empty() && body != b"0000") || commands.len() > MAX_PUSH_REFS {
         return Err(error(
             StatusCode::BAD_REQUEST,
             "receive_pack_ref_limit",
@@ -127,6 +129,19 @@ impl PushPolicy {
         read_pulls: impl FnOnce() -> Result<Vec<PullRequest>, ForgeError>,
     ) -> Result<Self, Box<Response>> {
         let permit = admin_override(state, headers)?;
+        if commands.is_empty() {
+            if permit.is_some() {
+                return Err(error(
+                    StatusCode::BAD_REQUEST,
+                    "merged_branch_override_mismatch",
+                    "an override cannot authorize a no-op probe",
+                ));
+            }
+            return Ok(Self {
+                pulls: Vec::new(),
+                now: Utc::now(),
+            });
+        }
         let default = state
             .core
             .get_repository(owner, repo)

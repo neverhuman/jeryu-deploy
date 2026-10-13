@@ -279,12 +279,34 @@ async fn malformed_and_over_limit_requests_leave_refs_unchanged() {
         b"zzzz".to_vec(),
         b"0001".to_vec(),
         b"0008abc".to_vec(),
+        b"0000garbage".to_vec(),
+        Vec::new(),
         f.body(MAX_PUSH_REFS + 1),
     ] {
         let (status, _) = f.push(&f.admin, None, body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(f.head(), f.old);
     }
+}
+
+#[tokio::test]
+async fn the_exact_flush_only_probe_is_preserved_without_reading_prs_or_moving_refs() {
+    let f = Fixture::new();
+    let probe = commands(b"0000").unwrap();
+    assert!(probe.is_empty());
+    let _policy = PushPolicy::inspect(
+        &f.state,
+        "alice",
+        "repo",
+        &probe,
+        &HeaderMap::new(),
+        false,
+        || panic!("a no-op probe must not read PRs"),
+    )
+    .unwrap();
+    let (status, _) = f.push(&f.admin, None, b"0000".to_vec()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(f.head(), f.old);
 }
 
 #[tokio::test]
