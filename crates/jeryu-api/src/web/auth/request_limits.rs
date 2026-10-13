@@ -3,13 +3,16 @@
 //! - reads (`GET`/`HEAD`) by one bearer token or session are capped per
 //!   window, so a runaway polling agent answers 429 instead of hammering the
 //!   read model;
-//! - credentials that fail to authenticate are counted per client address,
-//!   and once that address is over the cap it answers 429 before any further
-//!   token is checked.
+//! - a credential that fails to authenticate is counted against itself (its
+//!   digest and the client address), so a job looping with a dead token
+//!   throttles only itself, and against a looser per-address backstop that
+//!   catches a client spraying many different bad credentials.
 //!
-//! Trusted local-dev requests carry no credential and are never limited.
-//! Both caps read an environment override once (`JERYU_READ_RATE_LIMIT`,
-//! `JERYU_BAD_TOKEN_RATE_LIMIT`, requests per minute; `0` disables).
+//! A request is authenticated before any failure cap is consulted, so a valid
+//! credential is never refused by them. Trusted local-dev requests carry no
+//! credential and are never limited. Every cap reads an environment override
+//! once (`JERYU_READ_RATE_LIMIT`, `JERYU_BAD_TOKEN_RATE_LIMIT`,
+//! `JERYU_BAD_TOKEN_IP_RATE_LIMIT`, requests per minute; `0` disables).
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -25,6 +28,10 @@ use crate::web::api_error;
 pub(super) const LIMIT_WINDOW_SECS: i64 = 60;
 const DEFAULT_READS_PER_WINDOW: u32 = 600;
 const DEFAULT_BAD_TOKENS_PER_WINDOW: u32 = 20;
+/// The per-address backstop is deliberately far above the per-credential cap:
+/// it is there for a client trying many different credentials, not for one
+/// host whose single job loops on a revoked token.
+const DEFAULT_BAD_TOKEN_IPS_PER_WINDOW: u32 = 200;
 /// Expired buckets are swept once the map grows past this many keys.
 const SWEEP_AT_KEYS: usize = 4096;
 
@@ -36,6 +43,17 @@ pub(super) fn reads_per_window() -> u32 {
 pub(super) fn bad_tokens_per_window() -> u32 {
     static LIMIT: OnceLock<u32> = OnceLock::new();
     *LIMIT.get_or_init(|| env_limit("JERYU_BAD_TOKEN_RATE_LIMIT", DEFAULT_BAD_TOKENS_PER_WINDOW))
+}
+
+/// The per-address backstop against a client spraying many bad credentials.
+pub(super) fn bad_tokens_per_ip_window() -> u32 {
+    static LIMIT: OnceLock<u32> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        env_limit(
+            "JERYU_BAD_TOKEN_IP_RATE_LIMIT",
+            DEFAULT_BAD_TOKEN_IPS_PER_WINDOW,
+        )
+    })
 }
 
 fn env_limit(name: &str, default: u32) -> u32 {
@@ -184,19 +202,6 @@ pub(super) fn hit_with_budget(
         over,
         Budget::new(max, bucket.attempts, bucket.reset_at, now),
     )
-}
-
-/// What `key` has left without counting this request.
-pub(super) fn budget_for(
-    limits: &BTreeMap<String, RateLimitBucket>,
-    key: &str,
-    now: DateTime<Utc>,
-    max: u32,
-) -> Budget {
-    match limits.get(key).filter(|bucket| bucket.reset_at > now) {
-        Some(bucket) => Budget::new(max, bucket.attempts, bucket.reset_at, now),
-        None => Budget::full(max, now),
-    }
 }
 
 /// Stamps the rate-limit budget on a reply. A limit of zero is a disabled cap,

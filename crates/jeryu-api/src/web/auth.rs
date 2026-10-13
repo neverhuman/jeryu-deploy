@@ -684,25 +684,10 @@ pub(super) async fn gate(
         }
     } else {
         let ip = client_ip(peer, request.headers());
-        let bad_key = format!("bad-credential:{ip}");
         let credential = request_limits::credential_key(request.headers());
-        if credential.is_some() {
-            let budget = request_limits::budget_for(
-                &state
-                    .auth_rate_limits
-                    .lock()
-                    .expect("auth rate-limit mutex poisoned"),
-                &bad_key,
-                Utc::now(),
-                request_limits::bad_tokens_per_window(),
-            );
-            if budget.remaining == 0 {
-                return request_limits::refused(
-                    "too many failed credentials from this client",
-                    &budget,
-                );
-            }
-        }
+        // Authenticate before any failure cap is consulted: a request whose
+        // credential is valid is never refused because some other credential
+        // from the same address is failing.
         match authenticate_headers(&state, request.headers()) {
             Some(auth) => {
                 let read = matches!(*request.method(), Method::GET | Method::HEAD);
@@ -729,17 +714,14 @@ pub(super) async fn gate(
                 auth
             }
             None => {
-                if credential.is_some() {
-                    request_limits::hit(
-                        &mut state
-                            .auth_rate_limits
-                            .lock()
-                            .expect("auth rate-limit mutex poisoned"),
-                        bad_key,
-                        Utc::now(),
-                        request_limits::bad_tokens_per_window(),
-                    );
-                } else if anonymous_read_allowed(&state, request.method(), request.uri().path()) {
+                if let Some(credential) = &credential
+                    && let Some(refusal) = count_failed_credential(&state, ip, credential)
+                {
+                    return refusal;
+                }
+                if credential.is_none()
+                    && anonymous_read_allowed(&state, request.method(), request.uri().path())
+                {
                     request.extensions_mut().insert(anonymous_account());
                     return next.run(request).await;
                 }
@@ -909,6 +891,45 @@ pub(super) async fn gate(
         request_limits::stamp(&mut response, &budget);
     }
     response
+}
+
+/// Counts one failed credential against its own bucket (address plus
+/// credential digest) and against the per-address backstop, and refuses the
+/// request once either is over its cap.
+fn count_failed_credential(state: &WebState, ip: IpAddr, credential: &str) -> Option<AxumResponse> {
+    let now = Utc::now();
+    let mut limits = state
+        .auth_rate_limits
+        .lock()
+        .expect("auth rate-limit mutex poisoned");
+    let (credential_over, credential_budget) = request_limits::hit_with_budget(
+        &mut limits,
+        format!("bad-credential:{ip}:{credential}"),
+        now,
+        request_limits::bad_tokens_per_window(),
+    );
+    let (address_over, address_budget) = request_limits::hit_with_budget(
+        &mut limits,
+        format!("bad-credential-address:{ip}"),
+        now,
+        request_limits::bad_tokens_per_ip_window(),
+    );
+    drop(limits);
+    if credential_over {
+        return Some(request_limits::refused(
+            "this credential has failed to authenticate too many times and is rate limited; \
+             look for a job looping with a revoked or mistyped credential. Other credentials \
+             from this address are unaffected",
+            &credential_budget,
+        ));
+    }
+    if address_over {
+        return Some(request_limits::refused(
+            "too many different credentials have failed to authenticate from this address",
+            &address_budget,
+        ));
+    }
+    None
 }
 
 pub(crate) fn authenticate_headers(state: &WebState, headers: &HeaderMap) -> Option<HeaderAuth> {

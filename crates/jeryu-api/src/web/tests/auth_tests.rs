@@ -807,6 +807,156 @@ async fn a_metered_read_carries_the_rate_limit_budget() {
     assert!(!headers.contains_key(header::RETRY_AFTER));
 }
 
+/// One job looping on a dead token must not lock the office out: the failure
+/// cap is keyed by the credential, so a valid token and a valid browser
+/// session from the same address still answer 200.
+#[tokio::test]
+async fn a_failing_token_never_refuses_valid_credentials_from_the_same_address() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::User)
+        .unwrap();
+    let token = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "login": "alice", "password": "alice-password" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("login sets a session cookie")
+        .split(';')
+        .next()
+        .expect("cookie name and value")
+        .to_string();
+
+    // Well past the per-credential cap of 20, all from the same address.
+    for _ in 0..25 {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/work")
+                    .header(header::AUTHORIZATION, "Bearer not-a-real-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let with_token = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(with_token.status(), StatusCode::OK);
+
+    let with_session = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(with_session.status(), StatusCode::OK);
+
+    // The looping token itself is still refused, and the answer names the
+    // credential as the thing that is limited.
+    let limited = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/work")
+                .header(header::AUTHORIZATION, "Bearer not-a-real-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = response_json(limited).await;
+    let message = body["message"].as_str().unwrap_or_default().to_string();
+    assert!(
+        message.contains("this credential"),
+        "the 429 names the failing credential: {message}"
+    );
+}
+
+/// A client spraying many different bad credentials still meets a per-address
+/// backstop, so the per-credential key is not a way around the cap.
+#[tokio::test]
+async fn many_distinct_bad_credentials_from_one_address_hit_the_backstop() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let app = app(
+        WebState::new(ForgeCore::new()).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let send = |app: axum::Router, token: String| async move {
+        app.oneshot(
+            Request::builder()
+                .uri("/api/v1/work")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    };
+    for attempt in 0..200 {
+        assert_eq!(
+            send(app.clone(), format!("sprayed-token-{attempt}"))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "attempt {attempt} is a first failure for its own credential"
+        );
+    }
+    let limited = send(app, "sprayed-token-200".to_string()).await;
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = response_json(limited).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("from this address")
+    );
+}
+
 /// Personal access tokens and logins answer with a credential (the plaintext
 /// token, the session cookie), so their answer is not kept: a repeat with the
 /// same `Idempotency-Key` gets the placeholder instead, and the write still
