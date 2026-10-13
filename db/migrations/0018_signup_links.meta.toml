@@ -1,0 +1,31 @@
+# Structured metadata for 0018_signup_links.sql. The SQL file is
+# checksum-bound once applied, so its lock and timeout posture lives here.
+#
+# The store is SQLite, not PostgreSQL: there is no `SET lock_timeout` or
+# `SET statement_timeout` to put in the SQL (SQLite rejects both). The
+# equivalents below are what bound this migration in practice.
+
+migration = "0018_signup_links"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/signup.rs"
+apply = "AccountEmailStore::open -> migrate(), one transaction per migration"
+
+[lock_timeout]
+# SQLite's lock wait is the connection busy timeout, set before migrate() runs.
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+
+[statement_timeout]
+# SQLite has no statement timeout. An empty CREATE TABLE, two indexes over no
+# rows, and ADD COLUMN of a nullable column without a default, which rewrites
+# no row of account_emails.
+mechanism = "one table creation over no rows and a metadata-only ADD COLUMN"
+value = "milliseconds"
+
+[rollback]
+plan = "stop the server, DROP TABLE signup_links and delete version 18 from shift_schema_migrations; account_emails.reset_mailed_ms may stay, since an older binary never reads it; roll back together with the binary"
+backup = "sqlite3 shift.sqlite '.backup signup-links.sqlite' before rollback; only links in flight are lost, and their holders ask for a new one"
+
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::tests::signup_tests web::tests::admin_reset_tests (a store migrates through 0018, sign-up needs a spent link, and a mailed admin reset proves the address on the forced change)"

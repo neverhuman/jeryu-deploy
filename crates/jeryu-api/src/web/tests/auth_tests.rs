@@ -1,15 +1,24 @@
 use super::*;
 
+/// A sign-up link for `address`, issued through the store as
+/// `POST /api/v1/auth/signup/start` would mail it.
+fn signup_token(state: &WebState, address: &str) -> String {
+    state
+        .account_email
+        .issue_signup(address, chrono::Utc::now().timestamp_millis())
+        .expect("issue a sign-up link")
+        .secret
+}
+
 #[tokio::test]
 async fn signup_issues_session_cookie_for_followup_api_calls() {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
 
-    let app = app(
-        WebState::new(ForgeCore::new()).with_auth(true, false, false),
-        std::path::Path::new("/tmp/jeryu-no-spa"),
-    );
+    let state = WebState::new(ForgeCore::new()).with_auth(true, false, false);
+    let token = signup_token(&state, "newuser@example.com");
+    let app = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
     let response = app
         .clone()
         .oneshot(
@@ -19,6 +28,7 @@ async fn signup_issues_session_cookie_for_followup_api_calls() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::json!({
+                        "token": token,
                         "login": "newuser",
                         "password": "correct horse"
                     })
@@ -250,10 +260,9 @@ async fn admin_sees_all_repositories_but_fresh_signup_sees_none() {
     }
     core.create_account("jeryu-admin", "admin-password-123", UserRole::Admin)
         .unwrap();
-    let app = app(
-        WebState::new(core).with_auth(true, false, false),
-        std::path::Path::new("/tmp/jeryu-no-spa"),
-    );
+    let state = WebState::new(core).with_auth(true, false, false);
+    let token = signup_token(&state, "freshuser@example.com");
+    let app = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
 
     let admin_login = app
         .clone()
@@ -315,6 +324,7 @@ async fn admin_sees_all_repositories_but_fresh_signup_sees_none() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::json!({
+                        "token": token,
                         "login": "freshuser",
                         "password": "fresh-password-123"
                     })
@@ -495,10 +505,9 @@ async fn cookie_auth_mutations_require_csrf_and_pat_lifecycle_is_user_scoped() {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    let app = app(
-        WebState::new(ForgeCore::new()).with_auth(true, false, false),
-        std::path::Path::new("/tmp/jeryu-no-spa"),
-    );
+    let state = WebState::new(ForgeCore::new()).with_auth(true, false, false);
+    let token = signup_token(&state, "tokenuser@example.com");
+    let app = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
     let signup = app
         .clone()
         .oneshot(
@@ -508,6 +517,7 @@ async fn cookie_auth_mutations_require_csrf_and_pat_lifecycle_is_user_scoped() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::json!({
+                        "token": token,
                         "login": "tokenuser",
                         "password": "correct horse"
                     })

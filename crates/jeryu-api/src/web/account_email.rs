@@ -37,6 +37,9 @@
 //! - Nothing here writes a secret or an address to a log, and the rate-limit
 //!   keys hold a digest of the address rather than the address.
 //!
+//! Sign-up from a proved address (`super::signup`) and the administrator's
+//! mailed reset (`super::admin_reset`) are built on this store.
+//!
 //! Operator configuration and the backfill policy for accounts that already
 //! exist: `docs/account-email.md`.
 
@@ -71,7 +74,7 @@ const RESET_TTL_MS: i64 = 60 * 60 * 1000;
 /// rather than from an empty table.
 const TOKEN_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
-const HOUR_SECS: i64 = 60 * 60;
+pub(super) const HOUR_SECS: i64 = 60 * 60;
 /// One client address may ask for five reset links an hour, whatever address
 /// it names, and a separate route bucket caps the whole path per minute.
 const FORGOT_IP_MAX: u32 = 5;
@@ -93,7 +96,7 @@ pub(super) const ACCOUNT_EMAIL_BODY_MAX: usize = 4096;
 
 /// Core's own floor, checked here so a weak password is refused before the
 /// one-use link is spent on it.
-const PASSWORD_MIN_BYTES: usize = 12;
+pub(super) const PASSWORD_MIN_BYTES: usize = 12;
 
 const EMAIL_MAX: usize = 254;
 const LOCAL_MAX: usize = 64;
@@ -145,7 +148,7 @@ pub(crate) struct SpentLink {
 
 /// The secret half of a freshly issued link. Never stored, never logged.
 pub(crate) struct IssuedLink {
-    secret: String,
+    pub(super) secret: String,
 }
 
 impl IssuedLink {
@@ -182,7 +185,7 @@ impl AccountEmailStore {
         })
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(super) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.inner.lock().expect("account email mutex poisoned")
     }
 
@@ -206,7 +209,8 @@ impl AccountEmailStore {
     /// Store `address` (already folded by [`normalize_address`]) for `login`,
     /// unproved, and retire every link the account still had outstanding: an
     /// address the person is replacing must not keep a live reset link in its
-    /// mailbox.
+    /// mailbox. A temporary password mailed to the old address proves nothing
+    /// about the new one, so the mailed-reset marker is cleared too.
     ///
     /// Returns `false` when another account already holds the address.
     pub(crate) fn claim(&self, login: &str, address: &str, now_ms: i64) -> Result<bool, String> {
@@ -229,7 +233,8 @@ impl AccountEmailStore {
              ON CONFLICT(login) DO UPDATE SET
                address = excluded.address,
                verified_ms = NULL,
-               added_ms = excluded.added_ms",
+               added_ms = excluded.added_ms,
+               reset_mailed_ms = NULL",
             params![login, address, now_ms],
         )
         .map_err(|err| err.to_string())?;
@@ -395,20 +400,20 @@ impl AccountEmailStore {
 ///
 /// `Uuid::new_v4` is the crate's seam onto `getrandom`; two of them carry 244
 /// unpredictable bits, well past what a link needs.
-fn random_secret() -> String {
+pub(super) fn random_secret() -> String {
     let mut bytes = [0_u8; 32];
     bytes[..16].copy_from_slice(Uuid::new_v4().as_bytes());
     bytes[16..].copy_from_slice(Uuid::new_v4().as_bytes());
     hex::encode(bytes)
 }
 
-fn digest(secret: &str) -> String {
+pub(super) fn digest(secret: &str) -> String {
     hex::encode(Sha256::digest(secret.as_bytes()))
 }
 
 /// A rate-limit key that identifies an address without holding it: the
 /// limiter's map is in memory and read by anything that can print the state.
-fn address_key(address: &str) -> String {
+pub(super) fn address_key(address: &str) -> String {
     hex::encode(&Sha256::digest(address.as_bytes())[..16])
 }
 
@@ -949,11 +954,11 @@ async fn send_verification(state: &Arc<WebState>, login: &str, address: &str, no
     }
 }
 
-const DOCS: &str = "docs/account-email.md";
+pub(super) const DOCS: &str = "docs/account-email.md";
 
 /// Every unspendable link is this one refusal, so a caller cannot tell an
 /// expired link from a replayed one from a guess.
-fn link_refused(code: &str) -> AxumResponse {
+pub(super) fn link_refused(code: &str) -> AxumResponse {
     api_error(
         StatusCode::UNPROCESSABLE_ENTITY,
         code,
@@ -961,7 +966,7 @@ fn link_refused(code: &str) -> AxumResponse {
     )
 }
 
-fn storage_failed(message: &str, error: &str) -> AxumResponse {
+pub(super) fn storage_failed(message: &str, error: &str) -> AxumResponse {
     api_error(
         StatusCode::INTERNAL_SERVER_ERROR,
         "storage_failed",
@@ -976,7 +981,13 @@ fn storage_failed(message: &str, error: &str) -> AxumResponse {
 /// `phase` is core's closed set — `requested`, `completed` or `failed`. A
 /// request that reached nothing to send to is `requested`: it happened and
 /// went no further, which is not a failure of the forge.
-fn audit(state: &WebState, actor: &str, action: &str, phase: &str, detail: serde_json::Value) {
+pub(super) fn audit(
+    state: &WebState,
+    actor: &str,
+    action: &str,
+    phase: &str,
+    detail: serde_json::Value,
+) {
     let _ = state
         .core
         .append_audit_as(actor, action, "account_email", phase, detail);

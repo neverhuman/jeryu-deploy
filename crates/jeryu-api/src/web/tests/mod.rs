@@ -28,6 +28,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 mod account_email_tests;
+mod admin_reset_tests;
 mod agent_presence_tests;
 mod agent_run_access_tests;
 mod auth_tests;
@@ -51,6 +52,7 @@ mod release_board_tests;
 mod repo_admin_tests;
 mod repo_automation_tests;
 mod repo_list_tests;
+mod signup_tests;
 mod site_settings_tests;
 mod source_tests;
 mod surface_tests;

@@ -1,6 +1,7 @@
 //! Axum HTTP/WebSocket edge for the local live Jeryu API.
 
 mod account_email;
+mod admin_reset;
 mod agent_presence;
 mod agent_runs;
 pub(crate) mod auth;
@@ -51,6 +52,7 @@ mod route_index;
 mod search;
 mod sessions;
 pub(crate) mod shift;
+mod signup;
 mod site_settings;
 mod strict_query;
 mod surface;
@@ -980,7 +982,15 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/bot/token", post(bots::exchange_token)),
         ("/api/v1/bot/token/refresh", post(bots::refresh_token)),
         ("/api/v1/bot/whoami", get(bots::whoami)),
-        ("/api/v1/auth/signup", post(auth::signup)),
+        (
+            "/api/v1/auth/signup/start",
+            post(signup::start).layer(DefaultBodyLimit::max(account_email::ACCOUNT_EMAIL_BODY_MAX)),
+        ),
+        (
+            "/api/v1/auth/signup",
+            post(signup::complete)
+                .layer(DefaultBodyLimit::max(account_email::ACCOUNT_EMAIL_BODY_MAX)),
+        ),
         ("/api/v1/auth/login", post(auth::login)),
         (
             "/api/v1/waitlist",
@@ -1039,7 +1049,8 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         (
             "/api/v1/admin/users/:login/reset-password",
-            post(auth::admin_reset_password),
+            post(admin_reset::admin_reset_password)
+                .layer(DefaultBodyLimit::max(account_email::ACCOUNT_EMAIL_BODY_MAX)),
         ),
         (
             "/api/v1/admin/repos/:owner/:repo/grants",

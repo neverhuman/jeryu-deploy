@@ -215,6 +215,21 @@ fn with_kind(account: &AccountSummary, kind: &Kind) -> Value {
     value
 }
 
+/// `email` (the stored address or `null`) and `emailVerified`, so an
+/// administrator can see who a mailed reset would reach.
+fn with_email(value: &mut Value, email: Option<&super::account_email::AccountEmail>) {
+    if let Value::Object(map) = value {
+        map.insert(
+            "email".into(),
+            email.map_or(Value::Null, |email| Value::from(email.address.clone())),
+        );
+        map.insert(
+            "emailVerified".into(),
+            Value::from(email.is_some_and(super::account_email::AccountEmail::is_verified)),
+        );
+    }
+}
+
 /// `GET /api/v1/admin/users`
 pub(crate) async fn admin_users(
     State(state): State<Arc<WebState>>,
@@ -227,11 +242,24 @@ pub(crate) async fn admin_users(
         Ok(stored) => stored,
         Err(error) => return storage_error(&error),
     };
+    let emails = match state.account_email.all() {
+        Ok(emails) => emails,
+        Err(error) => {
+            return super::account_email::storage_failed(
+                "could not read the account addresses",
+                &error,
+            );
+        }
+    };
     let users: Vec<Value> = state
         .core
         .list_accounts()
         .iter()
-        .map(|user| with_kind(user, &resolve(&state, &stored, &user.login)))
+        .map(|user| {
+            let mut value = with_kind(user, &resolve(&state, &stored, &user.login));
+            with_email(&mut value, emails.get(&user.login));
+            value
+        })
         .collect();
     Json(users).into_response()
 }

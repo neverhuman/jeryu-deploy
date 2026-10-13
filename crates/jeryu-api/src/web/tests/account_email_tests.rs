@@ -19,26 +19,26 @@ use tower::ServiceExt;
 const PASSWORD: &str = "first-password-1";
 const NEW_PASSWORD: &str = "second-password-2";
 
-struct Forge {
-    router: axum::Router,
-    store: AccountEmailStore,
-    mailer: Mailer,
-    core: ForgeCore,
+pub(super) struct Forge {
+    pub(super) router: axum::Router,
+    pub(super) store: AccountEmailStore,
+    pub(super) mailer: Mailer,
+    pub(super) core: ForgeCore,
     /// A personal access token for `ada`, the account under test.
-    ada: String,
+    pub(super) ada: String,
 }
 
-fn forge() -> Forge {
+pub(super) fn forge() -> Forge {
     forge_with_mailer(Mailer::recording())
 }
 
-fn forge_with_mailer(mailer: Mailer) -> Forge {
+pub(super) fn forge_with_mailer(mailer: Mailer) -> Forge {
     forge_with(mailer, ForgeCore::new())
 }
 
 /// A forge whose core is backed by SQLite, which is what gives it an audit
 /// trail: the in-memory core keeps none.
-fn audited_forge(mailer: Mailer) -> (Forge, tempfile::TempDir) {
+pub(super) fn audited_forge(mailer: Mailer) -> (Forge, tempfile::TempDir) {
     let dir = tempdir().expect("forge dir");
     let core = ForgeCore::open_sqlite(dir.path().join("forge.sqlite")).expect("open the forge");
     (forge_with(mailer, core), dir)
@@ -64,7 +64,7 @@ fn forge_with(mailer: Mailer, core: ForgeCore) -> Forge {
     }
 }
 
-async fn send(
+pub(super) async fn send(
     router: &axum::Router,
     method: HttpMethod,
     uri: &str,
@@ -92,7 +92,7 @@ async fn send(
     (status, headers, bytes)
 }
 
-async fn json_reply(
+pub(super) async fn json_reply(
     router: &axum::Router,
     method: HttpMethod,
     uri: &str,
@@ -107,7 +107,7 @@ async fn json_reply(
 }
 
 /// The `token=` query value of the one link in the newest message.
-fn newest_link_secret(mailer: &Mailer) -> String {
+pub(super) fn newest_link_secret(mailer: &Mailer) -> String {
     let (_, rendered) = mailer
         .sent()
         .pop()
@@ -121,7 +121,7 @@ fn newest_link_secret(mailer: &Mailer) -> String {
 }
 
 /// Claim an address and follow its verification link, as a person does.
-async fn verify_address(forge: &Forge, address: &str) {
+pub(super) async fn verify_address(forge: &Forge, address: &str) {
     let (status, body) = json_reply(
         &forge.router,
         HttpMethod::PUT,

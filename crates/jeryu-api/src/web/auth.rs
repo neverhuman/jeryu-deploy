@@ -1,4 +1,8 @@
 //! Web account/session endpoints and auth middleware.
+//!
+//! Sign-up lives in `signup.rs` (it needs a proved email address first) and
+//! the administrator's password reset in `admin_reset.rs` (it mails the
+//! temporary password); both answer through helpers here.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
@@ -39,12 +43,6 @@ const WAITLIST_PAGE_MAX: u32 = 500;
 #[cfg(test)]
 const AUTH_LIMIT_WINDOW_SECS: i64 = request_limits::LIMIT_WINDOW_SECS;
 const REMEMBER_ME_MAX_AGE_SECS: i64 = 60 * 60 * 24 * 30;
-
-#[derive(Debug, Deserialize)]
-pub(super) struct SignupRequest {
-    login: String,
-    password: String,
-}
 
 #[derive(Debug, Deserialize)]
 pub(super) struct WaitlistJoinRequest {
@@ -123,12 +121,6 @@ pub(super) struct TokenSummaryResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct PasswordResetResponse {
-    login: String,
-    password: String,
-}
-
-#[derive(Debug, Serialize)]
 pub(super) struct CreatedUserResponse {
     login: String,
     role: UserRole,
@@ -183,38 +175,10 @@ pub(crate) struct HeaderAuth {
     pub(crate) bot: Option<bot_token::BotPrincipal>,
 }
 
-pub(super) async fn signup(
-    State(state): State<Arc<WebState>>,
-    peer: Option<ConnectInfo<SocketAddr>>,
-    headers: HeaderMap,
-    Json(request): Json<SignupRequest>,
-) -> AxumResponse {
-    if auth_rate_limit_exceeded(&state, peer.as_ref(), &headers, "signup", &request.login) {
-        return rate_limited();
-    }
-    let account = match state
-        .core
-        .create_account(&request.login, &request.password, UserRole::User)
-    {
-        Ok(account) => account,
-        Err(ForgeError::Conflict(_)) => {
-            return api_error(
-                StatusCode::CONFLICT,
-                "conflict",
-                "an account with that login already exists",
-            );
-        }
-        Err(ForgeError::Validation(reason)) => {
-            return api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_input", &reason);
-        }
-        Err(error) => {
-            return api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_failed",
-                &format!("could not create account: {error}"),
-            );
-        }
-    };
+/// Open a session for an account that was just created and answer with it,
+/// exactly as sign-in does: the account, its CSRF token, and the session
+/// cookie. Sign-up (`web/signup.rs`) is the caller.
+pub(super) fn new_account_session(state: &WebState, account: AccountSummary) -> AxumResponse {
     let session = match state.core.create_session(&account.login) {
         Ok(session) => session,
         Err(error) => {
@@ -227,7 +191,7 @@ pub(super) async fn signup(
     };
     let csrf_token = session.session.csrf_token.clone();
     let mut response = Json(AuthUserResponse::new(account, Some(csrf_token))).into_response();
-    if let Ok(value) = cookie_header(&state, &session.token, None) {
+    if let Ok(value) = cookie_header(state, &session.token, None) {
         response.headers_mut().append(header::SET_COOKIE, value);
     }
     response
@@ -414,43 +378,51 @@ pub(super) async fn change_password(
     Extension(account): Extension<AccountSummary>,
     Json(request): Json<PasswordChangeRequest>,
 ) -> AxumResponse {
-    match state.core.change_account_password(
+    let updated = match state.core.change_account_password(
         &account.login,
         &request.current_password,
         &request.new_password,
     ) {
-        Ok(updated) => match state.core.create_session(&updated.login) {
-            Ok(session) => {
-                let csrf_token = session.session.csrf_token.clone();
-                let mut response =
-                    Json(AuthUserResponse::new(updated, Some(csrf_token))).into_response();
-                match cookie_header(&state, &session.token, None) {
-                    Ok(value) => {
-                        response.headers_mut().append(header::SET_COOKIE, value);
-                        response
-                    }
-                    Err(error) => api_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "session_rotation_failed",
-                        &format!("could not publish the rotated session: {error}"),
-                    ),
-                }
-            }
-            Err(error) => api_error(
+        Ok(updated) => updated,
+        Err(ForgeError::Validation(_)) => {
+            return api_error(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "invalid current password",
+            );
+        }
+        Err(error) => {
+            return api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "session_rotation_failed",
-                &format!("could not create the rotated session: {error}"),
-            ),
-        },
-        Err(ForgeError::Validation(_)) => api_error(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "invalid current password",
-        ),
+                "storage_failed",
+                &format!("could not change password: {error}"),
+            );
+        }
+    };
+    // A temporary password an administrator mailed was just used and
+    // replaced, which proves the mailbox it went to.
+    super::admin_reset::prove_mailed_address(&state, &updated.login);
+    match state.core.create_session(&updated.login) {
+        Ok(session) => {
+            let csrf_token = session.session.csrf_token.clone();
+            let mut response =
+                Json(AuthUserResponse::new(updated, Some(csrf_token))).into_response();
+            match cookie_header(&state, &session.token, None) {
+                Ok(value) => {
+                    response.headers_mut().append(header::SET_COOKIE, value);
+                    response
+                }
+                Err(error) => api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "session_rotation_failed",
+                    &format!("could not publish the rotated session: {error}"),
+                ),
+            }
+        }
         Err(error) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "storage_failed",
-            &format!("could not change password: {error}"),
+            "session_rotation_failed",
+            &format!("could not create the rotated session: {error}"),
         ),
     }
 }
@@ -609,42 +581,6 @@ pub(super) async fn admin_create_user(
                 ),
             }
         }
-    }
-}
-
-pub(super) async fn admin_reset_password(
-    State(state): State<Arc<WebState>>,
-    Extension(account): Extension<AccountSummary>,
-    peer: Option<ConnectInfo<SocketAddr>>,
-    headers: HeaderMap,
-    AxumPath(login): AxumPath<String>,
-) -> AxumResponse {
-    if account.role != UserRole::Admin {
-        return forbidden("admin role required");
-    }
-    if auth_rate_limit_exceeded(&state, peer.as_ref(), &headers, "reset", &login) {
-        return rate_limited();
-    }
-    let password = match state.core.generate_one_time_password() {
-        Ok(password) => password,
-        Err(error) => {
-            return api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_failed",
-                &format!("could not generate password: {error}"),
-            );
-        }
-    };
-    match state.core.reset_account_password(&login, &password) {
-        Ok(_) => Json(PasswordResetResponse { login, password }).into_response(),
-        Err(ForgeError::NotFound(_)) => {
-            api_error(StatusCode::NOT_FOUND, "not_found", "user not found")
-        }
-        Err(error) => api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "storage_failed",
-            &format!("could not reset password: {error}"),
-        ),
     }
 }
 
@@ -1197,6 +1133,8 @@ pub(super) fn open_path(path: &str) -> bool {
     matches!(
         path,
         "/api/v1/auth/signup"
+            // Sign-up starts from an address, before any credential exists.
+            | "/api/v1/auth/signup/start"
             | "/api/v1/auth/login"
             | "/api/v1/bot/token"
             | "/api/v1/bot/token/refresh"
@@ -1533,7 +1471,7 @@ fn waitlist_route_window_is_closed(
     }
 }
 
-fn auth_rate_limit_exceeded(
+pub(super) fn auth_rate_limit_exceeded(
     state: &WebState,
     peer: Option<&ConnectInfo<SocketAddr>>,
     headers: &HeaderMap,

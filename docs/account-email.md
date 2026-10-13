@@ -1,15 +1,19 @@
-# Account email, verification and password recovery
+# Account email, sign-up, verification and password recovery
 
 An account's password lives in the forge core. Its email address, whether that
 address has been proved, and the single-use links that prove it or recover the
 password live in `<data_dir>/shift.sqlite`
 (`db/migrations/0017_account_emails.sql`), owned by
-`crates/jeryu-api/src/web/account_email.rs`.
+`crates/jeryu-api/src/web/account_email.rs`. Sign-up links and the
+mailed-reset marker are `db/migrations/0018_signup_links.sql`, owned by
+`crates/jeryu-api/src/web/signup.rs` and
+`crates/jeryu-api/src/web/admin_reset.rs`.
 
 Before this surface existed an account carried no address at all, so somebody
 who lost their password waited for an administrator to run
-`POST /api/v1/admin/users/:login/reset-password`. That route still works and is
-still the way back for an account with no proved address.
+`POST /api/v1/admin/users/:login/reset-password`. That route now mails the
+temporary password to the account's address (see
+[Administrator reset](#administrator-reset)).
 
 ## Routes
 
@@ -21,10 +25,76 @@ still the way back for an account with no proved address.
 | `POST /api/v1/auth/email/verify` | none | `200 {"result":"verified","verified":true}` |
 | `POST /api/v1/auth/password/forgot` | none | `202 {"result":"sent"}` |
 | `POST /api/v1/auth/password/reset` | none | `200 {"result":"reset"}` |
+| `POST /api/v1/auth/signup/start` | none | `202 {"result":"sent"}` |
+| `POST /api/v1/auth/signup` | none | the account, its CSRF token and the session cookie |
+| `POST /api/v1/admin/users/:login/reset-password` | an administrator | `202 {"result":"sent","login":…,"email":…}` |
 
-The three routes that need no credential are the ones a mail client reaches:
-a link is followed from a mailbox that holds no session, and the link itself
-names the account.
+The link routes need no credential because a mail client reaches them: a
+link is followed from a mailbox that holds no session, and the link itself
+names the account. The sign-up routes need none because no account exists yet.
+
+## Sign-up
+
+An account is only ever created with its address already proved:
+
+1. `POST /api/v1/auth/signup/start` `{"email": "…"}` mails a link,
+   `<base>/create-account?token=…`, good for a day. Every valid address
+   answers `202 {"result":"sent"}`. An address an account has already proved
+   is mailed a note naming that account's login and the
+   `<base>/forgot-password` page instead of a link, so the answer never says
+   whether an account holds the address; the mailbox does, and only to its
+   owner.
+2. `POST /api/v1/auth/signup` `{"token": "…", "login": "…", "password": "…"}`
+   spends the link, creates the account, stores the address proved, and
+   answers as sign-in does.
+
+Refusals:
+
+| Answer | When |
+|---|---|
+| `503 mail_unavailable` | the forge cannot send mail; sign-up is impossible without it, so `start` says so for every address |
+| `422 invalid_input` | `start` got a malformed address, or `signup` a password under 12 bytes (checked before the link is spent) |
+| `422 email_required` | `signup` got no token: verify an address with `start` first |
+| `422 signup_link_invalid` | the link is expired, already spent, or never issued |
+| `409 conflict` | the login is taken (the link stays spendable, so pick another), or another account proved the address meanwhile |
+
+A login core refuses (`422 invalid_input`) also leaves the link spendable.
+Another account's *unproved* claim on the address gives way to the sign-up
+that proved it. If another account proves the address in the instant between
+creating the account and storing its address, the new account is disabled and
+the answer is `409`: an account never exists without the address it proved.
+
+Administrator-created accounts (`POST /api/v1/admin/users`) are unchanged and
+start with no address.
+
+## Administrator reset
+
+`POST /api/v1/admin/users/:login/reset-password`, body `{}` or
+`{"email": "…"}`, sets a one-time password, drops the account's sessions,
+tokens and bots, forces a password change at the next sign-in, and mails the
+login, the temporary password and the sign-in address (`<base>/`) to the
+account. The answer is `202 {"result":"sent","login":…,"email":…}` and never
+carries the password.
+
+The address is the account's proved one if it has one; otherwise the
+supplied `email`, which is stored unproved; otherwise the stored unproved
+address.
+
+| Answer | When |
+|---|---|
+| `503 mail_unavailable` | mail is not configured; nothing was changed |
+| `422 email_required` | the account has no address and none was supplied; nothing was changed |
+| `422 invalid_input` | the supplied address is malformed |
+| `409 conflict` | the account has a proved address and a different one was supplied, or another account holds the supplied one |
+| `502 mail_failed` | the password was reset but the message did not leave; reset again, which issues a fresh password |
+
+Signing in with the mailed password and completing the forced change proves
+the person reads that mailbox, so `POST /api/v1/auth/password` then marks the
+address verified. Only a reset whose message left records that marker
+(`account_emails.reset_mailed_ms`); claiming another address clears it.
+
+`GET /api/v1/admin/users` reports each account's `email` (or `null`) and
+`emailVerified`.
 
 `POST /api/v1/auth/password/forgot` answers `202 {"result":"sent"}` for every
 well-formed request, byte for byte. Whether an account holds the address,
@@ -69,12 +139,20 @@ Alongside the ordinary `/api/v1` read and bad-credential caps, all in the one
 | `POST …/password/forgot` for the whole route | 30 / minute |
 | `POST …/password/reset` per client address | 10 / hour |
 | `POST …/email/verify` per client address | 10 / hour |
+| `POST …/signup/start` per client address | 5 / hour |
+| `POST …/signup/start` per address asked for | 3 / hour |
+| `POST …/signup/start` for the whole route | 30 / minute |
+| `POST …/signup` per client address and login | the sign-in cap |
+| sign-up messages sent per address | 5 / hour (in the store) |
 | reset links issued per account | 5 / hour (in the store) |
 | verification links issued per account | 5 / hour (in the store) |
 
-The first five are in memory and a restart forgets them; the last two are
-counted from `account_email_tokens`, so a restart loop cannot be used to send
-somebody a hundred messages.
+The per-route buckets are in memory and a restart forgets them; the three
+"in the store" caps are counted from `account_email_tokens` and
+`signup_links`, so a restart loop cannot be used to send somebody a hundred
+messages. The sign-up message cap counts the "already have an account" note
+as well as links, so it is reached at the same rate either way. Per-address
+caps hold even when every request arrives through one proxy address.
 
 Each refusal is the ordinary `429` with `Retry-After` and the rate-limit
 budget headers.
@@ -99,12 +177,15 @@ job, not to this process.
 
 `JERYU_MAIL_BASE_URL` is not guessed from the listener: a link that points at
 the bind address is a link nobody can follow. The links built on it are
-`<base>/reset-password?token=…` and `<base>/verify-email?token=…`, which the
-web app serves.
+`<base>/reset-password?token=…`, `<base>/verify-email?token=…`,
+`<base>/create-account?token=…`, `<base>/forgot-password` and `<base>/` (sign
+in), which the web app serves.
 
 **All three pieces are needed** — a sender, a base URL, and one transport.
-With anything missing the forge sends nothing: every route answers exactly as
-it would have, and the unsent message is recorded as a `failed`
+Without them sign-up start answers `503 mail_unavailable` and the
+administrator reset refuses before changing anything; the recovery routes
+send nothing and answer exactly as they would have, and the unsent message is
+recorded as a `failed`
 `account.password_reset.requested` or `account.email.verification_sent`
 record. A recovery request that discloses nothing must keep disclosing nothing
 while an operator is half way through wiring mail, so an operator watches the
@@ -122,6 +203,9 @@ All under subject `account_email`, phase `requested` / `completed` /
 | `account.email.verified` | an address was proved |
 | `account.password_reset.requested` | a reset was asked for; `requested` when there was nothing to send to |
 | `account.password_reset.completed` | a link was spent and the password set |
+| `account.signup.requested` | a sign-up link or "already have an account" note was sent, or was not |
+| `account.signup.completed` | a sign-up link was spent and the account created (`failed`: the account was disabled) |
+| `account.password_reset.admin_mailed` | an administrator's reset was mailed, or the message failed |
 
 A detail payload never carries an address or a secret, so the trail is not an
 address directory.
@@ -150,3 +234,9 @@ Rollback is in the migration header: stop the server, drop
 `shift_schema_migrations`. Take a copy first
 (`sqlite3 shift.sqlite '.backup account-emails.sqlite'`) — a proved address
 exists nowhere else, and without it every person proves their address again.
+
+`0018_signup_links` adds `signup_links` and the nullable
+`account_emails.reset_mailed_ms`, and backfills nothing: no outstanding
+administrator reset proves an address retroactively. Its rollback is in its
+header and goes together with the binary, since an older binary serves the old
+login-and-password sign-up.

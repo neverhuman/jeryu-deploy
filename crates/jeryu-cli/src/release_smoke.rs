@@ -415,63 +415,118 @@ fn main() -> Result<()> {
         probe(&client, &base_url, &mut probes, spec);
     }
 
-    let signup_auth = auth_probe(
-        &client,
-        &base_url,
-        &mut probes,
-        "signup",
-        "/api/v1/auth/signup",
-        json!({
-            "login": "release-smoke",
-            "password": "release-smoke-password-123"
-        }),
-        None,
-    )?;
-    let signup_me = json_probe(
-        &client,
-        &base_url,
-        &mut probes,
-        Probe {
-            name: "signup_me",
-            method: "GET",
-            path: "/api/v1/auth/me",
-            expected: 200,
-            body: None,
-            auth: Some(&signup_auth),
-            accept: Some("application/json"),
-            contains: None,
-            ctype_prefix: None,
-        },
-    )?;
-    require_auth_user(&signup_me, "release-smoke", "user", false)?;
-    let signup_repo_list = json_probe(
-        &client,
-        &base_url,
-        &mut probes,
-        Probe {
-            name: "signup_repo_list_empty",
-            method: "GET",
-            path: "/api/v1/repos",
-            expected: 200,
-            body: None,
-            auth: Some(&signup_auth),
-            accept: Some("application/json"),
-            contains: None,
-            ctype_prefix: None,
-        },
-    )?;
-    require_repo_list_len(&signup_repo_list, 0)?;
+    // Sign-up needs a mailed link, which the smoke cannot read, so a bare
+    // login-and-password sign-up must be refused with its repair code, and
+    // the non-admin account is created the way an administrator creates one.
     probe(
         &client,
         &base_url,
         &mut probes,
         Probe {
-            name: "signup_admin_users_denied",
+            name: "signup_requires_email",
+            method: "POST",
+            path: "/api/v1/auth/signup",
+            expected: 422,
+            body: Some(json!({
+                "login": "release-smoke",
+                "password": "release-smoke-password-123"
+            })),
+            auth: None,
+            accept: Some("application/json"),
+            contains: Some("email_required"),
+            ctype_prefix: None,
+        },
+    );
+    let created_user = json_probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "admin_create_user",
+            method: "POST",
+            path: "/api/v1/admin/users",
+            expected: 201,
+            body: Some(json!({ "login": "release-smoke", "role": "user" })),
+            auth: Some(&admin_auth),
+            accept: Some("application/json"),
+            contains: None,
+            ctype_prefix: None,
+        },
+    )?;
+    let one_time_password = created_user
+        .get("password")
+        .and_then(Value::as_str)
+        .context("admin create user returned no one-time password")?
+        .to_string();
+    let first_auth = auth_probe(
+        &client,
+        &base_url,
+        &mut probes,
+        "user_first_login",
+        "/api/v1/auth/login",
+        json!({
+            "login": "release-smoke",
+            "password": one_time_password
+        }),
+        None,
+    )?;
+    let user_auth = auth_probe(
+        &client,
+        &base_url,
+        &mut probes,
+        "user_password_change",
+        "/api/v1/auth/password",
+        json!({
+            "currentPassword": one_time_password,
+            "newPassword": "release-smoke-password-123"
+        }),
+        Some(&first_auth),
+    )?;
+    let user_me = json_probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "user_me",
+            method: "GET",
+            path: "/api/v1/auth/me",
+            expected: 200,
+            body: None,
+            auth: Some(&user_auth),
+            accept: Some("application/json"),
+            contains: None,
+            ctype_prefix: None,
+        },
+    )?;
+    require_auth_user(&user_me, "release-smoke", "user", false)?;
+    let user_repo_list = json_probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "user_repo_list_empty",
+            method: "GET",
+            path: "/api/v1/repos",
+            expected: 200,
+            body: None,
+            auth: Some(&user_auth),
+            accept: Some("application/json"),
+            contains: None,
+            ctype_prefix: None,
+        },
+    )?;
+    require_repo_list_len(&user_repo_list, 0)?;
+    probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "user_admin_users_denied",
             method: "GET",
             path: "/api/v1/admin/users",
             expected: 403,
             body: None,
-            auth: Some(&signup_auth),
+            auth: Some(&user_auth),
             accept: Some("application/json"),
             contains: Some("admin role required"),
             ctype_prefix: None,

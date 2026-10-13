@@ -101,6 +101,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `creation_failed` | 500 | the creation did not complete; inspect the server log before retrying |
 | `creation_incomplete` | 409 | an earlier creation with this key is still running or needs recovery |
 | `csrf_required` | 403 | a session-authenticated write needs a valid CSRF token |
+| `email_required` | 422 | sign-up needs a verified email address, or the account has none to send to |
 | `events_invalid_query` | 422 | the pipeline event query failed validation |
 | `events_invalid_request` | 422 | the pipeline event body failed validation |
 | `events_reporter_required` | 403 | only an admin or a JERYU_EVENT_REPORTERS login may post events |
@@ -139,6 +140,8 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_request` | 422 | credentials must not be passed as query parameters |
 | `invalid_session_id` | 422 | an agent_id or run_id has a character a ref may not carry |
 | `invalid_token` | 401 | invalid bot credential |
+| `mail_failed` | 502 | the message could not be sent |
+| `mail_unavailable` | 503 | this forge cannot send mail |
 | `managed_runtime_invalid` | 422 | the configured managed runtime is unknown |
 | `merge_blocked` | 409 | merge policy blocks this pull request |
 | `merge_failed` | 500 | the merge failed |
@@ -218,6 +221,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `shift_queue_read_failed` | 500 | the shift queue could not be read |
 | `shift_queue_write_failed` | 500 | the shift queue could not be written |
 | `shift_todo_not_found` | 404 | the shift todo was not found |
+| `signup_link_invalid` | 422 | that sign-up link is expired, already used, or not a link this forge issued |
 | `storage_failed` | 500 | the storage backend failed |
 | `task_not_granted` | 403 | the bot grant does not allow this task |
 | `todo_action_forbidden` | 403 | the caller may not run that action on the todo |

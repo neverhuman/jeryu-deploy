@@ -258,6 +258,23 @@ impl Mailer {
         }
     }
 
+    /// Test-only: a configured mailer whose transport refuses every message,
+    /// as a host whose sendmail program fails leaves it.
+    #[cfg(test)]
+    pub(crate) fn failing() -> Self {
+        Self {
+            inner: Some(Arc::new(Configured {
+                from: "jeryu <no-reply@jeryu.test>".to_string(),
+                base_url: "https://jeryu.test".to_string(),
+                transport: Arc::new(SendmailTransport {
+                    program: "/nonexistent/sendmail".to_string(),
+                    args: Vec::new(),
+                }),
+            })),
+            recording: None,
+        }
+    }
+
     /// Test-only: a mailer with no transport, as an operator who has not
     /// wired mail yet leaves it.
     #[cfg(test)]

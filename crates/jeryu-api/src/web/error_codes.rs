@@ -172,6 +172,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "a session-authenticated write needs a valid CSRF token",
     ),
     entry(
+        "email_required",
+        422,
+        "sign-up needs a verified email address, or the account has none to send to",
+    ),
+    entry(
         "events_invalid_query",
         422,
         "the pipeline event query failed validation",
@@ -329,6 +334,8 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "an agent_id or run_id has a character a ref may not carry",
     ),
     entry("invalid_token", 401, "invalid bot credential"),
+    entry("mail_failed", 502, "the message could not be sent"),
+    entry("mail_unavailable", 503, "this forge cannot send mail"),
     entry(
         "managed_runtime_invalid",
         422,
@@ -692,6 +699,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the shift queue could not be written",
     ),
     entry("shift_todo_not_found", 404, "the shift todo was not found"),
+    entry(
+        "signup_link_invalid",
+        422,
+        "that sign-up link is expired, already used, or not a link this forge issued",
+    ),
     entry("storage_failed", 500, "the storage backend failed"),
     entry(
         "task_not_granted",
