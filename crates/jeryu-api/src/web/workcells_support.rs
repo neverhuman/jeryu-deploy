@@ -144,7 +144,7 @@ pub(super) fn forge_error(err: ForgeError) -> AxumResponse {
             &["retry once an admin has made room on the waitlist"][..],
             "the waitlist is full; this request does not depend on it",
         ),
-        ForgeError::Storage(_) => (
+        ForgeError::Storage(_) | ForgeError::StoreCustody(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "forge_storage",
             &[

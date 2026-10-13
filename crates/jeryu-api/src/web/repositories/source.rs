@@ -588,7 +588,7 @@ pub(in crate::web) async fn repo_readme_update(
             "waitlist_full",
             "the waitlist is not accepting new addresses",
         ),
-        Err(ForgeError::Storage(err)) => api_error_with_hint(
+        Err(ForgeError::Storage(err) | ForgeError::StoreCustody(err)) => api_error_with_hint(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "storage_failed",
             "repository README could not be persisted",

@@ -500,7 +500,7 @@ pub(super) fn error_response(err: ForgeError) -> Response {
             "jeryu.get_system_snapshot",
             "the waitlist is full and not accepting new addresses",
         ),
-        ForgeError::Storage(_) => (
+        ForgeError::Storage(_) | ForgeError::StoreCustody(_) => (
             500,
             "jeryu.get_system_snapshot",
             "an internal store error occurred; snapshot the system and retry",

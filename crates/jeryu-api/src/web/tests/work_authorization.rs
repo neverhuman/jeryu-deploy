@@ -205,10 +205,34 @@ impl Fixture {
 
     /// Re-open every store from the same root: authorization must be decided
     /// from durable grants, not from state a single process happened to hold.
-    fn restart(&mut self) {
-        let state = state_at(self.root.path());
-        self.app = app(state.clone(), &self.root.path().join("absent-spa"));
-        self.state = state;
+    /// The old state goes first, as it would with the process: one store
+    /// writes a database.
+    fn restart(self) -> Self {
+        let Self {
+            root,
+            state,
+            app: router,
+            tokens,
+            permitted,
+            private,
+            bound,
+            hidden,
+            unbound,
+        } = self;
+        drop(router);
+        drop(state);
+        let state = state_at(root.path());
+        Self {
+            app: app(state.clone(), &root.path().join("absent-spa")),
+            state,
+            root,
+            tokens,
+            permitted,
+            private,
+            bound,
+            hidden,
+            unbound,
+        }
     }
 }
 
@@ -571,7 +595,7 @@ async fn work_writes_bind_authenticated_actors_and_survive_restart_and_grant_rev
         )
         .await;
     assert_eq!(status, StatusCode::CREATED);
-    f.restart();
+    f = f.restart();
     let (status, detail) = f
         .request(HttpMethod::GET, &path, Some("reader"), Value::Null)
         .await;
@@ -590,7 +614,7 @@ async fn work_writes_bind_authenticated_actors_and_survive_restart_and_grant_rev
         StatusCode::FORBIDDEN,
     )
     .await;
-    f.restart();
+    f = f.restart();
     f.refused(
         HttpMethod::GET,
         &path,

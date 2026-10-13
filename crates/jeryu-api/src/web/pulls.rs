@@ -1356,7 +1356,7 @@ fn core_error(error: ForgeError, purpose: &'static str) -> AxumResponse {
             PROOF_LANE,
             None,
         ),
-        ForgeError::Storage(reason) => repair_error(
+        ForgeError::Storage(reason) | ForgeError::StoreCustody(reason) => repair_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "storage_failed",
             purpose,

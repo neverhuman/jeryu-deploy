@@ -654,9 +654,10 @@ async fn waitlist_storage_errors_hide_internal_detail() {
         !matches!(internal, ForgeError::Validation(_)),
         "{internal_text}"
     );
+    // A directory where the store's file was is a replaced store.
     assert!(
-        internal_text.contains("storage failed"),
-        "expected a storage error, got {internal_text}"
+        internal_text.starts_with("store_replaced:"),
+        "expected the store to be refused as replaced, got {internal_text}"
     );
 
     let router = router_for(core);
