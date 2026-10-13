@@ -26,16 +26,23 @@ bash "${repo_root}/scripts/release-board/test-release-board.sh"
 bash "${repo_root}/ops/ci/test-jankurai-audit-heartbeat.sh"
 bash "${repo_root}/ops/ci/test-jankurai-audit-git-auth.sh"
 
-# jankurai pin: jeryu-tool/tool-manifest.toml is the family-wide source of truth.
-# When the control-plane repo is reachable (on-host family layout), fail fast if
-# this repo's pinned consumers drifted from it. In an isolated single-repo CI
-# checkout it is absent — skip rather than fail.
-JERYU_TOOL_RENDER="${JERYU_TOOL_RENDER:-$repo_root/../jeryu-tool/ops/render-tool-manifest.sh}"
-if [ -x "$JERYU_TOOL_RENDER" ]; then
-  echo "[pr-ci] jankurai pin drift check" >&2
-  bash "$JERYU_TOOL_RENDER" --check --repo jeryu-deploy \
-    --repo-root "jeryu-deploy=$repo_root"
+# Verify only this PR worktree against the family manifest; the post-rollout
+# control-plane check verifies the complete canonical family. The renderer is
+# jeryu-tool's, outside this checkout: a missing one fails closed, and one inside
+# this checkout (which the pull request under test could have written) is refused.
+if [ -z "${JERYU_TOOL_RENDER+x}" ]; then
+JERYU_TOOL_RENDER="$repo_root/../jeryu-tool/ops/render-tool-manifest.sh"
 fi
+[ -n "$JERYU_TOOL_RENDER" ] || { echo "[pr-ci] missing JERYU_TOOL_RENDER" >&2; exit 1; }
+[ -x "$JERYU_TOOL_RENDER" ] || { echo "[pr-ci] renderer is not executable: $JERYU_TOOL_RENDER" >&2; exit 1; }
+render_real="$(realpath "$JERYU_TOOL_RENDER")"
+case "$render_real/" in
+"$(realpath "$repo_root")/"*) echo "[pr-ci] refusing a renderer inside this checkout: $JERYU_TOOL_RENDER" >&2; exit 1 ;;
+esac
+echo "[pr-ci] jankurai pin drift check" >&2
+consumer_repo="$(awk -F'\"' '/^workspace =/ {print $2; exit}' agent/audit-policy.toml)"
+bash "$render_real" --check --repo "$consumer_repo" \
+--repo-root "$consumer_repo=$repo_root"
 
 # jeryu governs the worker count from live load (overrides any request). host-ci
 # already exports a governed JERYU_CI_JOBS; honor it, else ask the governor, else a
