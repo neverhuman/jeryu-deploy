@@ -38,6 +38,11 @@ const MAX_GIT_UPLOAD_PACK_DECODED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_GIT_RECEIVE_PACK_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GIT_RECEIVE_PACK_DECODED_BYTES: usize = 256 * 1024 * 1024;
 
+/// The pkt-line that ends a side-band receive-pack answer.
+const FLUSH_PKT: &[u8] = b"0000";
+/// Side-band channel 2: text the client prints, each line as `remote: ...`.
+const SIDEBAND_PROGRESS: char = '\u{2}';
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GitRpcContentEncoding {
     Identity,
@@ -171,6 +176,21 @@ async fn route_git(
     headers: &HeaderMap,
     body: Vec<u8>,
 ) -> AxumResponse {
+    gitd_to_axum_response(&route_gitd(state, peer, method, path, query, headers, body).await)
+}
+
+/// The gitd router's own answer, before it becomes an axum response: the
+/// receive-pack handler adds to the body (see [`append_sideband`]), and
+/// everything else hands this straight to [`gitd_to_axum_response`].
+async fn route_gitd(
+    state: &WebState,
+    peer: SocketAddr,
+    method: &str,
+    path: String,
+    query: HashMap<String, String>,
+    headers: &HeaderMap,
+    body: Vec<u8>,
+) -> GitHttpResponse {
     let request = GitHttpRequest {
         method: method.to_string(),
         path,
@@ -183,11 +203,179 @@ async fn route_git(
     // The gitd router shells out to `git` (blocking) and does file IO; run it on
     // the blocking pool so it never stalls an async worker.
     let manager = (*state.repo_manager).clone();
-    let response =
-        tokio::task::spawn_blocking(move || SmartHttpServer::new(manager).route(request))
-            .await
-            .expect("git smart-http task panicked");
-    gitd_to_axum_response(&response)
+    tokio::task::spawn_blocking(move || SmartHttpServer::new(manager).route(request))
+        .await
+        .expect("git smart-http task panicked")
+}
+
+/// The branches a receive-pack request moved or created, short names, deletes
+/// left out: a deleted branch strands nothing.
+fn pushed_branches(commands: &[jeryu_gitd::pack::ReceivePackCommand]) -> Vec<String> {
+    commands
+        .iter()
+        .filter(|command| command.new_oid != crate::ci_bridge::ZERO_OID)
+        .filter_map(|command| {
+            command
+                .ref_name
+                .strip_prefix("refs/heads/")
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// Whether the client asked for `side-band-64k`, which is what makes a
+/// `remote:` line readable: without it the body is a bare report-status and
+/// an extra packet would be read as part of it. Capabilities ride on the
+/// first command record, after a NUL.
+fn wants_sideband(body: &[u8]) -> bool {
+    let mut rest = body;
+    while rest.len() >= 4 {
+        let Ok(header) = std::str::from_utf8(&rest[..4]) else {
+            return false;
+        };
+        let Ok(length) = usize::from_str_radix(header, 16) else {
+            return false;
+        };
+        if length < 4 {
+            return false; // a flush or a control packet: no command came first
+        }
+        let payload_len = length - 4;
+        rest = &rest[4..];
+        if rest.len() < payload_len {
+            return false;
+        }
+        let (payload, tail) = rest.split_at(payload_len);
+        if let Some(position) = payload.iter().position(|byte| *byte == 0) {
+            return String::from_utf8_lossy(&payload[position + 1..])
+                .split_whitespace()
+                .any(|capability| capability == "side-band-64k");
+        }
+        rest = tail;
+    }
+    false
+}
+
+/// The remote message for every pushed branch whose pull request already
+/// closed, in push order. Reads current state, so a branch a new pull request
+/// already carries says nothing.
+fn pushed_after_merge_lines(
+    state: &WebState,
+    owner: &str,
+    repo: &str,
+    branches: &[String],
+) -> Vec<String> {
+    let repo = repo.trim_end_matches(".git");
+    let now = chrono::Utc::now();
+    branches
+        .iter()
+        .filter_map(|branch| {
+            crate::web::pushed_after_merge::stranded(state, owner, repo, branch, now)
+        })
+        .flat_map(|stranded| crate::web::pushed_after_merge::remote_message(&stranded))
+        .collect()
+}
+
+/// Add `remote:` lines to a side-band receive-pack answer.
+///
+/// With `side-band-64k` the answer is multiplexed packets terminated by a
+/// flush, band 1 carrying the report-status the client parses and band 2 the
+/// text it prints. The lines go on band 2, before that terminating flush: a
+/// packet after it is never read, and nothing already in the body is touched,
+/// so the report the client acts on is exactly what git wrote.
+fn append_sideband(response: GitHttpResponse, lines: &[String]) -> GitHttpResponse {
+    if lines.is_empty() {
+        return response;
+    }
+    let Some(body) = response.body().strip_suffix(FLUSH_PKT) else {
+        // Not a flush-terminated stream after all: say nothing rather than
+        // append to a body whose shape is not the one this understands.
+        return response;
+    };
+    let mut out = body.to_vec();
+    for line in lines {
+        let line: String = line
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .take(4000)
+            .collect();
+        let payload = format!("{SIDEBAND_PROGRESS}{line}\n");
+        out.extend_from_slice(format!("{:04x}", payload.len() + 4).as_bytes());
+        out.extend_from_slice(payload.as_bytes());
+    }
+    out.extend_from_slice(FLUSH_PKT);
+    let mut rebuilt = GitHttpResponse::bytes(response.status(), response.content_type(), out);
+    for (name, value) in response.extra_headers() {
+        rebuilt = rebuilt.with_header(name, value);
+    }
+    rebuilt
+}
+
+fn pkt_line(payload: &[u8]) -> Vec<u8> {
+    let mut out = format!("{:04x}", payload.len() + 4).into_bytes();
+    out.extend_from_slice(payload);
+    out
+}
+
+fn receive_pack_refusal(
+    commands: &[jeryu_gitd::pack::ReceivePackCommand],
+    blocked_ref: &str,
+    message: &str,
+    sideband: bool,
+) -> GitHttpResponse {
+    let message: String = message
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(4000)
+        .collect();
+    let mut report = Vec::new();
+    report.extend_from_slice(&pkt_line(
+        b"unpack branch policy refused before unpacking\n",
+    ));
+    let mut progress = vec![message.clone()];
+    for command in commands {
+        let reason = if command.ref_name == blocked_ref {
+            message.clone()
+        } else {
+            format!(
+                "batch not updated because {blocked_ref} was refused; retry this ref separately"
+            )
+        };
+        let prefix = format!("ng {} ", command.ref_name);
+        let budget = 65_516usize.saturating_sub(prefix.len() + 1);
+        let mut end = reason.len().min(budget);
+        while !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        report.extend_from_slice(&pkt_line(
+            format!("{prefix}{}\n", &reason[..end]).as_bytes(),
+        ));
+        if progress.len() <= 64 {
+            progress.push(format!("{}: {}", command.ref_name, &reason[..end]));
+        }
+    }
+    report.extend_from_slice(FLUSH_PKT);
+    let body = if sideband {
+        let mut body = Vec::new();
+        for line in progress {
+            let line: String = line
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(4000)
+                .collect();
+            body.extend_from_slice(&pkt_line(format!("{SIDEBAND_PROGRESS}{line}\n").as_bytes()));
+        }
+        for chunk in report.chunks(60_000) {
+            let mut status = Vec::with_capacity(chunk.len() + 1);
+            status.push(1);
+            status.extend_from_slice(chunk);
+            body.extend_from_slice(&pkt_line(&status));
+        }
+        body.extend_from_slice(FLUSH_PKT);
+        body
+    } else {
+        report
+    };
+    GitHttpResponse::bytes(200, "application/x-git-receive-pack-result", body)
 }
 
 /// Convert a gitd [`GitHttpResponse`] into an axum response, preserving status,
@@ -293,10 +481,10 @@ pub(crate) async fn git_receive_pack(
     };
     // The merge queue owns refs/queue/* and refs/queue-meta/*: a pushed queue
     // commit would be gated and landed as if the forge had built it.
-    if let Ok(commands) = jeryu_gitd::pack::receive_pack_commands(&body)
-        && let Some(command) = commands
-            .iter()
-            .find(|command| crate::web::is_queue_owned_ref(&command.ref_name))
+    let commands = jeryu_gitd::pack::receive_pack_commands(&body).unwrap_or_default();
+    if let Some(command) = commands
+        .iter()
+        .find(|command| crate::web::is_queue_owned_ref(&command.ref_name))
     {
         return (
             StatusCode::FORBIDDEN,
@@ -307,10 +495,62 @@ pub(crate) async fn git_receive_pack(
         )
             .into_response();
     }
+    let sideband = wants_sideband(&body);
+    let pushed_branches = pushed_branches(&commands);
+    let check_state = state.clone();
+    let check_owner = owner.clone();
+    let check_repo = repo.trim_end_matches(".git").to_string();
+    let check_commands = commands.clone();
+    let blocked = tokio::task::spawn_blocking(move || {
+        check_commands
+            .iter()
+            .filter(|command| command.new_oid != crate::ci_bridge::ZERO_OID)
+            .filter_map(|command| {
+                command
+                    .ref_name
+                    .strip_prefix("refs/heads/")
+                    .map(|branch| (command, branch))
+            })
+            .find_map(|(command, branch)| {
+                crate::web::pushed_after_merge::merged_pull_request_branch(
+                    &check_state,
+                    &check_owner,
+                    &check_repo,
+                    branch,
+                )
+                .filter(|blocked| {
+                    command.old_oid != crate::ci_bridge::ZERO_OID
+                        || command.new_oid != blocked.head_sha
+                })
+                .map(|blocked| (command.ref_name.clone(), blocked))
+            })
+    })
+    .await;
+    match blocked {
+        Ok(Some((blocked_ref, blocked))) => {
+            let message = crate::web::pushed_after_merge::receive_refusal_message(&blocked);
+            return gitd_to_axum_response(&receive_pack_refusal(
+                &commands,
+                &blocked_ref,
+                &message,
+                sideband,
+            ));
+        }
+        Ok(None) => {}
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "branch guard worker failed",
+            )
+                .into_response();
+        }
+    }
     let manager = (*state.repo_manager).clone();
     let before = snapshot_refs(&manager, &owner, &repo);
     let origin_base_url = origin_base_url(&headers);
-    let response = route_git(
+    // What the client said it can read back, and which branches it moved: both
+    // are only in the request, so they are taken before the body is handed on.
+    let gitd = route_gitd(
         &state,
         peer,
         "POST",
@@ -320,6 +560,24 @@ pub(crate) async fn git_receive_pack(
         body,
     )
     .await;
+    // A branch whose pull request closed without merging still gets a message
+    // after the ref lands. Updates to recent merged pull request branches
+    // were refused above, as were late-work recreations. Recreating at the
+    // recorded merged head and deleting a branch remain available.
+    let gitd = if sideband && gitd.status() == StatusCode::OK.as_u16() {
+        let notice_state = state.clone();
+        let notice_owner = owner.clone();
+        let notice_repo = repo.clone();
+        let lines = tokio::task::spawn_blocking(move || {
+            pushed_after_merge_lines(&notice_state, &notice_owner, &notice_repo, &pushed_branches)
+        })
+        .await
+        .unwrap_or_default();
+        append_sideband(gitd, &lines)
+    } else {
+        gitd
+    };
+    let response = gitd_to_axum_response(&gitd);
     // The refs are durable once receive-pack succeeds, so the push->CI bridge
     // for any moved branch runs detached: scoring a pushed commit must not hold
     // the acknowledgement the pushing agent is waiting for.
@@ -738,8 +996,9 @@ fn snapshot_refs(manager: &RepoManager, owner: &str, repo: &str) -> Vec<jeryu_gi
 #[cfg(test)]
 mod tests {
     use super::{
-        GitRpcBodyError, GitRpcContentEncoding, decode_git_rpc_body, forwarded_git_headers,
-        git_rpc_content_encoding, read_git_rpc_body, spawn_post_push,
+        GitHttpResponse, GitRpcBodyError, GitRpcContentEncoding, append_sideband,
+        decode_git_rpc_body, forwarded_git_headers, git_rpc_content_encoding, pushed_branches,
+        read_git_rpc_body, receive_pack_refusal, spawn_post_push, wants_sideband,
     };
     use axum::body::{Body, Bytes};
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -752,6 +1011,179 @@ mod tests {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(bytes).unwrap();
         encoder.finish().unwrap()
+    }
+
+    fn pkt_line(payload: &str) -> Vec<u8> {
+        let mut out = format!("{:04x}", payload.len() + 4).into_bytes();
+        out.extend_from_slice(payload.as_bytes());
+        out
+    }
+
+    /// A receive-pack request prelude: the commands, capabilities on the first
+    /// one, then a flush. The packfile that follows is not parsed.
+    fn receive_pack_body(commands: &[&str], capabilities: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (index, command) in commands.iter().enumerate() {
+            body.extend_from_slice(&pkt_line(&if index == 0 {
+                format!("{command}\0{capabilities}\n")
+            } else {
+                format!("{command}\n")
+            }));
+        }
+        body.extend_from_slice(b"0000");
+        body
+    }
+
+    const OLD: &str = "1111111111111111111111111111111111111111";
+    const NEW: &str = "2222222222222222222222222222222222222222";
+    const ZERO: &str = "0000000000000000000000000000000000000000";
+
+    /// A branch the push moved is a branch to look at; a deleted branch and a
+    /// tag are not, and neither is a push whose client cannot read a message.
+    #[test]
+    fn a_push_is_read_for_its_branches_and_for_a_band_to_answer_on() {
+        let body = receive_pack_body(
+            &[
+                &format!("{OLD} {NEW} refs/heads/feature"),
+                &format!("{OLD} {ZERO} refs/heads/gone"),
+                &format!("{ZERO} {NEW} refs/tags/v1"),
+            ],
+            "report-status side-band-64k agent=git/2.43",
+        );
+        let commands = jeryu_gitd::pack::receive_pack_commands(&body).unwrap();
+        assert_eq!(pushed_branches(&commands), vec!["feature".to_string()]);
+        assert!(wants_sideband(&body));
+
+        let bare = receive_pack_body(
+            &[&format!("{OLD} {NEW} refs/heads/feature")],
+            "report-status",
+        );
+        assert!(!wants_sideband(&bare), "no band to print a message on");
+        assert!(!wants_sideband(b"0000"), "a flush carries no command");
+        assert!(!wants_sideband(b"xx"), "a truncated body is not a push");
+    }
+
+    #[test]
+    fn receive_pack_refusal_reports_rejected_refs_without_writing() {
+        let body = receive_pack_body(
+            &[&format!("{OLD} {NEW} refs/heads/feature")],
+            "report-status side-band-64k agent=git/2.43",
+        );
+        let commands = jeryu_gitd::pack::receive_pack_commands(&body).unwrap();
+        let response = receive_pack_refusal(
+            &commands,
+            "refs/heads/feature",
+            "this branch's pull request #3 was already merged; push to a new branch and open a new pull request",
+            true,
+        );
+        let written = String::from_utf8_lossy(response.body());
+
+        assert_eq!(response.status(), 200);
+        assert!(
+            written.contains("unpack branch policy refused before unpacking"),
+            "{written}"
+        );
+        assert!(!written.contains("unpack ok"), "{written}");
+        assert!(
+            written
+                .contains("ng refs/heads/feature this branch's pull request #3 was already merged"),
+            "{written}"
+        );
+        assert!(
+            written.contains("push to a new branch and open a new pull request"),
+            "{written}"
+        );
+    }
+
+    #[test]
+    fn a_batch_refusal_identifies_only_the_blocked_ref_and_bounds_sideband_text() {
+        const OLD: &str = "1111111111111111111111111111111111111111";
+        const NEW: &str = "2222222222222222222222222222222222222222";
+        let body = receive_pack_body(
+            &[
+                &format!("{OLD} {NEW} refs/heads/feature"),
+                &format!("{OLD} {NEW} refs/heads/other"),
+            ],
+            "report-status side-band-64k",
+        );
+        let commands = jeryu_gitd::pack::receive_pack_commands(&body).unwrap();
+        let response =
+            receive_pack_refusal(&commands, "refs/heads/feature", "already merged", true);
+        let text = String::from_utf8_lossy(response.body());
+        assert!(text.contains("ng refs/heads/feature already merged"));
+        assert!(text.contains("ng refs/heads/other batch not updated because refs/heads/feature was refused; retry this ref separately"));
+        let appended = append_sideband(response, &[format!("bad\n{}", "é".repeat(100_000))]);
+        let mut rest = appended.body();
+        while !rest.is_empty() {
+            let length =
+                usize::from_str_radix(std::str::from_utf8(&rest[..4]).unwrap(), 16).unwrap();
+            if length == 0 {
+                assert_eq!(rest.len(), 4);
+                break;
+            }
+            assert!((4..=65_520).contains(&length));
+            assert!(length <= rest.len());
+            rest = &rest[length..];
+        }
+    }
+
+    /// The lines ride band 2, before the flush that ends the stream, and the
+    /// report-status the client acts on is left exactly as git wrote it.
+    #[test]
+    fn remote_lines_go_on_band_two_ahead_of_the_terminating_flush() {
+        let mut report = Vec::new();
+        report.extend_from_slice(&pkt_line("\u{1}000eunpack ok\n0000"));
+        report.extend_from_slice(b"0000");
+        let response =
+            GitHttpResponse::bytes(200, "application/x-git-receive-pack-result", report.clone())
+                .with_header("Cache-Control", "no-cache");
+
+        let appended = append_sideband(response, &["#7 already merged.".to_string()]);
+        let body = appended.body();
+        assert_eq!(appended.header("Cache-Control"), Some("no-cache"));
+        assert_eq!(
+            appended.content_type(),
+            "application/x-git-receive-pack-result"
+        );
+        assert!(
+            body.starts_with(&report[..report.len() - 4]),
+            "the report git wrote is untouched: {:?}",
+            String::from_utf8_lossy(body)
+        );
+        assert!(
+            body.ends_with(b"0000"),
+            "the stream still ends with a flush"
+        );
+        let expected = pkt_line("\u{2}#7 already merged.\n");
+        assert!(
+            body.windows(expected.len())
+                .any(|window| window == expected),
+            "the message is a band-2 packet: {:?}",
+            String::from_utf8_lossy(body)
+        );
+    }
+
+    /// Nothing to say, or a body that is not a flush-terminated stream: the
+    /// answer is handed back byte for byte.
+    #[test]
+    fn an_answer_is_left_alone_when_there_is_nothing_to_add_to_it() {
+        let response = || {
+            GitHttpResponse::bytes(
+                200,
+                "application/x-git-receive-pack-result",
+                b"0000".to_vec(),
+            )
+        };
+        assert_eq!(append_sideband(response(), &[]).body(), b"0000");
+        let unterminated = GitHttpResponse::bytes(
+            200,
+            "application/x-git-receive-pack-result",
+            b"nope".to_vec(),
+        );
+        assert_eq!(
+            append_sideband(unterminated, &["said nothing".to_string()]).body(),
+            b"nope"
+        );
     }
 
     #[tokio::test]

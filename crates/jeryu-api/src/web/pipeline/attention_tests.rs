@@ -11,10 +11,11 @@ use tower::ServiceExt;
 use super::attention::{
     ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
     Filter, Hosts, Item, KINDS, LatestDeployment, MainRedFacts, MirrorDrift, MirrorFailure,
-    ProductionFacts, PullFacts, ReviewerOfflineThresholds, Severity, SupersededPullFacts,
-    board_items, budget_items, divergence_items, draft_items, drop_shadowed_pull_rows,
-    gate_definition_paths, main_red_items, mirror_items, only_matching, order, pin_items,
-    pull_items, queue_items, release_items, runner_items, shift_items, superseded_pull_items,
+    ProductionFacts, PullFacts, PushedAfterMergeFacts, ReviewerOfflineThresholds, Severity,
+    StrandedBranchFacts, SupersededPullFacts, board_items, budget_items, divergence_items,
+    draft_items, drop_shadowed_pull_rows, gate_definition_paths, main_red_items, mirror_items,
+    only_matching, order, pin_items, pull_items, pushed_after_merge_items, queue_items,
+    release_items, runner_items, shift_items, stranded_branch_items, superseded_pull_items,
     todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
@@ -3383,6 +3384,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("pr_draft_waiting", "/repos/:provider/:owner/*"),
     ("pr_ready_to_merge", "/repos/:provider/:owner/*"),
     ("pr_superseded", "/repos/:provider/:owner/*"),
+    ("pushed_after_merge", "/repos/:provider/:owner/*"),
     ("queue_failed", "/repos/:provider/:owner/*"),
     ("queue_refused", "/repos/:provider/:owner/*"),
     ("queue_stuck", "/repos/:provider/:owner/*"),
@@ -3395,6 +3397,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("shift_stranded_work", "/work"),
     ("shift_without_pr", "/repos/:provider/:owner/*"),
     ("shift_without_pr", "/work"),
+    ("stranded_branch", "/repos/:provider/:owner/*"),
     ("todo_blocked", "/work/:key"),
     ("todo_handoff", "/work/:key"),
     ("todo_parked", "/work/:key"),
@@ -3405,6 +3408,133 @@ const KIND_ROUTES: &[(&str, &str)] = &[
 ];
 
 /// One item of every kind the inbox can emit, from the rules themselves.
+/// A branch holding one commit its pull request's merge did not take.
+fn pushed_after_merge(repo: &str, merged: bool) -> PushedAfterMergeFacts {
+    PushedAfterMergeFacts {
+        repo: repo.to_string(),
+        branch: "dev/widget-tax".to_string(),
+        number: 115,
+        title: "Widget tax".to_string(),
+        base_ref: "main".to_string(),
+        merged,
+        commits: vec!["f2bed08".to_string()],
+        commit_count: 1,
+        closed_at: Some(now() - Duration::days(4)),
+    }
+}
+
+fn stranded_branch(repo: &str, closed_pr: Option<u64>) -> StrandedBranchFacts {
+    StrandedBranchFacts {
+        repo: repo.to_string(),
+        branch: "dayshift/2026-10-11".to_string(),
+        default_branch: "main".to_string(),
+        commit_count: 2,
+        newest_sha: "f2bed08".to_string(),
+        newest_subject: "finish invoice export".to_string(),
+        newest_at: Some(now() - Duration::hours(2)),
+        closed_pr,
+    }
+}
+
+/// A commit pushed to a branch whose pull request already merged reaches
+/// nothing, so the row names the pull request, the commit and the one act that
+/// clears it: a new pull request from the branch.
+#[test]
+fn a_push_to_a_merged_branch_asks_for_a_new_pull_request() {
+    let items = pushed_after_merge_items(&[pushed_after_merge("acme/widget-shop", true)]);
+    assert_eq!(items.len(), 1, "{items:?}");
+    let item = &items[0];
+    assert_eq!(item.kind, "pushed_after_merge");
+    assert_eq!(item.severity, Severity::Action);
+    assert_eq!(item.repo.as_deref(), Some("acme/widget-shop"));
+    assert_eq!(item.pr, Some(115));
+    assert_eq!(item.sha.as_deref(), Some("f2bed08"));
+    assert_eq!(item.href, "/repos/jeryu/acme/widget-shop/pulls/115");
+    assert!(item.title.contains("dev/widget-tax"), "{}", item.title);
+    assert!(item.reason.contains("already merged"), "{}", item.reason);
+    assert!(item.reason.contains("f2bed08"), "{}", item.reason);
+    assert!(item.reason.contains("not on main"), "{}", item.reason);
+    assert!(
+        item.next_step
+            .contains("Open a new pull request from the branch"),
+        "{}",
+        item.next_step
+    );
+    assert_eq!(
+        item.since.as_deref(),
+        Some("2026-09-15T13:00:00Z"),
+        "the row waits from the day the pull request closed"
+    );
+}
+
+/// A pull request somebody closed unmerged strands its branch the same way,
+/// and the row says which of the two happened.
+#[test]
+fn a_push_to_a_branch_closed_unmerged_says_it_was_not_merged() {
+    let items = pushed_after_merge_items(&[pushed_after_merge("acme/widget-shop", false)]);
+    assert!(
+        items[0].reason.contains("closed without merging"),
+        "{}",
+        items[0].reason
+    );
+}
+
+/// Nothing pushed after a merge, nothing to say: the rule has no standing row
+/// of its own.
+#[test]
+fn no_stranded_push_raises_nothing() {
+    assert!(pushed_after_merge_items(&[]).is_empty());
+}
+
+#[test]
+fn a_stranded_branch_names_the_repo_branch_count_and_newest_subject() {
+    let items = stranded_branch_items(&[stranded_branch("acme/widget-shop", None)]);
+    assert_eq!(items.len(), 1, "{items:?}");
+    let item = &items[0];
+    assert_eq!(item.kind, "stranded_branch");
+    assert_eq!(item.severity, Severity::Action);
+    assert_eq!(item.repo.as_deref(), Some("acme/widget-shop"));
+    assert_eq!(item.sha.as_deref(), Some("f2bed08"));
+    assert_eq!(item.href, "/repos/jeryu/acme/widget-shop");
+    assert!(item.title.contains("acme/widget-shop"), "{}", item.title);
+    assert!(item.title.contains("dayshift/2026-10-11"), "{}", item.title);
+    assert!(item.title.contains("2 unlanded commits"), "{}", item.title);
+    assert!(
+        item.title.contains("finish invoice export"),
+        "{}",
+        item.title
+    );
+    assert!(
+        item.next_step.contains("Open a pull request"),
+        "{}",
+        item.next_step
+    );
+}
+
+#[test]
+fn a_capped_stranded_count_is_reported_as_a_lower_bound() {
+    let mut fact = stranded_branch("acme/widget-shop", None);
+    fact.commit_count = 200;
+    let items = stranded_branch_items(&[fact]);
+    assert!(items[0].title.contains("at least 200 unlanded commits"));
+    assert!(
+        items[0]
+            .reason
+            .contains("at least 200 patch-unique commits")
+    );
+}
+
+#[test]
+fn a_stranded_closed_pr_branch_recommends_a_fresh_branch() {
+    let items = stranded_branch_items(&[stranded_branch("acme/widget-shop", Some(7))]);
+    assert!(
+        items[0].next_step.contains("fresh branch from main")
+            && items[0].next_step.contains("cherry-pick -x"),
+        "{}",
+        items[0].next_step
+    );
+}
+
 fn one_of_every_kind() -> Vec<Item> {
     let family = "acme";
     let repo = "acme/widget-shop";
@@ -3569,6 +3699,8 @@ fn one_of_every_kind() -> Vec<Item> {
         first_step: "step failed (exit 1): ops/ci/check.sh".to_string(),
         log_id: "5f1d1b3e-2a0c-4f5e-9f2a-7c1d0b8e4a61".to_string(),
     }]));
+    items.extend(pushed_after_merge_items(&[pushed_after_merge(repo, true)]));
+    items.extend(stranded_branch_items(&[stranded_branch(repo, None)]));
 
     // One pull request per posture, plus one the queue has been building for
     // longer than a gate takes.

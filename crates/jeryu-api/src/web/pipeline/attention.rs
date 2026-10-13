@@ -43,6 +43,8 @@ mod flow;
 mod hosts;
 mod mirror;
 mod pins;
+mod pushed;
+mod stranded;
 #[cfg(test)]
 pub(super) mod web_routes;
 mod work;
@@ -61,6 +63,8 @@ pub(crate) use flow::{
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
 pub(crate) use pins::{pin_items, web_pin_bump_prs};
+pub(crate) use pushed::{PushedAfterMergeFacts, pushed_after_merge_items};
+pub(crate) use stranded::{StrandedBranchFacts, stranded_branch_items};
 pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
 /// `v1.1` added `action.api`, `v1.2` the optional `budget`, `v1.3` the
@@ -158,6 +162,7 @@ pub(crate) const KINDS: &[&str] = &[
     "pr_draft_waiting",
     "pr_ready_to_merge",
     "pr_superseded",
+    "pushed_after_merge",
     "queue_failed",
     "queue_refused",
     "queue_stuck",
@@ -169,6 +174,7 @@ pub(crate) const KINDS: &[&str] = &[
     "shift_budget_spent",
     "shift_stranded_work",
     "shift_without_pr",
+    "stranded_branch",
     "todo_blocked",
     "todo_handoff",
     "todo_parked",
@@ -747,6 +753,27 @@ fn production_facts(state: &WebState) -> Vec<ProductionFacts> {
     all
 }
 
+/// Every branch with patch-unique commits and no open pull request carrying it.
+fn stranded_branch_facts(state: &WebState) -> Vec<StrandedBranchFacts> {
+    super::super::stranded_branches::all(state)
+        .into_iter()
+        .map(|branch| StrandedBranchFacts {
+            repo: branch.repo,
+            branch: branch.branch,
+            default_branch: branch.default_branch,
+            commit_count: branch.commit_count,
+            newest_sha: branch.newest_sha,
+            newest_subject: branch.newest_subject,
+            newest_at: branch.newest_at,
+            closed_pr: branch.closed_pr,
+        })
+        .collect()
+}
+
+fn same_repo_name(full_or_short: &str, short: &str) -> bool {
+    full_or_short == short || full_or_short.ends_with(&format!("/{short}"))
+}
+
 /// Every release board as the board rules need it: which lanes the page draws
 /// red, and which sources the collector could not read.
 fn board_facts(state: &WebState) -> Vec<BoardFacts> {
@@ -860,6 +887,46 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     items.extend(divergence_items(
         &super::super::mirror_reconcile::drift_rows(state),
     ));
+    // Branches holding patch-unique commits with no open pull request. Shift
+    // branches the shift feed already names stay there; this sweep fills the
+    // rest, including dayshift branches that the shift-specific rule may not
+    // see.
+    let covered_shift_branches: Vec<(String, String)> = items
+        .iter()
+        .filter(|item| item.kind == "shift_without_pr")
+        .filter_map(|item| Some((item.repo.clone()?, item.shift.clone()?)))
+        .collect();
+    let mut stranded = stranded_branch_facts(state);
+    stranded.retain(|fact| {
+        !covered_shift_branches
+            .iter()
+            .any(|(repo, branch)| fact.branch == *branch && same_repo_name(&fact.repo, repo))
+    });
+    let pushed: Vec<_> = stranded
+        .iter()
+        .filter_map(|branch| {
+            let (owner, name) = branch.repo.split_once('/')?;
+            super::super::pushed_after_merge::stranded(state, owner, name, &branch.branch, now)
+        })
+        .map(|push| PushedAfterMergeFacts {
+            repo: push.repo,
+            branch: push.branch,
+            number: push.number,
+            title: push.title,
+            base_ref: push.base_ref,
+            merged: push.merged,
+            closed_at: push.closed_at,
+            commits: push.commits,
+            commit_count: push.commit_count,
+        })
+        .collect();
+    stranded.retain(|branch| {
+        !pushed
+            .iter()
+            .any(|push| push.repo == branch.repo && push.branch == branch.branch)
+    });
+    items.extend(pushed_after_merge_items(&pushed));
+    items.extend(stranded_branch_items(&stranded));
     let pulls = open_pull_facts(state);
     let superseded_pulls = all_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();

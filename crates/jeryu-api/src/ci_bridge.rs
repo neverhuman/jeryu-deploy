@@ -26,7 +26,7 @@ use jeryu_runner_core::trust::{RunnerClass, TrustTier};
 use jeryu_runnerd::submit as submit_runner_job;
 
 /// All-zero oid: a ref delete, which carries no commit to build.
-const ZERO_OID: &str = "0000000000000000000000000000000000000000";
+pub(crate) const ZERO_OID: &str = "0000000000000000000000000000000000000000";
 pub(crate) const HOST_JANKURAI_MINIMUM_SCORE: u32 = 85;
 /// The one check every audited head carries, whatever audited it.
 pub(crate) const JANKURAI_PROOF_CHECK: &str = "jankurai/proof";

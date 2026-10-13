@@ -74,6 +74,45 @@ fn run_git_failure(dir: &Path, args: &[&str]) -> String {
     )
 }
 
+/// Run git, require it to succeed, and hand back everything it printed: a
+/// `remote:` line arrives on stderr beside the push's own progress.
+fn run_git_said(dir: &Path, args: &[&str]) -> String {
+    let output = common::git_command()
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|err| panic!("git {args:?}: {err}"));
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {}: {said}",
+        dir.display()
+    );
+    said
+}
+
+fn rev_parse(dir: &Path, rev: &str) -> String {
+    run_git_said(dir, &["rev-parse", rev]).trim().to_string()
+}
+
+fn rev_parse_git_dir(bare: &Path, rev: &str) -> String {
+    let out = common::git_command()
+        .args(["--git-dir", bare.to_str().unwrap(), "rev-parse", rev])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git rev-parse {rev} in {}: {}",
+        bare.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 fn write_bytes(path: &Path, seed: u8, len: usize) -> Vec<u8> {
     let bytes: Vec<u8> = (0..len)
         .map(|idx| seed.wrapping_add((idx % 251) as u8))
@@ -1178,6 +1217,282 @@ async fn waitlist_signup_leaves_login_and_admin_authz_intact() {
     let listed: serde_json::Value = serde_json::from_str(&listed_body).unwrap();
     assert_eq!(listed["signups"][0]["email"], "ada@example.com");
 
+    server.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A commit pushed to a branch whose pull request already merged is refused by
+/// the push itself: git prints the pull request and the remedy, and the branch
+/// does not move. New branches and branches with open pull requests still push.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s4_a_push_to_a_merged_pull_requests_branch_is_refused() {
+    if !git_available() {
+        eprintln!("git unavailable; skipping the pushed-after-merge e2e");
+        return;
+    }
+
+    let base = std::env::temp_dir().join(format!("jeryu-s4-after-merge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let data_dir = base.join("data");
+    let git_root = base.join("git");
+    let spa_dir = base.join("spa");
+    let work = base.join("work");
+    write_spa_shell(&spa_dir);
+    std::fs::create_dir_all(&work).unwrap();
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let config = WebServerConfig {
+        bind: addr,
+        spa_dir,
+        data_dir,
+        git_storage_root: git_root,
+        split_manifests: Vec::new(),
+        auth_required: false,
+        trust_local_dev: true,
+        secure_cookies: false,
+    };
+    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    wait_until_listening(addr, &mut server).await;
+
+    let client = reqwest::Client::new();
+    let create = client
+        .post(format!("http://{addr}/repos"))
+        .json(&serde_json::json!({ "name": "after-merge" }))
+        .send()
+        .await
+        .expect("POST /repos");
+    assert_eq!(create.status().as_u16(), 201);
+
+    // A base branch and a branch off it, both pushed over the transport. The
+    // base is a release branch rather than main: main is protected, and this
+    // is about the branch of a pull request, whatever it was based on.
+    // Exercise an existing ref first, then the recreation case after deletion.
+    let retained = client
+        .patch(format!("http://{addr}/repos/jeryu/after-merge"))
+        .json(&serde_json::json!({ "delete_branch_on_merge": false }))
+        .send()
+        .await
+        .expect("retain merged head branch");
+    assert_eq!(retained.status().as_u16(), 200);
+    let clone_url = format!("http://{addr}/git/jeryu/after-merge.git");
+    run_git(
+        &work,
+        &[GIT_HTTP_GUARD, &["clone", clone_url.as_str(), "clone"]].concat(),
+    );
+    let clone_dir = work.join("clone");
+    run_git(
+        &clone_dir,
+        &["config", "user.email", "tester@jeryu.invalid"],
+    );
+    run_git(&clone_dir, &["config", "user.name", "Tester"]);
+    run_git(&clone_dir, &["checkout", "-b", "release"]);
+    std::fs::write(clone_dir.join("base.txt"), "base\n").unwrap();
+    run_git(&clone_dir, &["add", "."]);
+    run_git(&clone_dir, &["commit", "-m", "base"]);
+    run_git(
+        &clone_dir,
+        &[
+            GIT_HTTP_GUARD,
+            &["push", "origin", "HEAD:refs/heads/release"],
+        ]
+        .concat(),
+    );
+    let base_sha = rev_parse(&clone_dir, "HEAD");
+    run_git(&clone_dir, &["checkout", "-b", "feature"]);
+    std::fs::write(clone_dir.join("feature.txt"), "feature\n").unwrap();
+    run_git(&clone_dir, &["add", "."]);
+    run_git(&clone_dir, &["commit", "-m", "the feature"]);
+    run_git(
+        &clone_dir,
+        &[
+            GIT_HTTP_GUARD,
+            &["push", "origin", "HEAD:refs/heads/feature"],
+        ]
+        .concat(),
+    );
+    let head_sha = rev_parse(&clone_dir, "HEAD");
+
+    let opened = client
+        .post(format!("http://{addr}/repos/jeryu/after-merge/pulls"))
+        .json(&serde_json::json!({
+            "title": "the feature",
+            "head": "feature",
+            "base": "release",
+            "head_sha": head_sha,
+            "base_sha": base_sha,
+            "actor": "tester",
+        }))
+        .send()
+        .await
+        .expect("POST pulls");
+    let opened_status = opened.status().as_u16();
+    let opened_body = opened.text().await.unwrap();
+    assert_eq!(opened_status, 201, "open pull request: {opened_body}");
+    let number: u64 = serde_json::from_str::<serde_json::Value>(&opened_body).unwrap()["number"]
+        .as_u64()
+        .expect("pull request number");
+
+    let merged = client
+        .put(format!(
+            "http://{addr}/repos/jeryu/after-merge/pulls/{number}/merge"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("PUT merge");
+    let merge_status = merged.status().as_u16();
+    let merge_body = merged.text().await.unwrap();
+    assert_eq!(merge_status, 200, "merge the pull request: {merge_body}");
+
+    // The late commit: the work that must go to a new branch and pull request.
+    std::fs::write(clone_dir.join("late.txt"), "late\n").unwrap();
+    run_git(&clone_dir, &["add", "."]);
+    run_git(&clone_dir, &["commit", "-m", "late work"]);
+    let late_sha = rev_parse(&clone_dir, "HEAD");
+    let said = run_git_failure(
+        &clone_dir,
+        &[
+            GIT_HTTP_GUARD,
+            &["push", "origin", "HEAD:refs/heads/feature"],
+        ]
+        .concat(),
+    );
+    assert!(
+        said.contains(&format!("pull request #{number} was already merged")),
+        "the push names the merged pull request: {said}"
+    );
+    assert!(
+        said.contains("push to a new branch and open a new pull request"),
+        "the push says the remedy: {said}"
+    );
+    let bare = base.join("git").join("jeryu").join("after-merge.git");
+    assert_eq!(
+        rev_parse_git_dir(&bare, "refs/heads/feature"),
+        head_sha,
+        "a refused push must not move the merged pull request branch"
+    );
+
+    // An unrelated branch is nobody's merged pull request, so it still lands.
+    run_git(&clone_dir, &["checkout", "-b", "spike", &base_sha]);
+    std::fs::write(clone_dir.join("spike.txt"), "spike\n").unwrap();
+    run_git(&clone_dir, &["add", "."]);
+    run_git(&clone_dir, &["commit", "-m", "spike"]);
+    // The guard refuses a mixed RPC as a whole. The unrelated ref's reason
+    // names the actual blocked ref and its retry succeeds on its own.
+    let batch = run_git_failure(
+        &clone_dir,
+        &[
+            GIT_HTTP_GUARD,
+            &[
+                "push",
+                "origin",
+                "feature:refs/heads/feature",
+                "HEAD:refs/heads/spike",
+            ],
+        ]
+        .concat(),
+    );
+    assert!(
+        batch.contains("batch not updated because"),
+        "collateral reason: {batch}"
+    );
+    assert!(batch.contains("refs/heads/feature"), "blocked ref: {batch}");
+    assert!(
+        batch.contains("retry this ref separately"),
+        "retry reason: {batch}"
+    );
+    run_git_failure(&bare, &["show-ref", "--verify", "refs/heads/spike"]);
+    assert_eq!(rev_parse_git_dir(&bare, "refs/heads/feature"), head_sha);
+    let quiet = run_git_said(
+        &clone_dir,
+        &[GIT_HTTP_GUARD, &["push", "origin", "HEAD:refs/heads/spike"]].concat(),
+    );
+    assert!(
+        !quiet.contains("already merged"),
+        "an unrelated branch hears nothing: {quiet}"
+    );
+
+    // Automatic cleanup leaves the same stale local work arriving as CREATE.
+    // Reject it, but permit restoring the exact merged head to open a fresh PR.
+    run_git(
+        &clone_dir,
+        &[GIT_HTTP_GUARD, &["push", "origin", ":refs/heads/feature"]].concat(),
+    );
+    let recreated = run_git_failure(
+        &clone_dir,
+        &[
+            GIT_HTTP_GUARD,
+            &["push", "origin", "feature:refs/heads/feature"],
+        ]
+        .concat(),
+    );
+    assert!(
+        recreated.contains("already merged"),
+        "late recreation: {recreated}"
+    );
+    run_git_failure(&bare, &["show-ref", "--verify", "refs/heads/feature"]);
+    run_git(
+        &clone_dir,
+        &[
+            GIT_HTTP_GUARD,
+            &["push", "origin", &format!("{head_sha}:refs/heads/feature")],
+        ]
+        .concat(),
+    );
+    assert_eq!(rev_parse_git_dir(&bare, "refs/heads/feature"), head_sha);
+
+    // A branch with an open pull request is live review work and still accepts
+    // another push.
+    run_git(&clone_dir, &["checkout", "-b", "live", &base_sha]);
+    std::fs::write(clone_dir.join("live.txt"), "live\n").unwrap();
+    run_git(&clone_dir, &["add", "."]);
+    run_git(&clone_dir, &["commit", "-m", "live"]);
+    run_git(
+        &clone_dir,
+        &[GIT_HTTP_GUARD, &["push", "origin", "HEAD:refs/heads/live"]].concat(),
+    );
+    let live_head = rev_parse(&clone_dir, "HEAD");
+    let opened_live = client
+        .post(format!("http://{addr}/repos/jeryu/after-merge/pulls"))
+        .json(&serde_json::json!({
+            "title": "live",
+            "head": "live",
+            "base": "release",
+            "head_sha": live_head,
+            "base_sha": base_sha,
+            "actor": "tester",
+        }))
+        .send()
+        .await
+        .expect("POST live pull");
+    let opened_live_status = opened_live.status().as_u16();
+    let opened_live_body = opened_live.text().await.unwrap();
+    assert_eq!(
+        opened_live_status, 201,
+        "open live pull request: {opened_live_body}"
+    );
+    std::fs::write(clone_dir.join("live.txt"), "live again\n").unwrap();
+    run_git(&clone_dir, &["add", "."]);
+    run_git(&clone_dir, &["commit", "-m", "live again"]);
+    let live_later = rev_parse(&clone_dir, "HEAD");
+    let live_push = run_git_said(
+        &clone_dir,
+        &[GIT_HTTP_GUARD, &["push", "origin", "HEAD:refs/heads/live"]].concat(),
+    );
+    assert!(
+        !live_push.contains("already merged"),
+        "an open pull request branch is unaffected: {live_push}"
+    );
+    assert_eq!(
+        rev_parse_git_dir(&bare, "refs/heads/live"),
+        live_later,
+        "open pull request branch push should land"
+    );
+
+    assert_ne!(late_sha, head_sha, "the rejected commit is distinct");
     server.abort();
     let _ = std::fs::remove_dir_all(&base);
 }

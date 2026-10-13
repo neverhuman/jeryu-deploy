@@ -4,6 +4,17 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+bash "$root/ops/ci/verify-audit-workspace.sh"
+policy_fixture="$(mktemp)"
+trap 'rm -f "$policy_fixture"' EXIT
+for workspace in "" jeryu-web jeryu-tool; do
+  printf 'workspace = "%s"\n' "$workspace" >"$policy_fixture"
+  if bash "$root/ops/ci/verify-audit-workspace.sh" "$policy_fixture" >/dev/null 2>&1; then
+    echo "audit workspace guard accepted $workspace" >&2; exit 1
+  fi
+done
+printf 'workspace = "jeryu-deploy"\n' >"$policy_fixture"
+bash "$root/ops/ci/verify-audit-workspace.sh" "$policy_fixture"
 
 for value in 1 true 0 ""; do
   if output="$(JERYU_CI_MOCK="$value" bash -c "source '${root}/ops/ci/ci-env.sh'" 2>&1)"; then
