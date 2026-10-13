@@ -54,6 +54,143 @@ async fn passport_for_intrinsic_proof(
     serde_json::to_value(detail).unwrap()
 }
 
+#[test]
+fn main_health_uses_current_main_and_normalizes_the_log_digest() {
+    let storage = tempfile::tempdir().unwrap();
+    let (base, head) = build_bare_repo_with_main_and_feature(
+        storage.path(),
+        "alice",
+        "health",
+        "feature.txt",
+        "feature",
+    );
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "health".into(),
+            default_branch: Some("main".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "health",
+            "alice",
+            CreatePullRequestRequest {
+                title: "health posture".into(),
+                head: "feature".into(),
+                base: "main".into(),
+                head_sha: Some(head.clone()),
+                base_sha: Some(base.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let bare = storage.path().join("alice/health.git");
+    git_in(&bare, &["update-ref", "refs/heads/main", &head]);
+    let state = WebState::new_with_git_storage(core, storage.path().to_path_buf());
+    let digest = "f".repeat(64);
+    for (sha, log, cause) in [
+        (&base, "old-log".to_string(), "old base failure"),
+        (&head, digest.clone(), "fmt failed"),
+    ] {
+        state
+            .core
+            .create_commit_status(
+                "alice",
+                "health",
+                sha,
+                "gate-bot",
+                CreateCommitStatusRequest {
+                    state: CommitStatusState::Failure,
+                    context: "health/main-health".into(),
+                    description: Some(format!(
+                        "runner failure; attempt attempt-id; log {log}; cause: {cause}"
+                    )),
+                    target_url: None,
+                },
+            )
+            .unwrap();
+    }
+    let health = crate::web::pulls::attention_posture(&state, &pr)
+        .unwrap()
+        .main_failure
+        .unwrap();
+    assert_eq!(health.title, "fmt failed");
+    assert_eq!(health.attempt.as_deref(), Some(digest.as_str()));
+    let mut stacked = pr.clone();
+    stacked.base.ref_name = "release".into();
+    assert!(
+        crate::web::pulls::attention_posture(&state, &stacked)
+            .unwrap()
+            .main_failure
+            .is_none()
+    );
+    state
+        .core
+        .create_commit_status(
+            "alice",
+            "health",
+            &head,
+            "gate-bot",
+            CreateCommitStatusRequest {
+                state: CommitStatusState::Failure,
+                context: "health/main-health".into(),
+                description: Some(format!(
+                    "runner failure; attempt other-id; log sha256 {digest}; cause: clippy failed"
+                )),
+                target_url: None,
+            },
+        )
+        .unwrap();
+    let health =
+        crate::web::pipeline::attention::main_health_at(&state, "alice", "health", &head).unwrap();
+    assert_eq!(health.log_id, digest);
+    assert_eq!(health.first_step, "clippy failed");
+}
+
+#[tokio::test]
+async fn pull_lists_report_actual_reviews_without_a_synthetic_pending_identity() {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "review-list".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "review-list",
+            "alice",
+            CreatePullRequestRequest {
+                title: "review list".into(),
+                head: "feature".into(),
+                base: "main".into(),
+                head_sha: Some("review-head".into()),
+                base_sha: Some("review-base".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let response = crate::web::pulls::list(
+        State(Arc::new(WebState::new(core))),
+        AxumPath(repo.id.to_string()),
+        Query(serde_json::from_value(json!({"state": "open"})).unwrap()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["items"][0]["number"], pr.number);
+    assert_eq!(body["items"][0]["review"]["reviewers"], json!([]));
+}
+
 async fn passport_for_required_check(
     status: Option<jeryu_core::CheckRunStatus>,
     conclusion: Option<CheckConclusion>,

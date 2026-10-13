@@ -397,3 +397,17 @@ administrator success, writer/mismatched-scope refusal, malformed and over-limit
 commands, missing audit table, and one PR read reused for a multi-ref inspection.
 `cargo test --locked -p jeryu-api --features web --lib stranded_branches` verifies
 repeatable scan windows and continued rotation within the existing budgets.
+
+## Canonical renderer in isolated checkouts
+
+The required gate needs the canonical jeryu-tool renderer outside the checkout under test.
+An isolated checkout must set `JERYU_TOOL_RENDER` to that executable before running
+`bash ops/ci/pr-ci.sh`; the default is the sibling jeryu-tool checkout. Missing,
+empty or in-checkout renderer paths fail closed. A skipped drift check does not
+provide equivalent evidence. The hosted gate runner supplies its external renderer.
+
+`jeryu/autonomy` is an advisory record of whether human review is needed; its
+`action_required` conclusion is distinct from an executable gate failure.
+`jeryu-deploy/required` records the runner's required recipe result for the exact head.
+`verify-pin-bump.sh` remains a standalone diagnostic and never changes that recipe;
+its BASE must be an ancestor of the locally fetched `refs/remotes/origin/main`.

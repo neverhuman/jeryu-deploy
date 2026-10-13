@@ -590,7 +590,7 @@ pub(crate) struct MainHealthFailure {
     pub(crate) log_id: String,
 }
 
-fn main_head(state: &WebState, owner: &str, name: &str) -> Option<String> {
+pub(crate) fn main_head(state: &WebState, owner: &str, name: &str) -> Option<String> {
     let repo = state.github.core().get_repository(owner, name).ok()?;
     let bare = state.repo_manager.open_parts(owner, name).ok()?;
     jeryu_gitd::refs::RefService::new((*state.repo_manager).clone())
@@ -639,10 +639,11 @@ pub(crate) fn main_health_at(
     let log_id = latest
         .description
         .as_deref()
-        .and_then(|description| description.split("; attempt ").nth(1))
+        .and_then(|description| description.split("; log ").nth(1))
         .and_then(|tail| tail.split(';').next())
         .map(str::trim)
-        .filter(|attempt| !attempt.is_empty())
+        .map(|log| log.strip_prefix("sha256 ").unwrap_or(log).trim())
+        .filter(|log| !log.is_empty())
         .unwrap_or("unknown")
         .to_string();
     Some(MainHealthFailure {

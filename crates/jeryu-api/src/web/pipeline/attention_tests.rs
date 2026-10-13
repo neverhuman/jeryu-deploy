@@ -938,9 +938,7 @@ fn main_red_is_its_own_attention_row_and_annotates_pr_failures() {
     let items = pull_items(&pulls, &[], now(), &hosts());
     assert_eq!(kinds(&items), ["pr_checks_failing"]);
     assert!(
-        items[0]
-            .reason
-            .contains("main is red too at this PR's base"),
+        items[0].reason.contains("current main is red too"),
         "{}",
         items[0].reason
     );

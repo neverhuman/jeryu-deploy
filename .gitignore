@@ -16,3 +16,5 @@ dist
 # jeryu-split.lock.toml outside the checkout (see crates/jeryu-api/build.rs).
 !/packages/ux-qa/dist/
 !/packages/ux-qa/dist/cli.js
+
+.todoq/

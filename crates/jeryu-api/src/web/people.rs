@@ -19,7 +19,7 @@
 //! - `PUT /api/v1/admin/users/:login/kind`: `{"kind": "human" | "service"}`.
 //!
 //! The "assign to" picker lists people per family, and only to callers who
-//! can work in it: `GET /api/v1/shift/families/:family/people` (`shift.rs`).
+//! can work in it: `GET /api/v1/shift/todos/:family/:id/people` (`shift.rs`).
 
 use std::collections::HashMap;
 use std::sync::Arc;

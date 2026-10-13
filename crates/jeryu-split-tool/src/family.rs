@@ -71,6 +71,8 @@ pub struct Member {
 pub struct Family {
     pub repo_family: String,
     pub split_root: PathBuf,
+    #[serde(skip)]
+    paths_resolved: bool,
     /// Active members in manifest order, the control plane first.
     pub members: Vec<Member>,
 }
@@ -120,30 +122,75 @@ enum IdentityStatus {
     Bound,
 }
 
-/// Parse and validate the authority manifest at `path`. The binary resolves
-/// paths through [`read_with_root`]; this is the tests' shorthand.
+/// Parse and validate the authority manifest at `path`, resolving member
+/// paths from the family root. The binary resolves paths through
+/// [`read_with_root`]; this is the tests' shorthand.
 #[cfg(test)]
 pub fn read(path: &Path) -> Result<Family> {
     read_with_root(path, None)
 }
 
-/// Read a family authority, resolving relative member paths from `site_root`
-/// when supplied, or from the manifest directory otherwise.
+/// Parse and validate the authority manifest at `path`. Member paths resolve
+/// from one root: `site_root` when the operator supplies it (`--site-root`),
+/// otherwise an absolute legacy `split_root`, otherwise the family root the
+/// manifest's location implies (the manifest must then live in its named
+/// control-plane directory, so a copy elsewhere cannot relocate the family).
+/// Whichever root is used, every member path must stay inside it: the text is
+/// checked by [`parse`] (no dot segments, no escape), and an existing path is
+/// canonicalized and refused if it leaves the physical root.
 pub fn read_with_root(path: &Path, site_root: Option<&Path>) -> Result<Family> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("read the family authority from {}", path.display()))?;
-    let manifest_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    parse_at(&source, site_root, manifest_dir)
-        .with_context(|| format!("family authority {}", path.display()))
+    let mut family =
+        parse(&source).with_context(|| format!("family authority {}", path.display()))?;
+    let manifest = fs::canonicalize(path)?;
+
+    let root = if let Some(site_root) = site_root {
+        fs::canonicalize(site_root)
+            .with_context(|| format!("resolve the site root {}", site_root.display()))?
+    } else if family.split_root.is_absolute() {
+        fs::canonicalize(&family.split_root)?
+    } else {
+        let control = family
+            .members
+            .first()
+            .context("manifest has no control plane")?;
+        if manifest.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new(&control.name))
+        {
+            bail!("family manifest must live in its named control-plane directory");
+        }
+        manifest
+            .parent()
+            .and_then(Path::parent)
+            .context("manifest has no family root")?
+            .to_path_buf()
+    };
+    let legacy_root = family
+        .split_root
+        .is_absolute()
+        .then(|| family.split_root.clone());
+    family.split_root = root.clone();
+    for member in &mut family.members {
+        // A legacy absolute path is re-based onto the chosen root.
+        if let Some(legacy) = legacy_root.as_ref()
+            && let Ok(relative) = member.path.strip_prefix(legacy)
+        {
+            member.path = relative.to_path_buf();
+        }
+        member.path = root.join(&member.path);
+        if let Ok(physical) = fs::canonicalize(&member.path) {
+            if !physical.starts_with(&root) {
+                bail!("{} path escapes the physical family root", member.name);
+            }
+            member.path = physical;
+        }
+    }
+    family.paths_resolved = true;
+    Ok(family)
 }
 
-/// Parse and validate authority-manifest text (the tests' shorthand).
-#[cfg(test)]
+/// Parse and validate authority-manifest text.
 pub fn parse(source: &str) -> Result<Family> {
-    parse_at(source, None, Path::new("."))
-}
-
-fn parse_at(source: &str, site_root: Option<&Path>, manifest_dir: &Path) -> Result<Family> {
     let raw: RawManifest = toml::from_str(source).context("parse the family authority")?;
     if raw.schema_version != "1" {
         bail!("unsupported schema_version {}", raw.schema_version);
@@ -154,19 +201,7 @@ fn parse_at(source: &str, site_root: Option<&Path>, manifest_dir: &Path) -> Resu
         }
     }
 
-    if raw
-        .split_root
-        .as_deref()
-        .is_some_and(|root| root.trim().is_empty())
-    {
-        bail!("manifest split_root must not be blank");
-    }
-
-    let root = site_root
-        .map(PathBuf::from)
-        .or_else(|| raw.split_root.as_deref().map(PathBuf::from))
-        .unwrap_or_else(|| manifest_dir.to_path_buf());
-    let mut members = vec![control_plane_member(&raw.control_plane, &root)?];
+    let mut members = vec![control_plane_member(&raw.control_plane)?];
     for repo in &raw.repo {
         if repo.inventory_status.trim().is_empty() {
             bail!("{} missing inventory_status", repo.name);
@@ -174,7 +209,42 @@ fn parse_at(source: &str, site_root: Option<&Path>, manifest_dir: &Path) -> Resu
         if repo.inventory_status != "active" {
             continue;
         }
-        members.push(repository_member(repo, &root)?);
+        members.push(repository_member(repo)?);
+    }
+
+    if raw
+        .split_root
+        .as_deref()
+        .is_some_and(|root| root.trim().is_empty())
+    {
+        bail!("manifest split_root must not be blank");
+    }
+    let legacy_root = raw.split_root.as_deref().map(PathBuf::from);
+    if legacy_root.as_ref().is_some_and(|root| !root.is_absolute()) {
+        bail!("legacy split_root must be absolute");
+    }
+    for member in &members {
+        let relative = if member.path.is_absolute() {
+            let root = legacy_root
+                .as_ref()
+                .context("absolute member path requires legacy split_root")?;
+            member
+                .path
+                .strip_prefix(root)
+                .context("absolute member path escapes legacy split_root")?
+        } else {
+            member.path.as_path()
+        };
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            bail!(
+                "{} path must stay inside the family root without dot segments",
+                member.name
+            );
+        }
     }
 
     let mut names = BTreeSet::new();
@@ -212,12 +282,13 @@ fn parse_at(source: &str, site_root: Option<&Path>, manifest_dir: &Path) -> Resu
 
     Ok(Family {
         repo_family: raw.repo_family,
-        split_root: root,
+        split_root: legacy_root.unwrap_or_else(|| PathBuf::from(".")),
+        paths_resolved: false,
         members,
     })
 }
 
-fn control_plane_member(control: &RawControlPlane, root: &Path) -> Result<Member> {
+fn control_plane_member(control: &RawControlPlane) -> Result<Member> {
     let tag = match (control.identity_status, control.predecessor_tag.trim()) {
         (IdentityStatus::Bound, tag) if !tag.is_empty() => Some(tag.to_owned()),
         (IdentityStatus::Bound, _) => bail!("{} is bound without a tag", control.name),
@@ -230,7 +301,7 @@ fn control_plane_member(control: &RawControlPlane, root: &Path) -> Result<Member
     }
     member(
         &control.name,
-        &resolve_member_path(&control.path, root),
+        &control.path,
         &control.jeryu_slug,
         &control.required_check,
         &control.default_branch,
@@ -239,7 +310,7 @@ fn control_plane_member(control: &RawControlPlane, root: &Path) -> Result<Member
     )
 }
 
-fn repository_member(repo: &RawRepository, root: &Path) -> Result<Member> {
+fn repository_member(repo: &RawRepository) -> Result<Member> {
     let tag = match (repo.identity_status, repo.current_tag.as_deref()) {
         (IdentityStatus::Bound, Some(tag)) if !tag.trim().is_empty() => Some(tag.trim().to_owned()),
         (IdentityStatus::Bound, _) => bail!("{} is bound without a current_tag", repo.name),
@@ -250,22 +321,13 @@ fn repository_member(repo: &RawRepository, root: &Path) -> Result<Member> {
     };
     member(
         &repo.name,
-        &resolve_member_path(&repo.path, root),
+        &repo.path,
         &repo.jeryu_slug,
         &repo.required_check,
         &repo.default_branch,
         &repo.runtime_authority,
         tag,
     )
-}
-
-fn resolve_member_path(path: &str, root: &Path) -> String {
-    let path = Path::new(path);
-    if path.is_absolute() {
-        path.to_string_lossy().into_owned()
-    } else {
-        root.join(path).to_string_lossy().into_owned()
-    }
 }
 
 fn member(
@@ -307,6 +369,11 @@ impl Family {
     /// Prove every member is checked out where the authority says it is, with
     /// the agent maps a governed repository must carry.
     pub fn check_paths(&self) -> Result<()> {
+        if !self.paths_resolved {
+            bail!(
+                "read the authority manifest from its path before checking physical member paths"
+            );
+        }
         for member in &self.members {
             if !member.path.is_dir() {
                 bail!("{} path missing: {}", member.name, member.path.display());

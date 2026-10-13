@@ -417,7 +417,7 @@ pub(crate) fn pull_items(
                 .as_ref()
                 .map_or_else(String::new, |failure| {
                     format!(
-                        " main is red too at this PR's base: {}. Attempt {}.",
+                        " current main is red too: {}. Log {}.",
                         failure.title.trim_end_matches('.'),
                         failure.attempt.as_deref().unwrap_or("unknown")
                     )

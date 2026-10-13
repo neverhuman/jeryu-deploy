@@ -297,15 +297,6 @@ fn summary_list_item(state: &WebState, pr: &PullRequest) -> Value {
             }),
         );
     }
-    if let Some(login) = super::auth::REVIEW_IDENTITY.configured() {
-        reviewers.entry(login.to_lowercase()).or_insert_with(|| {
-            json!({
-                "login": login,
-                "verdict": "pending",
-                "at": Value::Null,
-            })
-        });
-    }
     if let Some(review) = value.get_mut("review") {
         review["reviewers"] = Value::Array(reviewers.into_values().collect());
     }
@@ -1150,7 +1141,7 @@ pub(crate) struct PullPosture {
     /// The failure cause the gate runner published for this head, if the
     /// `pr-gate-runner` check run failed and named one.
     pub gate_failure: Option<GateFailure>,
-    /// The base branch's main-health failure at this pull request's base SHA,
+    /// The default branch's main-health failure at its current Git head,
     /// if the PR is failing beside an already-red main.
     pub main_failure: Option<GateFailure>,
 }
@@ -1193,7 +1184,7 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
     if pr.draft || pr.merged || !matches!(web_pr_state(pr), WebPullRequestState::Open) {
         return None;
     }
-    find_repo(state, &format!("{}/{}", pr.owner, pr.repo))?;
+    let repo = find_repo(state, &format!("{}/{}", pr.owner, pr.repo))?;
     let required = required_contexts(state, pr);
     let summary = summary_with_required_contexts(state, pr, &required);
     let mut failing: Vec<String> = required
@@ -1230,16 +1221,16 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
             && summary.checks.pending == 0
             && (!required.is_empty() || summary.checks.total > 0),
         gate_failure: gate_failure(&checks),
-        main_failure: crate::web::pipeline::attention::main_health_at(
-            state,
-            &pr.owner,
-            &pr.repo,
-            &pr.base.sha,
-        )
-        .map(|health| GateFailure {
-            title: health.first_step,
-            attempt: Some(health.log_id),
-        }),
+        main_failure: (pr.base.ref_name == repo.default_branch)
+            .then(|| crate::web::pipeline::attention::main_head(state, &pr.owner, &pr.repo))
+            .flatten()
+            .and_then(|sha| {
+                crate::web::pipeline::attention::main_health_at(state, &pr.owner, &pr.repo, &sha)
+            })
+            .map(|health| GateFailure {
+                title: health.first_step,
+                attempt: Some(health.log_id),
+            }),
         failing,
         failing_optional,
     })

@@ -3,7 +3,7 @@
 # throwaway forge home: real SQLite databases, a "binary" that is a copy of sleep
 # (so /proc/<pid>/exe resolves to the installed release), a stand-in systemctl
 # that runs it, and a file:// health URL. Then auto-stage.sh against a local bare
-# repo with stand-in ssh and curl, and auto-pin.sh against two. No service, network or credential.
+# repo with stand-in ssh and curl, and auto-pin.sh against two, and verify-pin-bump.sh against a stand-in forge. No service, network or credential.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
@@ -976,6 +976,107 @@ grep -qxF 'root="$HOME/rb"; mkdir -p "$root"' "$S/remote-script" || fail "~/ in 
 stage_release >/dev/null || fail "a default stage failed"
 grep -qxF 'root="$HOME/jeryu-release-build"; mkdir -p "$root"' "$S/remote-script" || fail "the default build root is not under the build host's home"
 ok "stage-release --json prints one line, --dry-run builds nothing, --prev overrides the live-name check, and the build root is the build host's"
+
+# --- verify-pin-bump.sh: the default-off fast lane admits exactly a verified mechanical pin bump ---
+# Stand-ins: a local bare jeryu-web, a jeryu-deploy whose main carries a stub builder that prints
+# the hash in $V/dist, and a curl answering the status API from $V/status.
+V="$T/fast"; mkdir -p "$V/bin" "$V/web" "$V/deploy/scripts/release"
+g "$V/web" init -q -b main
+for n in 1 2 3; do echo "$n" >"$V/web/index.html"; g "$V/web" add .; g "$V/web" commit -q -m "web $n"; done
+git clone -q --bare "$V/web" "$V/web.git"
+f_old="$(git -C "$V/web" rev-parse HEAD~1)"; f_new="$(git -C "$V/web" rev-parse HEAD)"
+f_hash_a="$(printf a%.0s {1..64})"; f_hash_b="$(printf b%.0s {1..64})"
+write_lock() { # COMMIT HASH [CORE_COMMIT]
+  cat <<LOCK
+web_artifact = "pinned"
+
+[[repo]]
+name = "jeryu-core"
+commit = "${3:-$(printf c%.0s {1..40})}"
+
+[[repo]]
+name = "jeryu-web"
+commit = "$1"
+web_dist_sha256 = "$2"
+required_check = "jeryu-web/required"
+LOCK
+}
+write_lock "$f_old" "$f_hash_a" >"$V/deploy/jeryu-split.lock.toml"
+cat >"$V/deploy/scripts/release/build-web-dist.sh" <<STUB
+#!/usr/bin/env bash
+echo "\$2 \$(cat "$V/dist")"
+STUB
+chmod +x "$V/deploy/scripts/release/build-web-dist.sh"
+echo base >"$V/deploy/other.txt"
+g "$V/deploy" init -q -b main; g "$V/deploy" add .; g "$V/deploy" commit -q -m base
+f_base="$(git -C "$V/deploy" rev-parse HEAD)"
+g "$V/deploy" update-ref refs/remotes/origin/main "$f_base"
+cat >"$V/bin/curl" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$V/curl-args"
+case "\${!#}" in
+  https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-web/commits/*/status) cat "$V/status" ;;
+  *) echo "unexpected curl: \${!#}" >&2; exit 22 ;;
+esac
+STUB
+chmod +x "$V/bin/curl"
+echo "not-a-real-token" >"$V/token"; chmod 600 "$V/token"
+fast_ok='{"state":"success","statuses":[{"context":"jeryu-web/required","state":"success"}]}'
+bump() { # COMMIT HASH [CORE_COMMIT]: HEAD = base plus a lock edit, as a commit on a throwaway branch
+  g "$V/deploy" checkout -q -B bump "$f_base"
+  write_lock "$1" "$2" "${3:-}" >"$V/deploy/jeryu-split.lock.toml"
+  g "$V/deploy" commit -q -am bump
+}
+verify() { # [--json]: sets rc and out
+  rc=0; out="$(cd "$V/deploy" && env PATH="$V/bin:$PATH" JERYU_PIN_FAST_LANE="${FAST-1}" JERYU_WEB_REMOTE="$V/web.git" \
+    JERYU_WEB_REPO=jeryu/jeryu-web JERYU_PIN_TOKEN_FILE="$V/token" ${VERIFY_ENV:-} bash "$here/verify-pin-bump.sh" "$@" "$f_base" HEAD 2>/dev/null)" || rc=$?
+}
+refused() { # WHAT substring
+  [[ $rc == 10 && "$out" == "normal-path: "*"$2"* ]] || fail "$1 (rc $rc): $out"
+}
+echo "$f_hash_b" >"$V/dist"; echo "$fast_ok" >"$V/status"
+bump "$f_new" "$f_hash_b"
+FAST=0 verify; refused "the lane is not off by default" "is off"
+FAST="" verify; refused "an empty switch turned the lane on" "is off"
+: >"$V/curl-args"; FAST=0 verify; [[ ! -s "$V/curl-args" ]] || fail "an off lane reached the forge"
+verify
+[[ $rc == 0 && "$out" == "eligible $f_new $f_hash_b" ]] || fail "a verified bump is not eligible (rc $rc): $out"
+verify --json
+jq -e --arg c "$f_new" --arg h "$f_hash_b" '.eligible == true and .commit == $c and .web_dist_sha256 == $h' <<<"$out" >/dev/null \
+  || fail "--json verdict is not the contract's: $out"
+ok "verify-pin-bump is off by default and passes a verified bump"
+
+protected_base="$f_base"; f_base="$(git -C "$V/deploy" rev-parse HEAD)"
+verify; refused "an unprotected BASE was accepted" "not an ancestor of protected"
+f_base="$protected_base"
+ok "verify-pin-bump refuses a caller-chosen BASE outside protected origin/main"
+
+echo "$f_hash_a" >"$V/dist"; bump "$f_new" "$f_hash_a"
+verify; [[ $rc == 0 ]] || fail "a bump whose bundle is the pinned one (commit moves only) is not eligible: $out"
+echo "$f_hash_b" >"$V/dist"
+bump "$f_new" "$f_hash_b"; echo changed >"$V/deploy/other.txt"; g "$V/deploy" commit -q -am more
+verify; refused "a second file was accepted" "more than one file"
+bump "$f_new" "$f_hash_b" "$(printf d%.0s {1..40})"
+verify; refused "another lock line was accepted" "more than the jeryu-web pin"
+bump "$f_new" "$f_hash_b"; echo '# note' >>"$V/deploy/jeryu-split.lock.toml"; g "$V/deploy" commit -q -am note
+verify; refused "an appended line was accepted" "more than the jeryu-web pin"
+bump "$f_old" "$f_hash_b"; verify; refused "an unmoved commit was accepted" "does not move"
+bump "$(printf e%.0s {1..40})" "$f_hash_b"; verify; refused "a commit that is not on jeryu-web was accepted" "not a jeryu-web commit"
+bump "$f_new" "not-a-hash"; verify; refused "a malformed hash was accepted" "not 64-hex"
+ok "verify-pin-bump sends anything but the two pin lines, or an unknown or unmoved commit, to the normal path"
+
+bump "$f_new" "$f_hash_b"
+echo "$f_hash_a" >"$V/dist"; verify; refused "a hash the build does not reproduce was accepted" "hashes to"
+echo "$f_hash_b" >"$V/dist"
+echo '{"state":"pending","statuses":[]}' >"$V/status"; verify; refused "a pending web gate was accepted" "is not success"
+echo '{"state":"success","statuses":[{"context":"other","state":"success"}]}' >"$V/status"
+verify; refused "a green status without the required check was accepted" "is not success"
+echo 'not json' >"$V/status"; verify; refused "an unreadable status was accepted" "is not success"
+echo "$fast_ok" >"$V/status"
+VERIFY_ENV="JERYU_BASE=https://example.invalid" verify; refused "a foreign credential origin was accepted" "noncanonical"
+chmod 644 "$V/token"; verify; refused "a loose token file was accepted" "0600"; chmod 600 "$V/token"
+verify; [[ $rc == 0 ]] || fail "the verified bump stopped being eligible: $out"
+ok "verify-pin-bump sends an unreproduced hash, a web gate that is not green, a foreign origin or a loose token to the normal path"
 
 # -h and --help on every release script print its header and exit 0 without running anything:
 # the network, git, docker, service and file tools on PATH are tripwires.

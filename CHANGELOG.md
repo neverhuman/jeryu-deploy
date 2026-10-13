@@ -2,12 +2,14 @@
 
 ## Unreleased
 
+- Pull lists report actual reviewer records instead of a synthetic pending
+  review identity. Main-health annotations apply to pull requests targeting
+  the default branch and use that branch's current head and log digest.
 - The idempotency store keeps no personal access token and no session cookie.
   Token creation and session-cookie writes answer with a
   once-shown credential, so they join the routes that keep only a placeholder
   (a retry with the same key answers 409 `idempotent_secret_withheld` and does
   not run the write twice), and a kept answer never carries `Set-Cookie`.
-
 - `GET /api/v1/repos/:id/merge-queue` gives a building entry `gate_started_at`:
   when a gate first reported on its queue commit after the enqueue, or `null`
   while it waits for a gate runner. The merge box said "the gate is running" from the enqueue on,
@@ -112,6 +114,13 @@
   merging it would change nothing, as after a squash or a cherry-pick). It
   retains gate-change review and replaces its other rows: the step is to close it.
   `docs/pipeline-events.md`.
+- Proposed, and shipped switched off: a verified fast lane for auto-pin's lock
+  bumps. `scripts/release/verify-pin-bump.sh BASE HEAD` exits 0 only when the
+  diff is exactly the jeryu-web `commit` and `web_dist_sha256` lines, the commit
+  is on jeryu-web main with its required check green, and a rebuild from the
+  base's recipe gives that hash. The required gate always runs all lanes;
+  the proposed shortcut was withdrawn after review.
+  `docs/pin-bump-fast-lane.md`.
 
 - `GET /api/v1/yield` (admin-only) reports what the agent factory spent against
   what reached main: cost per merged change with a 95% interval, yield

@@ -8,6 +8,9 @@ The release procedure is [`scripts/release/README.md`](../scripts/release/README
 `stage-release.sh` builds and stages a release, `deploy-release.sh` switches to
 it and records the deployment, and the staged `rollback.sh` undoes a switch.
 
+The diagnostic verifier for auto-pin's lock-only bumps is described in
+[`docs/pin-bump-fast-lane.md`](pin-bump-fast-lane.md).
+
 The governed Jankurai binary that release and score lanes use is described in
 [`docs/governed-jankurai.md`](governed-jankurai.md).
 

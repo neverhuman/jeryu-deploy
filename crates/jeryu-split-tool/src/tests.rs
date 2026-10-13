@@ -85,7 +85,7 @@ fn member_lock(commit: &str) -> Value {
                 [[repo]]
                 name = "pelago"
                 github_slug = "pelago/pelago"
-                local_path = "/srv/pelago-split/pelago"
+                local_path = "pelago"
                 tag = "pelago-v5.0.0-split.4"
                 commit = "{commit}"
                 required_check = "pelago/required"
@@ -166,7 +166,6 @@ fn authority(control_path: &str, member_path: &str) -> String {
         r#"
 schema_version = "1"
 repo_family = "pelago-split"
-split_root = "/srv/pelago-split"
 required_repos = ["pelago", "pelago-release-ops", "pelago-tool"]
 
 [control_plane]
@@ -197,7 +196,7 @@ lfs_required = false
 
 [[repo]]
 name = "pelago-tool"
-path = "/srv/pelago-split/pelago-tool"
+path = "pelago-tool"
 jeryu_slug = "pelago/pelago-tool"
 remote = "https://forge.invalid/git/pelago/pelago-tool.git"
 required_check = "pelago-tool/required"
@@ -225,14 +224,10 @@ lfs_required = false
 
 #[test]
 fn the_control_plane_is_a_member_and_inactive_rows_are_not() {
-    let parsed = family::parse(&authority(
-        "/srv/pelago-split/pelago-release-ops",
-        "/srv/pelago-split/pelago",
-    ))
-    .unwrap();
+    let parsed = family::parse(&authority("pelago-release-ops", "pelago")).unwrap();
 
     assert_eq!(parsed.repo_family, "pelago-split");
-    assert_eq!(parsed.split_root, PathBuf::from("/srv/pelago-split"));
+    assert_eq!(parsed.split_root, PathBuf::from("."));
     let names: Vec<&str> = parsed
         .members
         .iter()
@@ -252,10 +247,7 @@ fn the_control_plane_is_a_member_and_inactive_rows_are_not() {
 
 #[test]
 fn required_repos_must_name_exactly_the_active_members() {
-    let source = authority(
-        "/srv/pelago-split/pelago-release-ops",
-        "/srv/pelago-split/pelago",
-    );
+    let source = authority("pelago-release-ops", "pelago");
 
     let missing = source.replace(
         r#"required_repos = ["pelago", "pelago-release-ops", "pelago-tool"]"#,
@@ -282,11 +274,8 @@ fn required_repos_must_name_exactly_the_active_members() {
 
 #[test]
 fn a_bound_member_without_a_tag_is_rejected() {
-    let source = authority(
-        "/srv/pelago-split/pelago-release-ops",
-        "/srv/pelago-split/pelago",
-    )
-    .replace("current_tag = \"pelago-v5.0.0-split.4\"\n", "");
+    let source = authority("pelago-release-ops", "pelago")
+        .replace("current_tag = \"pelago-v5.0.0-split.4\"\n", "");
 
     assert!(
         family::parse(&source)
@@ -298,10 +287,7 @@ fn a_bound_member_without_a_tag_is_rejected() {
 
 #[test]
 fn a_duplicate_member_identity_is_rejected() {
-    let source = authority(
-        "/srv/pelago-split/pelago-release-ops",
-        "/srv/pelago-split/pelago-release-ops",
-    );
+    let source = authority("pelago-release-ops", "pelago-release-ops");
 
     assert!(
         family::parse(&source)
@@ -342,24 +328,26 @@ fn path_validation_is_physical_over_the_members_the_authority_names() {
             fs::write(root.join(path), b"{}\n").unwrap();
         }
     }
-    let source = authority(
-        &control.display().to_string(),
-        &member.display().to_string(),
-    );
-    let parsed = family::parse(&source).unwrap();
+    let source = authority("pelago-release-ops", "pelago");
+    let manifest = control.join(family::MANIFEST_FILE);
+    fs::write(&manifest, &source).unwrap();
+    let parsed = family::read(&manifest).unwrap();
     assert!(
         parsed
             .check_paths()
             .unwrap_err()
             .to_string()
-            .contains("pelago-tool path missing: /srv/pelago-split/pelago-tool")
+            .contains(&format!(
+                "pelago-tool path missing: {}",
+                temporary.path().join("pelago-tool").display()
+            ))
     );
 
     let two_members = source.replace(
         r#"
 [[repo]]
 name = "pelago-tool"
-path = "/srv/pelago-split/pelago-tool"
+path = "pelago-tool"
 jeryu_slug = "pelago/pelago-tool"
 remote = "https://forge.invalid/git/pelago/pelago-tool.git"
 required_check = "pelago-tool/required"
@@ -375,11 +363,12 @@ lfs_required = false
         r#"required_repos = ["pelago", "pelago-release-ops", "pelago-tool"]"#,
         r#"required_repos = ["pelago", "pelago-release-ops"]"#,
     );
-    family::parse(&two_members).unwrap().check_paths().unwrap();
+    fs::write(&manifest, &two_members).unwrap();
+    family::read(&manifest).unwrap().check_paths().unwrap();
 
     fs::remove_file(member.join("agent/test-map.json")).unwrap();
     assert!(
-        family::parse(&two_members)
+        family::read(&manifest)
             .unwrap()
             .check_paths()
             .unwrap_err()
@@ -389,7 +378,7 @@ lfs_required = false
 }
 
 #[test]
-fn relative_member_paths_use_manifest_or_site_root_and_accept_prior_authorities() {
+fn a_site_root_relocates_the_family_and_still_contains_every_member() {
     let temporary = tempfile::tempdir().unwrap();
     let site = temporary.path().join("site");
     let control = site.join("pelago-release-ops");
@@ -401,28 +390,64 @@ fn relative_member_paths_use_manifest_or_site_root_and_accept_prior_authorities(
             fs::write(root.join(path), b"{}\n").unwrap();
         }
     }
-    let source = authority("pelago-release-ops", "pelago")
-        .replace("split_root = \"/srv/pelago-split\"\n", "")
-        .replace("/srv/pelago-split/pelago-tool", "pelago-tool");
-    let manifest = temporary.path().join("repos.manifest.toml");
-    fs::write(&manifest, &source).unwrap();
-    let by_manifest = family::read(&manifest).unwrap();
-    assert_eq!(
-        by_manifest.members[0].path,
-        temporary.path().join("pelago-release-ops")
-    );
-    assert!(by_manifest.check_paths().is_err());
+    let canonical_site = fs::canonicalize(&site).unwrap();
 
+    // A copy of the authority outside its control plane does not relocate the
+    // family on its own; an explicit --site-root does.
+    let manifest = temporary.path().join("repos.manifest.toml");
+    fs::write(&manifest, authority("pelago-release-ops", "pelago")).unwrap();
+    assert!(
+        family::read(&manifest)
+            .unwrap_err()
+            .to_string()
+            .contains("named control-plane directory")
+    );
     let by_site = family::read_with_root(&manifest, Some(&site)).unwrap();
-    assert_eq!(by_site.members[0].path, control);
+    assert_eq!(by_site.split_root, canonical_site);
+    assert_eq!(
+        by_site.members[0].path,
+        canonical_site.join("pelago-release-ops")
+    );
     by_site.check_paths().unwrap();
 
-    // Authorities that still include split_root remain readable.
-    let old_style = authority("pelago-release-ops", "pelago");
-    let old_manifest = temporary.path().join("old.toml");
-    fs::write(&old_manifest, old_style).unwrap();
-    let legacy = family::read_with_root(&old_manifest, Some(&site)).unwrap();
-    assert_eq!(legacy.members[1].path, member);
+    // An authority that still names an absolute split_root is re-based onto
+    // the site root.
+    let legacy_source = authority(
+        "/srv/pelago-split/pelago-release-ops",
+        "/srv/pelago-split/pelago",
+    )
+    .replacen(
+        "repo_family = \"pelago-split\"\n",
+        "repo_family = \"pelago-split\"\nsplit_root = \"/srv/pelago-split\"\n",
+        1,
+    );
+    let legacy_manifest = temporary.path().join("legacy.toml");
+    fs::write(&legacy_manifest, legacy_source).unwrap();
+    let legacy = family::read_with_root(&legacy_manifest, Some(&site)).unwrap();
+    assert_eq!(legacy.members[1].path, canonical_site.join("pelago"));
+
+    // The site root contains its members as strictly as the family root: a
+    // dot segment is refused in the text, and a member that is a link out of
+    // the root is refused once it is resolved.
+    for path in ["../outside", "pelago/../outside", "."] {
+        let escaping = temporary.path().join("escaping.toml");
+        fs::write(&escaping, authority("pelago-release-ops", path)).unwrap();
+        assert!(
+            family::read_with_root(&escaping, Some(&site)).is_err(),
+            "{path}"
+        );
+    }
+    let outside = temporary.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::remove_dir_all(&member).unwrap();
+    std::os::unix::fs::symlink(&outside, &member).unwrap();
+    let error = family::read_with_root(&manifest, Some(&site)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("escapes the physical family root"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -430,32 +455,32 @@ fn present_but_blank_split_root_is_rejected_even_with_a_site_override() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("repos.manifest.toml");
     for blank in ["", "   "] {
-        let source = authority("pelago-release-ops", "pelago").replace(
-            "split_root = \"/srv/pelago-split\"",
-            &format!("split_root = \"{blank}\""),
+        let source = authority("pelago-release-ops", "pelago").replacen(
+            "repo_family = \"pelago-split\"\n",
+            &format!("repo_family = \"pelago-split\"\nsplit_root = \"{blank}\"\n"),
+            1,
         );
         fs::write(&manifest, source).unwrap();
         for root in [None, Some(temp.path())] {
             let error = family::read_with_root(&manifest, root).unwrap_err();
-            assert!(format!("{error:#}").contains("split_root must not be blank"));
+            assert!(
+                format!("{error:#}").contains("split_root must not be blank"),
+                "{error:#}"
+            );
         }
     }
 }
 
 #[test]
 fn fleet_plan_preserves_authority_order_and_selects_one_lane() {
-    let parsed = family::parse(&authority(
-        "/srv/pelago-split/pelago-release-ops",
-        "/srv/pelago-split/pelago",
-    ))
-    .unwrap();
+    let parsed = family::parse(&authority("pelago-release-ops", "pelago")).unwrap();
 
     let score = fleet_entries(&parsed, false);
     assert_eq!(
         score[0],
         (
             "pelago-release-ops".to_owned(),
-            PathBuf::from("/srv/pelago-split/pelago-release-ops"),
+            PathBuf::from("pelago-release-ops"),
             "score".to_owned()
         )
     );
@@ -463,7 +488,7 @@ fn fleet_plan_preserves_authority_order_and_selects_one_lane() {
         score[1],
         (
             "pelago".to_owned(),
-            PathBuf::from("/srv/pelago-split/pelago"),
+            PathBuf::from("pelago"),
             "score".to_owned()
         )
     );
@@ -481,4 +506,35 @@ fn governed_process_failure_is_not_swallowed() {
         .to_string();
     assert!(error.contains("governed command for fixture failed"));
     assert!(error.contains("17"));
+}
+
+#[test]
+fn relative_manifest_paths_are_resolved_only_from_the_manifest_and_cannot_escape() {
+    for path in ["../outside", "/outside", ".", "pelago/../outside"] {
+        assert!(
+            family::parse(&authority("pelago-release-ops", path)).is_err(),
+            "{path}"
+        );
+    }
+    let parsed = family::parse(&authority("pelago-release-ops", "pelago")).unwrap();
+    assert!(
+        parsed
+            .check_paths()
+            .unwrap_err()
+            .to_string()
+            .contains("read the authority manifest")
+    );
+}
+
+#[test]
+fn a_manifest_copy_outside_its_control_plane_does_not_relocate_the_family() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("copy.toml");
+    fs::write(&manifest, authority("pelago-release-ops", "pelago")).unwrap();
+    assert!(
+        family::read(&manifest)
+            .unwrap_err()
+            .to_string()
+            .contains("named control-plane directory")
+    );
 }
