@@ -130,7 +130,41 @@
           "forge": {
             "repo": "acme/app",
             "environment": "production"
-          }
+          },
+          "missing": {
+            "from": "main",
+            "repo": "acme/app",
+            "total": 2,
+            "changes": [
+              {
+                "sha": "a1b2c3d",
+                "subject": "Recover a password through a verified email address",
+                "todo": "20261013-001451-f21832",
+                "todo_title": "Add secure email password recovery and verification"
+              },
+              {
+                "sha": "e4f5a6b",
+                "subject": "Renumber merge settings after a landed migration"
+              }
+            ]
+          },
+          "arrived": [
+            {
+              "at": "2026-10-12T21:40:00Z",
+              "from": "5c3af7f",
+              "to": "96d8374",
+              "repo": "acme/app",
+              "total": 1,
+              "changes": [
+                {
+                  "sha": "96d8374",
+                  "subject": "Show the attempt a worker is running now",
+                  "todo": "20261013-121500-a1b2c3",
+                  "todo_title": "Live attempt row on /work"
+                }
+              ]
+            }
+          ]
         }
       ]
     },

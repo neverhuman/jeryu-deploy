@@ -43,6 +43,8 @@ const MAX_LANES: usize = 32;
 const MAX_STAGES: usize = 16;
 const MAX_TARGETS: usize = 32;
 const MAX_SHIPS: usize = 50;
+/// Recent moves a stage reports in `arrived` (newest first).
+const MAX_MOVES: usize = 8;
 const MAX_PROBLEMS: usize = 64;
 const MAX_PIN_ROWS: usize = 200;
 const MAX_PIN_COLUMNS: usize = 12;
@@ -178,10 +180,57 @@ pub(crate) struct Stage {
     pub promote: Option<Promote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ships: Option<Vec<String>>,
+    /// What the stage it is compared with (usually main) holds that this one
+    /// does not: what promoting would bring, and what testing here does not cover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<StageChanges>,
+    /// The stage's recent moves, newest first: what each one brought here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arrived: Vec<StageMove>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge: Option<ForgeBinding>,
+}
+
+/// Commits one stage holds that another lacks, oldest first, with the work item
+/// each belongs to. `total` counts them all; `changes` is the first
+/// [`MAX_SHIPS`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct StageChanges {
+    /// The stage compared with, by name ("main").
+    pub from: String,
+    /// The forge repository the commits are in, `owner/name`.
+    pub repo: String,
+    pub total: u32,
+    #[serde(default)]
+    pub changes: Vec<Change>,
+}
+
+/// One move of a stage: when the collector saw it, from what to what, and the
+/// commits it brought.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct StageMove {
+    /// RFC 3339; when the collector first saw the stage at `to`.
+    pub at: String,
+    pub from: String,
+    pub to: String,
+    pub repo: String,
+    pub total: u32,
+    #[serde(default)]
+    pub changes: Vec<Change>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Change {
+    /// Abbreviated commit id.
+    pub sha: String,
+    pub subject: String,
+    /// The work item (`Todo:` trailer) and its title, when the commit has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -527,6 +576,17 @@ pub(crate) fn validate(
             if let Some(ships) = &stage.ships {
                 check_count(&format!("{at}.ships"), ships.len(), 0, MAX_SHIPS)?;
             }
+            if let Some(missing) = &stage.missing {
+                check_changes(&format!("{at}.missing"), &missing.repo, &missing.changes)?;
+            }
+            check_count(&format!("{at}.arrived"), stage.arrived.len(), 0, MAX_MOVES)?;
+            for (m, moved) in stage.arrived.iter().enumerate() {
+                let move_at = format!("{at}.arrived[{m}]");
+                check_changes(&move_at, &moved.repo, &moved.changes)?;
+                if DateTime::parse_from_rfc3339(&moved.at).is_err() {
+                    return Err(format!("{move_at}.at {:?} must be RFC 3339", moved.at));
+                }
+            }
             if let Some(forge) = &stage.forge
                 && forge
                     .repo
@@ -643,6 +703,13 @@ fn check_count(field: &str, count: usize, min: usize, max: usize) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+fn check_changes(at: &str, repo: &str, changes: &[Change]) -> Result<(), String> {
+    if repo.split('/').filter(|part| !part.is_empty()).count() != 2 {
+        return Err(format!("{at}.repo {repo:?} must be owner/name"));
+    }
+    check_count(&format!("{at}.changes"), changes.len(), 0, MAX_SHIPS)
 }
 
 fn check_strings(value: &Value, at: &str) -> Result<(), String> {
@@ -775,6 +842,41 @@ mod tests {
         DateTime::parse_from_rfc3339(text)
             .expect("test time")
             .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn a_stage_says_what_it_is_missing_and_what_just_arrived() {
+        let board = board();
+        validate("acme", &board, at("2026-10-12T22:00:00Z")).expect("the example is valid");
+        let prod = &board.lanes[0].stages[3];
+        let missing = prod
+            .missing
+            .as_ref()
+            .expect("the example's prod is missing work");
+        assert_eq!((missing.from.as_str(), missing.total), ("main", 2));
+        assert_eq!(
+            missing.changes[0].todo.as_deref(),
+            Some("20261013-001451-f21832")
+        );
+        assert_eq!(missing.changes[1].todo, None);
+        assert_eq!(prod.arrived[0].to, "96d8374");
+        // Both survive the round trip the server stores and serves.
+        let again: ReleaseBoard =
+            serde_json::from_value(serde_json::to_value(&board).unwrap()).unwrap();
+        assert_eq!(again.lanes[0].stages[3], *prod);
+    }
+
+    #[test]
+    fn too_many_moves_or_a_bad_repo_is_refused() {
+        let mut board = board();
+        let moved = board.lanes[0].stages[3].arrived[0].clone();
+        board.lanes[0].stages[3].arrived = vec![moved; MAX_MOVES + 1];
+        let err = validate("acme", &board, at("2026-10-12T22:00:00Z")).unwrap_err();
+        assert!(err.contains(".arrived has 9 entries"), "{err}");
+        let mut board = self::board();
+        board.lanes[0].stages[3].missing.as_mut().unwrap().repo = "app".into();
+        let err = validate("acme", &board, at("2026-10-12T22:00:00Z")).unwrap_err();
+        assert!(err.contains(".missing.repo"), "{err}");
     }
 
     #[test]

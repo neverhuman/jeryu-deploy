@@ -69,9 +69,9 @@ target() {
 
 # stage KEY=VALUE... — one stage. Keys: id name version state status known parallel never_deployed
 # column (one of the board's columns) targets (a JSON array) promote_cmd human_only automatic ships
-# (JSON array) rollback forge_repo forge_env.
+# (JSON array) missing (missing_json) arrived (arrived_json) rollback forge_repo forge_env.
 stage() {
-  local -A f=([parallel]=false [never_deployed]=false [targets]='[]' [human_only]=false [automatic]=false [ships]='')
+  local -A f=([parallel]=false [never_deployed]=false [targets]='[]' [human_only]=false [automatic]=false [ships]='' [missing]='' [arrived]='[]')
   local kv
   for kv in "$@"; do f["${kv%%=*}"]="${kv#*=}"; done
   jq -cn \
@@ -79,7 +79,8 @@ stage() {
     --arg status "${f[status]:-}" --arg known "${f[known]:-unverified}" --arg column "${f[column]:-}" \
     --argjson parallel "${f[parallel]}" --argjson never "${f[never_deployed]}" --argjson targets "${f[targets]}" \
     --arg cmd "${f[promote_cmd]:-}" --argjson human "${f[human_only]}" --argjson auto "${f[automatic]}" \
-    --arg ships "${f[ships]}" --arg rollback "${f[rollback]:-}" \
+    --arg ships "${f[ships]}" --arg missing "${f[missing]}" --argjson arrived "${f[arrived]:-[]}" \
+    --arg rollback "${f[rollback]:-}" \
     --arg frepo "${f[forge_repo]:-}" --arg fenv "${f[forge_env]:-}" '
     {id: $id, name: $name, version: (if $version == "" then null else $version end), state: $state,
      status: $status, known_by: $known, targets: $targets}
@@ -88,6 +89,8 @@ stage() {
     + (if $column != "" then {column: $column} else {} end)
     + (if $cmd != "" then {promote: {command: $cmd, human_only: $human, automatic: $auto}} else {} end)
     + (if $ships != "" then {ships: ($ships | fromjson)} else {} end)
+    + (if $missing != "" then {missing: ($missing | fromjson)} else {} end)
+    + (if ($arrived | length) > 0 then {arrived: $arrived} else {} end)
     + (if $rollback != "" then {rollback: $rollback} else {} end)
     + (if $frepo != "" then {forge: {repo: $frepo, environment: $fenv}} else {} end)'
 }
@@ -207,4 +210,82 @@ work_summary() {
       {key: "blocked", label: "Blocked", count: $blocked},
       {key: "open", label: "Open", count: $open}]}
     + (if $unlinked != "" then {unlinked: $unlinked} else {} end)'
+}
+
+# ---- what a stage is missing, and what just arrived -------------------------------------------
+
+# todo_titles_json FAMILY — {"<todo id>": "<title>"} for the family's queue, read once per run.
+todo_titles_json() {
+  local family="$1"
+  if [ -z "${todo_titles_cache[$family]:-}" ]; then
+    todo_titles_cache[$family]="$(${JERYU_BOARD_QUEUE_CMD:-todoq} list "$family" --all 2>/dev/null \
+      | awk '{ id = $1; $1 = $2 = $3 = $4 = $5 = ""; sub(/^ +/, ""); printf "%s\t%s\n", id, $0 }' \
+      | jq -Rcs 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}')"
+    [ -n "${todo_titles_cache[$family]}" ] || todo_titles_cache[$family]='{}'
+  fi
+  printf '%s' "${todo_titles_cache[$family]}"
+}
+declare -gA todo_titles_cache=()
+
+# changes_json FAMILY MIRROR FROM TO — {total, changes[]}: the commits TO holds that FROM does
+# not, oldest first, at most 50, each {sha, subject, todo?, todo_title?} (todo from the Todo:
+# trailer, its title from the family's queue). Prints nothing when either end is unknown.
+changes_json() {
+  local family="$1" m="$2" from="$3" to="$4"
+  [ -n "$from" ] && [ -n "$to" ] || return 0
+  git -C "$m" cat-file -e "$from^{commit}" 2>/dev/null && git -C "$m" cat-file -e "$to^{commit}" 2>/dev/null || return 0
+  git -C "$m" log --reverse --topo-order --no-merges \
+      --format='%h%x1f%s%x1f%(trailers:key=Todo,valueonly,separator=%x2C)%x1e' "$from..$to" 2>/dev/null \
+    | jq -Rcs --argjson titles "$(todo_titles_json "$family")" '
+      split("\u001e") | map(sub("^\n"; "") | select(length > 0) | split("\u001f")
+        | {sha: .[0], subject: .[1]} + (
+            (.[2] // "" | split(",") | map(gsub("^ +| +$"; "")) | map(select(length > 0)) | .[0]) as $todo
+            | if $todo then {todo: $todo} + (if $titles[$todo] then {todo_title: $titles[$todo]} else {} end)
+              else {} end))
+      | {total: length, changes: .[:50]}'
+}
+
+# missing_json FAMILY MIRROR REPO FROM_NAME FROM_SHA STAGE_SHA — a stage's `missing` object:
+# what FROM_NAME (e.g. main) holds that the stage does not. Empty when either end is unknown.
+missing_json() {
+  local family="$1" m="$2" repo="$3" from_name="$4" from_sha="$5" stage_sha="$6" c
+  c="$(changes_json "$family" "$m" "$stage_sha" "$from_sha")"
+  [ -n "$c" ] || return 0
+  jq -c --arg from "$from_name" --arg repo "$repo" '{from: $from, repo: $repo} + .' <<<"$c"
+}
+
+# arrived_json FAMILY LANE STAGE MIRROR REPO SHA [AT] [PREVIOUS] — a stage's `arrived` array: its
+# moves in the last 7 days, newest first (at most 5), each {at, from, to, repo, total, changes}. Each
+# run records the stage's commit in $state/history/FAMILY/LANE.STAGE when it moved, at AT (an RFC
+# 3339 time the source reports, e.g. a deployment's) or else when the collector first saw it there.
+# PREVIOUS, the commit the stage ran before (a deployment's previous release), seeds a stage with no
+# history yet, so its last move shows at once instead of after the next one.
+arrived_json() {
+  local family="$1" lane="$2" stage="$3" m="$4" repo="$5" sha="$6" at_text="${7:-}" previous="${8:-}"
+  [ -n "$sha" ] && [ -n "${state:-}" ] || { printf '[]'; return 0; }
+  local dir="$state/history/$family" file last now seen
+  file="$dir/$lane.$stage"
+  mkdir -p "$dir"
+  now="$(date +%s)"
+  seen="$now"; [ -n "$at_text" ] && seen="$(date -u -d "$at_text" +%s 2>/dev/null || echo "$now")"
+  if [ ! -s "$file" ] && [ -n "$previous" ] && [ "$previous" != "$sha" ]; then
+    printf '0 %s\n' "$previous" >"$file"
+  fi
+  last="$(tail -n 1 "$file" 2>/dev/null | cut -d' ' -f2)"
+  if [ "$last" != "$sha" ]; then
+    printf '%s %s\n' "$seen" "$sha" >>"$file"
+    tail -n 50 "$file" >"$file.tmp" && mv "$file.tmp" "$file"
+  fi
+  local -a lines=()
+  mapfile -t lines <"$file"
+  local i at from to c out=() since=$((now - 7 * 24 * 3600))
+  for ((i = ${#lines[@]} - 1; i >= 1 && ${#out[@]} < 5; i--)); do
+    at="${lines[$i]%% *}" to="${lines[$i]#* }" from="${lines[$((i - 1))]#* }"
+    [ "$at" -ge "$since" ] || break
+    c="$(changes_json "$family" "$m" "$from" "$to")"
+    [ -n "$c" ] || continue
+    out+=("$(jq -c --arg at "$(date -u -d "@$at" +%FT%TZ)" --arg from "$(short "$from")" \
+      --arg to "$(short "$to")" --arg repo "$repo" '{at: $at, from: $from, to: $to, repo: $repo} + .' <<<"$c")")
+  done
+  if [ ${#out[@]} -eq 0 ]; then printf '[]'; else printf '%s\n' "${out[@]}" | jq -cs .; fi
 }

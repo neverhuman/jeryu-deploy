@@ -73,8 +73,15 @@ minutes ahead of the forge's clock.
   sit together under its name: give each separately installed tool its own lane and one group,
   rather than one lane whose "stages" are different tools.
 - `stages[]`: `{id, name, version, state, status, known_by, column?, parallel?, never_deployed?,
-  targets[], promote?, ships?, rollback?, forge?}`. `column` must be one of the board's
-  `columns`.
+  targets[], promote?, ships?, missing?, arrived?, rollback?, forge?}`. `column` must be one of
+  the board's `columns`.
+  - `missing`: `{from, repo, total, changes[]}` — the commits the stage named `from` (usually
+    `main`) holds that this stage does not, oldest first: what promoting would bring, and what
+    testing here does not cover. `arrived[]`: `{at, from, to, repo, total, changes[]}` — the
+    stage's recent moves, newest first (at most 8): when the collector first saw it at `to`, and
+    the commits that move brought, i.e. what just became available here. A change is `{sha,
+    subject, todo?, todo_title?}`, `todo` from the commit's `Todo:` trailer. `repo` is
+    `owner/name`; `changes` holds at most 50, `total` counts them all.
   - `state` is `ok | warn | bad | none`; a stage is only `ok` when every target is.
   - `targets[]`: `{name, running, state, runners?, slots?}`. `running` is what the target runs,
     or null.

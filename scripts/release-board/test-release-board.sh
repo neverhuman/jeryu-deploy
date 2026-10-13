@@ -30,7 +30,9 @@ collect_demo() {
     "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived column=main)" \
     "$(stage id=prod name=prod column=prod version="$(short "$prod")" state=warn status="$(behind "$m" "$prod" "$main") behind" known=host \
         targets="[$(target node-a "$(short "$prod")" ok '["gate-a/slot0","gate-a/slot1"]'),$(target node-b old bad '[]' '[{"family":"demo","host":"node-b"}]')]" human_only=true promote_cmd="tag it" \
-        ships="$(git -C "$m" log --format='%h · %s' "$prod..$main" | lines_json)" forge_repo=demo/app forge_env=production)"
+        ships="$(git -C "$m" log --format='%h · %s' "$prod..$main" | lines_json)" forge_repo=demo/app forge_env=production \
+        missing="$(missing_json demo "$m" demo/app main "$main" "$prod")" \
+        arrived="$(arrived_json demo app prod "$m" demo/app "$prod")")"
   lane tool-a "Tool A" "demo/app" demo false group=Tools \
     "$(stage id=installed name=installed version="$(short "$main")" state=ok status="= main" known=host column=prod)"
   lane tool-b "Tool B" "demo/app" demo false group=Tools \
@@ -123,6 +125,33 @@ parts="$(jq -c '[.work.parts[] | {(.key): .count}] | add' "$b")"
 ok "the work bar places each todo once (content re-landed on main counts as merged)"
 jq -e '.work.total == 7' "$b" >/dev/null || fail "work total"
 ok "the work total is every todo in the queue"
+jq -e '.lanes[0].stages[1].missing | .from == "main" and .repo == "demo/app" and .total == 2
+  and [.changes[].subject] == ["merged change", "re-land the content change by tree"]
+  and .changes[0].todo == "t-merged" and .changes[0].todo_title == "merged"
+  and (.changes[1] | has("todo") | not)' "$b" >/dev/null \
+  || fail "missing lists what main holds and prod lacks: $(jq -c '.lanes[0].stages[1].missing' "$b")"
+jq -e '.lanes[0].stages[1] | has("arrived") | not' "$b" >/dev/null || fail "a stage seen once has no move yet"
+ok "missing lists main's commits prod lacks, oldest first, with each todo and its title"
+prev="$(cat "$T/prod")"; git -C "$src" rev-parse main >"$T/prod"
+bash "$T/rb/collect.sh" --out "$T/out" demo 2>"$T/log" || fail "second collect failed: $(cat "$T/log")"
+jq -e --arg from "${prev:0:7}" '.lanes[0].stages[1] | (.missing.total == 0)
+  and (.arrived | length) == 1 and .arrived[0].from == $from and .arrived[0].total == 2
+  and .arrived[0].changes[0].todo == "t-merged" and (.arrived[0].at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))' "$b" >/dev/null \
+  || fail "the move to main arrives: $(jq -c '.lanes[0].stages[1] | {missing, arrived}' "$b")"
+echo "$prev" >"$T/prod"
+ok "a stage's move is recorded once and arrives with the commits and todos it brought"
+(
+  problem() { :; }
+  # shellcheck source=/dev/null
+  . "$T/rb/lib.sh"
+  state="$T/seed-state"; m="$T/state/mirrors/demo/app.git"
+  main_sha="$(git -C "$m" rev-parse refs/heads/main)"
+  deployed="$(date -u -d '-1 hour' +%FT%TZ)"
+  out="$(arrived_json demo app prod "$m" demo/app "$main_sha" "$deployed" "$prev")"
+  jq -e --arg from "${prev:0:7}" --arg at "$deployed" 'length == 1 and .[0].at == $at and .[0].from == $from
+    and .[0].total == 2' <<<"$out" >/dev/null || fail "a reported deploy seeds its move: $out"
+)
+ok "a stage with no history is seeded from the previous deployment, at the reported time"
 
 bash "$T/rb/collect.sh" --push --trigger release --out "$T/out" demo 2>"$T/log" || fail "push exited non-zero: $(cat "$T/log")"
 [ "$(cat "$T/put.url")" = "file://$T/forge/api/v1/release-board/demo" ] || fail "PUT went to $(cat "$T/put.url")"
