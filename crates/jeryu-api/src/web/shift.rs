@@ -1042,6 +1042,7 @@ pub(crate) async fn heartbeat(
 /// hours, or one family's slots.
 pub(crate) async fn workers(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     StrictQuery(query): StrictQuery<WorkersQuery>,
 ) -> AxumResponse {
     // A family nobody hosts is a typo in the filter, not a family with no
@@ -1066,7 +1067,13 @@ pub(crate) async fn workers(
                     heartbeat: row.heartbeat,
                 })
                 .collect();
-            usage::attach_live(&state, &mut workers);
+            if account.role == UserRole::Admin {
+                usage::attach_live(&state, &mut workers);
+            } else {
+                for worker in &mut workers {
+                    worker.heartbeat.usage = None;
+                }
+            }
             Json(WorkersResponse {
                 generated_at: rfc3339_ms(now),
                 workers,

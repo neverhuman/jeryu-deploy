@@ -462,6 +462,7 @@ mod tests {
         let worker = shift::StoredHeartbeat {
             received_ms: now.timestamp_millis(),
             heartbeat: Heartbeat {
+                usage: None,
                 operator: "worker-a".to_string(),
                 host: "host-a".to_string(),
                 slot: "w1".to_string(),

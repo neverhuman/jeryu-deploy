@@ -1249,3 +1249,10 @@ reports each account's `kind` and `kind_source` (`set`, `config` or
 can work on that todo, for an "assign to" picker. Only an admin or someone who
 can work on the todo may read it, and it never reaches past the todo's own
 repositories, so it shows no more than the caller's own grants do.
+
+Compatibility with existing Activity clients: the histogram accepts
+`range=6h|24h|7d`, and usage accepts `range=24h`, alongside the explicit `hours`
+queries. Conflicting windows are refused. Worker rows omit token and cost usage
+for non-admin readers. A non-admin event reporter may attribute a usage sample
+only to its own authenticated operator login; administrators retain fleet
+reporting.

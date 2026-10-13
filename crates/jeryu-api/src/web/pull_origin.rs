@@ -4,7 +4,8 @@
 //! contribution is opened there and an importer brings it here, where it is
 //! gated, reviewed and merged. Such a pull request is `contributed`; one
 //! written inside the forge is `internal`, which is what a pull request with
-//! no recorded origin reads as.
+//! no recorded origin reads as, except the reserved contrib/gh- namespace,
+//! which stays contributed even before its marking can be stored.
 //!
 //! The marking is the importer's, never the author's. Only a global admin or a
 //! `JERYU_PULL_IMPORTERS` identity may write it, and a caller may not mark
@@ -261,9 +262,16 @@ pub(in crate::web) fn posture(state: &WebState, pr: &PullRequest) -> OriginPostu
             set_ms: 0,
         }),
     };
-    let origin = stored
-        .as_ref()
-        .map_or(PullOrigin::Internal, |row| row.origin);
+    let origin = stored.as_ref().map_or_else(
+        || {
+            if crate::github_pull_import::contrib_number(&pr.head.ref_name).is_some() {
+                PullOrigin::Contributed
+            } else {
+                PullOrigin::Internal
+            }
+        },
+        |row| row.origin,
+    );
     let maintainers = state.pull_maintainers.as_ref().clone();
     OriginPosture {
         origin,

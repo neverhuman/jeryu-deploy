@@ -28,4 +28,4 @@ plan = "fix-forward: re-run the statement; or delete version 14 from shift_schem
 backup = "not required: telemetry only, nothing of record is lost"
 
 [verify]
-check = "cargo test -p jeryu-api --features web --lib web::pipeline::tests::the_family_backfill_fills_rows_from_what_the_log_knows_of_their_repo (re-applying version 13 fills from the log's own evidence and leaves unknowable repos null)"
+check = "cargo test -p jeryu-api --features web --lib web::pipeline::tests::the_family_backfill_fills_rows_from_what_the_log_knows_of_their_repo (re-applying version 14 fills from the log's own evidence and leaves unknowable repos null)"

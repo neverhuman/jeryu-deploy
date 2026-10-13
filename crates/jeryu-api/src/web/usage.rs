@@ -397,6 +397,8 @@ fn sample_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sample> {
 /// `GET /api/v1/usage?hours=24&bucket=5m[&family=]`
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct UsageQuery {
+    /// Existing Activity clients use range=24h.
+    pub range: Option<String>,
     pub hours: Option<i64>,
     /// A bucket width such as `30s`, `5m` or `1h`.
     pub bucket: Option<String>,
@@ -405,7 +407,7 @@ pub(crate) struct UsageQuery {
 }
 
 impl StrictFields for UsageQuery {
-    const KEYS: &'static [&'static str] = &["hours", "bucket", "family"];
+    const KEYS: &'static [&'static str] = &["hours", "bucket", "family", "range"];
 
     /// The route keeps its own published code for a refused query: the keys
     /// alone do not say what a bucket width looks like.
@@ -415,6 +417,10 @@ impl StrictFields for UsageQuery {
         "hours is an integer from 1 to 720; bucket is a width such as 30s, 5m or 1h";
 
     fn check_values(&self) -> Result<(), String> {
+        super::strict_query::filter_one_of("range", self.range.as_ref(), &["24h"])?;
+        if self.range.is_some() && self.hours.is_some_and(|hours| hours != 24) {
+            return Err("range=24h conflicts with hours; send one window".to_string());
+        }
         if let Some(hours) = self.hours
             && !(1..=MAX_HOURS).contains(&hours)
         {

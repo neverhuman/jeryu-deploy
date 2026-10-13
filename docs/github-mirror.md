@@ -216,3 +216,11 @@ is what the two above are for.
 `JERYU_GITHUB_PUSH=0` loads the mirror with no targets. Merges, tag pushes and
 the reconcile all find no target and do nothing, so the forge runs with no
 route to GitHub at all.
+
+The contributed hold also applies to both REST merge spellings (`PUT /repos/...`
+and `PUT /api/v3/repos/...`), using the live source-branch head for maintainer
+approval. An unmarked `contrib/gh-<number>` branch stays contributed if the origin
+write fails. Settlement requires an origin record written by the configured
+importer, so naming an ordinary branch like an imported contribution cannot
+close a mirror pull request. Import fetches use `JERYU_MIRROR_REMOTE_ALLOWLIST`
+before adding transport credentials; unset allowlists refuse a fetch.

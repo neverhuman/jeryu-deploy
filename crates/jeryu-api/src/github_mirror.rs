@@ -724,7 +724,7 @@ fn run_bounded(git_bin: &str, args: &[&str], cwd: &Path) -> Result<String, Strin
 /// Single forward pass: everything between `x-access-token:` and the next `@`
 /// becomes `***`, and scanning resumes AFTER the rewritten span so the
 /// replacement can never re-match itself.
-fn redact(text: &str) -> String {
+pub(crate) fn redact(text: &str) -> String {
     const MARK: &str = "x-access-token:";
     let mut out = String::with_capacity(text.len());
     let mut rest = text;

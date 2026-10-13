@@ -260,13 +260,22 @@ impl PullImport {
 /// Where a contribution is fetched from: the mirror itself, which publishes
 /// every pull request head as `refs/pull/<number>/head` whether it was opened
 /// from a fork or from a branch on the mirror.
-fn fetch_source(target: &PullImportTarget) -> String {
-    target.fetch_override.clone().unwrap_or_else(|| {
-        format!(
-            "https://x-access-token:jeryussh@github.com/{}.git",
-            target.github_slug
-        )
-    })
+fn fetch_source(target: &PullImportTarget) -> Result<String, String> {
+    if let Some(seam) = &target.fetch_override {
+        return Ok(seam.clone());
+    }
+    let candidate = format!("https://github.com/{}.git", target.github_slug);
+    let allowlist = crate::git_remote::GitRemoteAllowlist::from_env(
+        crate::github_mirror::MIRROR_REMOTE_ALLOWLIST_VAR,
+    )
+    .ok_or_else(|| {
+        "JERYU_MIRROR_REMOTE_ALLOWLIST must be configured before importing".to_string()
+    })?;
+    allowlist.check(&candidate)?;
+    Ok(format!(
+        "https://x-access-token:jeryussh@github.com/{}.git",
+        target.github_slug
+    ))
 }
 
 /// Bring GitHub pull request `number` into `bare` as `contrib/gh-<number>` and
@@ -284,15 +293,10 @@ pub fn fetch_contribution(
 ) -> Result<String, String> {
     let branch = contrib_branch(number);
     let refspec = format!("+refs/pull/{number}/head:refs/heads/{branch}");
+    let source = fetch_source(target)?;
     run_bounded(
         git_bin,
-        &[
-            "fetch",
-            "--no-tags",
-            "--force",
-            &fetch_source(target),
-            &refspec,
-        ],
+        &["fetch", "--no-tags", "--force", &source, &refspec],
         bare,
     )?;
     let head = run_bounded(
@@ -365,8 +369,25 @@ impl CurlGithubApi {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<String, String> {
+        let (status, body) = self.call_response(method, path, body)?;
+        if (200..300).contains(&status) {
+            Ok(body)
+        } else {
+            Err(format!(
+                "github HTTP {status}: {}",
+                crate::github_mirror::redact(&body)
+            ))
+        }
+    }
+
+    fn call_response(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(u16, String), String> {
         let mut config = String::new();
-        config.push_str("--silent\n--show-error\n--fail-with-body\n");
+        config.push_str("--silent\n--show-error\nwrite-out = \"\\n%{http_code}\"\n");
         config.push_str(&format!("--max-time {}\n", CALL_TIMEOUT.as_secs()));
         config.push_str(&format!("--request {method}\n"));
         config.push_str(&format!(
@@ -447,16 +468,20 @@ impl GithubApi for CurlGithubApi {
     }
 
     fn branch_head(&self, slug: &str, branch: &str) -> Result<Option<String>, String> {
-        let body = match self.call(
+        let (status, body) = self.call_response(
             "GET",
             &format!("/repos/{slug}/git/ref/heads/{branch}"),
             None,
-        ) {
-            Ok(body) => body,
-            // A branch GitHub does not have is an answer, not a failure.
-            Err(err) if err.contains("404") => return Ok(None),
-            Err(err) => return Err(err),
-        };
+        )?;
+        if status == 404 {
+            return Ok(None);
+        }
+        if !(200..300).contains(&status) {
+            return Err(format!(
+                "github HTTP {status}: {}",
+                crate::github_mirror::redact(&body)
+            ));
+        }
         let parsed: serde_json::Value =
             serde_json::from_str(&body).map_err(|err| format!("read branch head: {err}"))?;
         Ok(parsed
@@ -524,7 +549,7 @@ fn json_config_value(raw: &str) -> String {
 
 /// Run `curl --config -` with the request on stdin, bounded like every other
 /// outbound call the mirror makes.
-fn run_curl(config: &str) -> Result<String, String> {
+fn run_curl(config: &str) -> Result<(u16, String), String> {
     let mut child = std::process::Command::new("curl")
         .args(["--config", "-"])
         .stdin(std::process::Stdio::piped())
@@ -542,13 +567,27 @@ fn run_curl(config: &str) -> Result<String, String> {
         .map_err(|err| format!("wait for curl: {err}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if output.status.success() {
-        return Ok(stdout);
+        return parse_http_output(&stdout);
     }
     Err(format!(
         "github call failed ({}): {}",
         output.status,
-        stdout.trim()
+        crate::github_mirror::redact(stdout.trim())
     ))
+}
+
+fn parse_http_output(stdout: &str) -> Result<(u16, String), String> {
+    let (body, status) = stdout
+        .rsplit_once('\n')
+        .ok_or_else(|| "curl did not report HTTP status".to_string())?;
+    let status = status
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "curl reported an invalid HTTP status".to_string())?;
+    if !(100..600).contains(&status) {
+        return Err("curl reported no HTTP response".to_string());
+    }
+    Ok((status, body.to_string()))
 }
 
 /// Run git with prompts disabled and a hard timeout; returns stdout on success.
@@ -581,17 +620,21 @@ fn run_bounded(git_bin: &str, args: &[&str], cwd: &Path) -> Result<String, Strin
                 if status.success() {
                     return Ok(stdout);
                 }
-                return Err(format!("git {} failed: {}", args.join(" "), stderr.trim()));
+                return Err(crate::github_mirror::redact(&format!(
+                    "git {} failed: {}",
+                    args.join(" "),
+                    stderr.trim()
+                )));
             }
             Ok(None) => {
                 if start.elapsed() > CALL_TIMEOUT {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!(
+                    return Err(crate::github_mirror::redact(&format!(
                         "git {} timed out after {}s",
                         args.join(" "),
                         CALL_TIMEOUT.as_secs()
-                    ));
+                    )));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -603,6 +646,23 @@ fn run_bounded(git_bin: &str, args: &[&str], cwd: &Path) -> Result<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_status_is_separate_from_response_text() {
+        assert_eq!(
+            parse_http_output("Not Found\n404").unwrap(),
+            (404, "Not Found".to_string())
+        );
+        assert_eq!(parse_http_output("body mentions 404\n500").unwrap().0, 500);
+        assert!(parse_http_output("no status").is_err());
+        assert!(parse_http_output("network error\n000").is_err());
+        assert!(
+            !crate::github_mirror::redact(
+                "https://x-access-token:private-test@host.invalid/repo.git"
+            )
+            .contains("private-test")
+        );
+    }
 
     #[test]
     fn a_contribution_branch_names_its_github_pull_request() {

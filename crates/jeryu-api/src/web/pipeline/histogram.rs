@@ -33,6 +33,8 @@ const MAX_BUCKETS: i64 = 1500;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct HistogramQuery {
+    /// Existing Activity clients use range=6h|24h|7d.
+    pub range: Option<String>,
     /// How far back the window reaches, 1 to 720 (default 24).
     pub hours: Option<i64>,
     /// `5m`, `15m`, `1h` or `1d`; the default comes from `hours`.
@@ -47,6 +49,7 @@ pub(crate) struct HistogramQuery {
 
 impl crate::web::strict_query::StrictFields for HistogramQuery {
     const KEYS: &'static [&'static str] = &[
+        "range",
         "hours",
         "bucket",
         "family",
@@ -64,6 +67,21 @@ impl crate::web::strict_query::StrictFields for HistogramQuery {
         "hours is an integer from 1 to 720; bucket is 5m, 15m, 1h or 1d";
 
     fn check_values(&self) -> Result<(), String> {
+        crate::web::strict_query::filter_one_of(
+            "range",
+            self.range.as_ref(),
+            &["6h", "24h", "7d"],
+        )?;
+        if let Some(range) = self.range.as_deref() {
+            let hours = match range {
+                "6h" => 6,
+                "24h" => 24,
+                _ => 168,
+            };
+            if self.hours.is_some_and(|value| value != hours) {
+                return Err("range and hours name different windows; send one".to_string());
+            }
+        }
         crate::web::strict_query::filter_one_of(
             "bucket",
             self.bucket.as_ref(),
@@ -267,7 +285,12 @@ pub(crate) async fn histogram(
         Ok(super::super::strict_query::StrictQuery(query)) => query,
         Err(refused) => return refused.into_response(),
     };
-    let hours = query.hours.unwrap_or(DEFAULT_HOURS);
+    let hours = query.hours.unwrap_or_else(|| match query.range.as_deref() {
+        Some("6h") => 6,
+        Some("24h") => 24,
+        Some("7d") => 168,
+        _ => DEFAULT_HOURS,
+    });
     if !(1..=MAX_HOURS).contains(&hours) {
         return refused(
             &format!("hours must be from 1 to {MAX_HOURS}, got {hours}; it is not clamped"),
@@ -282,7 +305,16 @@ pub(crate) async fn histogram(
             "use a dotted lower-case kind, or a prefix that ends in a dot",
         );
     }
-    let bucket_ms = bucket_seconds(query.bucket.as_deref(), hours) * 1000;
+    let bucket_ms = if query.bucket.is_none() {
+        match query.range.as_deref() {
+            Some("6h") => 300,
+            Some("24h") => 1800,
+            Some("7d") => 21600,
+            _ => bucket_seconds(None, hours),
+        }
+    } else {
+        bucket_seconds(query.bucket.as_deref(), hours)
+    } * 1000;
     let (from_ms, to_ms) = window(Utc::now().timestamp_millis(), hours, bucket_ms);
     let count = (to_ms - from_ms) / bucket_ms;
     if count > MAX_BUCKETS {

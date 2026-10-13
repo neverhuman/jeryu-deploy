@@ -60,7 +60,7 @@ const INTERVAL_ENV: &str = "JERYU_GITHUB_PULL_IMPORT_MINUTES";
 const DEFAULT_INTERVAL_MINUTES: u64 = 5;
 
 /// Most repositories one pass walks, so a pass cannot grow without bound as
-/// more enrol; the next pass carries on from the start of the list.
+/// more enrol; a rotating start gives later repositories their next pass.
 const MAX_REPOS_PER_PASS: usize = 64;
 
 /// The forge login an imported pull request is authored by, derived from the
@@ -197,10 +197,21 @@ pub(crate) fn import_once(state: &WebState) -> Vec<ImportOutcome> {
         return Vec::new();
     };
     let mut outcomes = Vec::new();
-    for repo in state.github.core().list_repositories(None) {
-        if outcomes.len() >= MAX_REPOS_PER_PASS {
-            break;
-        }
+    let mut enrolled: Vec<_> = state
+        .github
+        .core()
+        .list_repositories(None)
+        .into_iter()
+        .filter(|repo| state.pull_import.target(&repo.owner, &repo.name).is_some())
+        .collect();
+    enrolled.sort_by(|a, b| (&a.owner, &a.name).cmp(&(&b.owner, &b.name)));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    if !enrolled.is_empty() {
+        let offset = NEXT.fetch_add(MAX_REPOS_PER_PASS, std::sync::atomic::Ordering::Relaxed)
+            % enrolled.len();
+        enrolled.rotate_left(offset);
+    }
+    for repo in enrolled.into_iter().take(MAX_REPOS_PER_PASS) {
         let Some(target) = state.pull_import.target(&repo.owner, &repo.name) else {
             continue;
         };
@@ -447,6 +458,17 @@ fn settle_finished(
         let Some(number) = contrib_number(&pr.head.ref_name) else {
             continue;
         };
+        if !state
+            .pull_origin
+            .get(owner, name, pr.number)
+            .ok()
+            .flatten()
+            .is_some_and(|origin| {
+                origin.origin == PullOrigin::Contributed && origin.set_by == importer_login(state)
+            })
+        {
+            continue;
+        }
         if state
             .import_reports
             .get(&target.github_slug, number)

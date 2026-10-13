@@ -252,7 +252,6 @@ fn query_params(path: &str) -> &'static [&'static str] {
     match path {
         "/api/v1/attention" => keys::<super::pipeline::attention::AttentionQuery>(),
         "/api/v1/events" => keys::<super::pipeline::EventsQuery>(),
-        "/api/v1/usage" => keys::<super::pipeline::UsageQuery>(),
         "/api/v1/yield" => keys::<super::yields::YieldQuery>(),
         "/api/v1/flow" => keys::<super::flow::FlowQuery>(),
         "/api/v1/events/histogram" => keys::<super::pipeline::histogram::HistogramQuery>(),

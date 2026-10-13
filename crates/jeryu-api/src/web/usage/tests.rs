@@ -389,7 +389,7 @@ async fn the_usage_route_serves_heartbeat_totals_and_refuses_a_bad_query() {
     );
 
     let workers = body_json(
-        call(HttpMethod::GET, "/api/v1/shift/workers", &user, None)
+        call(HttpMethod::GET, "/api/v1/shift/workers", &admin, None)
             .await
             .unwrap(),
     )
@@ -403,6 +403,19 @@ async fn the_usage_route_serves_heartbeat_totals_and_refuses_a_bad_query() {
             .cloned()
             .unwrap_or(Value::Null)
     };
+    let public = body_json(
+        call(HttpMethod::GET, "/api/v1/shift/workers", &user, None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        public["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["usage"].is_null())
+    );
     assert_eq!(row("w1")["usage"]["input_tokens"], 1_000);
     assert_eq!(row("w1")["usage"]["model"], "claude-opus-5");
     assert_eq!(row("w1")["usage"]["turns"], 7);

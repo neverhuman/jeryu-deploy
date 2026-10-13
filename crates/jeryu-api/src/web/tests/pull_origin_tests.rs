@@ -4,6 +4,85 @@
 
 use super::*;
 
+#[tokio::test]
+async fn both_rest_merge_edges_require_a_maintainer() {
+    let storage = tempfile::tempdir().unwrap();
+    let (core, _, number, head) = forge_with_approved_pull(storage.path(), "edge-hold");
+    let state = Arc::new(
+        WebState::new_with_git_storage(core.clone(), storage.path().to_path_buf())
+            .with_pull_trust(&["importbot"], &["maintainer"]),
+    );
+    state
+        .pull_origin
+        .set(
+            "acme",
+            "edge-hold",
+            number,
+            crate::web::pull_origin::PullOrigin::Contributed,
+            "importbot",
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .unwrap();
+    let base = bare_ref(storage.path(), "acme", "edge-hold", "refs/heads/main");
+    for prefix in ["", "/api/v3"] {
+        let uri = format!("{prefix}/repos/acme/edge-hold/pulls/{number}/merge")
+            .parse()
+            .unwrap();
+        let response = crate::web::surface::github_forward(
+            State(state.clone()),
+            None,
+            axum::http::Method::PUT,
+            axum::http::HeaderMap::new(),
+            axum::extract::OriginalUri(uri),
+            axum::body::Bytes::from("{}"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            bare_ref(storage.path(), "acme", "edge-hold", "refs/heads/main"),
+            base
+        );
+    }
+    approve_as(&core, "edge-hold", number, "maintainer", &head);
+    let response = crate::web::surface::github_forward(
+        State(state),
+        None,
+        axum::http::Method::PUT,
+        axum::http::HeaderMap::new(),
+        axum::extract::OriginalUri(
+            format!("/api/v3/repos/acme/edge-hold/pulls/{number}/merge")
+                .parse()
+                .unwrap(),
+        ),
+        axum::body::Bytes::from("{}"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        bare_ref(storage.path(), "acme", "edge-hold", "refs/heads/main"),
+        head
+    );
+}
+
+#[test]
+fn an_unmarked_import_namespace_still_holds_the_pull() {
+    let storage = tempfile::tempdir().unwrap();
+    let (core, _, number, _) = forge_with_approved_pull(storage.path(), "unmarked");
+    let state = WebState::new_with_git_storage(core.clone(), storage.path().to_path_buf());
+    let mut pr = core.get_pull_request("acme", "unmarked", number).unwrap();
+    pr.head.ref_name = "contrib/gh-43".to_string();
+    let posture = crate::web::pull_origin::posture(&state, &pr);
+    assert!(posture.contributed());
+    assert!(posture.blocks_merge());
+    assert!(
+        state
+            .pull_origin
+            .get("acme", "unmarked", number)
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// One repository with a real bare git store, one pull request on a green
 /// required-free head, and an approval from `bob`, who is not a maintainer.
 fn forge_with_approved_pull(

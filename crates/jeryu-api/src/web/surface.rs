@@ -218,6 +218,61 @@ async fn github_forward_request(
     }
     let body = std::str::from_utf8(&body).unwrap_or_default();
     let body = bind_authenticated_actor(body, &account.login);
+    let route = normalize_github_edge_path(&path_and_query)
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    let segments: Vec<_> = route.trim_matches('/').split('/').collect();
+    if method == Method::Put
+        && let ["repos", owner, repo, "pulls", number, "merge"] = segments.as_slice()
+        && let Ok(number) = number.parse::<u64>()
+        && let Ok(mut pr) = state.core.get_pull_request(owner, repo, number)
+    {
+        // The approval must cover the live source branch that the merge uses.
+        if let Some((source_owner, source_repo)) = pr.source_repository.split_once('/')
+            && let Ok(source) = state
+                .repo_manager
+                .resolve_parts(source_owner, source_repo.trim_end_matches(".git"))
+            && let Ok(Some(head)) = jeryu_gitd::refs::RefService::new((*state.repo_manager).clone())
+                .resolve_commit(
+                    &source,
+                    &format!(
+                        "refs/heads/{}",
+                        pr.head
+                            .ref_name
+                            .split_once(':')
+                            .map_or(pr.head.ref_name.as_str(), |(_, branch)| branch)
+                    ),
+                )
+        {
+            pr.head.sha = head;
+        }
+        if super::pull_origin::posture(&state, &pr).blocks_merge() {
+            let response = super::workcells_support::typed_error(
+                super::workcells_support::TypedError {
+                    status: StatusCode::CONFLICT,
+                    code: "merge_blocked",
+                    purpose: "merge contributed pull request",
+                    reason: "a configured maintainer must approve the exact live head before it can merge",
+                    common_fixes: &[
+                        "configure JERYU_PULL_MAINTAINERS and obtain an approval on this head",
+                    ],
+                    docs_url: "docs/github-mirror.md",
+                    repair_hint: "refresh the PR origin and merge passport, then resolve its maintainer hold",
+                    message: "Contributed pull request requires a maintainer approval",
+                },
+            );
+            super::merge_attempts::record_edge(
+                &state,
+                true,
+                route,
+                &account.login,
+                409,
+                r#"{"code":"merge_blocked","message":"maintainer approval required"}"#,
+            );
+            return response;
+        }
+    }
     let response = state.github.handle(method, &path_and_query, &body);
     let normalized = normalize_github_edge_path(&path_and_query);
     super::merge_attempts::record_edge(
