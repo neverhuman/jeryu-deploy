@@ -285,7 +285,7 @@ pub(crate) async fn histogram(
         Ok(super::super::strict_query::StrictQuery(query)) => query,
         Err(refused) => return refused.into_response(),
     };
-    let hours = query.hours.unwrap_or_else(|| match query.range.as_deref() {
+    let hours = query.hours.unwrap_or(match query.range.as_deref() {
         Some("6h") => 6,
         Some("24h") => 24,
         Some("7d") => 168,

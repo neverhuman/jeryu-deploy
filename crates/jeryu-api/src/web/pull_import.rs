@@ -204,7 +204,7 @@ pub(crate) fn import_once(state: &WebState) -> Vec<ImportOutcome> {
         .into_iter()
         .filter(|repo| state.pull_import.target(&repo.owner, &repo.name).is_some())
         .collect();
-    enrolled.sort_by(|a, b| (&a.owner, &a.name).cmp(&(&b.owner, &b.name)));
+    enrolled.sort_by_key(|repo| (repo.owner.clone(), repo.name.clone()));
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     if !enrolled.is_empty() {
         let offset = NEXT.fetch_add(MAX_REPOS_PER_PASS, std::sync::atomic::Ordering::Relaxed)
