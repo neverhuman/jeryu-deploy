@@ -384,3 +384,29 @@ fn a_blocked_todos_kind_reaches_the_api() {
         None
     );
 }
+
+#[test]
+fn a_claimed_todo_says_when_and_with_which_model_its_attempt_began() {
+    let mut todo = todo_in(TodoStatus::Claimed);
+    todo.extra.push((
+        "claimed_at".to_string(),
+        toml_edit::Value::from("2026-10-13T11:40:02Z"),
+    ));
+    todo.extra.push((
+        "claim_model".to_string(),
+        toml_edit::Value::from("claude-opus-5[1m]"),
+    ));
+    let parsed = TodoFile::parse(&todo.dump()).expect("parse a claimed todo");
+    let api = parsed.to_api(Utc::now());
+    assert_eq!(api.claimed_at.as_deref(), Some("2026-10-13T11:40:02Z"));
+    assert_eq!(api.claim_model.as_deref(), Some("claude-opus-5[1m]"));
+    // Only a claimed todo has an attempt in progress: facts a release left
+    // behind say nothing about the todo once it is open again.
+    let mut released = parsed.clone();
+    released.status = TodoStatus::Open;
+    let api = released.to_api(Utc::now());
+    assert_eq!((api.claimed_at, api.claim_model), (None, None));
+    // A worker too old to write them leaves both null.
+    let api = todo_in(TodoStatus::Claimed).to_api(Utc::now());
+    assert_eq!((api.claimed_at, api.claim_model), (None, None));
+}

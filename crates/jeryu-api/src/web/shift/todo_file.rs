@@ -282,6 +282,20 @@ impl TodoFile {
                 .unwrap_or(false)
     }
 
+    /// A fact the claiming worker wrote about the attempt in progress
+    /// (`claimed_at`, `claim_model`); only a claimed todo has one in progress.
+    fn claim_fact(&self, key: &str) -> Option<String> {
+        if self.status != TodoStatus::Claimed {
+            return None;
+        }
+        self.extra
+            .iter()
+            .find(|(name, _)| name == key)
+            .and_then(|(_, value)| value.as_str())
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    }
+
     pub(crate) fn attempts_list(&self) -> Vec<Attempt> {
         self.worked_by.iter().filter_map(attempt_from).collect()
     }
@@ -325,6 +339,8 @@ impl TodoFile {
                 .iter()
                 .find(|(key, _)| key == "triage_cost_usd")
                 .and_then(|(_, value)| number(value)),
+            claimed_at: self.claim_fact("claimed_at"),
+            claim_model: self.claim_fact("claim_model"),
             note: self.note.clone(),
             park_until: self.park_until.clone(),
             assignee: (!self.assignee.is_empty()).then(|| self.assignee.clone()),

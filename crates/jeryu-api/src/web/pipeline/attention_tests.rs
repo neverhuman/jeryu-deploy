@@ -59,6 +59,8 @@ fn todo(id: &str, status: &str) -> ShiftTodo {
         prs: Vec::new(),
         cost_usd: None,
         triage_cost_usd: None,
+        claimed_at: None,
+        claim_model: None,
         note: String::new(),
         park_until: String::new(),
         assignee: None,

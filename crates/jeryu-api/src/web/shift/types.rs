@@ -92,6 +92,11 @@ pub(crate) struct ShiftTodo {
     pub cost_usd: Option<f64>,
     /// What triaging the todo cost, when todoq recorded a non-zero amount.
     pub triage_cost_usd: Option<f64>,
+    /// When the attempt in progress began and which model runs it, as the
+    /// claiming worker wrote them; `null` when none is in progress (an attempt
+    /// reaches `worked_by` only once it ends). Older workers write neither.
+    pub claimed_at: Option<String>,
+    pub claim_model: Option<String>,
     pub note: String,
     /// When a parked todo comes back by itself, as the file spells it; empty
     /// when it is parked with no date or not parked at all.

@@ -518,6 +518,10 @@ person that work is waiting for a tag.
 - `cost_usd`: the sum over `worked_by`, or null.
 - `triage_cost_usd`: what triaging the todo cost, or null when todoq recorded
   none.
+- `claimed_at`, `claim_model`: when the attempt in progress began and which
+  model runs it, as the claiming worker wrote them; null unless the todo is
+  `claimed` (an attempt reaches `worked_by` only once it ends) and from older
+  workers.
 - `worked_by[]` attempts carry, besides `by, host, slot, model, session,
   started, ended, outcome, cost_usd, note, shift`, whichever of these the file
   has (omitted when it has not): `agent` (harness CLI, e.g. `claude` or
