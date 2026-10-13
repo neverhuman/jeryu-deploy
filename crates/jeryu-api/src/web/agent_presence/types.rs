@@ -194,6 +194,37 @@ fn distinct(values: Vec<String>) -> Vec<String> {
     out
 }
 
+fn valid_pr_link(value: &str) -> bool {
+    let Some((repo, number)) = value.rsplit_once('#') else {
+        return false;
+    };
+    let Some((owner, name)) = repo.split_once('/') else {
+        return false;
+    };
+    let slug = |part: &str| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    };
+    slug(owner)
+        && slug(name)
+        && !number.is_empty()
+        && number.bytes().all(|b| b.is_ascii_digit())
+        && number.parse::<u64>().is_ok_and(|n| n > 0)
+}
+
+fn valid_todo_link(value: &str) -> bool {
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | ':' | '_' | '-'))
+        && value != "."
+        && value != ".."
+        && !value.starts_with("javascript:")
+}
+
 impl PresenceBeat {
     /// Check every field against the contract's limits.
     pub(crate) fn check(self) -> Result<CheckedBeat, BeatError> {
@@ -254,12 +285,24 @@ impl PresenceBeat {
         }
         let links = match self.links {
             None => None,
-            Some(links) => Some(Links {
-                pr: optional("links.pr", links.pr, LINK_MAX).map_err(invalid)?,
-                todo: optional("links.todo", links.todo, LINK_MAX).map_err(invalid)?,
-                agent_run: None,
-            })
-            .filter(|links| links.pr.is_some() || links.todo.is_some()),
+            Some(links) => {
+                let pr = optional("links.pr", links.pr, LINK_MAX).map_err(invalid)?;
+                let todo = optional("links.todo", links.todo, LINK_MAX).map_err(invalid)?;
+                if pr.as_deref().is_some_and(|value| !valid_pr_link(value)) {
+                    return Err(invalid(
+                        "links.pr must be owner/name#positive-number".into(),
+                    ));
+                }
+                if todo.as_deref().is_some_and(|value| !valid_todo_link(value)) {
+                    return Err(invalid("links.todo must be a todo id using letters, digits, dots, colons, underscores and hyphens".into()));
+                }
+                Some(Links {
+                    pr,
+                    todo,
+                    agent_run: None,
+                })
+                .filter(|links| links.pr.is_some() || links.todo.is_some())
+            }
         };
         Ok(CheckedBeat {
             session_id: self.session_id,
@@ -321,6 +364,9 @@ pub(crate) struct PresenceItem {
     pub id: String,
     pub source: Source,
     pub session_id: String,
+    /// Authenticated reporter; external display labels remain self-reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reporter: Option<String>,
     pub agent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

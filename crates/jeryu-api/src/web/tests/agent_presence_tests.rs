@@ -235,6 +235,7 @@ async fn register_then_heartbeat_upserts_one_session_and_host_is_admin_only() {
     assert_eq!(item["title"], "Waiting for review");
     assert_eq!(item["via"], "repo");
     assert_eq!(item["family"], "acme");
+    assert_eq!(item["reporter"], "grace");
     assert_eq!(item["links"]["pr"], "acme/widgets#12");
     assert_eq!(item["cost_usd"], 1.25);
     assert!(item.get("host").is_none(), "host leaked to a non-admin");
@@ -363,11 +364,11 @@ async fn another_user_cannot_overwrite_or_end_someone_elses_session() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], "presence_session_owned");
     let (status, body) = fx.delete(&fx.ada, "cli:mine").await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["code"], "presence_session_owned");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "presence_session_not_found");
     // A non-owner reporter login is refused the same way.
     let (status, _) = fx.delete(&fx.reporter, "cli:mine").await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     let items = fx.repo_items(&fx.grace, "acme%2Fwidgets").await;
     assert_eq!(items[0]["state"], "active");

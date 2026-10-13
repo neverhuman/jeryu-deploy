@@ -2,7 +2,7 @@
 //! forge already knows about (its own agent runs, gate runners and reviewers,
 //! queue worker slots), merged into one list of [`PresenceItem`]s.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use jeryu_core::Repository;
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use super::store::{PresenceRow, effective_state};
 use super::types::{Links, PresenceItem, Source, Via};
 use crate::web::WebState;
-use crate::web::control_plane::{is_online, is_reviewer, offline_after_secs};
+use crate::web::control_plane::{holds_gate_slot, is_online, is_reviewer, offline_after_secs};
 use crate::web::shift::HEALTHY_MS;
 
 /// An opaque, stable id for a forge-side agent. Runner ids and worker slots
@@ -33,6 +33,7 @@ pub(crate) fn external_item(
         id: format!("{}:{}", Source::External.prefix(), row.session_id),
         source: Source::External,
         session_id: row.session_id.clone(),
+        reporter: Some(row.reporter.clone()),
         agent: row.agent.clone(),
         model: row.model.clone(),
         operator: row.operator.clone(),
@@ -103,6 +104,7 @@ fn agent_runs(
             id: format!("{}:{}", Source::AgentRun.prefix(), row.run_id),
             source: Source::AgentRun,
             session_id: row.run_id.clone(),
+            reporter: None,
             agent: row.agent.clone().unwrap_or_else(|| "agent".to_string()),
             model: None,
             operator: None,
@@ -142,6 +144,7 @@ fn gate_runners(
         .snapshot()
         .into_iter()
         .filter(|record| is_online(record, now))
+        .filter(|record| holds_gate_slot(&record.heartbeat) || is_reviewer(&record.heartbeat))
         .filter_map(|record| {
             let current = record.heartbeat.current.as_ref()?;
             if current.repo != repo.full_name {
@@ -162,9 +165,10 @@ fn gate_runners(
                 id: format!("{}:{session_id}", source.prefix()),
                 source,
                 session_id,
+                reporter: None,
                 agent: agent.to_string(),
                 model: None,
-                operator: Some(record.reporter.clone()),
+                operator: admin.then(|| record.reporter.clone()),
                 lane: None,
                 branch: None,
                 title: Some(title),
@@ -243,6 +247,7 @@ fn queue_workers(
                 id: format!("{}:{session_id}", Source::QueueWorker.prefix()),
                 source: Source::QueueWorker,
                 session_id,
+                reporter: None,
                 agent: beat.kind.clone(),
                 model: None,
                 operator: Some(beat.operator.clone()),
@@ -313,38 +318,50 @@ pub(crate) fn mark_collisions(
     items: &mut [PresenceItem],
     repos_of: impl Fn(&PresenceItem) -> Option<Vec<String>>,
 ) {
-    let keys: Vec<Option<(Vec<String>, String)>> = items
+    // Index by repository and branch; bound each payload even when many sessions collide.
+    const MAX_COLLISIONS: usize = 64;
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    let keys: Vec<_> = items
         .iter()
         .map(|item| {
-            let branch = item.branch.clone().filter(|_| item.live())?;
-            Some((repos_of(item)?, branch))
+            let branch = item.branch.as_ref().filter(|_| item.live())?;
+            Some((repos_of(item)?, branch.clone()))
         })
         .collect();
-    let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
-    let collisions: Vec<Vec<String>> = keys
-        .iter()
-        .enumerate()
-        .map(|(index, key)| {
-            let Some((repos, branch)) = key else {
-                return Vec::new();
-            };
-            keys.iter()
-                .enumerate()
-                .filter(|(other, other_key)| {
-                    *other != index
-                        && other_key
-                            .as_ref()
-                            .is_some_and(|(their_repos, their_branch)| {
-                                their_branch == branch
-                                    && their_repos.iter().any(|name| repos.contains(name))
-                            })
-                })
-                .map(|(other, _)| ids[other].clone())
-                .collect()
-        })
-        .collect();
-    for (item, collides_with) in items.iter_mut().zip(collisions) {
-        item.collides_with = collides_with;
+    for (index, key) in keys.iter().enumerate() {
+        if let Some((repos, branch)) = key {
+            for repo in repos {
+                groups
+                    .entry((repo.clone(), branch.clone()))
+                    .or_default()
+                    .push(index);
+            }
+        }
+    }
+    let ids: Vec<_> = items.iter().map(|item| item.id.clone()).collect();
+    for (index, item) in items.iter_mut().enumerate() {
+        let mut others = BTreeSet::new();
+        if let Some((repos, branch)) = &keys[index] {
+            for repo in repos {
+                if let Some(group) = groups.get(&(repo.clone(), branch.clone())) {
+                    for other in group
+                        .iter()
+                        .copied()
+                        .filter(|other| *other != index)
+                        .take(MAX_COLLISIONS)
+                    {
+                        others.insert(other);
+                        if others.len() >= MAX_COLLISIONS {
+                            break;
+                        }
+                    }
+                }
+                if others.len() >= MAX_COLLISIONS {
+                    break;
+                }
+            }
+        }
+        item.collides_with = others.into_iter().map(|other| ids[other].clone()).collect();
     }
 }
 

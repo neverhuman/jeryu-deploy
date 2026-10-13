@@ -3,6 +3,7 @@
 //! replaced on every beat. Every method takes the clock as `now_ms`, so the
 //! expiry and retention rules are tested without waiting.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -15,6 +16,24 @@ use crate::web::shift::migrate_shift_store;
 pub(crate) const LINGER_MS: i64 = 10 * 60 * 1000;
 /// Rows not beaten for this long are deleted on write.
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
+pub(crate) const MAX_REPORTER_ROWS: i64 = 64;
+pub(crate) const MAX_ROWS: i64 = 1024;
+const WRITES_PER_MINUTE: u32 = 120;
+
+#[derive(Debug)]
+pub(crate) enum StoreError {
+    Owned,
+    Limit,
+    WriteBudget,
+    Database(String),
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Database(error.to_string())
+    }
+}
+
 const PRUNE_EVERY_MS: i64 = 60 * 60 * 1000;
 
 /// One stored session, as the last beat left it.
@@ -75,6 +94,7 @@ pub(crate) struct PresenceStore {
 struct Inner {
     conn: Connection,
     last_prune_ms: i64,
+    budgets: BTreeMap<String, (i64, u32)>,
 }
 
 impl PresenceStore {
@@ -87,47 +107,98 @@ impl PresenceStore {
             inner: Arc::new(Mutex::new(Inner {
                 conn,
                 last_prune_ms: 0,
+                budgets: BTreeMap::new(),
             })),
         })
     }
 
     /// The stored session, if any.
+    #[cfg(test)]
     pub(crate) fn get(&self, session_id: &str) -> Result<Option<PresenceRow>, String> {
         let inner = self.inner.lock().expect("agent presence mutex poisoned");
+        get_row(&inner.conn, session_id).map_err(|err| err.to_string())
+    }
+
+    fn budget(inner: &mut Inner, reporter: &str, now_ms: i64) -> Result<(), StoreError> {
         inner
-            .conn
-            .query_row(
-                "SELECT session_id, reporter, agent, model, host, operator, lane, branch,
-                        title, state, repos_json, families_json, started_ms, last_active_ms,
-                        ttl_seconds, received_ms, expires_ms, ended_ms, cost_usd, tokens_json,
-                        links_json
-                   FROM agent_presence WHERE session_id = ?1",
-                params![session_id],
-                read_row,
-            )
-            .optional()
-            .map_err(|err| err.to_string())
+            .budgets
+            .retain(|_, (start, _)| now_ms.saturating_sub(*start) < 60_000);
+        if !inner.budgets.contains_key(reporter) && inner.budgets.len() >= MAX_ROWS as usize {
+            return Err(StoreError::WriteBudget);
+        }
+        let (_, writes) = inner
+            .budgets
+            .entry(reporter.to_string())
+            .or_insert((now_ms, 0));
+        if *writes >= WRITES_PER_MINUTE {
+            return Err(StoreError::WriteBudget);
+        }
+        *writes += 1;
+        Ok(())
     }
 
     /// Replace the session's row with `row`. `ended_ms` is decided here: kept
     /// from the stored row while the session stays ended, set to `now_ms` when
     /// it first reports `ended`, and cleared when it comes back.
-    pub(crate) fn upsert(&self, row: &PresenceRow, now_ms: i64) -> Result<PresenceRow, String> {
-        let previous_end = self
-            .get(&row.session_id)?
-            .and_then(|stored| stored.ended_ms);
+    #[cfg(test)]
+    pub(crate) fn upsert(&self, row: &PresenceRow, now_ms: i64) -> Result<PresenceRow, StoreError> {
+        self.upsert_as(row, &row.reporter, false, now_ms)
+    }
+
+    pub(crate) fn upsert_as(
+        &self,
+        row: &PresenceRow,
+        actor: &str,
+        admin: bool,
+        now_ms: i64,
+    ) -> Result<PresenceRow, StoreError> {
+        let mut inner = self.inner.lock().expect("agent presence mutex poisoned");
+        Self::budget(&mut inner, actor, now_ms)?;
+        let prune = now_ms.saturating_sub(inner.last_prune_ms) >= PRUNE_EVERY_MS;
+        let tx = inner
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if prune {
+            tx.execute(
+                "DELETE FROM agent_presence WHERE received_ms < ?1",
+                params![now_ms - RETENTION_MS],
+            )?;
+        }
+        let previous = get_row(&tx, &row.session_id)?;
+        if previous
+            .as_ref()
+            .is_some_and(|existing| existing.reporter != actor && !admin)
+        {
+            return Err(StoreError::Owned);
+        }
         let mut row = row.clone();
+        row.reporter = previous
+            .as_ref()
+            .map_or_else(|| actor.to_string(), |existing| existing.reporter.clone());
+        if previous.is_none() {
+            let total: i64 =
+                tx.query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))?;
+            let owned: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM agent_presence WHERE reporter = ?1",
+                params![row.reporter],
+                |row| row.get(0),
+            )?;
+            if total >= MAX_ROWS || owned >= MAX_REPORTER_ROWS {
+                return Err(StoreError::Limit);
+            }
+        }
         row.received_ms = now_ms;
         row.expires_ms = now_ms.saturating_add(row.ttl_seconds.saturating_mul(1000));
         row.ended_ms = match row.state {
-            PresenceState::Ended => Some(previous_end.unwrap_or(now_ms)),
+            PresenceState::Ended => Some(
+                previous
+                    .and_then(|stored| stored.ended_ms)
+                    .unwrap_or(now_ms),
+            ),
             _ => None,
         };
-        let mut inner = self.inner.lock().expect("agent presence mutex poisoned");
-        inner
-            .conn
-            .execute(
-                "INSERT INTO agent_presence (session_id, reporter, agent, model, host, operator,
+        tx.execute(
+            "INSERT INTO agent_presence (session_id, reporter, agent, model, host, operator,
                    lane, branch, title, state, repos_json, families_json, started_ms,
                    last_active_ms, ttl_seconds, received_ms, expires_ms, ended_ms, cost_usd,
                    tokens_json, links_json)
@@ -145,39 +216,32 @@ impl PresenceStore {
                    expires_ms = excluded.expires_ms, ended_ms = excluded.ended_ms,
                    cost_usd = excluded.cost_usd, tokens_json = excluded.tokens_json,
                    links_json = excluded.links_json",
-                params![
-                    row.session_id,
-                    row.reporter,
-                    row.agent,
-                    row.model,
-                    row.host,
-                    row.operator,
-                    row.lane,
-                    row.branch,
-                    row.title,
-                    row.state.as_str(),
-                    to_json(&row.repos),
-                    to_json(&row.families),
-                    row.started_ms,
-                    row.last_active_ms,
-                    row.ttl_seconds,
-                    row.received_ms,
-                    row.expires_ms,
-                    row.ended_ms,
-                    row.cost_usd,
-                    row.tokens.as_ref().map(to_json),
-                    row.links.as_ref().map(to_json),
-                ],
-            )
-            .map_err(|err| err.to_string())?;
-        if now_ms - inner.last_prune_ms >= PRUNE_EVERY_MS {
-            inner
-                .conn
-                .execute(
-                    "DELETE FROM agent_presence WHERE received_ms < ?1",
-                    params![now_ms - RETENTION_MS],
-                )
-                .map_err(|err| err.to_string())?;
+            params![
+                row.session_id,
+                row.reporter,
+                row.agent,
+                row.model,
+                row.host,
+                row.operator,
+                row.lane,
+                row.branch,
+                row.title,
+                row.state.as_str(),
+                to_json(&row.repos),
+                to_json(&row.families),
+                row.started_ms,
+                row.last_active_ms,
+                row.ttl_seconds,
+                row.received_ms,
+                row.expires_ms,
+                row.ended_ms,
+                row.cost_usd,
+                row.tokens.as_ref().map(to_json),
+                row.links.as_ref().map(to_json),
+            ],
+        )?;
+        tx.commit()?;
+        if prune {
             inner.last_prune_ms = now_ms;
         }
         Ok(row)
@@ -185,23 +249,42 @@ impl PresenceStore {
 
     /// Mark the session ended at `now_ms` (kept if it already ended). `None`
     /// when no such session is stored.
-    pub(crate) fn end(&self, session_id: &str, now_ms: i64) -> Result<Option<PresenceRow>, String> {
-        let Some(mut row) = self.get(session_id)? else {
+    #[cfg(test)]
+    pub(crate) fn end(
+        &self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<Option<PresenceRow>, StoreError> {
+        self.end_as(session_id, "test-admin", true, now_ms)
+    }
+
+    pub(crate) fn end_as(
+        &self,
+        session_id: &str,
+        actor: &str,
+        admin: bool,
+        now_ms: i64,
+    ) -> Result<Option<PresenceRow>, StoreError> {
+        let mut inner = self.inner.lock().expect("agent presence mutex poisoned");
+        Self::budget(&mut inner, actor, now_ms)?;
+        let tx = inner
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let Some(mut row) = get_row(&tx, session_id)? else {
             return Ok(None);
         };
-        if row.ended_ms.is_some() {
-            return Ok(Some(row));
+        if row.reporter != actor && !admin {
+            return Ok(None);
         }
-        row.state = PresenceState::Ended;
-        row.ended_ms = Some(now_ms);
-        let inner = self.inner.lock().expect("agent presence mutex poisoned");
-        inner
-            .conn
-            .execute(
+        if row.ended_ms.is_none() {
+            row.state = PresenceState::Ended;
+            row.ended_ms = Some(now_ms);
+            tx.execute(
                 "UPDATE agent_presence SET state = 'ended', ended_ms = ?2 WHERE session_id = ?1",
                 params![session_id, now_ms],
-            )
-            .map_err(|err| err.to_string())?;
+            )?;
+        }
+        tx.commit()?;
         Ok(Some(row))
     }
 
@@ -238,6 +321,18 @@ impl PresenceStore {
             .query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))
             .expect("count agent presence rows")
     }
+}
+
+fn get_row(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<PresenceRow>> {
+    conn.query_row(
+        "SELECT session_id, reporter, agent, model, host, operator, lane, branch,
+        title, state, repos_json, families_json, started_ms, last_active_ms, ttl_seconds,
+        received_ms, expires_ms, ended_ms, cost_usd, tokens_json, links_json
+        FROM agent_presence WHERE session_id = ?1",
+        params![session_id],
+        read_row,
+    )
+    .optional()
 }
 
 fn to_json<T: serde::Serialize>(value: &T) -> String {

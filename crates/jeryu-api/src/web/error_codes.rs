@@ -409,6 +409,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the agent presence beat failed validation",
     ),
     entry(
+        "presence_limit",
+        429,
+        "retained agent sessions reached the per-reporter or forge limit",
+    ),
+    entry(
         "presence_repo_unknown",
         422,
         "the beat names a repository this forge does not host, or one the caller cannot see",
@@ -437,6 +442,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "presence_store_failed",
         500,
         "the agent presence store could not be read or written",
+    ),
+    entry(
+        "presence_write_budget",
+        429,
+        "the presence write budget is exhausted for this minute",
     ),
     entry(
         "pull_approve_invalid_request",

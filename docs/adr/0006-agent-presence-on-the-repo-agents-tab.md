@@ -59,3 +59,5 @@ is not known up front.
   remains the place for their history.
 - Session cost events for the ledger are follow-up work, not part of this
   route.
+
+Reported labels, including operator and agent names, are untrusted display text. External list items include the authenticated reporter login for attribution. Gate runner reporter logins remain admin-only; non-gate timers are excluded. Retained row and write budgets bound shared database use, ownership mutations are transactional, and collision responses are indexed and bounded.

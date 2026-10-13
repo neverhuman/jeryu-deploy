@@ -34,8 +34,7 @@ Reporting scope:
   when it can write every hosted repository of that family (a family with no
   hosted repository cannot be claimed). Otherwise `403
   presence_scope_forbidden`, naming each repository or family refused.
-- A session belongs to the login that registered it. A beat or a `DELETE`
-  from another login answers `409 presence_session_owned`. An admin may beat
+- A session belongs to the login that registered it. A beat from another login answers `409 presence_session_owned`. A `DELETE` of a missing or foreign session answers the same `404 presence_session_not_found`. Ownership checks and writes share one SQLite transaction. An admin may beat
   or end anyone's session; the session stays its reporter's.
 
 Bot tokens (`jat_…`) reach only `/api/v1/repos/*`, so they read a repository's
@@ -116,7 +115,7 @@ Marks the session ended. `200 {"ok": true, "session_id": "…", "state":
 reads as `stale`. A stale session is listed until 10 minutes after
 `expires_at`, an ended one until 10 minutes after it ended; then both are
 left out. A session that beats `active` or `idle` after ending is live again.
-Rows not beaten for 14 days are deleted on write.
+Rows not beaten for 14 days are deleted on write. Retained rows are capped at 64 per authenticated reporter and 1024 forge-wide (`429 presence_limit`); ending a session does not free its retained slot. Beats and ends share a 120-write-per-minute budget per authenticated login (`429 presence_write_budget`). Reuse session IDs rather than minting one per beat.
 
 ## Read: `GET /api/v1/repos/:id/agent-presence`
 
@@ -157,13 +156,14 @@ Paged like every list (`limit`/`per_page`, `page`; `docs/pagination.md`).
 - `state` is `active`, `idle`, `stale` or `ended`.
 - `via` is `repo` or `family`; `family` is the repository's family key when
   it has one.
-- `host` is present for global admins only.
+- `reporter` on external items is the authenticated login that registered the session. `operator`, `agent`, title and other external labels are self-reported and may be false.
+- `host` and a gate runner's reporting login (`operator`) are present for global admins only.
 - Optional fields are left out when unknown: `started_at` and `expires_at`
   are absent for sources that do not know them (see below); `last_active_at`
   is always present.
 - `links` is always an object; `agent_run` is set on jeryu's own runs, which
   the web links to the existing terminal view.
-- `collides_with` lists the other live items with `via: repo` on the same
+- `collides_with` lists at most 64 other items, using a repository/branch index to bound matching and response size. It lists the other live items with `via: repo` on the same
   branch. A family-scoped session is not known to work on this repository,
   so it collides with nothing; an item with no branch collides with nothing.
 
@@ -176,7 +176,7 @@ each, `last_active_at` newest first.
 |---|---|---|---|
 | `external` | reported sessions naming this repository, or its family | `repo` when `repos` names it (even if `families` does too), else `family` | the reported record |
 | `agent_run` | jeryu's running agent runs on this repository (not the companion shells) | `repo` | `links.agent_run` = the run id; finished runs are left out, since the store keeps no end time and `/agent-runs` lists them; `last_active_at` is the time of the read; no `started_at`/`expires_at` |
-| `reviewer`, `gate` | online gate runners whose current pass is on this repository; a runner with the reviewer label is `reviewer` | `repo` | `title` is the recipe and pull request; `links.pr` = `owner/name#n`; `branch` is not known; `expires_at` is when the runner would read offline |
+| `reviewer`, `gate` | online gate runners whose current pass is on this repository; a runner with the reviewer label is `reviewer`; deployment, automation and audit timers are excluded | `repo` | `title` is the recipe and pull request; `links.pr` = `owner/name#n`; `branch` is not known; `expires_at` is when the runner would read offline |
 | `queue_worker` | healthy worker slots of this repository's family in the `working` state | `repo` when the slot's todo lists this repository, else `family` | the family's todo queue is read once per request, only when one of its slots is working; a slot whose todo lists other repositories is left out; when the todo cannot be read the slot is listed for the whole family; idle slots are never listed |
 
 Forge-side items have no host in their ids: `session_id` is an opaque digest
@@ -198,3 +198,5 @@ same item shape without `via`, plus `repos` and `families`:
   the branch.
 
 Unknown query keys answer `422 invalid_query`.
+
+`links.pr` must be `owner/name#positive-number`; `links.todo` is an identifier using letters, digits, dots, colons, underscores and hyphens. Clients must parse these references and construct their own same-origin paths; never use a reported link value directly as an `href`. Unknown-family responses reveal no family inventory.

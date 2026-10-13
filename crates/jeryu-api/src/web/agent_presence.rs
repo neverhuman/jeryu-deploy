@@ -122,6 +122,25 @@ fn store_failed(reason: &str) -> AxumResponse {
     )
 }
 
+fn write_failed(error: store::StoreError, session_id: &str) -> AxumResponse {
+    match error {
+        store::StoreError::Owned => owned(session_id),
+        store::StoreError::Limit => presence_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "presence_limit",
+            "at most 64 retained sessions per reporter and 1024 for the forge",
+            "reuse an existing session id or wait for retention pruning",
+        ),
+        store::StoreError::WriteBudget => presence_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "presence_write_budget",
+            "at most 120 presence writes per login per minute",
+            "reduce beat frequency and retry after one minute",
+        ),
+        store::StoreError::Database(reason) => store_failed(&reason),
+    }
+}
+
 fn owned(session_id: &str) -> AxumResponse {
     presence_error(
         StatusCode::CONFLICT,
@@ -141,6 +160,30 @@ fn can_read(state: &WebState, account: &AccountSummary, repo: &Repository) -> bo
         || state
             .core
             .user_can_read_repo(&account.login, &repo.owner, &repo.name)
+}
+
+fn visible_family(
+    state: &WebState,
+    account: &AccountSummary,
+    raw: &str,
+) -> Result<String, Box<AxumResponse>> {
+    let key = super::family::canonical(raw);
+    if state.core.list_repositories(None).iter().any(|repo| {
+        (can_read(state, account, repo)
+            || state
+                .agent_presence
+                .may_report_any(&account.login, is_admin(account)))
+            && effective_family(state, repo).as_deref() == Some(key.as_str())
+    }) {
+        Ok(key)
+    } else {
+        Err(Box::new(presence_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "family_unknown",
+            "no such visible family",
+            "name a family of a repository you can read",
+        )))
+    }
 }
 
 fn can_write(state: &WebState, account: &AccountSummary, repo: &Repository) -> bool {
@@ -235,7 +278,7 @@ pub(crate) async fn beat(
     };
     let mut families = Vec::new();
     for raw in &beat.families {
-        match super::family::require(&state, raw) {
+        match visible_family(&state, &account, raw) {
             Ok(key) if !families.contains(&key) => families.push(key),
             Ok(_) => {}
             Err(response) => return *response,
@@ -254,21 +297,9 @@ pub(crate) async fn beat(
         }
     }
     let store = &state.agent_presence.store;
-    let existing = match store.get(&beat.session_id) {
-        Ok(existing) => existing,
-        Err(err) => return store_failed(&err),
-    };
-    // An admin may beat a session someone else registered; it stays theirs.
-    let reporter = match existing {
-        Some(existing) if existing.reporter != account.login && !admin => {
-            return owned(&beat.session_id);
-        }
-        Some(existing) => existing.reporter,
-        None => account.login.clone(),
-    };
     let row = store::PresenceRow {
         session_id: beat.session_id,
-        reporter,
+        reporter: account.login.clone(),
         agent: beat.agent,
         model: beat.model,
         host: beat.host,
@@ -289,14 +320,14 @@ pub(crate) async fn beat(
         tokens: beat.tokens,
         links: beat.links,
     };
-    match store.upsert(&row, Utc::now().timestamp_millis()) {
+    match store.upsert_as(&row, &account.login, admin, Utc::now().timestamp_millis()) {
         Ok(stored) => Json(BeatAccepted {
             ok: true,
             session_id: stored.session_id,
             expires_at: stored.expires_ms,
         })
         .into_response(),
-        Err(err) => store_failed(&err),
+        Err(err) => write_failed(err, &row.session_id),
     }
 }
 
@@ -310,22 +341,12 @@ pub(crate) async fn end(
         return invalid("session_id must be 1 to 64 characters of [A-Za-z0-9._:-]");
     }
     let store = &state.agent_presence.store;
-    match store.get(&session_id) {
-        Ok(Some(existing)) if existing.reporter != account.login && !is_admin(&account) => {
-            return owned(&session_id);
-        }
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return presence_error(
-                StatusCode::NOT_FOUND,
-                "presence_session_not_found",
-                &format!("no session {session_id:?} is registered"),
-                "end a session id that a beat registered",
-            );
-        }
-        Err(err) => return store_failed(&err),
-    }
-    match store.end(&session_id, Utc::now().timestamp_millis()) {
+    match store.end_as(
+        &session_id,
+        &account.login,
+        is_admin(&account),
+        Utc::now().timestamp_millis(),
+    ) {
         Ok(Some(row)) => Json(json!({
             "ok": true,
             "session_id": row.session_id,
@@ -333,8 +354,13 @@ pub(crate) async fn end(
             "ended_at": row.ended_ms,
         }))
         .into_response(),
-        Ok(None) => store_failed("the session vanished while it was being ended"),
-        Err(err) => store_failed(&err),
+        Ok(None) => presence_error(
+            StatusCode::NOT_FOUND,
+            "presence_session_not_found",
+            "no session owned by this login is registered with that id",
+            "end a session id that your login registered",
+        ),
+        Err(err) => write_failed(err, &session_id),
     }
 }
 
@@ -384,7 +410,12 @@ pub(crate) async fn overview(
         Ok(page) => page,
         Err(rejection) => return rejection.into_response(),
     };
-    let family = match super::family::filter(&state, query.family.as_deref()) {
+    let family = match query
+        .family
+        .as_deref()
+        .map(|raw| visible_family(&state, &account, raw))
+        .transpose()
+    {
         Ok(family) => family,
         Err(response) => return *response,
     };

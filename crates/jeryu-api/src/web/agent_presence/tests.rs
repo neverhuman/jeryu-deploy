@@ -6,6 +6,94 @@ use super::types::{BeatError, PresenceBeat, PresenceState};
 
 const MINUTE: i64 = 60 * 1000;
 
+#[test]
+fn retained_rows_are_bounded_and_beats_have_a_write_budget() {
+    let (_dir, store) = store();
+    for n in 0..super::store::MAX_REPORTER_ROWS {
+        store
+            .upsert(&row(&format!("s{n}"), 300, PresenceState::Active), 0)
+            .unwrap();
+    }
+    assert!(matches!(
+        store.upsert(&row("overflow", 300, PresenceState::Active), 0),
+        Err(super::store::StoreError::Limit)
+    ));
+    assert_eq!(store.count(), super::store::MAX_REPORTER_ROWS);
+    for _ in 65..120 {
+        store
+            .upsert(&row("s0", 300, PresenceState::Active), 0)
+            .unwrap();
+    }
+    assert!(matches!(
+        store.upsert(&row("s0", 300, PresenceState::Active), 0),
+        Err(super::store::StoreError::WriteBudget)
+    ));
+    store
+        .upsert(&row("s0", 300, PresenceState::Active), MINUTE)
+        .unwrap();
+}
+
+#[test]
+fn competing_first_registrations_cannot_change_the_winning_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shift.sqlite");
+    let first = PresenceStore::open(&path).unwrap();
+    let second = PresenceStore::open(&path).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let jobs: Vec<_> = [(first.clone(), "ada"), (second, "grace")]
+        .into_iter()
+        .map(|(store, actor)| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                (
+                    actor,
+                    store.upsert_as(&row("shared", 300, PresenceState::Active), actor, false, 0),
+                )
+            })
+        })
+        .collect();
+    let results: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
+    assert_eq!(
+        results.iter().filter(|(_, result)| result.is_ok()).count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|(_, result)| matches!(result, Err(super::store::StoreError::Owned)))
+            .count(),
+        1
+    );
+    let winner = results.iter().find(|(_, result)| result.is_ok()).unwrap().0;
+    assert_eq!(first.get("shared").unwrap().unwrap().reporter, winner);
+    assert!(
+        first
+            .end_as("shared", "outsider", false, 1)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        first.get("shared").unwrap().unwrap().state,
+        PresenceState::Active
+    );
+}
+
+#[test]
+fn links_refuse_paths_and_scripts() {
+    for pr in [
+        "javascript:alert(1)",
+        "//evil.invalid/a",
+        "../../admin",
+        "acme/widgets#0",
+    ] {
+        assert!(beat(with("links", serde_json::json!({"pr": pr}))).is_err());
+    }
+    for todo in ["javascript:alert(1)", "//evil.invalid/a", "../../admin"] {
+        assert!(beat(with("links", serde_json::json!({"todo": todo}))).is_err());
+    }
+}
+
 fn beat(value: serde_json::Value) -> Result<super::types::CheckedBeat, BeatError> {
     serde_json::from_value::<PresenceBeat>(value)
         .map_err(|err| BeatError::Invalid(err.to_string()))?
