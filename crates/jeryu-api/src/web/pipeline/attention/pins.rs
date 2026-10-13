@@ -104,7 +104,8 @@ fn is_web_pin(pin: &Pin) -> bool {
 
 fn is_web_bump(pin: &Pin) -> bool {
     pin.bump_pr.as_ref().is_some_and(|bump| {
-        bump.title == "release: pin jeryu-web" && bump.head_ref.starts_with("auto/pin-web-")
+        bump.title.starts_with("release: pin jeryu-web ")
+            && bump.head_ref.starts_with("auto/pin-web-")
     })
 }
 

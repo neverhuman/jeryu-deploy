@@ -392,7 +392,7 @@ case "\$method \$url" in
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*) cat "$P/detail.json" ;;
   "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/issues/"*"/comments")
     echo "\${url%/comments}" >>"$P/comments.log"; cat >>"$P/comments.log"; echo >>"$P/comments.log"; echo '{}' ;;
-  "PATCH https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*) echo "\${url##*/} \$(cat)" >>"$P/closed.log"; echo '{}' ;;
+  "PATCH https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*) [ -e "$P/refuse-close" ] && exit 22; echo "\${url##*/} \$(cat)" >>"$P/closed.log"; echo '{}' ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-web/commits/"*"/status") echo "{\"state\":\"\$(cat "$P/gate")\"}" ;;
   *) echo "unexpected curl: \$method \$url" >&2; exit 22 ;;
 esac
@@ -491,6 +491,7 @@ cp "$P/state/opened.tsv" "$P/opened.tsv.keep"; builds_keep="$(lines "$P/builds")
 side_sha="$(g "$P/web" commit-tree -m side "$(git -C "$P/web" rev-parse 'HEAD^{tree}')" -p "$w1")" # off main
 git -C "$P/state/jeryu-web.git" fetch -q "$P/web" "$side_sha" # the cache has seen it, as it would an orphaned pin
 stale_pr() { # NUMBER REF CREATED_AT
+  printf "%s\t%s\t%s\n" "$(git -C "$P/state/jeryu-web.git" rev-parse "${2#auto/pin-web-}^{commit}")" "$1" "$3" >>"$P/state/opened.tsv"
   jq -n --argjson n "$1" --arg ref "$2" --arg at "$3" '[{number: $n, state: "open", title: "release: pin jeryu-web abc1234", created_at: $at,
     head: {ref: $ref, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
 }
@@ -505,7 +506,7 @@ approval='{"reviews":[{"state":"APPROVED","effective":true}]}'
 
 stale_pr 60 "$b1" "$now_iso"; echo "$approval" >"$P/detail.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick behind an approved bump failed"
-grep -q "bump #60 is approved on its head" "$P/run.log" && grep -q "bump #60 is open" "$P/run.log" \
+grep -q "bump #60 has a current review inside the grace period" "$P/run.log" && grep -q "bump #60 is open" "$P/run.log" \
   && [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" && -z "$(git -C "$P/deploy.git" for-each-ref "refs/heads/$b2")" ]] \
   || { cat "$P/run.log" >&2; fail "auto-pin closed or replaced an approved bump"; }
 undo_bump
@@ -545,13 +546,42 @@ grep -q '^60 ' "$P/closed.log" || fail "an approval older than JERYU_AUTO_PIN_SU
 undo_bump
 stale_pr 60 "$b1" "$now_iso"; echo '{"reviews":[{"state":"APPROVED","effective":true},{"state":"CHANGES_REQUESTED","effective":true}]}' >"$P/detail.json"
 auto_pin >"$P/run.log" 2>&1 || fail "superseding a bump with requested changes failed the tick"
-grep -q '^60 ' "$P/closed.log" || fail "a bump with requested changes was not superseded"
+[[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] || fail "a recent changes-requested review was superseded"
 undo_bump
 echo success >"$P/gate.keep"; echo pending >"$P/gate"; stale_pr 60 "$b1" "$now_iso"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick with a not-green head failed"
 [[ ! -s "$P/closed.log" ]] || fail "a bump was closed for a head that is not green"
 echo success >"$P/gate"; rm "$P/gate.keep"; undo_bump
 ok "auto-pin supersedes a stale unqueued bump in one tick, and leaves approved, queued, diverged and same-head bumps alone"
+
+# Building or opening a replacement must never retire the existing review.
+stale_pr 60 "$b1" "$now_iso"; touch "$P/fail"
+if auto_pin >"$P/run.log" 2>&1; then fail "a failed replacement build reported success"; fi
+[[ ! -s "$P/closed.log" && ! -s "$P/comments.log" ]] || fail "a failed build closed or commented on the old bump"
+mv "$P/fail" "$P/fail.saved"; mv "$P/state/failures/$h2" "$P/state/failures/$h2-build.saved"; undo_bump
+stale_pr 60 "$b1" "$now_iso"; touch "$P/refuse-pr"
+if auto_pin >"$P/run.log" 2>&1; then fail "a refused replacement PR reported success"; fi
+[[ ! -s "$P/closed.log" && ! -s "$P/comments.log" ]] || fail "a refused create closed or commented on the old bump"
+mv "$P/refuse-pr" "$P/refuse-pr.saved"; mv "$P/state/failures/$h2" "$P/state/failures/$h2-create.saved"; undo_bump
+
+stale_pr 60 "$b1" "$now_iso"; touch "$P/refuse-close"
+auto_pin >"$P/run.log" 2>&1 || fail "a refused old-bump close lost its replacement"
+[[ "$(posted "$P/prs.jsonl")" == 1 && ! -s "$P/comments.log" ]] || fail "a refused close posted a superseding comment"
+jq -es 'any(.[]; .kind == "pin.bump_failed" and .needs_human == true)' "$P/events.jsonl" >/dev/null || fail "a refused close did not ask for cleanup"
+mv "$P/refuse-close" "$P/refuse-close.saved"; undo_bump
+
+stale_pr 60 "$b1" "$now_iso"
+jq '. + [.[0] | .number = 61 | .head.ref = "operator/pin-web"]' "$P/pulls.json" >"$P/pulls.multiple.json"
+cp "$P/pulls.multiple.json" "$P/pulls.json"
+auto_pin >"$P/run.log" 2>&1 || fail "multiple existing bumps failed the tick"
+[[ ! -s "$P/prs.jsonl" && ! -s "$P/closed.log" ]] || fail "multiple existing bumps were replaced"
+undo_bump
+stale_pr 60 "$b1" "$now_iso"; cp "$P/opened.tsv.keep" "$P/state/opened.tsv"
+auto_pin >"$P/run.log" 2>&1 || fail "an unrecorded bump failed the tick"
+[[ ! -s "$P/prs.jsonl" && ! -s "$P/closed.log" ]] || fail "an unrecorded bump was replaced"
+undo_bump
+ok "replacement failures preserve the old review; refused closes, multiple bumps and unknown provenance fail safely"
+
 
 echo '[]' >"$P/pulls.json"; touch "$P/fail"; : >"$P/events.jsonl"
 if auto_pin >"$P/run.log" 2>&1; then fail "a failed build reported success"; fi

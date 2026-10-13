@@ -773,7 +773,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
             .query(&page("todo.claimed", None))
             .unwrap_or_default(),
     ));
-    let pin_events = state
+    let mut pin_events = state
         .events
         .query(&super::types::EventsQuery {
             source: Some("auto-pin".to_string()),
@@ -781,6 +781,21 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
             ..Default::default()
         })
         .unwrap_or_default();
+    // Other timer events must not evict the latest give-up receipts.
+    pin_events.extend(
+        state
+            .events
+            .query(&super::types::EventsQuery {
+                source: Some("auto-pin".to_string()),
+                kind: Some("pin.bump_failed".to_string()),
+                needs_human: Some(true),
+                limit: Some(20),
+                ..Default::default()
+            })
+            .unwrap_or_default(),
+    );
+    pin_events.sort_by(|a, b| b.seq.cmp(&a.seq));
+    pin_events.dedup_by_key(|event| event.seq);
     items.extend(pin_items(
         &super::pins::snapshot(state).consumers,
         &pin_events,

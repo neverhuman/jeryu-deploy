@@ -281,7 +281,7 @@ fn first_review_line(review: &Review) -> Option<String> {
         .body
         .as_deref()
         .and_then(|body| body.lines().find(|line| !line.trim().is_empty()))
-        .map(one_line)
+        .map(|line| one_line(line).chars().take(180).collect::<String>())
         .filter(|line| !line.is_empty())
         .or_else(|| Some(format!("{} requested changes", review.author)))
 }

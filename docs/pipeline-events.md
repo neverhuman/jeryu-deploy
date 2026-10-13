@@ -480,7 +480,7 @@ A consumer is every hosted repository whose default branch has a root
 | `behind` | commits on the default branch the pin does not reach (counting stops at 1000) |
 | `latest_green` | the combined commit status of `latest_sha`: true, false (failing or pending), or null when nothing posts statuses there |
 | `state` | `current`; `behind` (behind, and the head is green or ungated); `behind_not_green`; `diverged` (the pin is not an ancestor of the head); `unknown` (unresolvable) |
-| `bump_pr` | `{"number", "state", "url"}` of an open pull request in the consumer titled `release: pin <dependency name> ...`, or from an `auto/pin-` branch naming the dependency; else null |
+| `bump_pr` | `{"number", "state", "url", "title", "head_ref", "head_sha", "created_at", "changes_requested", "blocking_review"}` of an open pull request in the consumer titled `release: pin <dependency name> ...`, or from an `auto/pin-` branch naming the dependency; else null |
 | `unreleased` | up to 20 `{"sha", "subject"}`, newest first: what a bump would ship |
 
 Lock shapes it does not know (a `repo = "..."` entry, `commit = "PENDING"`) are

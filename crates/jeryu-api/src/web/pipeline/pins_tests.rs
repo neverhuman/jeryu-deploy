@@ -139,7 +139,7 @@ fn pin(kind: &'static str, state: &'static str, bump: Option<u64>) -> Pin {
             number,
             state: "open".to_string(),
             url: format!("/repos/jeryu/jeryu/jeryu-deploy/pulls/{number}"),
-            title: "release: pin jeryu-web".to_string(),
+            title: "release: pin jeryu-web 427bebe".to_string(),
             head_ref: "auto/pin-web-427bebe".to_string(),
             head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
             created_at: "2026-09-19T15:00:00+00:00".to_string(),

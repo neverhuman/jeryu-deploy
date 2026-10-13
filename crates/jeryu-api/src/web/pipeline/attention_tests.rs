@@ -1462,7 +1462,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
         &[PullFacts {
             repo: repo.clone(),
             number: 243,
-            title: "release: pin jeryu-web".to_string(),
+            title: "release: pin jeryu-web 427bebe".to_string(),
             author: "rel-bot".to_string(),
             head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
             head_ref: "auto/pin-web-427bebe".to_string(),
@@ -1492,7 +1492,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             number: 243,
             state: "open".to_string(),
             url: "/repos/jeryu/acme/globex-deploy/pulls/243".to_string(),
-            title: "release: pin jeryu-web".to_string(),
+            title: "release: pin jeryu-web 427bebe".to_string(),
             head_ref: "auto/pin-web-427bebe".to_string(),
             head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
             created_at: "2026-09-19T12:30:00Z".to_string(),
@@ -1527,7 +1527,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
         &[PullFacts {
             repo: repo.clone(),
             number: 243,
-            title: "release: pin jeryu-web".to_string(),
+            title: "release: pin jeryu-web 427bebe".to_string(),
             author: "rel-bot".to_string(),
             head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
             head_ref: "auto/pin-web-427bebe".to_string(),
