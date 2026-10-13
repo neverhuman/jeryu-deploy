@@ -4,9 +4,10 @@
 //! instance already names it as automation in its configuration: the shift
 //! pull-request author, a `JERYU_SHIFT_REPORTERS` login, the review and merge
 //! identities, or a login in `JERYU_AUTOMATION_IDENTITIES`,
-//! `JERYU_CI_PUBLISHERS` or `JERYU_JANKURAI_SCORERS`. `JERYU_DEPLOYERS` is not
-//! on that list: it names the administrators trusted to record deployments,
-//! who are people, so a deployer is a person unless something else says not.
+//! `JERYU_CI_PUBLISHERS` or `JERYU_JANKURAI_SCORERS`. A `JERYU_DEPLOYERS`
+//! login also defaults to service, because release hosts can hold those
+//! credentials. An administrator can explicitly mark a human deployer
+//! `human`; that mark cannot override another configured automation role.
 //! Account-owned bots (`/api/v1/bots`) are not accounts at all.
 //!
 //! Whether an account is a person is a security decision (only people take
@@ -121,9 +122,9 @@ fn configured_service(state: &WebState, login: &str) -> bool {
         || named(JANKURAI_SCORERS.configured())
 }
 
-/// The instance configuration wins over a stored mark: a login it names as
-/// automation stays automation even if an administrator marked it a person,
-/// because that login's credential is held by a machine.
+/// Configured automation wins over a stored mark. Deployment permission alone
+/// permits an explicit human mark, while preserving the service default for
+/// existing machine-held deployer credentials.
 fn resolve(state: &WebState, stored: &HashMap<String, Kind>, login: &str) -> Kind {
     let unset = |kind, source| Kind {
         kind,
@@ -136,6 +137,13 @@ fn resolve(state: &WebState, stored: &HashMap<String, Kind>, login: &str) -> Kin
     }
     match stored.get(login) {
         Some(kind) => kind.clone(),
+        None if super::auth::DEPLOYERS
+            .configured()
+            .iter()
+            .any(|named| named == login) =>
+        {
+            unset(AccountKind::Service, KindSource::Config)
+        }
         None => unset(AccountKind::Human, KindSource::Default),
     }
 }

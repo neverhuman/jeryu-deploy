@@ -74,7 +74,8 @@ Put an edge proxy (TLS) in front of the loopback listener, then set:
 | Edge proxy | `JERYU_TRUSTED_PROXIES` = the address the proxy connects from (`127.0.0.1,::1` for a proxy on the same host). Exact IPs only, no CIDR |
 | Mail | `JERYU_MAIL_FROM`, `JERYU_MAIL_BASE_URL`, and one of `JERYU_MAIL_SENDMAIL` / `JERYU_MAIL_SPOOL`; details in [account-email.md](account-email.md) |
 | Sign-up | closed unless `JERYU_SIGNUP=email` (needs mail); `JERYU_WAITLIST_URL` = an absolute https URL where people join the waitlist instead ([account-email.md](account-email.md#sign-up)) |
-| Automation | the `JERYU_*_IDENTITY`, `JERYU_*_REPORTERS`, `JERYU_CI_PUBLISHERS`, `JERYU_JANKURAI_SCORERS` and `JERYU_DEPLOYERS` logins your bots run as ([bots.md](bots.md), [pipeline-events.md](pipeline-events.md)) |
+| Automation | `JERYU_AUTOMATION_IDENTITIES`, the shift/reporting and review/merge identities, `JERYU_CI_PUBLISHERS`, and `JERYU_JANKURAI_SCORERS` enforce service kind ([bots.md](bots.md), [pipeline-events.md](pipeline-events.md)) |
+| Deployment permission | `JERYU_DEPLOYERS` names admins allowed to record deployments. These accounts default to service; explicitly mark a person `human` through the admin users API. Other configured automation roles still enforce service kind |
 | Mirror | `JERYU_MIRROR_REMOTE_ALLOWLIST` plus `--split-manifest` ([github-mirror.md](github-mirror.md)) |
 
 Leave `JERYU_WEB_TRUST_LOCAL` and `JERYU_CI_MOCK` empty on any forge an edge

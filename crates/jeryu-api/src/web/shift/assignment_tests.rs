@@ -25,6 +25,7 @@ struct Site {
     /// Signed up, no grant on any family repository.
     carl: String,
     reporter: String,
+    operator: String,
 }
 
 fn site(dir: &Path) -> Site {
@@ -33,7 +34,12 @@ fn site(dir: &Path) -> Site {
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
     for login in ["ada", "bea", "carl", "ci-bot", "operator"] {
-        core.create_account(login, &format!("{login}-password"), UserRole::User)
+        let role = if login == "operator" {
+            UserRole::Admin
+        } else {
+            UserRole::User
+        };
+        core.create_account(login, &format!("{login}-password"), role)
             .unwrap();
     }
     core.create_repository(
@@ -62,12 +68,13 @@ fn site(dir: &Path) -> Site {
             .unwrap()
             .secret
     };
-    let (admin, ada, bea, carl, reporter) = (
+    let (admin, ada, bea, carl, reporter, operator) = (
         token("alice"),
         token("ada"),
         token("bea"),
         token("carl"),
         token("ci-bot"),
+        token("operator"),
     );
     let router = app(
         WebState::new_with_git_storage(core, dir.to_path_buf()).with_auth(true, false, false),
@@ -80,6 +87,7 @@ fn site(dir: &Path) -> Site {
         bea,
         carl,
         reporter,
+        operator,
     }
 }
 
@@ -286,10 +294,10 @@ async fn an_admin_marks_accounts_as_automation_and_nobody_else_can() {
         kind_of(&users, "ci-bot"),
         (json!("service"), json!("config"))
     );
-    // Deployers are the people trusted to record deployments, not automation.
+    // Existing machine-held deployer credentials retain the service default.
     assert_eq!(
         kind_of(&users, "operator"),
-        (json!("human"), json!("default"))
+        (json!("service"), json!("config"))
     );
 
     // A non-admin may neither read the list nor set a kind.
@@ -354,6 +362,89 @@ async fn an_admin_marks_accounts_as_automation_and_nobody_else_can() {
         )
         .await;
     assert!(status.is_client_error(), "{status}");
+}
+
+#[tokio::test]
+async fn a_human_deployer_claims_and_accepts_assignment_only_after_an_explicit_mark() {
+    let dir = tempfile::tempdir().unwrap();
+    let site = site(dir.path());
+    let id = site.blocked_todo().await;
+    let action = format!("/api/v1/shift/todos/jeryu/{id}/action");
+    let (status, _) = site
+        .act(&action, &site.operator, json!({"action": "claim"}))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        !site
+            .people(&site.admin, &id)
+            .await
+            .contains(&"operator".to_string())
+    );
+
+    let (status, operator) = site
+        .call(
+            HttpMethod::PUT,
+            "/api/v1/admin/users/operator/kind",
+            &site.admin,
+            Some(json!({"kind": "human"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{operator}");
+    assert_eq!(operator["kind"], "human");
+    assert_eq!(operator["kind_source"], "set");
+    assert_eq!(operator["kind_updated_by"], "alice");
+    assert!(
+        site.people(&site.admin, &id)
+            .await
+            .contains(&"operator".to_string())
+    );
+    let (status, claimed) = site
+        .act(&action, &site.operator, json!({"action": "claim"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    assert_eq!(claimed["assignee"], "operator");
+
+    let other = site.blocked_todo().await;
+    let other_action = format!("/api/v1/shift/todos/jeryu/{other}/action");
+    let (status, assigned) = site
+        .act(
+            &other_action,
+            &site.admin,
+            json!({"action": "assign", "value": "operator"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{assigned}");
+    assert_eq!(assigned["assignee"], "operator");
+
+    let (status, operator) = site
+        .call(
+            HttpMethod::PUT,
+            "/api/v1/admin/users/operator/kind",
+            &site.admin,
+            Some(json!({"kind": "service"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{operator}");
+    assert_eq!(operator["kind"], "service");
+    assert_eq!(operator["kind_source"], "set");
+    assert!(
+        !site
+            .people(&site.admin, &id)
+            .await
+            .contains(&"operator".to_string())
+    );
+    let (status, _) = site
+        .act(&action, &site.operator, json!({"action": "claim"}))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = site
+        .act(
+            &other_action,
+            &site.admin,
+            json!({"action": "assign", "value": "operator"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 /// `done` cannot be undone, so a person never finishes work an administrator

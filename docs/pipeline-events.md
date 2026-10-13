@@ -1259,9 +1259,15 @@ An account is automation when an admin marks it `service`
 (`PUT /api/v1/admin/users/<login>/kind` with `{"kind": "service"}`) or the
 instance configuration names it: `JERYU_SHIFT_PR_AUTHOR`,
 `JERYU_SHIFT_REPORTERS`, `JERYU_REVIEW_IDENTITY`, `JERYU_MERGE_IDENTITY`,
-`JERYU_AUTOMATION_IDENTITIES`, `JERYU_CI_PUBLISHERS`, `JERYU_JANKURAI_SCORERS`
-or `JERYU_DEPLOYERS`; the configuration wins over a stored mark, since such a
-login's credential is held by a machine. The check fails closed: if the stored
+`JERYU_AUTOMATION_IDENTITIES`, `JERYU_CI_PUBLISHERS`, or `JERYU_JANKURAI_SCORERS`;
+these configuration roles win over a stored mark, since those credentials
+are held by machines. `JERYU_DEPLOYERS` names administrators allowed to record
+deployments, including release-host accounts. Those logins default to service;
+an admin can explicitly mark a person who deploys `human`. That mark does not
+override any of the other automation roles above. A machine-held deployer can
+be marked `service`, or listed in `JERYU_AUTOMATION_IDENTITIES` when its service
+kind must remain enforced by configuration. Deployment permission still
+requires both admin and deployer-list membership. The check fails closed: if the stored
 marks cannot be read, nobody counts as a person. `GET /api/v1/admin/users`
 reports each account's `kind` and `kind_source` (`set`, `config` or
 `default`).
