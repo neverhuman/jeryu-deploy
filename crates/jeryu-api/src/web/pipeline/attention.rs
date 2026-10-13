@@ -289,6 +289,7 @@ pub(crate) struct AttentionResponse {
     pub generated_at: String,
     pub items: Vec<Item>,
     pub counts: Counts,
+    pub branch_discovery: &'static str,
 }
 
 /// The few fields an item is built from; the rest default to `None`.
@@ -754,8 +755,8 @@ fn production_facts(state: &WebState) -> Vec<ProductionFacts> {
 }
 
 /// Every branch with patch-unique commits and no open pull request carrying it.
-fn stranded_branch_facts(state: &WebState) -> Vec<StrandedBranchFacts> {
-    super::super::stranded_branches::all(state)
+fn stranded_branch_facts(state: &WebState, now: DateTime<Utc>) -> Vec<StrandedBranchFacts> {
+    super::super::stranded_branches::all_at_time(state, now)
         .into_iter()
         .map(|branch| StrandedBranchFacts {
             repo: branch.repo,
@@ -896,7 +897,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         .filter(|item| item.kind == "shift_without_pr")
         .filter_map(|item| Some((item.repo.clone()?, item.shift.clone()?)))
         .collect();
-    let mut stranded = stranded_branch_facts(state);
+    let mut stranded = stranded_branch_facts(state, now);
     stranded.retain(|fact| {
         !covered_shift_branches
             .iter()
@@ -988,6 +989,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     let count = |severity| items.iter().filter(|i| i.severity == severity).count();
     AttentionResponse {
         schema_version: ATTENTION_SCHEMA,
+        branch_discovery: super::super::stranded_branches::COVERAGE_NOTICE,
         generated_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         counts: Counts {
             critical: count(Severity::Critical),
@@ -1124,6 +1126,7 @@ pub(super) fn only_matching(response: &AttentionResponse, filter: &Filter) -> At
     let count = |severity| items.iter().filter(|i| i.severity == severity).count();
     AttentionResponse {
         schema_version: response.schema_version,
+        branch_discovery: response.branch_discovery,
         generated_at: response.generated_at.clone(),
         counts: Counts {
             critical: count(Severity::Critical),

@@ -88,6 +88,7 @@ fn closed_at(pull: &PullRequest) -> DateTime<Utc> {
 /// The merged pull request that owns `branch`, if a push to that branch would
 /// land nowhere. A new open pull request from the branch makes the push live
 /// work again and clears the refusal.
+#[cfg(test)]
 pub(crate) fn merged_pull_request_branch(
     state: &WebState,
     owner: &str,
@@ -97,6 +98,7 @@ pub(crate) fn merged_pull_request_branch(
     merged_pull_request_branch_at(state, owner, name, branch, Utc::now())
 }
 
+#[cfg(test)]
 fn merged_pull_request_branch_at(
     state: &WebState,
     owner: &str,
@@ -104,10 +106,23 @@ fn merged_pull_request_branch_at(
     branch: &str,
     now: DateTime<Utc>,
 ) -> Option<MergedPullRequestBranch> {
-    if state.core.get_repository(owner, name).ok()?.default_branch == branch {
+    let default = state.core.get_repository(owner, name).ok()?.default_branch;
+    let pulls = state.core.list_pull_requests(owner, name, None).ok()?;
+    merged_pull_request_branch_among(&pulls, owner, name, &default, branch, now)
+}
+
+/// Evaluate the receive guard using the request's one PR snapshot.
+pub(crate) fn merged_pull_request_branch_among(
+    pulls: &[PullRequest],
+    owner: &str,
+    name: &str,
+    default: &str,
+    branch: &str,
+    now: DateTime<Utc>,
+) -> Option<MergedPullRequestBranch> {
+    if default == branch {
         return None;
     }
-    let pulls = state.core.list_pull_requests(owner, name, None).ok()?;
     let full_name = format!("{owner}/{name}");
     let from_branch = || {
         pulls
@@ -182,6 +197,7 @@ fn commits_not_on_base(
 /// The pull request a push to `branch` is stranded behind, if it is stranded:
 /// the newest one that closed within [`LOOKBACK_DAYS`] with the branch as its
 /// head, while no pull request from the branch is open.
+#[cfg(test)]
 pub(crate) fn stranded(
     state: &WebState,
     owner: &str,
@@ -193,9 +209,8 @@ pub(crate) fn stranded(
     stranded_among(state, owner, name, &pulls, branch, now)
 }
 
-/// As [`stranded`], over pull requests already read: the inbox walks every
-/// branch of a repository and reads its pull requests once.
-fn stranded_among(
+/// Inspect a branch using pull requests already read for this collection or push.
+pub(crate) fn stranded_among(
     state: &WebState,
     owner: &str,
     name: &str,

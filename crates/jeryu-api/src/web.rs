@@ -538,6 +538,11 @@ impl WebState {
         .with_reporters(TEST_REPORTERS, TEST_PR_AUTHOR)
     }
 
+    #[cfg(test)]
+    pub(crate) fn authenticated_git_test_state(core: ForgeCore, storage_root: PathBuf) -> Self {
+        Self::new_with_git_storage(core, storage_root).with_auth(true, false, false)
+    }
+
     /// Test-only constructor that roots the git `RepoManager` at `storage_root`
     /// AND injects a [`WarmPool`] built over the given container lifecycle, so the
     /// claim path can be driven with a recording `FakeContainerRuntime` (no

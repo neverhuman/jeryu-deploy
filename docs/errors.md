@@ -504,3 +504,27 @@ than HTTP errors:
 
 `control_lost` (another client took control) and `ended` (the run finished
 and its output drained) are status frames, not errors.
+
+
+## Receive-pack merged-branch exceptions
+
+Receive-pack rejects command preludes it cannot parse, duplicate refs, and pushes
+with more than 64 ref updates before Git changes a ref. Split larger batches.
+One PR listing supplies every merged-branch guard and at most 16 branch notices;
+a side-band message points to Needs you when additional notices were omitted.
+
+To advance a recurring shared branch whose PR merged within 30 days, open a new
+PR carrying that branch, or send `X-Jeryu-Merged-Branch-Override` for one exact
+update using the existing Git credential helper with an administrator PAT.
+The header is JSON with `ref`, `old_sha`, `new_sha`, `pull_request`, and `reason`.
+It must match the receive-pack command and the merged PR, contain at most 1024
+bytes, and give a nonblank reason of at most 256 bytes without control characters.
+A writer, bot credential, cookie, or local development bypass cannot authorize it.
+Other Git protections still apply, and a second blocked branch refuses the entire
+batch; the override cannot authorize unrelated refs.
+
+Before invoking Git, the forge must persist and read back a
+`git.merged_branch_override` requested audit record naming the actor, repository,
+ref, PR, reason and old/new SHA. Missing or unavailable audit storage refuses the
+request. That record authorizes the attempt; Git's report-status determines whether
+the update succeeded. No permanent repository setting or blanket bypass is added.

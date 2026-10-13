@@ -7,14 +7,14 @@
 
 use chrono::{DateTime, Utc};
 use jeryu_core::{PullRequest, PullRequestState};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::WebState;
 
 const MAX_SCAN_REPOS: usize = 32;
 const MAX_SCAN_BRANCHES: usize = 64;
 const MAX_BRANCHES_PER_REPO: usize = 16;
-static SCAN_ROUND: AtomicUsize = AtomicUsize::new(0);
+const SCAN_WINDOW_SECONDS: i64 = 60;
+pub(crate) const COVERAGE_NOTICE: &str = "Branch discovery rotates through a bounded sample once per minute; a missing row does not establish that its work was resolved.";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StrandedBranch {
@@ -112,8 +112,10 @@ fn patch_unique_commits(
         .collect()
 }
 
-pub(crate) fn all(state: &WebState) -> Vec<StrandedBranch> {
-    all_at_round(state, SCAN_ROUND.fetch_add(1, Ordering::Relaxed))
+pub(crate) fn all_at_time(state: &WebState, now: DateTime<Utc>) -> Vec<StrandedBranch> {
+    let round =
+        usize::try_from(now.timestamp().div_euclid(SCAN_WINDOW_SECONDS)).unwrap_or_default();
+    all_at_round(state, round)
 }
 
 // Partial scans rotate so large forges remain responsive without permanently

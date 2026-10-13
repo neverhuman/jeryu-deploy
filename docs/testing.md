@@ -389,3 +389,12 @@ accept, I/O and join behavior. A missing socket is a failure, not a pass.
 Actual Firecracker and client dispatch acceptance must separately show fresh
 VM identity, guest results and refusal of host writes. Provider qualification
 and production launch readiness require their independent proof lanes.
+
+
+Merged-branch receive policy regressions run with
+`cargo test --locked -p jeryu-api --features web --lib git_transport::push_policy`.
+They exercise actual stateless receive-pack and persistent audit storage: scoped
+administrator success, writer/mismatched-scope refusal, malformed and over-limit
+commands, missing audit table, and one PR read reused for a multi-ref inspection.
+`cargo test --locked -p jeryu-api --features web --lib stranded_branches` verifies
+repeatable scan windows and continued rotation within the existing budgets.

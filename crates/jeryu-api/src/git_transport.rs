@@ -28,6 +28,8 @@ use tokio::io::AsyncWriteExt;
 
 use crate::web::WebState;
 
+mod push_policy;
+
 // Bound both wire bytes and logical request bytes. Compressed RPCs get a tighter
 // wire cap so a small authenticated request cannot become a decompression bomb;
 // identity RPCs use the decoded cap because their wire and logical bytes are the
@@ -255,26 +257,6 @@ fn wants_sideband(body: &[u8]) -> bool {
     false
 }
 
-/// The remote message for every pushed branch whose pull request already
-/// closed, in push order. Reads current state, so a branch a new pull request
-/// already carries says nothing.
-fn pushed_after_merge_lines(
-    state: &WebState,
-    owner: &str,
-    repo: &str,
-    branches: &[String],
-) -> Vec<String> {
-    let repo = repo.trim_end_matches(".git");
-    let now = chrono::Utc::now();
-    branches
-        .iter()
-        .filter_map(|branch| {
-            crate::web::pushed_after_merge::stranded(state, owner, repo, branch, now)
-        })
-        .flat_map(|stranded| crate::web::pushed_after_merge::remote_message(&stranded))
-        .collect()
-}
-
 /// Add `remote:` lines to a side-band receive-pack answer.
 ///
 /// With `side-band-64k` the answer is multiplexed packets terminated by a
@@ -481,7 +463,10 @@ pub(crate) async fn git_receive_pack(
     };
     // The merge queue owns refs/queue/* and refs/queue-meta/*: a pushed queue
     // commit would be gated and landed as if the forge had built it.
-    let commands = jeryu_gitd::pack::receive_pack_commands(&body).unwrap_or_default();
+    let commands = match push_policy::commands(&body) {
+        Ok(commands) => commands,
+        Err(response) => return *response,
+    };
     if let Some(command) = commands
         .iter()
         .find(|command| crate::web::is_queue_owned_ref(&command.ref_name))
@@ -501,42 +486,26 @@ pub(crate) async fn git_receive_pack(
     let check_owner = owner.clone();
     let check_repo = repo.trim_end_matches(".git").to_string();
     let check_commands = commands.clone();
-    let blocked = tokio::task::spawn_blocking(move || {
-        check_commands
-            .iter()
-            .filter(|command| command.new_oid != crate::ci_bridge::ZERO_OID)
-            .filter_map(|command| {
-                command
-                    .ref_name
-                    .strip_prefix("refs/heads/")
-                    .map(|branch| (command, branch))
-            })
-            .find_map(|(command, branch)| {
-                crate::web::pushed_after_merge::merged_pull_request_branch(
-                    &check_state,
-                    &check_owner,
-                    &check_repo,
-                    branch,
-                )
-                .filter(|blocked| {
-                    command.old_oid != crate::ci_bridge::ZERO_OID
-                        || command.new_oid != blocked.head_sha
-                })
-                .map(|blocked| (command.ref_name.clone(), blocked))
-            })
+    let check_headers = headers.clone();
+    let policy = match tokio::task::spawn_blocking(move || {
+        push_policy::PushPolicy::inspect(
+            &check_state,
+            &check_owner,
+            &check_repo,
+            &check_commands,
+            &check_headers,
+            sideband,
+            || {
+                check_state
+                    .core
+                    .list_pull_requests(&check_owner, &check_repo, None)
+            },
+        )
     })
-    .await;
-    match blocked {
-        Ok(Some((blocked_ref, blocked))) => {
-            let message = crate::web::pushed_after_merge::receive_refusal_message(&blocked);
-            return gitd_to_axum_response(&receive_pack_refusal(
-                &commands,
-                &blocked_ref,
-                &message,
-                sideband,
-            ));
-        }
-        Ok(None) => {}
+    .await
+    {
+        Ok(Ok(policy)) => policy,
+        Ok(Err(response)) => return *response,
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -544,7 +513,7 @@ pub(crate) async fn git_receive_pack(
             )
                 .into_response();
         }
-    }
+    };
     let manager = (*state.repo_manager).clone();
     let before = snapshot_refs(&manager, &owner, &repo);
     let origin_base_url = origin_base_url(&headers);
@@ -562,14 +531,16 @@ pub(crate) async fn git_receive_pack(
     .await;
     // A branch whose pull request closed without merging still gets a message
     // after the ref lands. Updates to recent merged pull request branches
-    // were refused above, as were late-work recreations. Recreating at the
-    // recorded merged head and deleting a branch remain available.
+    // were refused above, as were late-work recreations, unless an exact
+    // administrator exception was durably audited. The request's one PR
+    // snapshot supplies at most 16 branch notices. Recreating at the recorded
+    // merged head and deleting a branch remain available.
     let gitd = if sideband && gitd.status() == StatusCode::OK.as_u16() {
         let notice_state = state.clone();
         let notice_owner = owner.clone();
-        let notice_repo = repo.clone();
+        let notice_repo = repo.trim_end_matches(".git").to_string();
         let lines = tokio::task::spawn_blocking(move || {
-            pushed_after_merge_lines(&notice_state, &notice_owner, &notice_repo, &pushed_branches)
+            policy.notice_lines(&notice_state, &notice_owner, &notice_repo, &pushed_branches)
         })
         .await
         .unwrap_or_default();

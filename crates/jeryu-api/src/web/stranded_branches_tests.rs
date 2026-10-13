@@ -251,3 +251,31 @@ fn large_repository_scans_are_bounded_and_rotate_to_later_branches() {
         "global budget applies across repositories"
     );
 }
+
+#[test]
+fn inbox_scan_is_repeatable_within_a_time_window_and_rotates_after_it() {
+    let fixture = Fixture::new();
+    let bare = fixture._storage.path().join("alice/jeryu.git");
+    for n in 0..32 {
+        git(
+            &bare,
+            &[
+                "update-ref",
+                &format!("refs/heads/window-{n:03}"),
+                &fixture.dayshift_sha,
+            ],
+        );
+    }
+    let at = chrono::DateTime::parse_from_rfc3339("2026-10-13T18:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let first = all_at_time(&fixture.state, at);
+    assert_eq!(first, all_at_time(&fixture.state, at));
+    assert_eq!(
+        first,
+        all_at_time(&fixture.state, at + chrono::Duration::seconds(30))
+    );
+    let next = all_at_time(&fixture.state, at + chrono::Duration::seconds(60));
+    assert_ne!(first, next);
+    assert!(first.len() <= MAX_BRANCHES_PER_REPO && next.len() <= MAX_BRANCHES_PER_REPO);
+}

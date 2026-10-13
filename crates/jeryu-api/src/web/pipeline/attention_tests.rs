@@ -3932,6 +3932,7 @@ fn a_filter_keeps_only_the_rows_asked_for_and_recounts_them() {
     items.push(elsewhere);
     let response = AttentionResponse {
         schema_version: ATTENTION_SCHEMA,
+        branch_discovery: crate::web::stranded_branches::COVERAGE_NOTICE,
         generated_at: "2026-09-19T13:00:00Z".to_string(),
         counts: Counts::default(),
         items,
@@ -3950,6 +3951,7 @@ fn a_filter_keeps_only_the_rows_asked_for_and_recounts_them() {
         acme.items.iter().map(|i| &i.family).collect::<Vec<_>>()
     );
     assert!(!acme.items.is_empty());
+    assert_eq!(acme.branch_discovery, response.branch_discovery);
     assert_eq!(
         acme.counts.critical + acme.counts.action + acme.counts.watch,
         acme.items.len()
