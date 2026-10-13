@@ -197,7 +197,6 @@ fn commits_not_on_base(
 /// The pull request a push to `branch` is stranded behind, if it is stranded:
 /// the newest one that closed within [`LOOKBACK_DAYS`] with the branch as its
 /// head, while no pull request from the branch is open.
-#[cfg(test)]
 pub(crate) fn stranded(
     state: &WebState,
     owner: &str,
