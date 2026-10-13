@@ -47,8 +47,8 @@ required_check = "jeryu-jira/required"
 name = "jeryu-web"
 github_slug = "neverhuman/jeryu-web"
 local_path = "/home/ubuntu/jeryu-split/jeryu-web"
-commit = "83534746af1bd2aa240456d65628fb736bdd2199"
-web_dist_sha256 = "099fedcd842462237c74f4f3f57c380e5392aba2259a81744a3dcb3886841272"
+commit = "15296f25e538a750a758438bae7dd3a47f40691c"
+web_dist_sha256 = "908ceb1cbd1284f0cbfca8976772705cb24ef62ef8809a7a5b618c08d0649105"
 required_check = "jeryu-web/required"
 
 [[repo]]
