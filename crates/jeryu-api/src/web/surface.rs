@@ -184,6 +184,12 @@ async fn github_forward_request(
             uri.path(),
         );
     };
+    // The edge's index is discovery, like the `/api/v1` open paths: every
+    // refusal on the edge points a caller at it, so it answers without a
+    // credential. Nothing else on the edge opens with it.
+    if method == Method::Get && uri.path() == crate::github::V3_PREFIX {
+        return github_response(state.github.handle(method, crate::github::V3_PREFIX, ""));
+    }
     let auth = match github_account_from_headers(&state, peer.as_ref(), &http_method, &headers) {
         Ok(auth) => auth,
         Err(response) => return *response,

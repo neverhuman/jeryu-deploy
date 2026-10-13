@@ -47,7 +47,7 @@ use crate::routes::Response;
 use listing::{CommitListQuery, IssueListQuery, PullListQuery};
 pub use support::V3_ROUTES;
 pub(crate) use support::{
-    GH_AUTH_BOUNDARY, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE, gh_setup_command,
+    GH_AUTH_BOUNDARY, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE, V3_PREFIX, gh_setup_command,
     gh_setup_command_with_origin, public_origin,
 };
 #[allow(unused_imports)]

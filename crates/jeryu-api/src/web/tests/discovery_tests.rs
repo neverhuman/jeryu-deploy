@@ -211,6 +211,89 @@ async fn the_rest_edge_answers_its_index_with_a_200_that_lists_pr_create() {
     );
 }
 
+/// The release smoke runs a server that requires a login, and there the
+/// index answered an anonymous caller 401: the test above only ever ran with
+/// auth off. Like `/api/v1` discovery, the route list is readable without a
+/// credential; nothing else on the edge opens with it.
+#[tokio::test]
+async fn the_rest_edge_index_answers_without_a_credential_when_auth_is_required() {
+    let spa = tempdir().expect("spa dir");
+    write_file(
+        spa.path(),
+        "index.html",
+        "<!doctype html><title>jeryu</title>",
+    );
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        jeryu_core::CreateRepositoryRequest {
+            name: "public-widgets".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .expect("public repository");
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        spa.path(),
+    );
+
+    for accept in ["application/json", "application/vnd.github+json"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3")
+                    .header(header::ACCEPT, accept)
+                    .header(header::USER_AGENT, "curl/8.5.0")
+                    .body(Body::empty())
+                    .expect("index request"),
+            )
+            .await
+            .expect("router answered");
+        assert_eq!(response.status(), StatusCode::OK, "Accept {accept}");
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .expect("read body");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("POST /repos/{owner}/{repo}/pulls"),
+            "the anonymous index lists opening a pull request: {body}"
+        );
+    }
+
+    // Only the index opens: the account, the repository list and a public
+    // repository's routes on the edge still ask for a credential.
+    for path in [
+        "/api/v3/user",
+        "/user",
+        "/api/v3/repos",
+        "/api/v3/repos/alice/public-widgets",
+        "/api/v3/repos/alice/public-widgets/pulls",
+    ] {
+        let answered = fetch(&app, path).await;
+        assert_eq!(
+            answered.status,
+            StatusCode::UNAUTHORIZED,
+            "{path}: {}",
+            answered.body
+        );
+    }
+    let write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(HttpMethod::POST)
+                .uri("/api/v3")
+                .body(Body::empty())
+                .expect("write request"),
+        )
+        .await
+        .expect("router answered");
+    assert_eq!(write.status(), StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn the_route_index_describes_params_and_who_may_call_each_route() {
     let spa = tempdir().expect("spa dir");
