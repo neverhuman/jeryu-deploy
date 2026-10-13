@@ -18,8 +18,8 @@ fn governed_version() -> String {
         .0
 }
 
-/// A repository plus one queued audit ticket for a unique head, so tests that
-/// share the process-wide queue never see each other's work.
+/// A repository plus one queued audit ticket for a unique head. Mutations use
+/// this key; a FIFO claim can also return another fixture's earlier work.
 fn repo_with_ticket(name: &str, head: &str, base: &str) -> (Arc<WebState>, AuditTicket) {
     let core = ForgeCore::new();
     core.create_repository(
@@ -77,24 +77,52 @@ async fn ingest(
 async fn a_runner_report_for_an_open_ticket_becomes_the_head_proof() {
     let head = "1".repeat(40);
     let base = "2".repeat(40);
+    // A full earlier batch makes the FIFO behavior deterministic under every
+    // test schedule. One claim never promises to contain this fixture's head.
+    {
+        let mut queue = audit_queue::queue().lock().unwrap();
+        for index in 0..audit_queue::MAX_CLAIM_BATCH {
+            queue.enqueue(AuditTicket::new(
+                "jeryu",
+                &format!("audit-happy-backlog-{index}"),
+                "feature",
+                &format!("{:040x}", index + 100),
+                &base,
+            ));
+        }
+    }
     let (state, ticket) = repo_with_ticket("audit-happy", &head, &base);
-
-    let claimed = response_json(
-        claim(
-            State(state.clone()),
-            authenticated_account("ci-bot"),
-            axum::body::Bytes::from(json!({"runner_id": "node-2/slot0", "max": 8}).to_string()),
+    let mut found = false;
+    for _ in 0..audit_queue::AUDIT_QUEUE_CAPACITY.div_ceil(audit_queue::MAX_CLAIM_BATCH) {
+        let claimed = response_json(
+            claim(
+                State(state.clone()),
+                authenticated_account("ci-bot"),
+                axum::body::Bytes::from(json!({"runner_id": "node-2/slot0", "max": 8}).to_string()),
+            )
+            .await,
         )
-        .await,
-    )
-    .await;
+        .await;
+        let tickets = claimed["tickets"].as_array().unwrap();
+        assert!(
+            tickets.len() <= audit_queue::MAX_CLAIM_BATCH,
+            "the claim cap remains enforced"
+        );
+        if tickets.iter().any(|claimed| {
+            claimed["owner"] == ticket.owner
+                && claimed["repo"] == ticket.repo
+                && claimed["headSha"] == head
+        }) {
+            found = true;
+            break;
+        }
+        if tickets.is_empty() {
+            break;
+        }
+    }
     assert!(
-        claimed["tickets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|claimed| claimed["headSha"] == head),
-        "the runner is handed the queued head: {claimed}"
+        found,
+        "bounded FIFO claims must reach the queued head behind the backlog"
     );
 
     let accepted = ingest(
