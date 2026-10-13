@@ -2,19 +2,24 @@
 //! (`POST /api/v1/admin/users/:login/reset-password`).
 //!
 //! The reset used to hand the temporary password back to the administrator,
-//! who then had to carry it to the person some other way. It now goes to the
-//! person's own address and never appears in the answer:
+//! who then had to carry it to the person some other way. With mail
+//! configured it now goes to the person's own address and never appears in
+//! the answer; without mail, or when the message does not leave, the
+//! administrator is shown it, because a reset nobody can hand over would lock
+//! the person out with no way back.
 //!
 //! - The address is the account's proved one when it has one. Without one,
 //!   the administrator may supply an address, which is stored unproved, or the
-//!   account's stored unproved address is used. With none of them the reset
-//!   is refused with `email_required` before anything changes.
+//!   account's stored unproved address is used. With mail configured and none
+//!   of them, the reset is refused with `email_required` before anything
+//!   changes; without mail an address is optional.
 //! - The account gets a fresh one-time password through core's administrative
 //!   reset, which drops its sessions, tokens and bots and forces a password
 //!   change at the next sign-in.
-//! - The temporary password is mailed with the sign-in address. A failed send
-//!   is `502 mail_failed`; the administrator retries, and a retry issues a
-//!   fresh password, so an unsent one is never live for long.
+//! - Mailed: `202 {"result":"sent","login","email"}`. Shown:
+//!   `200 {"result":"shown","login","password","email"}`, plus `mailError`
+//!   when a configured transport failed. The audit action says which
+//!   (`account.password_reset.admin_mailed` or `.admin_shown`).
 //!
 //! Proving the address: a person who signs in with the mailed password and
 //! completes the forced change has shown they read that mailbox. A successful
@@ -148,11 +153,13 @@ struct AdminResetRequest {
 }
 
 /// `POST /api/v1/admin/users/:login/reset-password` — set a one-time password
-/// and mail it to the account's address.
+/// and mail it to the account's address, or show it when it cannot be mailed.
 ///
 /// The body is optional: `{}` or nothing uses the address the account has,
 /// `{"email"}` supplies one for an account without a proved address.
-/// Answers `202 {"result":"sent","login","email"}` and never the password.
+/// Answers `202 {"result":"sent","login","email"}` without the password when
+/// the message left, and `200 {"result":"shown",...,"password"}` when there
+/// is no mail or the send failed.
 pub(super) async fn admin_reset_password(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
@@ -166,15 +173,6 @@ pub(super) async fn admin_reset_password(
     }
     if auth_rate_limit_exceeded(&state, peer.as_ref(), &headers, "reset", &login) {
         return rate_limited();
-    }
-    // Checked before anything changes: a reset nobody can be told about would
-    // lock the person out.
-    if !state.mailer.is_configured() {
-        return api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "mail_unavailable",
-            "this forge cannot send mail, so it cannot deliver a reset; configure mail first (docs/account-email.md)",
-        );
     }
     let request: AdminResetRequest = if body.iter().all(u8::is_ascii_whitespace) {
         AdminResetRequest::default()
@@ -216,13 +214,25 @@ pub(super) async fn admin_reset_password(
         Ok(stored) => stored,
         Err(error) => return storage_failed("could not read the account address", &error),
     };
+    let mail_configured = state.mailer.is_configured();
     let address = match choose_address(stored.as_ref(), supplied) {
         Ok(address) => address,
         Err((status, code, message)) => return api_error(status, code, message),
     };
+    // With mail the password goes to the person, so there must be somewhere
+    // to send it; without mail it is shown to the administrator instead.
+    if mail_configured && address.is_none() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "email_required",
+            "this account has no email address; supply one",
+        );
+    }
     let now_ms = Utc::now().timestamp_millis();
-    if stored.as_ref().map(|stored| stored.address.as_str()) != Some(address.as_str()) {
-        match state.account_email.claim(&target.login, &address, now_ms) {
+    if let Some(address) = address.as_deref()
+        && stored.as_ref().map(|stored| stored.address.as_str()) != Some(address)
+    {
+        match state.account_email.claim(&target.login, address, now_ms) {
             Ok(true) => audit(
                 &state,
                 &account.login,
@@ -256,6 +266,23 @@ pub(super) async fn admin_reset_password(
             error => storage_failed("could not reset password", &error.to_string()),
         };
     }
+    // A marker from an earlier mailed reset belongs to a password that no
+    // longer works; only a message that leaves below records a new one.
+    if let Err(error) = state.account_email.clear_reset_mailed(&target.login) {
+        return storage_failed("could not clear the mailed-reset marker", &error);
+    }
+    let Some(address) = address.clone().filter(|_| mail_configured) else {
+        // No mail: the administrator hands the password over. Nothing was
+        // mailed, so nothing will prove an address.
+        audit(
+            &state,
+            &account.login,
+            "account.password_reset.admin_shown",
+            "completed",
+            json!({ "for": &target.login, "reason": "mail is not configured" }),
+        );
+        return shown(&target.login, &password, address.as_deref(), None);
+    };
     let sign_in = state.mailer.link("").unwrap_or_default();
     let body = format!(
         "An administrator reset the password for the jeryu account {login}.\n\
@@ -279,20 +306,20 @@ pub(super) async fn admin_reset_password(
         })
         .await;
     if let Err(error) = outcome {
-        // The password that did not leave must not prove the address if it
-        // is ever used, and an older mailed one no longer works.
-        let _ = state.account_email.clear_reset_mailed(&target.login);
+        // The reset stands, so the administrator is shown the password to
+        // hand over; it reached no mailbox, so it proves no address.
         audit(
             &state,
             &account.login,
-            "account.password_reset.admin_mailed",
-            "failed",
+            "account.password_reset.admin_shown",
+            "completed",
             json!({ "for": &target.login, "reason": format!("could not send the message: {error}") }),
         );
-        return api_error(
-            StatusCode::BAD_GATEWAY,
-            "mail_failed",
-            "the password was reset but the message could not be sent; reset again to send a fresh one",
+        return shown(
+            &target.login,
+            &password,
+            Some(&address),
+            Some("could not send the message"),
         );
     }
     if let Err(error) = state
@@ -321,12 +348,32 @@ pub(super) async fn admin_reset_password(
         .into_response()
 }
 
+/// The one-time password, shown to the administrator who reset it because it
+/// could not be mailed. `mail_error` says why when mail is configured.
+fn shown(
+    login: &str,
+    password: &str,
+    email: Option<&str>,
+    mail_error: Option<&str>,
+) -> AxumResponse {
+    let mut body = json!({
+        "result": "shown",
+        "login": login,
+        "password": password,
+        "email": email,
+    });
+    if let Some(mail_error) = mail_error {
+        body["mailError"] = json!(mail_error);
+    }
+    (StatusCode::OK, Json(body)).into_response()
+}
+
 /// Which address a reset goes to: the proved one, else the one supplied, else
-/// the stored unproved one.
+/// the stored unproved one, else none.
 fn choose_address(
     stored: Option<&AccountEmail>,
     supplied: Option<String>,
-) -> Result<String, (StatusCode, &'static str, &'static str)> {
+) -> Result<Option<String>, (StatusCode, &'static str, &'static str)> {
     match (stored, supplied) {
         (Some(stored), Some(supplied)) if stored.is_verified() && stored.address != supplied => {
             Err((
@@ -335,13 +382,9 @@ fn choose_address(
                 "the account already has a verified address",
             ))
         }
-        (Some(stored), _) if stored.is_verified() => Ok(stored.address.clone()),
-        (_, Some(supplied)) => Ok(supplied),
-        (Some(stored), None) => Ok(stored.address.clone()),
-        (None, None) => Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "email_required",
-            "this account has no email address; supply one",
-        )),
+        (Some(stored), _) if stored.is_verified() => Ok(Some(stored.address.clone())),
+        (_, Some(supplied)) => Ok(Some(supplied)),
+        (Some(stored), None) => Ok(Some(stored.address.clone())),
+        (None, None) => Ok(None),
     }
 }

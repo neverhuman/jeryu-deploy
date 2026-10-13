@@ -334,7 +334,6 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "an agent_id or run_id has a character a ref may not carry",
     ),
     entry("invalid_token", 401, "invalid bot credential"),
-    entry("mail_failed", 502, "the message could not be sent"),
     entry("mail_unavailable", 503, "this forge cannot send mail"),
     entry(
         "managed_runtime_invalid",

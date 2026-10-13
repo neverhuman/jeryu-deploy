@@ -432,3 +432,39 @@ async fn an_invalid_waitlist_url_is_not_served() {
     .await;
     assert_eq!(body, json!({ "mode": "closed", "waitlistUrl": null }));
 }
+
+/// A sign-up that proves an address another account only claimed takes it,
+/// and the other account's trail records the loss without the address.
+#[tokio::test]
+async fn a_released_unproved_claim_is_audited_against_its_account() {
+    let (forge, _dir) = audited_forge(Mailer::recording());
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    forge
+        .store
+        .claim("ada", "shared@example.com", now_ms)
+        .expect("ada claims the address without proving it");
+    let secret = mailed_signup_secret(&forge, "shared@example.com").await;
+    let (status, reply) = signup(
+        &forge,
+        &json!({ "token": secret, "login": "grace", "password": SIGNUP_PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(forge.store.get("ada").expect("read ada's address"), None);
+    let records = forge
+        .core
+        .list_audit("account_email")
+        .expect("read the audit trail");
+    let released = records
+        .iter()
+        .find(|record| record.action == "account.email.claim_released")
+        .unwrap_or_else(|| panic!("no release record: {records:?}"));
+    assert_eq!(released.actor, "ada");
+    let rendered = format!("{released:?}");
+    assert!(
+        rendered.contains("address proved by a new sign-up"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("shared@example.com"), "{rendered}");
+    assert!(!rendered.contains("grace"), "{rendered}");
+}

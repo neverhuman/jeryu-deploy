@@ -89,27 +89,36 @@ start with no address.
 
 `POST /api/v1/admin/users/:login/reset-password`, body `{}` or
 `{"email": "…"}`, sets a one-time password, drops the account's sessions,
-tokens and bots, forces a password change at the next sign-in, and mails the
-login, the temporary password and the sign-in address (`<base>/`) to the
-account. The answer is `202 {"result":"sent","login":…,"email":…}` and never
-carries the password.
+tokens and bots, and forces a password change at the next sign-in. Then:
+
+- **Mail configured, message sent:** the login, the temporary password and
+  the sign-in address (`<base>/`) are mailed to the account, and the answer
+  is `202 {"result":"sent","login":…,"email":…}`, without the password.
+- **Mail configured, send failed:** the reset stands and the administrator
+  is shown the password to hand over:
+  `200 {"result":"shown","login":…,"password":…,"email":…,"mailError":"could not send the message"}`.
+- **Mail not configured** (the default): the reset happens and the answer is
+  `200 {"result":"shown","login":…,"password":…,"email":…|null}`, so an
+  account without mail still has a way back in.
+
+A shown password is a secret in the answer: an idempotent replay of it gets
+the placeholder, never the password again.
 
 The address is the account's proved one if it has one; otherwise the
 supplied `email`, which is stored unproved; otherwise the stored unproved
-address.
+address. Without mail an address is optional.
 
 | Answer | When |
 |---|---|
-| `503 mail_unavailable` | mail is not configured; nothing was changed |
-| `422 email_required` | the account has no address and none was supplied; nothing was changed |
+| `422 email_required` | mail is configured, the account has no address and none was supplied; nothing was changed |
 | `422 invalid_input` | the supplied address is malformed |
 | `409 conflict` | the account has a proved address and a different one was supplied, or another account holds the supplied one |
-| `502 mail_failed` | the password was reset but the message did not leave; reset again, which issues a fresh password |
 
 Signing in with the mailed password and completing the forced change proves
 the person reads that mailbox, so `POST /api/v1/auth/password` then marks the
 address verified. Only a reset whose message left records that marker
-(`account_emails.reset_mailed_ms`); claiming another address clears it.
+(`account_emails.reset_mailed_ms`); a shown password records none and clears
+an older one, and claiming another address clears it too.
 
 `GET /api/v1/admin/users` reports each account's `email` (or `null`) and
 `emailVerified`.
@@ -201,7 +210,8 @@ in), which the web app serves.
 
 **All three pieces are needed** — a sender, a base URL, and one transport.
 Without them sign-up start answers `503 mail_unavailable` and the
-administrator reset refuses before changing anything; the recovery routes
+administrator reset shows the one-time password instead of mailing it; the
+recovery routes
 send nothing and answer exactly as they would have, and the unsent message is
 recorded as a `failed`
 `account.password_reset.requested` or `account.email.verification_sent`
@@ -223,7 +233,9 @@ All under subject `account_email`, phase `requested` / `completed` /
 | `account.password_reset.completed` | a link was spent and the password set |
 | `account.signup.requested` | a sign-up link or "already have an account" note was sent, or was not |
 | `account.signup.completed` | a sign-up link was spent and the account created (`failed`: the account was disabled) |
-| `account.password_reset.admin_mailed` | an administrator's reset was mailed, or the message failed |
+| `account.password_reset.admin_mailed` | an administrator's reset was mailed (`failed`: the marker could not be recorded) |
+| `account.password_reset.admin_shown` | an administrator's reset was shown instead; the detail says why (no mail, or the send failed) |
+| `account.email.claim_released` | against an account whose unproved address a new sign-up proved and took |
 
 A detail payload never carries an address or a secret, so the trail is not an
 address directory.

@@ -6,7 +6,9 @@
 //! to send it, and only a mailed password that is used and replaced proves
 //! the address.
 
-use super::account_email_tests::{Forge, forge, forge_with_mailer, json_reply, verify_address};
+use super::account_email_tests::{
+    Forge, audited_forge, forge, forge_with_mailer, json_reply, verify_address,
+};
 use super::*;
 use crate::web::mail::Mailer;
 use axum::body::Body;
@@ -261,18 +263,56 @@ async fn an_address_held_by_another_account_or_malformed_is_refused() {
     assert!(forge.mailer.sent().is_empty());
 }
 
-/// Without mail nothing changes: a reset nobody is told about locks the
-/// person out.
+/// Without mail the reset still happens and the administrator is shown the
+/// one-time password to hand over: the account must change it, and nothing
+/// was mailed, so changing it proves no address.
 #[tokio::test]
-async fn an_unconfigured_mailer_changes_nothing() {
+async fn an_unconfigured_mailer_shows_the_password_to_the_administrator() {
     let forge = forge_with_mailer(Mailer::unconfigured());
     let admin = admin_token(&forge);
+    // No address is needed without mail.
+    let (status, reply) = reset(&forge, &admin, None).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["result"], "shown", "{reply}");
+    assert_eq!(reply["login"], "ada", "{reply}");
+    assert_eq!(reply["email"], Value::Null, "{reply}");
+    assert!(reply.get("mailError").is_none(), "{reply}");
+    let password = reply["password"]
+        .as_str()
+        .expect("the password is shown")
+        .to_string();
+
+    // A supplied address is stored unproved.
     let (status, reply) = reset(&forge, &admin, Some(&json!({ "email": "ada@example.com" }))).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{reply}");
-    assert_eq!(reply["code"], "mail_unavailable");
-    assert_eq!(forge.store.get("ada").expect("read the address"), None);
-    let (status, _, _) = sign_in(&forge, ADA_PASSWORD).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["email"], "ada@example.com", "{reply}");
+    let password_again = reply["password"].as_str().expect("the password is shown");
+    assert_ne!(
+        password_again, password,
+        "each reset issues a fresh password"
+    );
+    let (status, _, _) = sign_in(&forge, &password).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the first one was replaced"
+    );
+    let (status, _, body) = sign_in(&forge, password_again).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["mustChangePassword"], true, "{body}");
+
+    change_password(&forge, password_again).await;
+    let stored = forge
+        .store
+        .get("ada")
+        .expect("read the address")
+        .expect("the address is stored");
+    assert_eq!(stored.address, "ada@example.com");
+    assert!(
+        !stored.is_verified(),
+        "nothing was mailed, so nothing is proved"
+    );
+    assert!(forge.mailer.sent().is_empty());
 }
 
 #[tokio::test]
@@ -325,21 +365,59 @@ async fn a_new_address_after_the_reset_is_not_proved_by_it() {
     assert!(!stored.is_verified());
 }
 
-/// A message that did not leave is a 502 the administrator can act on, and
-/// the password it would have carried proves nothing if it is ever used.
+/// A message that did not leave: the reset stands and the administrator is
+/// shown the password with the reason, and the password proves nothing if it
+/// is ever used.
 #[tokio::test]
-async fn a_failed_send_is_a_bad_gateway_and_proves_nothing() {
+async fn a_failed_send_shows_the_password_and_proves_nothing() {
     let forge = forge_with_mailer(Mailer::failing());
     let admin = admin_token(&forge);
     let (status, reply) = reset(&forge, &admin, Some(&json!({ "email": "ada@example.com" }))).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "{reply}");
-    assert_eq!(reply["code"], "mail_failed", "{reply}");
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["result"], "shown", "{reply}");
+    assert_eq!(reply["email"], "ada@example.com", "{reply}");
+    assert_eq!(reply["mailError"], "could not send the message", "{reply}");
+    let password = reply["password"].as_str().expect("the password is shown");
+    let (status, _, body) = sign_in(&forge, password).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["mustChangePassword"], true, "{body}");
     assert!(
-        forge
+        !forge
             .store
             .prove_by_mailed_reset("ada", 1)
-            .expect("read the marker")
-            .eq(&false),
+            .expect("read the marker"),
         "no marker was recorded for an unsent password"
     );
+}
+
+/// A message that left is the only answer without the password, and the audit
+/// trail tells a mailed reset from a shown one without carrying the secret.
+#[tokio::test]
+async fn a_mailed_reset_answers_without_the_password_and_is_audited_apart() {
+    let (forge, _dir) = audited_forge(Mailer::recording());
+    let admin = admin_token(&forge);
+    let (status, reply) = reset(&forge, &admin, Some(&json!({ "email": "ada@example.com" }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+    assert_eq!(reply["result"], "sent", "{reply}");
+    assert!(reply.get("password").is_none(), "{reply}");
+    let mailed = mailed_password(&forge.mailer);
+    let records = forge
+        .core
+        .list_audit("account_email")
+        .expect("read the audit trail");
+    assert!(
+        records.iter().any(|record| {
+            record.action == "account.password_reset.admin_mailed" && record.phase == "completed"
+        }),
+        "{records:?}"
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| record.action == "account.password_reset.admin_shown"),
+        "{records:?}"
+    );
+    let rendered = format!("{records:?}");
+    assert!(!rendered.contains(&mailed), "{rendered}");
+    assert!(!rendered.contains("ada@example.com"), "{rendered}");
 }

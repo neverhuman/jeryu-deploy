@@ -354,7 +354,8 @@ fn applies(method: &Method, path: &str) -> bool {
 }
 
 /// Bot enrollment, key rotation, agent-token issue, token exchange, token
-/// refresh, personal-access-token creation and login answer with a secret
+/// refresh, personal-access-token creation, an administrator's password reset
+/// that could not be mailed, and login answer with a secret
 /// (the last two with the plaintext token and the session cookie). Their
 /// successful answer is not kept as is: a placeholder without the secret is,
 /// so a retry with the same key still does not run the write twice, and the
@@ -371,6 +372,16 @@ fn returns_a_secret(path: &str) -> bool {
             | "/api/v1/auth/password"
     ) {
         return true;
+    }
+    // An administrator's reset shows the one-time password when it could not
+    // be mailed.
+    if let Some(rest) = path.strip_prefix("/api/v1/admin/users/") {
+        let mut segments = rest.split('/');
+        let _login = segments.next();
+        return matches!(
+            (segments.next(), segments.next()),
+            (Some("reset-password"), None)
+        );
     }
     let Some(rest) = path.strip_prefix("/api/v1/bots/") else {
         return false;
@@ -475,6 +486,7 @@ mod tests {
             "/api/v1/auth/login",
             "/api/v1/auth/signup",
             "/api/v1/auth/password",
+            "/api/v1/admin/users/ada/reset-password",
         ] {
             assert!(returns_a_secret(path), "{path}");
             assert!(applies(&Method::POST, path), "{path}");

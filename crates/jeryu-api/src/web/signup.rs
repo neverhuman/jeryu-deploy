@@ -104,7 +104,9 @@ impl SignupRowKind {
 /// How storing the proved address for a new account went.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum StoreVerified {
-    Stored,
+    /// Stored. `released` names the account whose unproved claim on the
+    /// address gave way, so the caller can record it against that account.
+    Stored { released: Option<String> },
     /// Another account has proved the address.
     AddressTaken,
 }
@@ -244,6 +246,7 @@ impl AccountEmailStore {
             )
             .optional()
             .map_err(|err| err.to_string())?;
+        let mut released = None;
         match holder {
             Some((holder, Some(_))) if holder != login => return Ok(StoreVerified::AddressTaken),
             Some((holder, None)) if holder != login => {
@@ -258,6 +261,7 @@ impl AccountEmailStore {
                     params![holder, address, now_ms],
                 )
                 .map_err(|err| err.to_string())?;
+                released = Some(holder);
             }
             _ => {}
         }
@@ -287,7 +291,7 @@ impl AccountEmailStore {
         )
         .map_err(|err| err.to_string())?;
         tx.commit().map_err(|err| err.to_string())?;
-        Ok(StoreVerified::Stored)
+        Ok(StoreVerified::Stored { released })
     }
 }
 
@@ -535,7 +539,21 @@ pub(super) async fn complete(
     let stored = state
         .account_email
         .insert_verified(&account.login, &address, now_ms);
-    if stored != Ok(StoreVerified::Stored) {
+    if let Ok(StoreVerified::Stored {
+        released: Some(released),
+    }) = &stored
+    {
+        // The other account loses an address it never proved; its own trail
+        // says so, without naming the address or who took it.
+        audit(
+            &state,
+            released,
+            "account.email.claim_released",
+            "completed",
+            json!({ "reason": "address proved by a new sign-up" }),
+        );
+    }
+    if !matches!(stored, Ok(StoreVerified::Stored { .. })) {
         // An account must never exist without the address it proved, so the
         // one just created is switched off rather than left reachable.
         let _ = state.core.disable_account(&account.login);
@@ -684,7 +702,9 @@ mod tests {
             store
                 .insert_verified("ada", "ada@example.com", 2_000)
                 .unwrap(),
-            StoreVerified::Stored
+            StoreVerified::Stored {
+                released: Some("bob".to_string())
+            }
         );
         assert_eq!(store.get("bob").unwrap(), None);
         assert_eq!(
