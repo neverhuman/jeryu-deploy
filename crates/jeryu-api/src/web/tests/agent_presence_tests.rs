@@ -561,6 +561,7 @@ async fn gate_runners_reviewers_and_queue_workers_show_on_the_repo() {
             .unwrap();
     }
     let slot = Heartbeat {
+        usage: None,
         operator: "ada".to_string(),
         host: "node-a".to_string(),
         slot: "1".to_string(),
