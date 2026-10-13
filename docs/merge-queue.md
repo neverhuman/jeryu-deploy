@@ -262,7 +262,7 @@ It is on for every repository unless an administrator turns it off, in GitHub's
 spelling: `PATCH /repos/{owner}/{repo}` with `{"delete_branch_on_merge": false}`
 (so `gh repo edit --delete-branch-on-merge=false` works), read back on
 `GET /repos/{owner}/{repo}`. The value is kept per repository id in
-`shift.sqlite` (migration `0011_repo_merge_settings.sql`).
+`shift.sqlite` (migration `0012_repo_merge_settings.sql`).
 
 The branch is kept, and the reason reported, when its head lives in another
 repository, when it is the base or the default branch, when it has branch
@@ -282,3 +282,10 @@ the same ref policy as `git push --delete`, so a push made after the merge, or
 a branch the server's protected-ref rules cover, survives. A direct merge's
 response says what happened in `head_branch` (`{"name", "deleted", "reason"}`);
 a queue landing logs a kept branch.
+
+Automatic deletion writes a requested audit receipt before changing the branch,
+then a completed or failed receipt naming the PR, ref and gated commit. An audit
+request that cannot be stored keeps the branch. This cleanup affects the forge;
+mirror branch deletion is a separate operation and is not attempted here. The
+cross-repository safety scan keeps the branch if it exceeds 1,024 repositories
+or 4,096 pull requests rather than deleting on incomplete evidence.

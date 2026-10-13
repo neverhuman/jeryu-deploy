@@ -456,7 +456,10 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
         let Ok(listed) = state.core.list_pull_requests(&repo.owner, &repo.name, None) else {
             continue;
         };
-        for pr in listed {
+        for mut pr in listed {
+            if let Some(head) = super::super::pulls::landed::live_head(state, &pr) {
+                pr.head.sha = head;
+            }
             let Some(posture) = super::super::pulls::attention_posture(state, &pr) else {
                 continue;
             };

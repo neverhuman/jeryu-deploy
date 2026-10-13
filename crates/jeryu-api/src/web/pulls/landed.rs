@@ -52,9 +52,10 @@ fn cache() -> &'static Mutex<HashMap<CacheKey, Option<Landed>>> {
 /// Whether `pr`'s change is already on its base branch, or `None` when it is
 /// not or git cannot tell (repository not materialized, head not fetched).
 pub(in crate::web) fn already_landed(state: &WebState, pr: &PullRequest) -> Option<Landed> {
-    if pr.head.sha.is_empty() || pr.base.ref_name.is_empty() {
+    if pr.base.ref_name.is_empty() {
         return None;
     }
+    let head = live_head(state, pr)?;
     let resolved = state.repo_manager.resolve_parts(&pr.owner, &pr.repo).ok()?;
     let git_bin = &state.repo_manager.config().git_bin;
     let base = rev_parse(
@@ -62,17 +63,40 @@ pub(in crate::web) fn already_landed(state: &WebState, pr: &PullRequest) -> Opti
         &resolved.path,
         &format!("refs/heads/{}^{{commit}}", pr.base.ref_name),
     )?;
-    let key = (resolved.path.clone(), base.clone(), pr.head.sha.clone());
+    let key = (resolved.path.clone(), base.clone(), head.clone());
     if let Some(answer) = cache().lock().expect("landed cache lock").get(&key) {
         return *answer;
     }
-    let answer = landed(git_bin, &resolved.path, &base, &pr.head.sha);
+    let answer = landed(git_bin, &resolved.path, &base, &head);
     let mut held = cache().lock().expect("landed cache lock");
     if held.len() >= CACHE_LIMIT {
         held.clear();
     }
     held.insert(key, answer);
     answer
+}
+
+/// Read the source branch, never a caller-supplied or outdated stored SHA.
+/// A missing source or branch is unknown, so it cannot suppress review.
+pub(in crate::web) fn live_head(state: &WebState, pr: &PullRequest) -> Option<String> {
+    let (owner, repo) = pr.source_repository.trim().split_once('/')?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    let source = state
+        .repo_manager
+        .resolve_parts(owner, repo.trim_end_matches(".git"))
+        .ok()?;
+    let branch = pr
+        .head
+        .ref_name
+        .split_once(':')
+        .map_or(pr.head.ref_name.as_str(), |(_, branch)| branch);
+    rev_parse(
+        &state.repo_manager.config().git_bin,
+        &source.path,
+        &format!("refs/heads/{branch}^{{commit}}"),
+    )
 }
 
 fn landed(git_bin: &str, repo: &Path, base: &str, head: &str) -> Option<Landed> {
@@ -144,7 +168,7 @@ fn rev_parse(git_bin: &str, repo: &Path, rev: &str) -> Option<String> {
     let output = Command::new(git_bin)
         .arg("-C")
         .arg(repo)
-        .args(["rev-parse", "--verify", "--quiet", rev])
+        .args(["rev-parse", "--verify", "--quiet", "--end-of-options", rev])
         .output()
         .ok()?;
     output
@@ -156,6 +180,32 @@ fn rev_parse(git_bin: &str, repo: &Path, rev: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_head_cannot_hide_live_work_and_cache_follows_the_branch() {
+        let fx = crate::web::merge_queue_tests::Fixture::new("Justfile", "gate\n");
+        let mut pr = fx
+            .state
+            .core
+            .get_pull_request("alice", "jeryu", fx.number)
+            .unwrap();
+        pr.head.sha = fx.main();
+        assert_eq!(live_head(&fx.state, &pr), Some(fx.head.clone()));
+        assert_eq!(already_landed(&fx.state, &pr), None);
+        let mut current = pr.clone();
+        current.head.sha = live_head(&fx.state, &pr).unwrap();
+        assert!(
+            crate::web::pulls::diff::changed_paths(&fx.state, &current)
+                .contains(&"Justfile".to_string())
+        );
+
+        run(&fx.bare, &["update-ref", "refs/heads/feature", &fx.main()]);
+        assert_eq!(already_landed(&fx.state, &pr), Some(Landed::Ancestor));
+        pr.head.ref_name = "missing".to_string();
+        assert_eq!(already_landed(&fx.state, &pr), None);
+        pr.source_repository = "unverified".to_string();
+        assert_eq!(live_head(&fx.state, &pr), None);
+    }
 
     fn run(cwd: &Path, args: &[&str]) -> String {
         let output = crate::test_git::git_command()

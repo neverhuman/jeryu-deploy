@@ -246,12 +246,6 @@ pub(crate) fn pull_items(
 ) -> Vec<Item> {
     let mut items = Vec::new();
     for pull in pulls {
-        // A change already on its base needs closing, not reviewing, gating
-        // or merging: every other row about it would point at the wrong step.
-        if let Some(landed) = pull.landed {
-            items.push(landed_item(pull, landed));
-            continue;
-        }
         let posture = &pull.posture;
         let label = format!("{}#{}", pull.repo, pull.number);
         let building = entries.iter().find(|entry| {
@@ -323,6 +317,11 @@ pub(crate) fn pull_items(
             item.pr = Some(pull.number);
             item.sha = Some(pull.head_sha.clone());
             items.push(item);
+        }
+        // Gate-definition changes stay visible even when the content landed.
+        if let Some(landed) = pull.landed {
+            items.push(landed_item(pull, landed));
+            continue;
         }
         let verdict: Verdict = if posture.changes_requested > 0 {
             Some((

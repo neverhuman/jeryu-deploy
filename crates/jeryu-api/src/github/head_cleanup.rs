@@ -71,6 +71,29 @@ pub(super) struct MergedHead<'a> {
 }
 
 impl GithubRouter {
+    #[cfg(test)]
+    pub(crate) fn cleanup_pull_head_for_test(
+        &self,
+        rm: &std::sync::Arc<jeryu_gitd::RepoManager>,
+        resolved: &jeryu_gitd::repo::Repository,
+        pr: &PullRequest,
+    ) -> Value {
+        self.delete_merged_head(
+            rm,
+            resolved,
+            &MergedHead {
+                owner: &pr.owner,
+                repo: &pr.repo,
+                number: pr.number,
+                base_ref: &pr.base.ref_name,
+                head_ref: &pr.head.ref_name,
+                source_repository: &pr.source_repository,
+                merged_head: &pr.head.sha,
+            },
+        )
+        .json()
+    }
+
     pub(super) fn delete_merged_head(
         &self,
         rm: &std::sync::Arc<jeryu_gitd::RepoManager>,
@@ -92,13 +115,53 @@ impl GithubRouter {
         if let Err(reason) = pin_pull_head(&refs, resolved, merged) {
             return kept(reason);
         }
-        match refs.update_ref(
+        let subject = format!("{}/{}", merged.owner, merged.repo);
+        let detail = json!({
+            "pull_request": merged.number,
+            "ref": format!("refs/heads/{branch}"),
+            "old_sha": merged.merged_head,
+            "new_sha": ZERO_OID,
+            "retained_ref": format!("refs/pull/{}/head", merged.number),
+        });
+        let audit_id = match self.core.append_audit_as(
+            "system:pr-merge",
+            "pull_request.delete_head_branch",
+            &subject,
+            "requested",
+            detail.clone(),
+        ) {
+            Ok(id) => id,
+            Err(err) => return kept(format!("the deletion could not be audited ({err})")),
+        };
+        let result = refs.update_ref(
             resolved,
             "system:pr-merge",
             &format!("refs/heads/{branch}"),
             ZERO_OID,
             Some(merged.merged_head),
+        );
+        let mut outcome = detail;
+        outcome["request_audit_id"] = json!(audit_id);
+        if let Err(err) = &result {
+            outcome["error"] = json!(err.to_string());
+        }
+        if let Err(err) = self.core.append_audit_as(
+            "system:pr-merge",
+            "pull_request.delete_head_branch",
+            &subject,
+            if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            },
+            outcome,
         ) {
+            eprintln!(
+                "head-branch deletion outcome audit failed for {subject}#{} ({audit_id}): {result:?}; {err}",
+                merged.number
+            );
+        }
+        match result {
             Ok(()) => HeadBranch::Deleted { name },
             Err(err) => kept(format!(
                 "git refused to delete it ({err}); it may have moved since the merge or be \
@@ -109,6 +172,25 @@ impl GithubRouter {
 
     /// Why the head branch stays, or `None` when it may be deleted.
     fn keep_reason(&self, merged: &MergedHead<'_>, branch: &str) -> Option<String> {
+        let expected_source = format!("{}/{}", merged.owner, merged.repo);
+        let source = match self
+            .core
+            .get_pull_request(merged.owner, merged.repo, merged.number)
+        {
+            Ok(pr) => pr.source_repository,
+            Err(_) => {
+                return Some(
+                    "the pull request's source repository could not be verified".to_string(),
+                );
+            }
+        };
+        if source.trim().trim_end_matches(".git") != expected_source
+            || merged.source_repository.trim().trim_end_matches(".git") != expected_source
+        {
+            return Some(
+                "the head source is outside this repository or could not be verified".to_string(),
+            );
+        }
         if super::pulls::is_fork(merged.owner, merged.repo, merged.source_repository) {
             return Some(format!(
                 "it lives in {}, not in this repository",
@@ -161,7 +243,13 @@ impl GithubRouter {
     /// not be able to read that repository.
     fn open_pull_using(&self, merged: &MergedHead<'_>, branch: &str) -> Option<String> {
         let this_repo = format!("{}/{}", merged.owner, merged.repo);
-        for repository in self.core.list_repositories(None) {
+        let mut examined = 0;
+        for (index, repository) in self.core.list_repositories(None).into_iter().enumerate() {
+            if index >= 1024 {
+                return Some(
+                    "the dependency scan limit was reached; the branch is kept".to_string(),
+                );
+            }
             let Ok(pulls) = self
                 .core
                 .list_pull_requests(&repository.owner, &repository.name, None)
@@ -169,6 +257,12 @@ impl GithubRouter {
                 continue;
             };
             for pr in pulls {
+                examined += 1;
+                if examined > 4096 {
+                    return Some(
+                        "the dependency scan limit was reached; the branch is kept".to_string(),
+                    );
+                }
                 if !is_open(&pr) || super::pulls::head_branch(&pr.head.ref_name) != branch {
                     continue;
                 }

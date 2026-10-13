@@ -52,16 +52,20 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) fn new(feature_file: &str, feature_body: &str) -> Self {
-        Self::build(feature_file, feature_body, false)
+        Self::build(feature_file, feature_body, false, false)
+    }
+
+    pub(super) fn with_audit_store(feature_file: &str, feature_body: &str) -> Self {
+        Self::build(feature_file, feature_body, false, true)
     }
 
     /// As [`Fixture::new`], but the feature branch also merges a `side` branch,
     /// so the PR range carries a merge commit the queue cannot replay.
     fn with_merge_commit(feature_file: &str, feature_body: &str) -> Self {
-        Self::build(feature_file, feature_body, true)
+        Self::build(feature_file, feature_body, true, false)
     }
 
-    fn build(feature_file: &str, feature_body: &str, merge_side: bool) -> Self {
+    fn build(feature_file: &str, feature_body: &str, merge_side: bool, durable: bool) -> Self {
         let storage = tempfile::tempdir().expect("storage");
         let bare = storage.path().join("alice").join("jeryu.git");
         let work = storage.path().join("work");
@@ -95,7 +99,11 @@ impl Fixture {
         );
         git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
-        let core = ForgeCore::new();
+        let core = if durable {
+            ForgeCore::open_sqlite(storage.path().join("forge.sqlite")).unwrap()
+        } else {
+            ForgeCore::new()
+        };
         let repo = core
             .create_repository(
                 "alice",

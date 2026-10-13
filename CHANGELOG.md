@@ -67,7 +67,7 @@
 - `/needs-you` has a `pr_already_landed` item for an open pull request whose
   change is already on its base branch (its head is in the base's history, or
   merging it would change nothing, as after a squash or a cherry-pick). It
-  replaces that pull request's other rows: the step is to close it.
+  retains gate-change review and replaces its other rows: the step is to close it.
   `docs/pipeline-events.md`.
 
 - `GET /api/v1/yield` (admin-only) reports what the agent factory spent against

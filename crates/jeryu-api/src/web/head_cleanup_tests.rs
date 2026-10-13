@@ -69,6 +69,59 @@ fn a_direct_merge_deletes_the_head_branch_and_says_so() {
     assert_eq!(fx.main(), fx.head, "the merge itself still landed");
 }
 
+#[test]
+fn a_deleted_head_has_a_durable_audit_receipt() {
+    let fx = Fixture::with_audit_store("feature.txt", "feature\n");
+    merge(&fx);
+    let rows = fx.state.core.list_audit("alice/jeryu").unwrap();
+    let rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.action == "pull_request.delete_head_branch")
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].phase, "requested");
+    assert_eq!(rows[1].phase, "completed");
+    assert_eq!(rows[1].actor, "system:pr-merge");
+    assert_eq!(rows[1].detail["old_sha"], fx.head);
+    assert_eq!(rows[1].detail["ref"], FEATURE);
+    assert_eq!(rows[1].detail["pull_request"], fx.number);
+    assert_eq!(rows[1].detail["request_audit_id"], rows[0].id);
+}
+
+#[test]
+fn an_archived_repository_rejects_merge_setting_writes() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (status, _) = patch_repo(&fx, r#"{"archived": true, "actor": "alice"}"#);
+    assert_eq!(status, 200);
+    let (status, body) = patch_repo(&fx, r#"{"delete_branch_on_merge": false}"#);
+    assert_eq!(status, 422, "{body}");
+    assert!(body.to_string().contains("read-only"));
+}
+
+#[test]
+fn an_unknown_or_fork_source_keeps_the_destination_branch() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let resolved = fx
+        .state
+        .repo_manager
+        .resolve_parts("alice", "jeryu")
+        .unwrap();
+    for source in ["", "invalid", "bob/jeryu"] {
+        let mut pr = fx
+            .state
+            .core
+            .get_pull_request("alice", "jeryu", fx.number)
+            .unwrap();
+        pr.source_repository = source.to_string();
+        let result =
+            fx.state
+                .github
+                .cleanup_pull_head_for_test(&fx.state.repo_manager, &resolved, &pr);
+        assert_eq!(result["deleted"], false);
+        assert!(fx.has_ref(FEATURE));
+    }
+}
+
 #[tokio::test]
 async fn a_merge_queue_landing_deletes_the_head_branch() {
     let fx = Fixture::new("feature.txt", "feature\n");
@@ -169,6 +222,35 @@ fn a_protected_head_branch_is_kept() {
         "{body}"
     );
     assert!(fx.has_ref(FEATURE));
+}
+
+#[test]
+fn a_server_pattern_rule_keeps_the_head_branch() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let mut config = fx.state.repo_manager.config().clone();
+    config
+        .protected_refs
+        .push(jeryu_gitd::protection::ProtectedRefRule {
+            pattern: "refs/heads/feat*".to_string(),
+            deny_delete: true,
+            deny_force: true,
+            bypass_actors: Vec::new(),
+        });
+    let manager = Arc::new(jeryu_gitd::RepoManager::new(config));
+    let resolved = manager.resolve_parts("alice", "jeryu").unwrap();
+    let pr = fx
+        .state
+        .core
+        .get_pull_request("alice", "jeryu", fx.number)
+        .unwrap();
+    let result = fx
+        .state
+        .github
+        .cleanup_pull_head_for_test(&manager, &resolved, &pr);
+    assert_eq!(result["deleted"], false);
+    assert!(result["reason"].as_str().unwrap().contains("cannot delete"));
+    assert!(fx.has_ref(FEATURE));
+    assert_eq!(pinned(&fx), fx.head);
 }
 
 #[test]

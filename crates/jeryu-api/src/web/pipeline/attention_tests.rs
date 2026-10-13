@@ -499,8 +499,7 @@ fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
 }
 
 /// A pull request whose change is already on its base gets one row, the one
-/// that says to close it, whatever its gate and reviews say: a green, approved
-/// pull request would otherwise ask to be merged, a red one to be fixed.
+/// that says to close it. Gate-definition changes still require human review.
 #[test]
 fn a_pull_request_already_on_its_base_asks_only_to_be_closed() {
     let ready = PullPosture {
@@ -524,8 +523,15 @@ fn a_pull_request_already_on_its_base_asks_only_to_be_closed() {
         },
     ];
     let items = pull_items(&pulls, &[], now(), &hosts());
-    assert_eq!(kinds(&items), ["pr_already_landed", "pr_already_landed"]);
-    let ancestor = &items[0];
+    assert_eq!(
+        kinds(&items),
+        [
+            "pr_changes_own_gate",
+            "pr_already_landed",
+            "pr_already_landed"
+        ]
+    );
+    let ancestor = &items[1];
     assert_eq!(ancestor.id, "pr-already-landed:jeryu/jeryu-web:4");
     assert_eq!(ancestor.severity, Severity::Action);
     assert_eq!(ancestor.title, "jeryu/jeryu-web#4 is already on main");
@@ -537,11 +543,11 @@ fn a_pull_request_already_on_its_base_asks_only_to_be_closed() {
         ancestor.reason
     );
     assert!(
-        items[1].reason.contains("squash, a cherry-pick"),
+        items[2].reason.contains("squash, a cherry-pick"),
         "{}",
-        items[1].reason
+        items[2].reason
     );
-    assert_eq!(items[1].href, "/repos/jeryu/jeryu/jeryu-web/pulls/5");
+    assert_eq!(items[2].href, "/repos/jeryu/jeryu/jeryu-web/pulls/5");
 }
 
 #[test]

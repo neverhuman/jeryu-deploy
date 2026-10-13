@@ -153,6 +153,11 @@ impl GithubRouter {
                 Ok(current) => current,
                 Err(err) => return error_response(err),
             };
+            if current.archived {
+                return validation(
+                    "an archived repository is read-only; unarchive it before changing merge settings",
+                );
+            }
             return match self.merge_settings.set_delete_branch_on_merge(
                 &current.id.to_string(),
                 value,
