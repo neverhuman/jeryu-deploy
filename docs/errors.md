@@ -191,6 +191,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `repository_archived` | 409 | the repository is archived |
 | `repository_changed` | 409 | the repository the replayed request created no longer exists |
 | `request_failed` | 400 | the request failed |
+| `reset_link_invalid` | 422 | that password reset link is expired, already used, or not a link this forge issued |
 | `runner_policy_denied` | 422 | the runner policy denies this trust tier on the chosen runner |
 | `sandbox_unavailable` | 424 | a verified Firecracker runner is unavailable |
 | `serialization_failed` | 500 | the response could not be serialized |
@@ -245,6 +246,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `unsupported_media_type` | 415 | the request body needs Content-Type: application/json |
 | `usage_invalid_query` | 422 | the token usage query failed validation |
 | `usage_store_failed` | 500 | the token usage sample store failed |
+| `verification_link_invalid` | 422 | that email verification link is expired, already used, or not a link this forge issued |
 | `waitlist_full` | 503 | the waitlist is not accepting new addresses |
 | `workcell_branch_budget_denied` | 409 | the workcell branch budget is spent |
 | `workcell_claim_denied` | 409 | the workcell could not be claimed |

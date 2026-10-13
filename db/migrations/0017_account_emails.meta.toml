@@ -1,0 +1,30 @@
+# Structured metadata for 0017_account_emails.sql. The SQL file is
+# checksum-bound once applied, so its lock and timeout posture lives here.
+#
+# The store is SQLite, not PostgreSQL: there is no `SET lock_timeout` or
+# `SET statement_timeout` to put in the SQL (SQLite rejects both). The
+# equivalents below are what bound this migration in practice.
+
+migration = "0017_account_emails"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/account_email.rs"
+apply = "AccountEmailStore::open -> migrate(), one transaction per migration"
+
+[lock_timeout]
+# SQLite's lock wait is the connection busy timeout, set before migrate() runs.
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+
+[statement_timeout]
+# SQLite has no statement timeout. Two empty CREATE TABLEs and three indexes
+# read no existing row, so the bound is the creation itself.
+mechanism = "two table creations over no rows"
+value = "milliseconds"
+
+[rollback]
+plan = "stop the server, DROP TABLE account_email_tokens, DROP TABLE account_emails and delete version 17 from shift_schema_migrations"
+backup = "sqlite3 shift.sqlite '.backup account-emails.sqlite' before rollback; a verified address exists nowhere else, so without the copy every person proves their address again"
+
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::tests::account_email_tests (a version-11 store upgrades and serves recovery; the tables start empty, so no existing account can recover until it verifies an address)"

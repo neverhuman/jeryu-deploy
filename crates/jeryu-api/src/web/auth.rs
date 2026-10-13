@@ -1201,6 +1201,11 @@ pub(super) fn open_path(path: &str) -> bool {
             | "/api/v1/bot/token"
             | "/api/v1/bot/token/refresh"
             | "/api/v1/waitlist"
+            // A reset or verification link is followed from a mail client
+            // that holds no session, and the link itself names the account.
+            | "/api/v1/auth/password/forgot"
+            | "/api/v1/auth/password/reset"
+            | "/api/v1/auth/email/verify"
             | "/api/v1/errors"
             | crate::discovery::CAPABILITIES_PATH
             | crate::discovery::DOCS_PATH
@@ -1557,8 +1562,28 @@ fn rate_limit_hit(
 
 /// Every 429 carries `Retry-After` and the rate-limit budget, so a client
 /// waits the window out instead of retrying straight into the same refusal.
-fn rate_limited() -> AxumResponse {
+pub(super) fn rate_limited() -> AxumResponse {
     request_limits::too_many("too many authentication attempts")
+}
+
+/// The client address the account routes bucket by, resolved exactly as the
+/// sign-in and waitlist limiters resolve it (including the one-off complaint
+/// about an untrusted forwarding header).
+pub(super) fn client_ip_for_limits(peer: Option<SocketAddr>, headers: &HeaderMap) -> IpAddr {
+    client_ip(peer, headers)
+}
+
+/// Count one request against `key` inside `window_secs`, in the shared
+/// `auth_rate_limits` map, so every account-surface bucket is swept and
+/// reported by the one limiter.
+pub(super) fn limits_hit_for(
+    limits: &mut BTreeMap<String, RateLimitBucket>,
+    key: String,
+    now: DateTime<Utc>,
+    max: u32,
+    window_secs: i64,
+) -> bool {
+    request_limits::hit_for(limits, key, now, max, window_secs)
 }
 
 fn client_ip(peer: Option<SocketAddr>, headers: &HeaderMap) -> IpAddr {

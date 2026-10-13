@@ -1,5 +1,6 @@
 //! Axum HTTP/WebSocket edge for the local live Jeryu API.
 
+mod account_email;
 mod agent_presence;
 mod agent_runs;
 pub(crate) mod auth;
@@ -19,6 +20,7 @@ pub(crate) mod flow;
 pub(crate) mod gate_wanted;
 mod idempotency;
 mod jankurai;
+mod mail;
 mod managed_launch;
 mod markdown;
 mod merge_attempts;
@@ -206,6 +208,14 @@ pub(crate) struct WebState {
     /// (`JERYU_PULL_MAINTAINERS`), resolved once at startup. Empty holds every
     /// contribution for a person to look at.
     pub(crate) pull_maintainers: Arc<Vec<String>>,
+    /// The address each account owns and whether it is proved, plus the
+    /// single-use recovery and verification links (`<data_dir>/shift.sqlite`,
+    /// `account_emails`).
+    pub(crate) account_email: account_email::AccountEmailStore,
+    /// How a recovery or verification link reaches a person. Unconfigured by
+    /// default, in which case those routes answer as they always do and
+    /// record that nothing was sent (`docs/account-email.md`).
+    pub(crate) mailer: mail::Mailer,
     /// What the newest GitHub-mirror reconcile found per repository.
     pub(crate) mirror_state: mirror_reconcile::MirrorStateStore,
     /// Which repositories import their GitHub mirror's pull requests, read
@@ -355,6 +365,8 @@ impl WebState {
             site_settings::SiteSettingsStore::open(&shift_path).expect("open site settings store");
         let pull_origin = pull_origin::PullOriginStore::open(&shift_path)
             .expect("open pull request origin store");
+        let account_email =
+            account_email::AccountEmailStore::open(&shift_path).expect("open account email store");
         let attention_acks = pipeline::attention::AckStore::open(&shift_path)
             .expect("open attention acknowledgement store");
         // Managed execution is Firecracker-only. Constructing the web edge
@@ -395,6 +407,13 @@ impl WebState {
             pull_origin,
             pull_importers: Arc::new(pull_origin::importers_from_env()),
             pull_maintainers: Arc::new(pull_origin::maintainers_from_env()),
+            account_email,
+            // A test must never send mail, and must be able to read what the
+            // handler built; production reads the operator's configuration.
+            #[cfg(test)]
+            mailer: mail::Mailer::recording(),
+            #[cfg(not(test))]
+            mailer: mail::Mailer::from_env(),
             mirror_state: mirror_reconcile::MirrorStateStore::default(),
             pull_import: Arc::new(crate::github_pull_import::PullImport::default()),
             github_api: None,
@@ -970,6 +989,29 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/auth/logout", post(auth::logout)),
         ("/api/v1/auth/me", get(auth::me)),
         ("/api/v1/auth/password", post(auth::change_password)),
+        (
+            "/api/v1/auth/password/forgot",
+            post(account_email::forgot_password)
+                .layer(DefaultBodyLimit::max(account_email::ACCOUNT_EMAIL_BODY_MAX)),
+        ),
+        (
+            "/api/v1/auth/password/reset",
+            post(account_email::reset_password)
+                .layer(DefaultBodyLimit::max(account_email::ACCOUNT_EMAIL_BODY_MAX)),
+        ),
+        (
+            "/api/v1/auth/email",
+            get(account_email::get_email).put(account_email::put_email),
+        ),
+        (
+            "/api/v1/auth/email/verify",
+            post(account_email::verify_email)
+                .layer(DefaultBodyLimit::max(account_email::ACCOUNT_EMAIL_BODY_MAX)),
+        ),
+        (
+            "/api/v1/auth/email/verify/resend",
+            post(account_email::resend_verification),
+        ),
         (
             "/api/v1/auth/tokens",
             get(auth::list_tokens).post(auth::create_token),

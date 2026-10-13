@@ -562,6 +562,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("request_failed", 400, "the request failed"),
     entry(
+        "reset_link_invalid",
+        422,
+        "that password reset link is expired, already used, or not a link this forge issued",
+    ),
+    entry(
         "runner_policy_denied",
         422,
         "the runner policy denies this trust tier on the chosen runner",
@@ -818,6 +823,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "usage_store_failed",
         500,
         "the token usage sample store failed",
+    ),
+    entry(
+        "verification_link_invalid",
+        422,
+        "that email verification link is expired, already used, or not a link this forge issued",
     ),
     entry(
         "waitlist_full",
