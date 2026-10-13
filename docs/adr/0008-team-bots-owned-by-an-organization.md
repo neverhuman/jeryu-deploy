@@ -27,9 +27,9 @@ fits.
   automation offline. If they leave, it goes with them. Its rights grow and
   shrink with their grants, and nobody else can rotate its tokens.
 
-The forge has organizations and teams, and teams have members, but neither
-confers anything: repository access is decided only by grants held by a
-login (`repo_access_for`).
+Record 0009 gives organizations owners and lets them run teams of people.
+Neither confers anything: repository access is decided only by grants held by
+a login (`repo_access_for`).
 
 ## Decision
 
@@ -56,8 +56,11 @@ login (`repo_access_for`).
    may still have a copy; tokens issued by other stewards keep working. A
    steward can revoke every token they issued in one action. Suspending or
    revoking the bot ends all of its tokens, as in 0005.
-5. **A team bot is never a person.** It is never offered as an assignee or
-   reviewer, never counted among people, and needs no account kind. The
+5. **A team bot is never a person.** It acts, authors and is audited as
+   `<organization>.<slug>[bot]`, a name no account can have, and that name
+   resolves to the bot's own grants wherever a login's access is checked. It
+   is never offered as an assignee or reviewer, never counted among people,
+   and needs no account kind. The
    account-kind mark stays only for automation that must be a login account,
    such as one that needs forge administration, which no bot can hold.
 6. **Schema.** A jeryu-core migration, numbered when it is written, rebuilds
