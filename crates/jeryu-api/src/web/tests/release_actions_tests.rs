@@ -303,7 +303,7 @@ async fn advertise(state: &Arc<WebState>, by: &str, repo: &str) {
 }
 
 async fn pending(state: &Arc<WebState>) -> Value {
-    advertise(&state, "operator", REPO).await;
+    advertise(state, "operator", REPO).await;
     let response = release_actions::list(
         State(state.clone()),
         authenticated_admin_account("operator"),

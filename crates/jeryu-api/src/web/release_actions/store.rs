@@ -1,10 +1,12 @@
 use super::*;
 
+type PollerHeartbeats = BTreeMap<(String, String), chrono::DateTime<chrono::Utc>>;
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReleaseActionStore {
     actions: Arc<Mutex<BTreeMap<String, ReleaseAction>>>,
     next: Arc<std::sync::atomic::AtomicU64>,
-    pollers: Arc<Mutex<BTreeMap<(String, String), chrono::DateTime<chrono::Utc>>>>,
+    pollers: Arc<Mutex<PollerHeartbeats>>,
 }
 
 impl ReleaseActionStore {
