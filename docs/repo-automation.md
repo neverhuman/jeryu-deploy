@@ -151,7 +151,7 @@ cache (`docs/pipeline-events.md`). It links to the pull request page for a
 person to close it and keeps gate-definition changes visible.
 
 Separately, release automation can close an open `auto/pin-web-*` bump it
-opened in this repository when every commit is upstream by patch identity
+opened in this repository, as recorded in its ownership ledger, when every commit is upstream by patch identity
 (`git cherry` answers `-`) **and** merging its head produces exactly main's
 tree. It comments the landing commit before closing; a refused comment or
 close leaves the request open. Branch retention follows the existing prune

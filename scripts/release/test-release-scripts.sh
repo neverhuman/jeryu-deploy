@@ -759,6 +759,7 @@ g "$P/deploy" cherry-pick refs/remotes/d/b3 >/dev/null
 g "$P/deploy" push -q "$P/deploy.git" HEAD:refs/heads/main
 landing="$(git -C "$P/deploy.git" rev-parse refs/heads/main)"
 [[ "$landing" != "$landed_sha" ]] || fail "the fixture did not land the bump as another commit"
+printf '%s\t%s\t%s\n' "$h3" 193 "$now_iso" >>"$P/state/opened.tsv"
 jq -n --arg b "$b3" --arg sha "$landed_sha" '
   [{number: 193, state: "open", title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}},
    {number: 194, state: "open", title: "something else", head: {ref: "work/other", sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
@@ -772,6 +773,15 @@ jq -es '.[0].url == "https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/
   and .[0].state == "closed" and length == 1' "$P/closes.jsonl" >/dev/null \
   || { cat "$P/closes.jsonl" >&2; fail "exactly the landed bump must be closed"; }
 ok "auto-pin closes its own bump whose change is already on main, naming the landing commit"
+
+# A manually opened pull request on the same branch has no timer ownership.
+: >"$P/comments.jsonl"; : >"$P/closes.jsonl"
+jq -n --arg b "$b3" --arg sha "$landed_sha" '
+  [{number: 195, state: "open", title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick with an unowned landed bump failed"
+[[ ! -s "$P/closes.jsonl" && ! -s "$P/comments.jsonl" ]] || fail "an unowned pull request was touched"
+grep -q "bump #195 has no auto-pin ownership record" "$P/run.log" || fail "missing ownership was not explained"
+ok "auto-pin never closes an unowned pull request even on its own branch"
 
 # A bump with something to land is left alone, and so is one whose comment the forge refuses: a
 # close nobody can read the reason for is worse than an open pull request.

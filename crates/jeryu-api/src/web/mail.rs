@@ -106,6 +106,7 @@ impl MailTransport for SendmailTransport {
     fn deliver(&self, rendered: &str, to: &str) -> Result<(), String> {
         let mut child = Command::new(&self.program)
             .args(&self.args)
+            .arg("--")
             .arg(to)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -445,6 +446,38 @@ mod tests {
         transport
             .deliver("From: a\r\n\r\nbody\r\n", "ada@example.com")
             .expect("the program accepts the message on stdin");
+    }
+
+    #[test]
+    fn a_recipient_cannot_be_a_sendmail_option() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("mail transport fixture");
+        let program = dir.path().join("sendmail");
+        std::fs::write(&program,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv\"\ncat > \"$(dirname \"$0\")/message\"\n")
+            .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let recipient = "-Cattack@attacker.test";
+        assert_eq!(
+            super::super::account_email::normalize_address(recipient).as_deref(),
+            Some(recipient)
+        );
+        let transport = SendmailTransport {
+            program: program.to_str().unwrap().to_string(),
+            args: vec!["-t".to_string(), "-i".to_string()],
+        };
+        transport
+            .deliver("From: fixture\r\n\r\nbody\r\n", recipient)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("argv")).unwrap(),
+            "-t\n-i\n--\n-Cattack@attacker.test\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("message")).unwrap(),
+            "From: fixture\r\n\r\nbody\r\n"
+        );
     }
 
     #[tokio::test]

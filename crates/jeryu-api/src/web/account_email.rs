@@ -212,20 +212,37 @@ impl AccountEmailStore {
     /// mailbox. A temporary password mailed to the old address proves nothing
     /// about the new one, so the mailed-reset marker is cleared too.
     ///
-    /// Returns `false` when another account already holds the address.
+    /// Returns `false` for another account's verified address or an unverified
+    /// claim younger than a day. An expired unverified claim and its outstanding
+    /// links are retired atomically, so a claim cannot squat an address forever.
     pub(crate) fn claim(&self, login: &str, address: &str, now_ms: i64) -> Result<bool, String> {
         let mut conn = self.conn();
         let tx = conn.transaction().map_err(|err| err.to_string())?;
-        let holder: Option<String> = tx
+        let holder: Option<(String, Option<i64>, i64)> = tx
             .query_row(
-                "SELECT login FROM account_emails WHERE address = ?1",
+                "SELECT login, verified_ms, added_ms FROM account_emails WHERE address = ?1",
                 params![address],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(|err| err.to_string())?;
-        if holder.is_some_and(|holder| holder != login) {
-            return Ok(false);
+        if let Some((holder, verified_ms, added_ms)) = holder
+            && holder != login
+        {
+            if verified_ms.is_some() || added_ms > now_ms.saturating_sub(VERIFY_TTL_MS) {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE account_email_tokens SET consumed_ms = ?2
+                 WHERE login = ?1 AND consumed_ms IS NULL",
+                params![holder, now_ms],
+            )
+            .map_err(|err| err.to_string())?;
+            tx.execute(
+                "DELETE FROM account_emails WHERE login = ?1",
+                params![holder],
+            )
+            .map_err(|err| err.to_string())?;
         }
         tx.execute(
             "INSERT INTO account_emails (login, address, verified_ms, added_ms)
@@ -1120,6 +1137,57 @@ mod tests {
         // The same account may re-claim its own address.
         assert!(store.claim("ada", "ada@example.com", 3_000).unwrap());
         assert_eq!(store.get("bob").unwrap(), None);
+    }
+
+    #[test]
+    fn an_expired_unverified_claim_is_reclaimable_and_old_links_are_retired() {
+        let store = store();
+        let address = "owner@example.com";
+        assert!(store.claim("squatter", address, 1_000).unwrap());
+        let link = store
+            .issue(
+                LinkPurpose::Verify,
+                "squatter",
+                address,
+                1_000 + VERIFY_TTL_MS - 1,
+            )
+            .unwrap();
+        assert!(
+            !store
+                .claim("owner", address, 1_000 + VERIFY_TTL_MS - 1)
+                .unwrap()
+        );
+        assert!(
+            store
+                .claim("owner", address, 1_000 + VERIFY_TTL_MS)
+                .unwrap()
+        );
+        assert_eq!(store.get("squatter").unwrap(), None);
+        assert_eq!(store.get("owner").unwrap().unwrap().address, address);
+        assert_eq!(
+            store
+                .spend(LinkPurpose::Verify, &link.secret, 1_000 + VERIFY_TTL_MS + 1)
+                .unwrap(),
+            None,
+            "even a recently resent old link must not prove the retired claim"
+        );
+    }
+
+    #[test]
+    fn a_verified_claim_never_expires_for_another_account() {
+        let store = store();
+        let address = "owner@example.com";
+        assert!(store.claim("owner", address, 1_000).unwrap());
+        assert!(store.mark_verified("owner", address, 2_000).unwrap());
+        assert!(
+            !store
+                .claim("other", address, 1_000 + VERIFY_TTL_MS * 30)
+                .unwrap()
+        );
+        assert_eq!(
+            store.verified_holder(address).unwrap().as_deref(),
+            Some("owner")
+        );
     }
 
     #[test]

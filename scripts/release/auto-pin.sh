@@ -266,11 +266,17 @@ close_landed_bumps() {
       [.[] | select(.state == "open" and .head.ref == $b and .head.sha == $sha
         and .head.repo.full_name == $repo)][0].number // empty' <<<"$pulls")"
     [ -n "$number" ] || continue
+    # A branch prefix is not proof that this timer opened the pull request.
+    awk -F '\t' -v n="$number" -v short="${name#auto/pin-web-}" \
+      '$2 == n && substr($1, 1, 12) == short {found=1} END {exit !found}' \
+      "$state/opened.tsv" || { say "bump #$number has no auto-pin ownership record; leaving it open"; continue; }
     # The comment goes first: it is the reason the pull request was closed, and a close whose
     # comment never arrived would say nothing. A refused comment leaves it open for a person.
     jq -n --arg landing "$landing" --arg name "$name" '{body: ("Closing this bump: its change is already on main as `\($landing)`, and merging it would leave main exactly as it is, so there is nothing left for it to land. Branch `\($name)` is deleted by a later tick.\n\nClosed by the release automation that opened it.")}' \
       | api POST "/api/v3/repos/$repo_path/issues/$number/comments" --data-binary @- >/dev/null 2>&1 \
       || { say "could not comment on #$number before closing it (ignored); leaving it open"; continue; }
+    [ "$(git ls-remote "$remote" "refs/heads/$name" | cut -f1)" = "$sha" ] \
+      || { say "bump #$number moved after the listing; leaving it open"; continue; }
     if printf '{"state":"closed"}' \
       | api PATCH "/api/v3/repos/$repo_path/pulls/$number" --data-binary @- >/dev/null 2>&1; then
       say "closed #$number ($name): already on main as ${landing:0:12}"

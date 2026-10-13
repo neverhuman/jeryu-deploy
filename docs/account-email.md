@@ -141,6 +141,12 @@ wrong purpose — is one refusal: `422 reset_link_invalid` or
 - Spending is one `UPDATE … WHERE consumed_ms IS NULL AND expires_ms > now`,
   so a replay finds nothing.
 - A verification link lasts a day; a reset link lasts an hour.
+- An unproved address claim reserves the address for one day. A later claim
+  can retire an expired unproved reservation and all its outstanding links
+  atomically. Resending a verification link does not extend the reservation.
+  A proved address never expires for another account. A recent reservation
+  or proved owner still gives an authenticated claimant `409`; password
+  recovery continues to answer identically for known and unknown addresses.
 - A reset link is only ever sent to a **proved** address, so taking over an
   unproved address takes over no account.
 - Claiming an address, proving one, or finishing a reset retires that
@@ -197,7 +203,9 @@ one of two ways:
 | `JERYU_MAIL_SENDMAIL` | a sendmail-compatible program to pipe the message to, e.g. `/usr/sbin/sendmail -t -i` |
 | `JERYU_MAIL_SPOOL` | a directory to write one RFC 5322 `.eml` file into per message |
 
-`JERYU_MAIL_SENDMAIL` wins when both transports are set. A spooled message is
+`JERYU_MAIL_SENDMAIL` wins when both transports are set. Its configured arguments
+come first, then `--`, then the recipient, so an address beginning with `-`
+cannot become an MTA option. A spooled message is
 written to `<name>.tmp` and renamed, so a path unit or cron job that submits
 the directory never reads half a message. Retries belong to the program or the
 job, not to this process.
