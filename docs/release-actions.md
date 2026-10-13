@@ -47,7 +47,7 @@ says the release host runs it) only while a deployer-authenticated poller check-
 ask for the same step is open. While one is open, the row says who asked and when instead of
 offering a second button. Without a poller the rows keep their copyable command only.
 
-The pinned web commit `15296f25e538a750a758438bae7dd3a47f40691c` passes `action.confirm` to `ActionPreviewDialog` in `apps/web/src/pages/needsYou/AttentionRow.tsx` before sending the request. Its locked bundle digest is checked by the web gate.
+The web UI passes `action.confirm` to `ActionPreviewDialog` in `apps/web/src/pages/needsYou/AttentionRow.tsx` before sending the request. The exact web commit and bundle digest live in `jeryu-split.lock.toml` and are checked by the web gate.
 
 Ask IDs contain only ASCII letters, digits and hyphens, including when the server clock serializes UTC with `+00:00`. Requests and poller check-ins resolve hosted repository identities; invented repositories are refused. Staging eligibility requires an event authenticated as a currently authorized deployer, rather than another event reporter. Release-action reads accept only `state=pending|all`; unknown query keys and values are 422. Before the generated drift check, the CI environment preflight asserts `workspace = "jeryu-deploy"`.
 
