@@ -154,7 +154,17 @@ Separately, release automation can close an open `auto/pin-web-*` bump it
 opened in this repository, as recorded in its ownership ledger, when every commit is upstream by patch identity
 (`git cherry` answers `-`) **and** merging its head produces exactly main's
 tree. It comments the landing commit before closing; a refused comment or
-close leaves the request open. Branch retention follows the existing prune
+close leaves the request open. Only a pull targeting this repository's main
+is eligible. After the comment, the timer re-reads its number, open state,
+source repository, branch, head and base; an unknown or changed identity is
+left open. It also rechecks main's tip against the landing proof.
+
+The current API has no conditional close. These client checks narrow the
+window but do not atomically bind the identity to the later PATCH: a source
+or main change after the final read can still race it. A retarget in the
+fixture models caller data; the current update API has no base-retarget
+field. Stronger write fencing needs a separate server contract.
+Branch retention follows the existing prune
 policy on a later tick.
 
 A head whose patch is upstream but which removes something main has fails

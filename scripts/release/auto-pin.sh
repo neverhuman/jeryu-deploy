@@ -247,7 +247,7 @@ landed_sha() {
 # then the state change, and a refusal is logged and tried again on the next tick.
 # Best-effort: it never fails a tick.
 close_landed_bumps() {
-  local refs sha ref name number landing rows=""
+  local refs sha ref name number landing current rows=""
   [ -z "$token_problem" ] || return 0
   refs="$(git ls-remote "$remote" 'refs/heads/auto/pin-web-*' 2>/dev/null)" || return 0
   [ -n "$refs" ] || return 0
@@ -264,7 +264,8 @@ close_landed_bumps() {
     [ -n "$name" ] || continue
     number="$(jq -r --arg b "$name" --arg sha "$sha" --arg repo "$repo_path" '
       [.[] | select(.state == "open" and .head.ref == $b and .head.sha == $sha
-        and .head.repo.full_name == $repo)][0].number // empty' <<<"$pulls")"
+        and .head.repo.full_name == $repo and .base.ref == "main"
+        and .base.repo.full_name == $repo)][0].number // empty' <<<"$pulls")"
     [ -n "$number" ] || continue
     # A branch prefix is not proof that this timer opened the pull request.
     awk -F '\t' -v n="$number" -v short="${name#auto/pin-web-}" \
@@ -277,6 +278,19 @@ close_landed_bumps() {
       || { say "could not comment on #$number before closing it (ignored); leaving it open"; continue; }
     [ "$(git ls-remote "$remote" "refs/heads/$name" | cut -f1)" = "$sha" ] \
       || { say "bump #$number moved after the listing; leaving it open"; continue; }
+    # A different PR target is not covered by main's no-op result. Re-read
+    # its identity instead of closing from an earlier pull-request listing.
+    current="$(api GET "/api/v3/repos/$repo_path/pulls/$number" 2>/dev/null)" \
+      || { say "could not re-read #$number before closing it; leaving it open"; continue; }
+    jq -e --argjson n "$number" --arg b "$name" --arg sha "$sha" --arg repo "$repo_path" '
+      .number == $n and .state == "open" and .head.ref == $b and .head.sha == $sha
+      and .head.repo.full_name == $repo and .base.ref == "main"
+      and .base.repo.full_name == $repo' <<<"$current" >/dev/null \
+      || { say "bump #$number changed after the listing; leaving it open"; continue; }
+    [ "$(git ls-remote "$remote" refs/heads/main | cut -f1)" = "$main" ] \
+      || { say "main moved after the landing check; leaving #$number open"; continue; }
+    # These reads narrow the race, but the current API has no conditional
+    # close: identity can change between this check and the PATCH below.
     if printf '{"state":"closed"}' \
       | api PATCH "/api/v3/repos/$repo_path/pulls/$number" --data-binary @- >/dev/null 2>&1; then
       say "closed #$number ($name): already on main as ${landing:0:12}"

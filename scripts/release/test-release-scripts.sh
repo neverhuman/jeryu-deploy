@@ -412,11 +412,22 @@ case "\$method \$url" in
     if [ -e "$P/pulls.json.\$page" ]; then cat "$P/pulls.json.\$page"; elif [ "\$page" = 1 ]; then cat "$P/pulls.json"; else echo '[]'; fi ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/merge-queue?"*) cat "$P/queue.json" ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*) cat "$P/detail.json" ;;
+  "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*)
+    [ -e "$P/refuse-close-detail" ] && exit 22
+    jq --argjson n "\${url##*/}" '[.[] | select(.number == \$n)][0] // {}' "$P/pulls.json" ;;
   "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/issues/"*"/comments")
     [ -e "$P/refuse-comment" ] && exit 22
     body="\$(cat)"
     echo "\${url%/comments}" >>"$P/comments.log"; printf '%s\n' "\$body" >>"$P/comments.log"
-    printf '%s' "\$body" | jq -c --arg url "\$url" '. + {url: \$url}' >>"$P/comments.jsonl"; echo '{}' ;;
+    printf '%s' "\$body" | jq -c --arg url "\$url" '. + {url: \$url}' >>"$P/comments.jsonl"
+    if [ -e "$P/retarget-on-comment" ]; then
+      jq 'map(if .number == 193 then .base.ref = "release/stable" else . end)' "$P/pulls.json" >"$P/pulls.next"
+      mv "$P/pulls.next" "$P/pulls.json"
+    fi
+    if [ -e "$P/rewind-main-on-comment" ]; then
+      git -C "$P/deploy.git" update-ref refs/heads/main refs/heads/main^
+    fi
+    echo '{}' ;;
   "PATCH https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*)
     [ -e "$P/refuse-close" ] && exit 22
     body="\$(cat)"; echo "\${url##*/} \$body" >>"$P/closed.log"
@@ -761,8 +772,8 @@ landing="$(git -C "$P/deploy.git" rev-parse refs/heads/main)"
 [[ "$landing" != "$landed_sha" ]] || fail "the fixture did not land the bump as another commit"
 printf '%s\t%s\t%s\n' "$h3" 193 "$now_iso" >>"$P/state/opened.tsv"
 jq -n --arg b "$b3" --arg sha "$landed_sha" '
-  [{number: 193, state: "open", title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}},
-   {number: 194, state: "open", title: "something else", head: {ref: "work/other", sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+  [{number: 193, state: "open", base: {ref: "main", repo: {full_name: "jeryu/jeryu-deploy"}}, title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}},
+   {number: 194, state: "open", base: {ref: "main", repo: {full_name: "jeryu/jeryu-deploy"}}, title: "something else", head: {ref: "work/other", sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a tick that closes a landed bump failed"; }
 grep -q "closed #193 ($b3): already on main as ${landing:0:12}" "$P/run.log" \
   || { cat "$P/run.log" >&2; fail "auto-pin did not close the bump whose change is on main"; }
@@ -774,10 +785,57 @@ jq -es '.[0].url == "https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/
   || { cat "$P/closes.jsonl" >&2; fail "exactly the landed bump must be closed"; }
 ok "auto-pin closes its own bump whose change is already on main, naming the landing commit"
 
+# Main's copy of the change says nothing about a PR retargeted to a release
+# branch. It remains owned, and its source is unchanged, but it must stay open.
+: >"$P/comments.jsonl"; : >"$P/closes.jsonl"
+jq -n --arg b "$b3" --arg sha "$landed_sha" '
+  [{number: 193, state: "open", title: "release: pin jeryu-web x",
+    base: {ref: "release/stable", repo: {full_name: "jeryu/jeryu-deploy"}},
+    head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick with a retargeted landed bump failed"
+[[ ! -s "$P/closes.jsonl" && ! -s "$P/comments.jsonl" ]] \
+  || fail "main's landed change closed a bump targeting a release branch"
+ok "auto-pin leaves a bump targeting a release branch open"
+
+# The remote source remains fixed while the comment changes the PR's target.
+# The fresh PR read must invalidate the earlier main-targeted eligibility.
+: >"$P/comments.jsonl"; : >"$P/closes.jsonl"
+jq -n --arg b "$b3" --arg sha "$landed_sha" '
+  [{number: 193, state: "open", title: "release: pin jeryu-web x",
+    base: {ref: "main", repo: {full_name: "jeryu/jeryu-deploy"}},
+    head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+touch "$P/retarget-on-comment"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick with a late retarget failed"
+rm "$P/retarget-on-comment"
+[[ -s "$P/comments.jsonl" && ! -s "$P/closes.jsonl" ]] \
+  || fail "a late retarget did not prevent the close"
+ok "auto-pin rechecks the PR target after the comment before closing"
+
+# An unreadable current PR is not permission to close it from an older list.
+: >"$P/comments.jsonl"; : >"$P/closes.jsonl"
+jq 'map(.base.ref = "main")' "$P/pulls.json" >"$P/pulls.next"
+mv "$P/pulls.next" "$P/pulls.json"
+touch "$P/refuse-close-detail"
+auto_pin >"$P/run.log" 2>&1 || fail "a refused current PR read failed the tick"
+rm "$P/refuse-close-detail"
+[[ ! -s "$P/closes.jsonl" ]] || fail "an unreadable current PR was closed"
+ok "auto-pin keeps the PR open when its current identity cannot be read"
+
+# A main rewind can remove the supposedly landed patch while the source and
+# PR identity stay unchanged. Do not apply the result from the earlier main.
+: >"$P/comments.jsonl"; : >"$P/closes.jsonl"
+touch "$P/rewind-main-on-comment"
+auto_pin >"$P/run.log" 2>&1 || fail "a main movement failed the tick"
+rm "$P/rewind-main-on-comment"
+[[ -s "$P/comments.jsonl" && ! -s "$P/closes.jsonl" ]] \
+  || fail "a main movement did not invalidate the earlier landing result"
+git -C "$P/deploy.git" update-ref refs/heads/main "$landing"
+ok "auto-pin leaves the bump open when main changes after the landing proof"
+
 # A manually opened pull request on the same branch has no timer ownership.
 : >"$P/comments.jsonl"; : >"$P/closes.jsonl"
 jq -n --arg b "$b3" --arg sha "$landed_sha" '
-  [{number: 195, state: "open", title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+  [{number: 195, state: "open", base: {ref: "main", repo: {full_name: "jeryu/jeryu-deploy"}}, title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick with an unowned landed bump failed"
 [[ ! -s "$P/closes.jsonl" && ! -s "$P/comments.jsonl" ]] || fail "an unowned pull request was touched"
 grep -q "bump #195 has no auto-pin ownership record" "$P/run.log" || fail "missing ownership was not explained"
@@ -790,11 +848,11 @@ ok "auto-pin never closes an unowned pull request even on its own branch"
 # answer about rather than a branch the close pass never sees.
 git -C "$P/deploy.git" update-ref "refs/heads/$b1" "$s1"
 jq -n --arg b "$b1" --arg sha "$s1" '
-  [{number: 7, state: "open", title: "release: pin jeryu-web old", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+  [{number: 7, state: "open", base: {ref: "main", repo: {full_name: "jeryu/jeryu-deploy"}}, title: "release: pin jeryu-web old", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a tick with an unlanded bump open failed"; }
 [[ ! -s "$P/closes.jsonl" && ! -s "$P/comments.jsonl" ]] || fail "a bump with something to land was closed"
 jq -n --arg b "$b3" --arg sha "$landed_sha" '
-  [{number: 193, state: "open", title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+  [{number: 193, state: "open", base: {ref: "main", repo: {full_name: "jeryu/jeryu-deploy"}}, title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
 git -C "$P/deploy.git" update-ref "refs/heads/$b3" "$landed_sha"
 touch "$P/refuse-comment"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a refused comment failed the tick"; }
