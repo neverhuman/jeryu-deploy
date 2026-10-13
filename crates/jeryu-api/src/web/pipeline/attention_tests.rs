@@ -1466,6 +1466,8 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             author: "rel-bot".to_string(),
             head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
             head_ref: "auto/pin-web-427bebe".to_string(),
+            base_ref: "main".to_string(),
+            landed: None,
             updated_at: now() - Duration::minutes(45),
             posture: PullPosture {
                 changes_requested: 1,
@@ -1531,6 +1533,8 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             author: "rel-bot".to_string(),
             head_sha: "b761244b76371995527bfe7795e98492703553a8".to_string(),
             head_ref: "auto/pin-web-427bebe".to_string(),
+            base_ref: "main".to_string(),
+            landed: None,
             updated_at: now() - Duration::minutes(45),
             posture: PullPosture {
                 changes_requested: 1,

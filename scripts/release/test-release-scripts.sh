@@ -369,6 +369,7 @@ cat >"$P/deploy/scripts/release/build-web-dist.sh" <<EOF
 #!/usr/bin/env bash
 echo "[web] building \$2" >&2; echo build >>"$P/builds"
 [ -e "$P/fail" ] && { echo "error: vite exploded" >&2; exit 4; }
+[ ! -e "$P/post-build-pulls.json" ] || cp "$P/post-build-pulls.json" "$P/pulls.json"
 echo "\$2 $dist_b"
 EOF
 chmod +x "$P/deploy/scripts/release/build-web-dist.sh"
@@ -384,7 +385,10 @@ case "\$method \$url" in
   "POST https://git.neverhuman.org/api/v1/runners/heartbeat")
     [ -e "$P/refuse-beats" ] && exit 22; cat >>"$P/beats.jsonl"; echo >>"$P/beats.jsonl"; echo '{"accepted":true}' ;;
   "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls")
-    [ -e "$P/refuse-pr" ] && exit 22; cat >>"$P/prs.jsonl"; echo >>"$P/prs.jsonl"; echo '{"number":7}' ;;
+    [ -e "$P/refuse-pr" ] && exit 22; cat >>"$P/prs.jsonl"; echo >>"$P/prs.jsonl"
+    [ ! -e "$P/post-create-pulls.json" ] || cp "$P/post-create-pulls.json" "$P/pulls.json"
+    [ ! -e "$P/post-create-detail.json" ] || cp "$P/post-create-detail.json" "$P/detail.json"
+    echo '{"number":7}' ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls?"*)
     page="\${url##*page=}"; page="\${page%%&*}"
     if [ -e "$P/pulls.json.\$page" ]; then cat "$P/pulls.json.\$page"; elif [ "\$page" = 1 ]; then cat "$P/pulls.json"; else echo '[]'; fi ;;
@@ -506,7 +510,7 @@ approval='{"reviews":[{"state":"APPROVED","effective":true}]}'
 
 stale_pr 60 "$b1" "$now_iso"; echo "$approval" >"$P/detail.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick behind an approved bump failed"
-grep -q "bump #60 has a current review inside the grace period" "$P/run.log" && grep -q "bump #60 is open" "$P/run.log" \
+grep -q "bump #60 has a current approval" "$P/run.log" && grep -q "bump #60 is open" "$P/run.log" \
   && [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" && -z "$(git -C "$P/deploy.git" for-each-ref "refs/heads/$b2")" ]] \
   || { cat "$P/run.log" >&2; fail "auto-pin closed or replaced an approved bump"; }
 undo_bump
@@ -541,8 +545,8 @@ jq -es '.[1].kind == "pin.bump_opened"' "$P/events.jsonl" >/dev/null || fail "th
 undo_bump
 
 stale_pr 60 "$b1" "$(date -u -d '7 hours ago' +%FT%TZ)"; echo "$approval" >"$P/detail.json" # approved, but older than 6h
-auto_pin >"$P/run.log" 2>&1 || fail "superseding an aged bump failed the tick"
-grep -q '^60 ' "$P/closed.log" || fail "an approval older than JERYU_AUTO_PIN_SUPERSEDE_AFTER still held a bump"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick behind an aged approved bump failed"
+[[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] || fail "an aged effective approval was discarded"
 undo_bump
 stale_pr 60 "$b1" "$now_iso"; echo '{"reviews":[{"state":"APPROVED","effective":true},{"state":"CHANGES_REQUESTED","effective":true}]}' >"$P/detail.json"
 auto_pin >"$P/run.log" 2>&1 || fail "superseding a bump with requested changes failed the tick"
@@ -581,6 +585,30 @@ auto_pin >"$P/run.log" 2>&1 || fail "an unrecorded bump failed the tick"
 [[ ! -s "$P/prs.jsonl" && ! -s "$P/closed.log" ]] || fail "an unrecorded bump was replaced"
 undo_bump
 ok "replacement failures preserve the old review; refused closes, multiple bumps and unknown provenance fail safely"
+
+stale_pr 60 "$b1" "$now_iso"
+jq '. + [.[0] | .number = 61 | .head.ref = "operator/pin-web"]' "$P/pulls.json" >"$P/post-build-pulls.json"
+auto_pin >"$P/run.log" 2>&1 || fail "another bump arriving during the build failed the tick"
+[[ ! -s "$P/prs.jsonl" && ! -s "$P/closed.log" ]] || fail "the pre-create list used cached bump state"
+mv "$P/post-build-pulls.json" "$P/post-build-pulls.saved"; undo_bump
+stale_pr 60 "$b1" "$now_iso"
+jq '.[0].state = "closed"' "$P/pulls.json" >"$P/post-create-pulls.json"
+auto_pin >"$P/run.log" 2>&1 || fail "a manual close during replacement failed the tick"
+[[ "$(posted "$P/prs.jsonl")" == 1 && ! -s "$P/closed.log" && ! -s "$P/comments.log" ]] \
+  || { cat "$P/run.log" "$P/closed.log" "$P/comments.log" >&2; fail "a manual close did not preserve the old review and replacement"; }
+jq -es 'any(.[]; .kind == "pin.bump_failed" and .needs_human == true)
+  and all(.[]; .kind != "pin.bump_superseded")' "$P/events.jsonl" >/dev/null \
+  || fail "a changed close-state was reported as superseded"
+mv "$P/post-create-pulls.json" "$P/post-create-pulls.saved"; undo_bump
+stale_pr 60 "$b1" "$now_iso"; echo "$approval" >"$P/post-create-detail.json"
+auto_pin >"$P/run.log" 2>&1 || fail "an approval arriving during replacement failed the tick"
+[[ "$(posted "$P/prs.jsonl")" == 1 && ! -s "$P/closed.log" && ! -s "$P/comments.log" ]] \
+  || fail "an approval arriving during the build was discarded"
+jq -es 'any(.[]; .kind == "pin.bump_failed" and .needs_human == true)
+  and all(.[]; .kind != "pin.bump_superseded")' "$P/events.jsonl" >/dev/null \
+  || fail "a preserved approval did not produce the cleanup signal"
+mv "$P/post-create-detail.json" "$P/post-create-detail.saved"; undo_bump
+ok "fresh lists detect a new bump, preserve manual closes and approvals, and signal replacement cleanup"
 
 
 echo '[]' >"$P/pulls.json"; touch "$P/fail"; : >"$P/events.jsonl"

@@ -181,12 +181,15 @@ test-only commit, builds the bundle already pinned: then only `commit` moves and
 says the bundle is unchanged.) It never merges: the reviewer and the merge queue land
 it, auto-stage stages main, and a person deploys. It skips a head while a bump is open and
 holding, but not a stale one: a bump recorded in `opened.tsv` that pins an older
-ancestor of green web main may be replaced when it is not queued. An approval or
-changes-requested review keeps it open for `JERYU_AUTO_PIN_SUPERSEDE_AFTER`
+ancestor of green web main may be replaced when it is not queued or approved.
+An effective approval always keeps it open. A changes-requested review keeps it
+open for `JERYU_AUTO_PIN_SUPERSEDE_AFTER`
 (default `6h`; `90m` or seconds also work). The replacement is built and opened
 before the old bump closes; a build or create failure leaves the old review open.
 Only a successful close gets a superseding comment and `pin.bump_superseded`.
 A refused close emits a human-cleanup event without posting repeated comments.
+If the old bump closes, receives approval or joins the queue during the build,
+the pre-close check leaves it alone and emits a cleanup event for the replacement.
 Multiple existing bumps, an unrecorded bump or a diverged pin stop replacement.
 A second list before PR creation catches other bumps opened during the build.
 It retries

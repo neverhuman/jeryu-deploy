@@ -13,8 +13,8 @@
 #      proposes whatever is newer), when this head already has its branch and pull request, or
 #      when the head's combined status is not `success`.
 #      An open bump that pins an OLDER commit on the way to this head, and is neither queued nor
-#      reviewed inside the grace period (no review on its head, or it is older than
-#      JERYU_AUTO_PIN_SUPERSEDE_AFTER), is closed after the replacement exists, and the new bump
+#      approved, and has no changes-requested review inside JERYU_AUTO_PIN_SUPERSEDE_AFTER,
+#      is closed after the replacement exists, and the new bump
 #      opens in the same tick (`pin.bump_superseded`). A queued bump is never closed; a bump pinning a
 #      commit that is not an ancestor of the head is left alone with a `pin.bump_diverged` event, and
 #      so is one this script did not open.
@@ -142,7 +142,7 @@ api() { # METHOD PATH [JSON on stdin] -> body on stdout
 # repo has more than 100, and every tick opened a duplicate. Returns 1, having said why, on failure.
 pulls=""
 list_pulls() {
-  [ -z "$pulls" ] || return 0 # already listed this tick
+  if [ "${1:-}" != fresh ] && [ -n "$pulls" ]; then return 0; fi
   local page batch all='[]'
   for page in $(seq 1 50); do
     batch="$(api GET "/api/v3/repos/$repo_path/pulls?state=all&per_page=100&page=$page")" \
@@ -257,14 +257,14 @@ if (( other_count > 1 )); then
 fi
 
 # supersede_stale N: the open bump #N pins an older commit of jeryu-web main than this head. When it
-# is neither queued nor approved (or an approval has aged past the supersede age, or a reviewer asked
-# for changes), prepare its replacement. Closing waits until the new PR exists.
+# is neither queued nor approved and has no changes-requested review inside the grace period,
+# prepare its replacement. Closing waits until the new PR exists.
 # Returns 1 when it stays. Anything it cannot read counts as stays.
 supersede_stale() {
   local n="$1" row ref created pinned_sha queue_rows reviews_json approved changes age queued
   row="$(jq -c --argjson n "$n" --arg repo "$repo_path" '
-    [.[] | select(.number == $n and .head.repo.full_name == $repo)][0] // empty' <<<"$pulls")"
-  [ -n "$row" ] || return 1 # not a branch of this repository: a fork's
+    [.[] | select(.number == $n and .state == "open" and .head.repo.full_name == $repo)][0] // empty' <<<"$pulls")"
+  [ -n "$row" ] || return 1 # no longer open, or not a branch of this repository
   ref="$(jq -r '.head.ref' <<<"$row")"; created="$(jq -r '.created_at // empty' <<<"$row")"
   [[ "$ref" =~ ^auto/pin-web-([0-9a-f]{12})$ ]] || return 1 # only auto-pin's own bumps
   pinned_sha="$(git -C "$web_cache" rev-parse --verify -q "${BASH_REMATCH[1]}^{commit}")" || return 1
@@ -293,8 +293,11 @@ supersede_stale() {
   approved="$(jq -r 'any((.reviews // [])[]; .effective == true and .state == "APPROVED")' <<<"$reviews_json" 2>/dev/null)" || return 1
   changes="$(jq -r 'any((.reviews // [])[]; .effective == true and .state == "CHANGES_REQUESTED")' <<<"$reviews_json" 2>/dev/null)" || return 1
   age=0; [ -z "$created" ] || age=$(( $(date -u +%s) - $(date -u -d "$created" +%s 2>/dev/null || date -u +%s) ))
-  if { [ "$approved" = true ] || [ "$changes" = true ]; } && (( age <= supersede_after )); then
-    say "bump #$n has a current review inside the grace period; not superseding"; return 1
+  if [ "$approved" = true ]; then
+    say "bump #$n has a current approval; not superseding"; return 1
+  fi
+  if [ "$changes" = true ] && (( age <= supersede_after )); then
+    say "bump #$n has requested changes inside the grace period; not superseding"; return 1
   fi
   say "bump #$n pins ${pinned_sha:0:12}, behind green main ${head:0:12}, and is not queued (approved=$approved changes_requested=$changes age=${age}s); superseding"
   superseded_pr="$n"; superseded_pinned="$pinned_sha"
@@ -398,7 +401,7 @@ $shipped
 
 Opened by \`scripts/release/auto-pin.sh\` because jeryu-web main is green and ahead of the pin. It never merges: review and the merge queue land this, auto-stage then stages main, and a person deploys."
 # Building and pushing may take time: check every open bump again before creating.
-list_pulls || give_up "could not re-read open pull requests"
+list_pulls fresh || give_up "could not re-read open pull requests"
 unexpected="$(jq -r --arg old "$superseded_pr" '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")) and (.number | tostring) != $old)] | length' <<<"$pulls")"
 if (( unexpected > 0 )); then
   say "another web pin bump appeared while building; leaving the existing bumps open"; exit 0
@@ -416,8 +419,11 @@ find "$state/logs" -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\n' | sort -
 say "OPENED $repo_path#$number: $title"
 if [ -n "$superseded_pr" ]; then
   # No close on a failed build or create, and no repeated comment on a refused close.
-  if ! list_pulls || ! supersede_stale "$superseded_pr"; then
+  if ! list_pulls fresh || ! supersede_stale "$superseded_pr"; then
     say "bump #$superseded_pr is no longer eligible to close; replacement #$number exists, human cleanup required"
+    emit pin.bump_failed true "auto-pin:close-ineligible:$superseded_pr:$number" \
+      "replacement $repo_path#$number exists; old bump #$superseded_pr changed before close, verify the open bumps" \
+      "$(jq -n --arg dep "$web_path" --arg to "$head" '{dependency: $dep, to: $to}')" "$superseded_pr"
     superseded_pr=""
   elif ! echo '{"state":"closed"}' | api PATCH "/api/v3/repos/$repo_path/pulls/$superseded_pr" --data-binary @- >/dev/null 2>&1; then
     say "bump #$superseded_pr could not close after replacement #$number opened; human cleanup required"
@@ -428,7 +434,7 @@ if [ -n "$superseded_pr" ]; then
   fi
 fi
 if [ -n "$superseded_pr" ]; then
-  jq -n --arg b "Superseded by ${head:0:7} in #$number: the replacement pull request exists. This older bump was not queued and its reviews were outside the grace period." \
+  jq -n --arg b "Superseded by ${head:0:7} in #$number: the replacement pull request exists. This older bump was not queued or approved and had no requested changes inside the grace period." \
     '{body: $b}' | api POST "/api/v3/repos/$repo_path/issues/$superseded_pr/comments" --data-binary @- >/dev/null 2>&1 \
     || say "bump #$superseded_pr: the comment was not accepted (ignored)"
   emit pin.bump_superseded false "auto-pin:superseded:$superseded_pr:${head:0:12}" \

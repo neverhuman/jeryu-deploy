@@ -255,13 +255,16 @@ pub(super) async fn list(
         Ok(pulls) => pulls,
         Err(error) => return core_error(error, "load repository pull requests"),
     };
-    let mut items: Vec<_> = pulls
+    let mut pulls: Vec<_> = pulls
         .iter()
         .filter(|pr| state_matches(pr, filter))
+        .collect();
+    pulls.sort_by_key(|pr| pr.number);
+    let (pulls, page) = page.apply(pulls);
+    let items = pulls
+        .into_iter()
         .map(|pr| summary_list_item(&state, pr))
         .collect();
-    items.sort_by_key(|pr| pr["number"].as_u64().unwrap_or_default());
-    let (items, page) = page.apply(items);
     Json(PullRequestListResponse {
         total: page.total,
         items,
@@ -273,7 +276,8 @@ pub(super) async fn list(
 /// List rows carry the detail needed to explain review and required-context
 /// gates without making a second request for every pull request.
 fn summary_list_item(state: &WebState, pr: &PullRequest) -> Value {
-    let summary = summary(state, pr);
+    let contexts = posture::required_contexts(state, pr);
+    let summary = summary_with_required_contexts(state, pr, &contexts);
     let mut value = serde_json::to_value(summary).expect("pull summary serializes");
     let reviews = reviews_for_pr(state, pr);
     let mut reviewers = BTreeMap::<String, Value>::new();
@@ -304,7 +308,6 @@ fn summary_list_item(state: &WebState, pr: &PullRequest) -> Value {
     if let Some(review) = value.get_mut("review") {
         review["reviewers"] = Value::Array(reviewers.into_values().collect());
     }
-    let contexts = posture::required_contexts(state, pr);
     value["required_contexts"] =
         serde_json::to_value(contexts).expect("required contexts serialize");
     value
@@ -947,11 +950,6 @@ fn detail_for_pr_with_required_contexts(
         reviews,
         merge_passport,
     }
-}
-
-fn summary(state: &WebState, pr: &PullRequest) -> PullRequestSummary {
-    let required_contexts = required_contexts(state, pr);
-    summary_with_required_contexts(state, pr, &required_contexts)
 }
 
 fn summary_with_required_contexts(
