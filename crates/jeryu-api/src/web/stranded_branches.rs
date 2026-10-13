@@ -113,14 +113,18 @@ fn patch_unique_commits(
 }
 
 pub(crate) fn all_at_time(state: &WebState, now: DateTime<Utc>) -> Vec<StrandedBranch> {
-    let round =
-        usize::try_from(now.timestamp().div_euclid(SCAN_WINDOW_SECONDS)).unwrap_or_default();
+    // A window's magnitude is always representable, including before the
+    // Unix epoch. Keep it wide until an index is bounded by its collection.
+    let round = now
+        .timestamp()
+        .div_euclid(SCAN_WINDOW_SECONDS)
+        .unsigned_abs();
     all_at_round(state, round)
 }
 
 // Partial scans rotate so large forges remain responsive without permanently
 // hiding branches beyond the budget. A skipped branch is never mutated.
-fn all_at_round(state: &WebState, round: usize) -> Vec<StrandedBranch> {
+fn all_at_round(state: &WebState, round: u64) -> Vec<StrandedBranch> {
     let mut stranded = Vec::new();
     let mut repos: Vec<_> = state
         .core
@@ -130,9 +134,11 @@ fn all_at_round(state: &WebState, round: usize) -> Vec<StrandedBranch> {
         .collect();
     repos.sort_by(|a, b| a.full_name.cmp(&b.full_name));
     let repo_count = repos.len();
+    let repo_count_wide = repo_count as u64;
     let mut scanned_branches = 0;
     for offset in 0..repo_count.min(MAX_SCAN_REPOS) {
-        let repo = &repos[(round % repo_count + offset) % repo_count];
+        let start = (round % repo_count_wide) as usize;
+        let repo = &repos[(start + offset) % repo_count];
         if scanned_branches == MAX_SCAN_BRANCHES {
             break;
         }
@@ -163,10 +169,10 @@ fn all_at_round(state: &WebState, round: usize) -> Vec<StrandedBranch> {
         {
             // Advance even when a repository is revisited at a fixed period;
             // using round * budget would starve branches at matching periods.
-            let start = (round / repo_count)
-                .wrapping_mul(MAX_BRANCHES_PER_REPO)
-                .wrapping_add(round % repo_count)
-                % branch_count;
+            let start = ((round / repo_count_wide)
+                .wrapping_mul(MAX_BRANCHES_PER_REPO as u64)
+                .wrapping_add(round % repo_count_wide)
+                % branch_count as u64) as usize;
             let branch = branches[(start + offset) % branch_count];
             scanned_branches += 1;
             let commits =
