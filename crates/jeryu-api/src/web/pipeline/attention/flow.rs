@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 use super::{
     BRANCH_CAMPAIGN_PRS, Draft, Hosts, Item, MERGER_STALLED_MINUTES, PullLink,
     QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES, Severity, Shell,
-    close_pull_call, enqueue_call, parse_time, pull_href, ready_for_review_call, regate_call,
-    web_pin_bump_prs,
+    close_landed_pull_call, close_pull_call, enqueue_call, parse_time, pull_href,
+    ready_for_review_call, regate_call, web_pin_bump_prs,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -246,9 +246,11 @@ fn gate_evidence(attempt: Option<&str>, pull: &PullFacts, hosts: &Hosts) -> Stri
     }
 }
 
-/// An open pull request whose change is already on its base branch. Closing it
-/// is a person's call on the pull request page, so the item links there; the
-/// forge deletes nothing on its behalf.
+/// An open pull request whose change is already on its base branch. The row
+/// carries the call that closes it: the change has shipped, so closing it is
+/// one safe step rather than a judgement, and the close comments the commit
+/// the work landed as before it happens, so the reason outlives the pull
+/// request. The branch is left alone.
 pub(crate) fn landed_item(pull: &PullFacts, landed: Landed) -> Item {
     let label = format!("{}#{}", pull.repo, pull.number);
     let how = match landed {
@@ -275,7 +277,7 @@ pub(crate) fn landed_item(pull: &PullFacts, landed: Landed) -> Item {
         ),
         href: pull_href(&pull.repo, pull.number),
         label: "Close the pull request: its change is already on the base branch",
-        api: None,
+        api: Some(close_landed_pull_call(&pull.repo, pull.number)),
         command: None,
     }
     .build();

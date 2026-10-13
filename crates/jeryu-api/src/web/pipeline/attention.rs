@@ -505,6 +505,18 @@ pub(super) fn close_pull_call(repo: &str, number: u64) -> ApiCall {
     }
 }
 
+/// `POST /api/v1/repos/:id/pulls/:number/close`: close a pull request whose
+/// change is already on its base branch, after commenting the commit it
+/// landed as. It performs that one case only, so the row can carry it.
+pub(super) fn close_landed_pull_call(repo: &str, number: u64) -> ApiCall {
+    ApiCall {
+        method: "POST",
+        path: format!("/api/v1/repos/{repo}/pulls/{number}/close"),
+        body: None,
+        confirm: None,
+    }
+}
+
 fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     let mut pulls = Vec::new();
     // An archived repository is read-only: nothing on it can be acted on, so

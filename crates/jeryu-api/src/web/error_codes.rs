@@ -495,6 +495,16 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the approval body failed validation",
     ),
     entry(
+        "pull_close_has_work_to_land",
+        409,
+        "the pull request still has something to land, so the one-click close does not close it",
+    ),
+    entry(
+        "pull_close_not_open",
+        409,
+        "only an open pull request can be closed",
+    ),
+    entry(
         "pull_comment_body_required",
         422,
         "a pull request comment needs a body",

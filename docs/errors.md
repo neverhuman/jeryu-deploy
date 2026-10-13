@@ -177,6 +177,8 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `presence_session_owned` | 409 | another login registered this agent presence session |
 | `presence_store_failed` | 500 | the agent presence store could not be read or written |
 | `pull_approve_invalid_request` | 422 | the approval body failed validation |
+| `pull_close_has_work_to_land` | 409 | the pull request still has something to land, so the one-click close does not close it |
+| `pull_close_not_open` | 409 | only an open pull request can be closed |
 | `pull_comment_body_required` | 422 | a pull request comment needs a body |
 | `pull_comment_invalid_request` | 422 | the pull request comment body failed validation |
 | `pull_draft_forbidden` | 403 | only the author or an admin can change a pull request's draft state |

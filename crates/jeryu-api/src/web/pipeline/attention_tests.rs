@@ -679,6 +679,17 @@ fn a_pull_request_already_on_its_base_asks_only_to_be_closed() {
         items[2].reason
     );
     assert_eq!(items[2].href, "/repos/jeryu/jeryu/jeryu-web/pulls/5");
+    // The row carries the close itself: closing a pull request whose change
+    // has shipped is one step, and the route comments the landing commit
+    // before it closes anything.
+    assert_eq!(
+        api(ancestor),
+        Some((
+            "POST",
+            "/api/v1/repos/jeryu/jeryu-web/pulls/4/close",
+            Value::Null
+        ))
+    );
 }
 
 #[test]

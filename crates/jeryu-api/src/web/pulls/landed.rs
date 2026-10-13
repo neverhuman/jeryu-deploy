@@ -14,6 +14,10 @@
 //!   `git merge-tree` of the two produces the base's own tree, without
 //!   conflicts. This is what catches a squash or a cherry-pick.
 //!
+//! [`landing_commit`] answers a second question, asked only when something is
+//! being closed: *which* commit of the base carries the work, so the comment
+//! the close leaves behind can name it.
+//!
 //! `merge-tree` writes the trees it builds, so it runs against a throwaway
 //! object directory with the repository's objects as an alternate: reading the
 //! inbox never writes to a repository. Answers are cached by repository, base
@@ -97,6 +101,115 @@ pub(in crate::web) fn live_head(state: &WebState, pr: &PullRequest) -> Option<St
         &source.path,
         &format!("refs/heads/{branch}^{{commit}}"),
     )
+}
+
+/// The commit on the base branch that already carries `pr`'s work, named in
+/// the comment the close leaves behind so the reason outlives the pull
+/// request. `None` when the pull request still has something to land, or when
+/// git cannot say.
+///
+/// The same two tests as [`already_landed`] decide it; this only answers
+/// *which* commit. A head already in the base's history landed as itself. One
+/// whose content is there arrived as some other commit, found by the patch
+/// identity of the head's own newest commit (`git patch-id`, which is how a
+/// cherry-pick is recognised across a rewritten sha); a squash or a reworded
+/// rebase has no twin, and then the base's own tip is the commit to name,
+/// because that is the state the work is in.
+pub(in crate::web) fn landing_commit(state: &WebState, pr: &PullRequest) -> Option<String> {
+    let head = live_head(state, pr)?;
+    let resolved = state.repo_manager.resolve_parts(&pr.owner, &pr.repo).ok()?;
+    let git_bin = &state.repo_manager.config().git_bin;
+    let base = rev_parse(
+        git_bin,
+        &resolved.path,
+        &format!("refs/heads/{}^{{commit}}", pr.base.ref_name),
+    )?;
+    match landed(git_bin, &resolved.path, &base, &head)? {
+        Landed::Ancestor => Some(head),
+        Landed::Content => {
+            Some(landing_twin(git_bin, &resolved.path, &base, &head).unwrap_or(base))
+        }
+    }
+}
+
+/// The commit of `base` carrying the same diff as the newest commit `head` has
+/// of its own, or `None` when there is none to find.
+fn landing_twin(git_bin: &str, repo: &Path, base: &str, head: &str) -> Option<String> {
+    let newest = rev_list(git_bin, repo, &format!("{base}..{head}"), 1)?
+        .into_iter()
+        .next()?;
+    let identity = patch_identity(git_bin, repo, &newest)?;
+    // Only what the base gained since the head left it can be the landing
+    // commit, and a pull request longer than this is not one of these.
+    rev_list(git_bin, repo, &format!("{head}..{base}"), 200)?
+        .into_iter()
+        .find(|commit| patch_identity(git_bin, repo, commit).as_deref() == Some(&identity))
+}
+
+/// The commits in `range`, newest first, merges left out: `git patch-id` has
+/// no answer for a merge.
+fn rev_list(git_bin: &str, repo: &Path, range: &str, max: usize) -> Option<Vec<String>> {
+    let output = Command::new(git_bin)
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "rev-list",
+            "--no-merges",
+            &format!("--max-count={max}"),
+            "--end-of-options",
+            range,
+        ])
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    })
+}
+
+/// What `commit` changes, as the identity two commits with the same diff
+/// share. A root commit is read as the diff against the empty tree (`--root`),
+/// so a pull request whose first commit is the repository's first one still
+/// gets an answer.
+fn patch_identity(git_bin: &str, repo: &Path, commit: &str) -> Option<String> {
+    let diff = Command::new(git_bin)
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "diff-tree",
+            "--patch",
+            "--no-commit-id",
+            "--no-color",
+            "--no-ext-diff",
+            "--root",
+            "--end-of-options",
+            commit,
+        ])
+        .output()
+        .ok()?;
+    if !diff.status.success() {
+        return None;
+    }
+    let mut child = Command::new(git_bin)
+        .arg("-C")
+        .arg(repo)
+        .args(["patch-id", "--stable"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    std::io::Write::write_all(child.stdin.as_mut()?, &diff.stdout).ok()?;
+    drop(child.stdin.take());
+    let out = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout);
+    let identity = line.lines().next()?.split_whitespace().next()?.to_string();
+    (!identity.is_empty()).then_some(identity)
 }
 
 fn landed(git_bin: &str, repo: &Path, base: &str, head: &str) -> Option<Landed> {
@@ -294,6 +407,22 @@ mod tests {
             object_count(&bare),
             before,
             "the check never writes to the repository"
+        );
+        // A squash has no commit with the branch's own patch, so there is no
+        // twin to name and `landing_commit` falls back to the base's tip; a
+        // cherry-pick does, and that commit is the one named.
+        assert_eq!(landing_twin("git", &bare, &main, &squashed), None);
+        let picked = run(&work, &["rev-parse", "main~1"]);
+        run(&work, &["checkout", "--quiet", "-b", "picked", &base]);
+        let pick_head = commit(&work, "c.txt", "c\n", "c again, by hand");
+        run(
+            &work,
+            &["push", "--quiet", bare.to_str().unwrap(), "picked"],
+        );
+        assert_eq!(
+            landing_twin("git", &bare, &main, &pick_head).as_deref(),
+            Some(merged.as_str()),
+            "the cherry-picked twin on the base is the commit to name ({picked})"
         );
     }
 }

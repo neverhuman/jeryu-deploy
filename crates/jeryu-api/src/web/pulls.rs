@@ -771,6 +771,99 @@ fn set_draft(
     Json(detail_for_pr(state, &updated, Some(&account.login))).into_response()
 }
 
+/// `POST /api/v1/repos/:id/pulls/:number/close`: close an open pull request
+/// whose change is already on its base branch, the step `pr_already_landed`
+/// asks for (`docs/pipeline-events.md`). The reason goes on the pull request
+/// as a comment naming the commit the work landed as, and then the pull
+/// request is closed, so the reason outlives the close.
+///
+/// It closes nothing else: a pull request with something left to land is
+/// refused here, because this route exists for the one case a reader of
+/// /needs-you can perform in a click, and closing live work is a decision
+/// nobody should make through a one-click call.
+pub(super) async fn close(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath((id, number)): AxumPath<(String, u64)>,
+) -> AxumResponse {
+    let purpose = "close pull request already on its base branch";
+    let Some((repo, pr)) = resolve_pr(&state, &id, number) else {
+        return not_found(purpose, "pull request not found");
+    };
+    if !matches!(web_pr_state(&pr), WebPullRequestState::Open) {
+        return repair_error(
+            StatusCode::CONFLICT,
+            "pull_close_not_open",
+            purpose,
+            "only an open pull request can be closed",
+            &[
+                "reload the pull request: it is already closed or merged",
+                "reload /needs-you: the item for it is gone",
+            ],
+            PROOF_LANE,
+            Some(json!({ "state": web_pr_state(&pr) })),
+        );
+    }
+    let Some(landing) = landed::landing_commit(&state, &pr) else {
+        return repair_error(
+            StatusCode::CONFLICT,
+            "pull_close_has_work_to_land",
+            purpose,
+            "this pull request still has something to land, or git cannot say that it does not",
+            &[
+                "review and merge the pull request instead",
+                "close it on the pull request page, which closes any pull request",
+            ],
+            PROOF_LANE,
+            Some(json!({ "base_ref": pr.base.ref_name, "head_sha": pr.head.sha })),
+        );
+    };
+    // The comment first: a close whose reason never arrived says nothing, so a
+    // refused comment leaves the pull request open for a person.
+    if let Err(error) = state.github.core().create_review(
+        &repo.owner,
+        &repo.name,
+        pr.number,
+        &account.login,
+        CreateReviewRequest {
+            body: Some(format!(
+                "Closing this pull request: its change is already on `{}` as `{landing}`, so \
+                 there is nothing left for it to land.",
+                pr.base.ref_name
+            )),
+            event: ReviewState::Commented,
+            comments: Vec::new(),
+            expected_head_sha: Some(pr.head.sha.clone()),
+        },
+    ) {
+        return core_error(error, "comment the landing commit before closing");
+    }
+    let updated = match state.github.core().update_pull_request(
+        &repo.owner,
+        &repo.name,
+        pr.number,
+        UpdatePullRequestRequest {
+            state: Some(jeryu_core::PullRequestState::Closed),
+            ..UpdatePullRequestRequest::default()
+        },
+    ) {
+        Ok(updated) => updated,
+        Err(error) => return core_error(error, purpose),
+    };
+    let _ = state.github.core().append_audit_as(
+        &account.login,
+        "pull_request.close_already_landed",
+        &format!("{}/{}#{}", repo.owner, repo.name, pr.number),
+        "completed",
+        json!({
+            "base_ref": updated.base.ref_name,
+            "head_sha": updated.head.sha,
+            "landed_as": landing,
+        }),
+    );
+    Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
+}
+
 fn resolve_pr(
     state: &WebState,
     id: &str,

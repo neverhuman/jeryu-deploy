@@ -145,10 +145,24 @@ check is one the base requires.
 
 ## A pull request with nothing left to land
 
-A pull request whose change has already reached its base branch has nothing
-to merge. The inbox retains `pr_already_landed`, its live-head checks and its
-cache (`docs/pipeline-events.md`). It links to the pull request page for a
-person to close it and keeps gate-definition changes visible.
+A pull request whose change has already reached its base branch by another
+route has nothing to merge. The inbox reads that one fact from git, by the
+tests in `crates/jeryu-api/src/web/pulls/landed.rs`: the head is already in the
+base's history, or merging it would leave the base's tree exactly as it is, as
+after a squash or a cherry-pick. It raises `pr_already_landed`
+(`docs/pipeline-events.md`), with its live-head checks and its cache, and keeps
+gate-definition changes visible. The row carries the close call,
+`POST /api/v1/repos/:id/pulls/:number/close`. That route comments the commit
+the work landed as and then closes the pull request, and refuses anything with
+work left to land, so the one click is the whole step and nothing else can be
+closed through it.
+
+Which commit to name is a second question, asked only once something is being
+closed: a head already in the base's history landed as itself, and one whose
+content is there arrived as another commit, found by patch identity
+(`git patch-id`, how a cherry-pick is recognised across a rewritten sha). A
+squash or a reworded rebase leaves no twin, and then the base's own tip is
+named, because that is the state the work is in.
 
 Separately, release automation can close an open `auto/pin-web-*` bump it
 opened in this repository, as recorded in its ownership ledger, when every commit is upstream by patch identity

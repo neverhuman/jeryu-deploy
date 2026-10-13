@@ -1215,6 +1215,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             post(pulls::approve),
         ),
         ("/api/v1/repos/:id/pulls/:number/merge", post(pulls::merge)),
+        // Close a pull request whose change is already on its base: the one
+        // step /needs-you offers for `pr_already_landed`, which comments the
+        // landing commit first and refuses anything with work left to land.
+        ("/api/v1/repos/:id/pulls/:number/close", post(pulls::close)),
         // The draft lifecycle. `PATCH /api/v3/repos/{owner}/{repo}/pulls/{n}`
         // with `{"draft": …}` stays the `gh`-compatible way in; these are the
         // named routes the index lists and the PR page's buttons call.

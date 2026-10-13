@@ -2500,3 +2500,77 @@ async fn a_running_gate_check_says_when_it_started_and_what_to_expect() {
         "a concluded check has no running gate"
     );
 }
+
+/// The step `pr_already_landed` asks for, as the route behind it: a pull
+/// request whose change main took by another route is closed, with the commit
+/// it landed as named in a comment first, and one that still has something to
+/// land is refused rather than closed.
+#[tokio::test]
+async fn closing_a_landed_pull_request_names_the_commit_it_landed_as() {
+    let fx = crate::web::merge_queue_tests::Fixture::with_audit_store("Justfile", "gate\n");
+    let path = || AxumPath((fx.repo_id.clone(), fx.number));
+    let refused = crate::web::pulls::close(
+        State(fx.state.clone()),
+        authenticated_account("alice"),
+        path(),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response_json(refused).await["code"],
+        "pull_close_has_work_to_land"
+    );
+
+    // main takes the same change as another commit, which is the shape of a
+    // pin bump whose pin reached main through a replacement pull request.
+    git_in(&fx.work, &["cherry-pick", &fx.head]);
+    git_in(
+        &fx.work,
+        &["push", "--quiet", fx.bare.to_str().unwrap(), "main"],
+    );
+    let landing = fx.main();
+    assert_ne!(landing, fx.head, "main landed it as another commit");
+
+    let closed = response_json(
+        crate::web::pulls::close(
+            State(fx.state.clone()),
+            authenticated_account("alice"),
+            path(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(closed["summary"]["state"], "closed");
+    let reviews = fx
+        .state
+        .core
+        .list_reviews("alice", "jeryu", fx.number)
+        .expect("reviews");
+    let comment = reviews
+        .iter()
+        .filter_map(|review| review.body.as_deref())
+        .find(|body| body.contains("already on"))
+        .unwrap_or_else(|| panic!("the close left no comment: {reviews:?}"));
+    assert!(comment.contains(&landing), "{comment}");
+    let audit = fx
+        .state
+        .core
+        .list_audit(&format!("alice/jeryu#{}", fx.number))
+        .expect("audit read");
+    assert!(
+        audit
+            .iter()
+            .any(|row| row.action == "pull_request.close_already_landed"),
+        "{audit:?}"
+    );
+
+    // Closed once: the row is gone from the inbox, and the route says so.
+    let again = crate::web::pulls::close(
+        State(fx.state.clone()),
+        authenticated_account("alice"),
+        path(),
+    )
+    .await;
+    assert_eq!(again.status(), StatusCode::CONFLICT);
+    assert_eq!(response_json(again).await["code"], "pull_close_not_open");
+}
