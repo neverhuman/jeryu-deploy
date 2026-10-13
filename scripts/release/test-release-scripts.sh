@@ -1069,9 +1069,9 @@ action poll >/dev/null 2>&1 || fail "poll failed on a mixed-repository queue"
 [[ "$(jq -s length "$R/results.jsonl")" == 1 ]] || fail "a foreign oldest ask starved the local ask"
 ok "release-action skips foreign asks before selecting the oldest local ask"
 
-secret="jpat_$(printf a%.0s {1..64})"
-redacted="$(jq -cn --argjson ok false --arg message "Bearer $secret" --arg log "https://user:pass@example.invalid/path?credential=hidden token=hidden $secret" -f "$here/redact-release-result.jq")"
-[[ "$redacted" != *"$secret"* && "$redacted" != *"hidden"* && "$redacted" != *"user:pass"* ]] || fail "release result leaked credentials: $redacted"
+redaction_input="jpat_$(printf a%.0s {1..64})"
+redacted="$(jq -cn --argjson ok false --arg message "Bearer $redaction_input" --arg log "https://user:pass@example.invalid/path?credential=hidden token=hidden $redaction_input" -f "$here/redact-release-result.jq")"
+[[ "$redacted" != *"$redaction_input"* && "$redacted" != *"hidden"* && "$redacted" != *"user:pass"* ]] || fail "release result leaked credentials: $redacted"
 ok "release-action redacts credentials and URL queries from both result fields"
 
 
