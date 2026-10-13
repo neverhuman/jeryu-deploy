@@ -1,5 +1,9 @@
 # Changelog
 
+This file is written when a release is cut: its notes are generated from the
+commits since the previous release. Do not add entries by hand; write a commit
+subject that says what changed.
+
 ## Unreleased
 
 - `GET /api/v1/yield` reports `adhoc`: the spend of agent sessions run by

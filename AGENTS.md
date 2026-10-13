@@ -36,3 +36,5 @@ release-CI sibling path patches are not permitted.
 - Leave a human's PR state alone. Do not convert a PR they marked ready back to
   draft. If merging it is unsafe, say why once in a comment.
 - Re-read live PR heads, merged flags, and tags before each landing step.
+- Do not edit `CHANGELOG.md` in a change: release notes are generated at release
+  time from commit subjects and `Todo:` trailers.
