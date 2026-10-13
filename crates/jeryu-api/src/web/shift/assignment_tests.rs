@@ -32,7 +32,7 @@ fn site(dir: &Path) -> Site {
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    for login in ["ada", "bea", "carl", "ci-bot"] {
+    for login in ["ada", "bea", "carl", "ci-bot", "operator"] {
         core.create_account(login, &format!("{login}-password"), UserRole::User)
             .unwrap();
     }
@@ -285,6 +285,11 @@ async fn an_admin_marks_accounts_as_automation_and_nobody_else_can() {
     assert_eq!(
         kind_of(&users, "ci-bot"),
         (json!("service"), json!("config"))
+    );
+    // Deployers are the people trusted to record deployments, not automation.
+    assert_eq!(
+        kind_of(&users, "operator"),
+        (json!("human"), json!("default"))
     );
 
     // A non-admin may neither read the list nor set a kind.

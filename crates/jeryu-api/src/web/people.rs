@@ -4,7 +4,9 @@
 //! instance already names it as automation in its configuration: the shift
 //! pull-request author, a `JERYU_SHIFT_REPORTERS` login, the review and merge
 //! identities, or a login in `JERYU_AUTOMATION_IDENTITIES`,
-//! `JERYU_CI_PUBLISHERS`, `JERYU_JANKURAI_SCORERS` or `JERYU_DEPLOYERS`.
+//! `JERYU_CI_PUBLISHERS` or `JERYU_JANKURAI_SCORERS`. `JERYU_DEPLOYERS` is not
+//! on that list: it names the administrators trusted to record deployments,
+//! who are people, so a deployer is a person unless something else says not.
 //! Account-owned bots (`/api/v1/bots`) are not accounts at all.
 //!
 //! Whether an account is a person is a security decision (only people take
@@ -107,8 +109,7 @@ fn stored_kinds(state: &WebState) -> Result<HashMap<String, Kind>, String> {
 /// True when the instance's own configuration names `login` as automation.
 fn configured_service(state: &WebState, login: &str) -> bool {
     use super::auth::{
-        AUTOMATION_IDENTITIES, CI_PUBLISHERS, DEPLOYERS, JANKURAI_SCORERS, MERGE_IDENTITY,
-        REVIEW_IDENTITY,
+        AUTOMATION_IDENTITIES, CI_PUBLISHERS, JANKURAI_SCORERS, MERGE_IDENTITY, REVIEW_IDENTITY,
     };
     let named = |logins: &[String]| logins.iter().any(|named| named == login);
     state.shift.pr_author.as_deref() == Some(login)
@@ -118,7 +119,6 @@ fn configured_service(state: &WebState, login: &str) -> bool {
         || named(AUTOMATION_IDENTITIES.configured())
         || named(CI_PUBLISHERS.configured())
         || named(JANKURAI_SCORERS.configured())
-        || named(DEPLOYERS.configured())
 }
 
 /// The instance configuration wins over a stored mark: a login it names as
