@@ -29,6 +29,8 @@
 # JERYU_BASE (https://git.neverhuman.org); JERYU_STATUS_TOKEN_FILE (required, no
 # default: the token for the commit-status API and for posting events, which needs
 # a global admin or a JERYU_EVENT_REPORTERS login);
+# JERYU_RELEASE_ENV (the settings file the deploy command loads; default
+# ~/.config/jeryu/release.env) and JERYU_RELEASE_ACTION (see deploy_line);
 # JERYU_AUTO_STAGE_MAX_FAILURES (2); JERYU_AUTO_STAGE_EVENTS=0 turns the events off;
 # JERYU_AUTO_STAGE_BEAT=0 turns the heartbeat off.
 # -h|--help prints this header and exits, before anything else runs.
@@ -102,6 +104,38 @@ beat() {
     "$base/api/v1/runners/heartbeat" <<<"$body" >/dev/null 2>&1 || say "heartbeat: not accepted (ignored)"
 }
 
+# tilde PATH — PATH as a shell word that expands to it from any login shell: a path under $HOME
+# is written ~/rest, so the line carries no user name.
+tilde() {
+  if [[ "$1" == "$HOME" ]]; then printf '~'
+  elif [[ -n "$HOME" && "$1" == "$HOME"/* ]]; then printf '~/%q' "${1#"$HOME"/}"
+  else printf '%q' "$1"; fi
+}
+
+# deploy_line RELEASE — the deploy command, one line that runs as pasted into a fresh login shell
+# in any directory on this host: it changes into the checkout this script runs from and loads the
+# site settings from the file named by JERYU_RELEASE_ENV (default
+# $XDG_CONFIG_HOME/jeryu/release.env, when that file exists) before running deploy-release.sh.
+# JERYU_RELEASE_ACTION (default ~/.local/share/jeryu-release-actions/release-action.sh), when
+# installed and executable, is a wrapper that does both itself, so the line is just that.
+# When no settings file is found the settings came from this timer's own environment, and the
+# line only changes directory.
+deploy_line() {
+  local rel="$1" action env_file checkout line
+  action="${JERYU_RELEASE_ACTION:-$HOME/.local/share/jeryu-release-actions/release-action.sh}"
+  if [ -x "$action" ]; then
+    printf '%s deploy %s' "$(tilde "$action")" "$rel"
+    return 0
+  fi
+  checkout="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  env_file="${JERYU_RELEASE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/jeryu/release.env}"
+  line="cd $(tilde "$checkout") && "
+  if [ -r "$env_file" ]; then
+    line+="set -a && . $(tilde "$env_file") && set +a && "
+  fi
+  printf '%sscripts/release/deploy-release.sh %s' "$line" "$rel"
+}
+
 mkdir -p "$state/failures"
 exec 9>"$state/lock"
 flock -n 9 || { say "another run holds the lock"; exit 0; }
@@ -170,17 +204,12 @@ if (( rc == 0 )) && [[ "$rel" =~ ^prod-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}-unsigned$ 
   printf '%s\t%s\t%s\n' "$main" "$rel" "$(date -u +%FT%TZ)" >>"$state/staged.tsv"
   echo "$rel" >"$state/latest"
   rm -f "$state/failures/$main"
-  # The whole step, runnable as shown: the installed release-action.sh loads the site settings and
-  # works from any directory (install-release-actions.sh). Without it, the path inside a checkout.
-  deploy_line="scripts/release/deploy-release.sh $rel"
-  # shellcheck disable=SC2088 # a line for a person to paste, so `~` stays literal
-  [ ! -x "$HOME/.local/share/jeryu-release-actions/release-action.sh" ] \
-    || deploy_line="~/.local/share/jeryu-release-actions/release-action.sh deploy $rel"
-  say "STAGED $rel; deploy with: $deploy_line"
+  deploy_command="$(deploy_line "$rel")"
+  say "STAGED $rel; deploy with: $deploy_command"
   emit release.staged false "auto-stage:staged:$rel" \
     "staged $rel from main ${main:0:12}; waiting for a deploy" \
     "$(jq -n --arg release "$rel" --arg previous "${live#jeryu-}" \
-      --arg command "$deploy_line" \
+      --arg command "$deploy_command" \
       '{release: $release, previous_release: $previous, deploy_command: $command}')" "$seconds"
 else
   echo "$attempt" >"$state/failures/$main"

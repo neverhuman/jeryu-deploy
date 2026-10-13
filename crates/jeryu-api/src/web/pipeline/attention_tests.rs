@@ -2445,6 +2445,22 @@ fn a_staged_release_a_staging_that_gave_up_and_a_failed_deploy() {
         Some("release-box, in a checkout of the repository that staged it")
     );
 
+    // A line that changes directory and loads the site settings itself runs as
+    // pasted, so it is not wrapped in "in a <repo> checkout".
+    let mut whole = staged.clone();
+    let line = "cd ~/deploy-checkout && set -a && . ~/.config/jeryu/release.env && set +a \
+                && scripts/release/deploy-release.sh prod-20260919T130210Z-01dfe68-unsigned";
+    whole.detail = Some(json!({
+        "release": "prod-20260919T130210Z-01dfe68-unsigned",
+        "deploy_command": line,
+    }));
+    let pasted = release_items(slice(&whole), &[], &[], &hosts());
+    assert_eq!(pasted[0].action.command.as_deref(), Some(line));
+    assert_eq!(
+        pasted[0].action.run_in.as_deref(),
+        Some("release-box, any directory")
+    );
+
     // Deployed: the same sha is live, or something newer than the staging is.
     assert!(
         release_items(

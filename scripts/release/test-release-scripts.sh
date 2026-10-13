@@ -262,10 +262,22 @@ chmod +x "$A/bin/ssh" "$A/bin/curl"
 echo "not-a-real-token" >"$A/token"
 # The hosts and the credential path are site settings with no default, so every
 # invocation names them; the stand-in ssh ignores which host it was given.
+# It runs from a copy placed in a fixture home, so the checkout and settings file the deploy
+# command names are the fixture's and the same wherever this test runs.
+H="$A/home"; mkdir -p "$H/deploy-checkout/scripts/release" "$H/.config/jeryu"
+cp "$here/auto-stage.sh" "$here/deploy-release.sh" "$H/deploy-checkout/scripts/release/"
+cat >"$H/.config/jeryu/release.env" <<EOF
+JERYU_BUILD_HOST=build-1
+JERYU_FORGE_HOST=edge-1
+JERYU_DEPLOY_TOKEN_FILE=$A/token
+JERYU_HEALTH_URL=http://127.0.0.1:8787/health
+EOF
 auto_stage() {
-  PATH="$A/bin:$PATH" JERYU_DEPLOY_REMOTE="$A/remote.git" JERYU_DEPLOY_REPO=jeryu/jeryu-deploy JERYU_AUTO_STAGE_STATE="$A/state" \
+  env -u JERYU_RELEASE_ENV -u JERYU_RELEASE_ACTION -u XDG_CONFIG_HOME HOME="$H" PATH="$A/bin:$PATH" \
+    JERYU_DEPLOY_REMOTE="$A/remote.git" JERYU_DEPLOY_REPO=jeryu/jeryu-deploy JERYU_AUTO_STAGE_STATE="$A/state" \
     JERYU_BUILD_HOST="${STAGE_BUILD_HOST-build.invalid}" JERYU_FORGE_HOST="${STAGE_FORGE_HOST-forge.invalid}" \
-    JERYU_STATUS_TOKEN_FILE="${STAGE_TOKEN_FILE-$A/token}" JERYU_BASE="https://forge.invalid" bash "$here/auto-stage.sh"
+    JERYU_STATUS_TOKEN_FILE="${STAGE_TOKEN_FILE-$A/token}" JERYU_BASE="https://forge.invalid" \
+    bash "$H/deploy-checkout/scripts/release/auto-stage.sh"
 }
 
 # Each site setting is refused by name, before anything is staged or posted.
@@ -303,15 +315,30 @@ grep -q "posting release.staged failed (ignored)" "$A/run3.log" || fail "a refus
 ok "auto-stage stages even when the forge refuses the event"
 
 rm -f "$A/refuse-events"; rm -rf "$A/state"
-auto_stage >/dev/null 2>&1 || fail "auto-stage failed"
+auto_stage >"$A/run-staged.log" 2>&1 || fail "auto-stage failed"
 [[ "$(jq -r '.kind' "$A/events.jsonl")" == release.staged ]] || fail "no release.staged event"
-[[ "$(jq -r '.detail.deploy_command' "$A/events.jsonl")" == "scripts/release/deploy-release.sh $want" ]] || fail "staged event lacks the deploy command"
+want_line="cd ~/deploy-checkout && set -a && . ~/.config/jeryu/release.env && set +a && scripts/release/deploy-release.sh $want"
+[[ "$(jq -r '.detail.deploy_command' "$A/events.jsonl")" == "$want_line" ]] || fail "staged event lacks the self-contained deploy command"
 [[ "$(jq -r '.detail.previous_release' "$A/events.jsonl")" == "$PREV" ]] || fail "staged event lacks the live release"
 [[ "$(jq -r '.sha' "$A/events.jsonl")" == "$sha" ]] || fail "staged event names the wrong commit"
 : >"$A/events.jsonl"
 auto_stage >/dev/null 2>&1 || fail "an idle auto-stage tick failed"
 [[ ! -s "$A/events.jsonl" ]] || fail "an already-staged commit emitted again"
 ok "auto-stage reports a staged release once, with the deploy command and what is live"
+
+# The line the row shows runs as pasted: a fresh login shell in ~ with no site settings in its
+# environment, only what the line loads. --dry-run stops before anything is recorded or switched.
+mkdir -p "$A/dbin"
+cat >"$A/dbin/ssh" <<EOF
+#!/usr/bin/env bash
+printf 'jeryu_deploy_commit=%s\nbinary_sha256=%s\nlive=jeryu-%s\nlive_commit=%s\n' "$sha" "$(printf '0%.0s' {1..64})" "$PREV" "$sha"
+EOF
+chmod +x "$A/dbin/ssh"
+dry="$(env -i HOME="$H" PATH="$A/dbin:/usr/bin:/bin" bash -lc "cd ~ && $want_line --dry-run --allow-downgrade" 2>&1)" \
+  || { echo "$dry" >&2; fail "the staged deploy command does not run as pasted"; }
+[[ "$dry" == *"[dry-run] would switch edge-1 to $want"* ]] || fail "the pasted deploy command did not load the site settings: $dry"
+grep -qF "STAGED $want; deploy with: $want_line" "$A/run-staged.log" || fail "the STAGED log line is not the event's deploy command"
+ok "the staged deploy command runs as pasted from ~ with the site settings loaded, and the STAGED line prints it"
 
 # Every tick, idle or not, posts one heartbeat so /runners shows the timer alive and what it did.
 newest() { jq -sc '.[-1]' "$1"; }

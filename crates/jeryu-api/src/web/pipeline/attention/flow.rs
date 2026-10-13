@@ -1063,6 +1063,14 @@ pub(crate) struct LatestDeployment {
     pub created_at: DateTime<Utc>,
 }
 
+/// Whether a command line names the directory it runs from: it starts with a
+/// `cd`, or its program is an absolute or home path. A bare relative path
+/// (`scripts/release/...`) only works from the right checkout.
+fn is_self_contained(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("cd ") || line.starts_with('/') || line.starts_with('~')
+}
+
 /// " The last deploy of `release` failed: <why>." when the newest production
 /// deployment is a failed attempt at this release, else empty. The deploy
 /// script puts the log's last meaningful line in the status description.
@@ -1172,13 +1180,13 @@ fn staging_items(
                 .and_then(|detail| detail["deploy_command"].as_str())
                 .map(|line| Shell {
                     line: line.to_string(),
-                    run_in: if line.starts_with('/') || line.starts_with("~/") {
-                        // An installed launcher (`release-action.sh deploy`)
-                        // loads the site settings itself and runs anywhere.
+                    // A line that names its own directory (a `cd`, or an
+                    // absolute or home path) runs as pasted. Only a bare
+                    // relative path is a path inside the repository that
+                    // staged the release, which the event names.
+                    run_in: if is_self_contained(line) {
                         Hosts::anywhere(&hosts.release)
                     } else {
-                        // A path inside the repository that staged the
-                        // release, which the event names.
                         match event.repo.as_deref() {
                             Some(repo) => Hosts::checkout(&hosts.release, repo),
                             None => format!(
