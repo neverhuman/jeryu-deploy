@@ -793,3 +793,115 @@ async fn a_metered_read_carries_the_rate_limit_budget() {
     // The budget is for the limited reads, not an advisory on every answer.
     assert!(!headers.contains_key(header::RETRY_AFTER));
 }
+
+/// Personal access tokens and logins answer with a credential (the plaintext
+/// token, the session cookie), so their answer is not kept: a repeat with the
+/// same `Idempotency-Key` gets the placeholder instead, and the write still
+/// does not run twice.
+#[tokio::test]
+async fn a_replayed_token_creation_or_login_hands_back_no_secret() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let core = ForgeCore::new();
+    core.create_account("keyed", "correct horse battery", UserRole::User)
+        .unwrap();
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        std::path::Path::new("/tmp/jeryu-no-spa"),
+    );
+    let credentials = serde_json::json!({
+        "login": "keyed",
+        "password": "correct horse battery"
+    })
+    .to_string();
+    let login = |key: &'static str| {
+        let app = app.clone();
+        let credentials = credentials.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method(HttpMethod::POST)
+                    .uri("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("Idempotency-Key", key)
+                    .body(Body::from(credentials))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    let first = login("log-in-once").await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let cookie = first
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("login sets a session cookie")
+        .to_string();
+    let session = cookie.split(';').next().expect("cookie value").to_string();
+    let csrf = response_json(first).await["csrfToken"]
+        .as_str()
+        .expect("csrf token")
+        .to_string();
+
+    // The kept answer holds neither the cookie nor the session it names.
+    let replayed_login = login("log-in-once").await;
+    assert_eq!(replayed_login.status(), StatusCode::CONFLICT);
+    assert!(!replayed_login.headers().contains_key(header::SET_COOKIE));
+    let body = response_json(replayed_login).await;
+    assert_eq!(body["code"], "idempotent_secret_withheld");
+    assert!(!body.to_string().contains(&session));
+
+    let create = |key: &'static str| {
+        let app = app.clone();
+        let session = session.clone();
+        let csrf = csrf.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method(HttpMethod::POST)
+                    .uri("/api/v1/auth/tokens")
+                    .header(header::COOKIE, session)
+                    .header("x-jeryu-csrf", csrf)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("Idempotency-Key", key)
+                    .body(Body::from(serde_json::json!({ "name": "cli" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    let created = create("issue-once").await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let token = response_json(created).await["token"]
+        .as_str()
+        .expect("token secret")
+        .to_string();
+    assert!(token.starts_with("jpat_"));
+
+    let replayed_token = create("issue-once").await;
+    assert_eq!(replayed_token.status(), StatusCode::CONFLICT);
+    let body = response_json(replayed_token).await;
+    assert_eq!(body["code"], "idempotent_secret_withheld");
+    assert!(!body.to_string().contains(&token));
+
+    // The write ran once: the account owns one token, not two.
+    let list = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/tokens")
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    assert_eq!(response_json(list).await.as_array().unwrap().len(), 1);
+}

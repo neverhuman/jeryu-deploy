@@ -37,6 +37,7 @@ const ORDER: &[&str] = &[
     "assignee",
     "triaged",
     "worked_by",
+    "reworks",
 ];
 
 /// One todo as todoq models it, plus the unknown keys it must preserve.
@@ -45,6 +46,7 @@ pub(crate) struct TodoFile {
     pub id: String,
     pub family: String,
     pub title: String,
+    pub reworks: Vec<String>,
     pub body: String,
     pub repos: Vec<String>,
     pub mode: String,
@@ -82,6 +84,7 @@ impl TodoFile {
             id,
             family,
             title,
+            reworks: Vec::new(),
             body: String::new(),
             repos: Vec::new(),
             mode: "night".to_string(),
@@ -155,6 +158,14 @@ impl TodoFile {
         let id = take("id").and_then(Value::as_str).ok_or("todo has no id")?;
         let mut todo = Self::new(id.to_string(), text_of("family"), text_of("title"));
         todo.body = body.trim_matches('\n').to_string();
+        todo.reworks = match take("reworks") {
+            Some(Value::String(id)) => vec![id.value().clone()],
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
         todo.repos = list_of("repos");
         if let Some(mode) = take("mode").and_then(Value::as_str) {
             todo.mode = mode.to_string();
@@ -262,6 +273,16 @@ impl TodoFile {
         if !self.assignee.is_empty() {
             out.push_str(&format!("assignee = {}\n", quote(&self.assignee)));
         }
+        if !self.reworks.is_empty() {
+            out.push_str(&format!(
+                "reworks = [{}]\n",
+                self.reworks
+                    .iter()
+                    .map(|id| quote(id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         for (key, value) in &self.extra {
             out.push_str(&format!("{key} = {}\n", render(value)));
         }
@@ -307,6 +328,7 @@ impl TodoFile {
             family_label: crate::web::family::label(&family),
             family,
             title: self.title.clone(),
+            reworks: self.reworks.clone(),
             body: self.body.clone(),
             repos: self.repos.clone(),
             mode: self.mode.clone(),
@@ -322,6 +344,7 @@ impl TodoFile {
             shift: self.shift.clone(),
             change_set: self.change_set.clone(),
             commits: self.commits.iter().cloned().collect(),
+            landing: super::landing::from_file(self),
             merged: self.merged,
             released: None,
             pr: None,

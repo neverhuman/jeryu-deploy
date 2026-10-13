@@ -33,6 +33,9 @@ enum Command {
         /// Authority manifest; defaults to the located one.
         #[arg(long)]
         manifest: Option<PathBuf>,
+        /// Root used to resolve relative repository paths in the authority.
+        #[arg(long)]
+        site_root: Option<PathBuf>,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -141,6 +144,7 @@ fn parse_manifest_compat(args: &[OsString]) -> std::result::Result<Cli, Manifest
     let mut manifest: Option<PathBuf> = None;
     let mut json = false;
     let mut check_paths = false;
+    let mut site_root = None;
     let mut index = 2;
     while index < args.len() {
         match args[index].to_str() {
@@ -156,6 +160,16 @@ fn parse_manifest_compat(args: &[OsString]) -> std::result::Result<Cli, Manifest
             }
             Some("--json") => json = true,
             Some("--check-paths") => check_paths = true,
+            Some("--site-root") => {
+                index += 1;
+                let Some(path) = args.get(index) else {
+                    return Err(ManifestCliError {
+                        exit_code: 1,
+                        stderr: String::new(),
+                    });
+                };
+                site_root = Some(PathBuf::from(path));
+            }
             _ => {
                 return Err(ManifestCliError {
                     exit_code: 2,
@@ -179,6 +193,7 @@ fn parse_manifest_compat(args: &[OsString]) -> std::result::Result<Cli, Manifest
     Ok(Cli {
         command: Command::Manifest {
             manifest,
+            site_root,
             json,
             check_paths,
         },
@@ -189,9 +204,10 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Manifest {
             manifest,
+            site_root,
             json,
             check_paths,
-        } => manifest_command(manifest.as_deref(), json, check_paths),
+        } => manifest_command(manifest.as_deref(), site_root.as_deref(), json, check_paths),
         Command::ManifestPath => manifest_path(),
         Command::FleetCi { manifest, full } => fleet_ci(manifest.as_deref(), full),
         Command::VerifyLock { lock } => verify_lock(&lock),
@@ -242,10 +258,10 @@ fn repositories(value: &Value) -> Result<&Vec<Value>> {
 }
 
 /// The authority manifest an explicit `--manifest` names, else the located one.
-fn load_family(manifest: Option<&Path>) -> Result<Family> {
+fn load_family(manifest: Option<&Path>, site_root: Option<&Path>) -> Result<Family> {
     match manifest {
-        Some(path) => family::read(path),
-        None => family::read(&family::locate(Path::new("."))?),
+        Some(path) => family::read_with_root(path, site_root),
+        None => family::read_with_root(&family::locate(Path::new("."))?, site_root),
     }
 }
 
@@ -254,8 +270,13 @@ fn manifest_path() -> Result<()> {
     Ok(())
 }
 
-fn manifest_command(manifest: Option<&Path>, json: bool, check_paths: bool) -> Result<()> {
-    let family = load_family(manifest)?;
+fn manifest_command(
+    manifest: Option<&Path>,
+    site_root: Option<&Path>,
+    json: bool,
+    check_paths: bool,
+) -> Result<()> {
+    let family = load_family(manifest, site_root)?;
     if check_paths {
         family.check_paths()?;
     }
@@ -277,7 +298,7 @@ fn manifest_command(manifest: Option<&Path>, json: bool, check_paths: bool) -> R
 }
 
 fn fleet_ci(manifest: Option<&Path>, full: bool) -> Result<()> {
-    let family = load_family(manifest)?;
+    let family = load_family(manifest, None)?;
     for (name, path, lane) in fleet_entries(&family, full) {
         println!("{name}: just {lane}");
         io::stdout().flush()?;
@@ -406,7 +427,7 @@ fn verify_lock_value(value: &Value) -> Result<()> {
 
 fn product_pipeline(manifest: Option<&Path>, lock: &Path) -> Result<()> {
     println!("+ jeryu-split manifest --check-paths");
-    manifest_command(manifest, false, true)?;
+    manifest_command(manifest, None, false, true)?;
     println!("+ jeryu-split verify-lock");
     verify_lock(lock)?;
     println!("product pipeline bootstrap ok");

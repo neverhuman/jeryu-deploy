@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The idempotency store keeps no personal access token and no session cookie.
+  Token creation and session-cookie writes answer with a
+  once-shown credential, so they join the routes that keep only a placeholder
+  (a retry with the same key answers 409 `idempotent_secret_withheld` and does
+  not run the write twice), and a kept answer never carries `Set-Cookie`.
+
 - `GET /api/v1/repos/:id/merge-queue` gives a building entry `gate_started_at`:
   when a gate first reported on its queue commit after the enqueue, or `null`
   while it waits for a gate runner. The merge box said "the gate is running" from the enqueue on,

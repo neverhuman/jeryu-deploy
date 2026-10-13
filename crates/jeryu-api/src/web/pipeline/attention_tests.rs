@@ -11,10 +11,11 @@ use tower::ServiceExt;
 use super::attention::{
     ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
     Filter, Hosts, Item, KINDS, LatestDeployment, MainRedFacts, MirrorDrift, MirrorFailure,
-    ProductionFacts, PullFacts, ReviewerOfflineThresholds, Severity, board_items, budget_items,
-    divergence_items, draft_items, drop_shadowed_pull_rows, gate_definition_paths, main_red_items,
-    mirror_items, only_matching, order, pin_items, pull_items, queue_items, release_items,
-    runner_items, shift_items, todo_items, web_routes, worker_items,
+    ProductionFacts, PullFacts, ReviewerOfflineThresholds, Severity, SupersededPullFacts,
+    board_items, budget_items, divergence_items, draft_items, drop_shadowed_pull_rows,
+    gate_definition_paths, main_red_items, mirror_items, only_matching, order, pin_items,
+    pull_items, queue_items, release_items, runner_items, shift_items, superseded_pull_items,
+    todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -32,12 +33,138 @@ fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 9, 19, 13, 0, 0).unwrap()
 }
 
+#[test]
+fn superseded_pull_rows_name_replacement_and_offer_close_call() {
+    let old = SupersededPullFacts {
+        author: "alice".into(),
+        base_ref: "main".into(),
+        source_repository: String::new(),
+        repo: "acme/widgets".into(),
+        number: 4,
+        title: "first".into(),
+        body: None,
+        head_ref: "feature".into(),
+        created_at: now(),
+        status: "open",
+    };
+    let replacement = SupersededPullFacts {
+        author: "alice".into(),
+        base_ref: "main".into(),
+        source_repository: String::new(),
+        repo: "acme/widgets".into(),
+        number: 5,
+        title: "replacement".into(),
+        body: Some("Replaces #4".into()),
+        head_ref: "feature-r2".into(),
+        created_at: now() + Duration::hours(1),
+        status: "merged",
+    };
+    let items = superseded_pull_items(&[old, replacement]);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, "pr_superseded");
+    assert!(items[0].title.contains("#4") && items[0].title.contains("#5"));
+    assert!(items[0].reason.contains("merged"));
+    assert_eq!(items[0].action.api.as_ref().unwrap().method, "PATCH");
+    assert_eq!(
+        items[0].action.api.as_ref().unwrap().body,
+        Some(json!({"state":"closed"}))
+    );
+}
+
+#[test]
+fn replacement_text_and_branch_suffix_cannot_close_another_authors_or_scopes_pull() {
+    let old = SupersededPullFacts {
+        repo: "acme/widgets".into(),
+        author: "alice".into(),
+        base_ref: "main".into(),
+        source_repository: String::new(),
+        number: 4,
+        title: "first".into(),
+        body: None,
+        head_ref: "feature".into(),
+        created_at: now(),
+        status: "open",
+    };
+    let newer = SupersededPullFacts {
+        number: 5,
+        title: "replaces #4".into(),
+        body: Some("supersedes #4".into()),
+        head_ref: "feature-r2".into(),
+        created_at: now() + Duration::hours(1),
+        ..old.clone()
+    };
+    assert_eq!(
+        superseded_pull_items(&[old.clone(), newer.clone()]).len(),
+        1
+    );
+    for field in ["author", "base", "source"] {
+        let mut unrelated = newer.clone();
+        match field {
+            "author" => unrelated.author = "mallory".into(),
+            "base" => unrelated.base_ref = "release".into(),
+            _ => unrelated.source_repository = "mallory/widgets".into(),
+        }
+        assert!(
+            superseded_pull_items(&[old.clone(), unrelated]).is_empty(),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn superseded_pull_rows_follow_r_chains_and_ignore_newest_or_other_repositories() {
+    let pull =
+        |number, repo: &str, head: &str, created_at, body: Option<&str>| SupersededPullFacts {
+            author: "alice".into(),
+            base_ref: "main".into(),
+            source_repository: String::new(),
+            repo: repo.into(),
+            number,
+            title: format!("pull {number}"),
+            body: body.map(str::to_string),
+            head_ref: head.into(),
+            created_at,
+            status: "open",
+        };
+    let rows = superseded_pull_items(&[
+        pull(1, "acme/widgets", "feature", now(), None),
+        pull(
+            2,
+            "acme/widgets",
+            "feature-r2",
+            now() + Duration::minutes(1),
+            None,
+        ),
+        pull(
+            3,
+            "acme/widgets",
+            "feature-r3",
+            now() + Duration::minutes(2),
+            Some("Supersedes #2"),
+        ),
+        pull(
+            4,
+            "other/widgets",
+            "feature-r4",
+            now() + Duration::minutes(3),
+            Some("replaces #1"),
+        ),
+    ]);
+    assert_eq!(
+        rows.iter().map(|row| row.pr.unwrap()).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(rows[0].title.contains("#3"));
+    assert!(rows[1].title.contains("#3"));
+}
+
 fn todo(id: &str, status: &str) -> ShiftTodo {
     ShiftTodo {
         id: id.to_string(),
         family: "jeryu".to_string(),
         family_label: "jeryu".to_string(),
         title: format!("Title of {id}"),
+        reworks: Vec::new(),
         body: String::new(),
         repos: vec!["jeryu-deploy".to_string()],
         mode: "now".to_string(),
@@ -53,6 +180,7 @@ fn todo(id: &str, status: &str) -> ShiftTodo {
         shift: String::new(),
         change_set: String::new(),
         commits: BTreeMap::new(),
+        landing: Vec::new(),
         merged: false,
         released: None,
         pr: None,
@@ -3254,6 +3382,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("pr_checks_failing", "/repos/:provider/:owner/*"),
     ("pr_draft_waiting", "/repos/:provider/:owner/*"),
     ("pr_ready_to_merge", "/repos/:provider/:owner/*"),
+    ("pr_superseded", "/repos/:provider/:owner/*"),
     ("queue_failed", "/repos/:provider/:owner/*"),
     ("queue_refused", "/repos/:provider/:owner/*"),
     ("queue_stuck", "/repos/:provider/:owner/*"),
@@ -3280,6 +3409,33 @@ fn one_of_every_kind() -> Vec<Item> {
     let family = "acme";
     let repo = "acme/widget-shop";
     let mut items = Vec::new();
+
+    items.extend(superseded_pull_items(&[
+        SupersededPullFacts {
+            author: "alice".into(),
+            base_ref: "main".into(),
+            source_repository: String::new(),
+            repo: repo.into(),
+            number: 40,
+            title: "older".into(),
+            body: None,
+            head_ref: "feature".into(),
+            created_at: now(),
+            status: "open",
+        },
+        SupersededPullFacts {
+            author: "alice".into(),
+            base_ref: "main".into(),
+            source_repository: String::new(),
+            repo: repo.into(),
+            number: 41,
+            title: "newer".into(),
+            body: Some("replaces #40".into()),
+            head_ref: "feature-r2".into(),
+            created_at: now() + Duration::minutes(1),
+            status: "open",
+        },
+    ]));
 
     let mut blocked = todo("t-blocked", "blocked");
     blocked.note = "The widget-shop tag does not exist; a person must cut it.".to_string();

@@ -99,8 +99,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::GithubRouter;
 use crate::git_materializer::{CoreRedirects, GitMaterializer};
 use crate::github::{
-    GH_AUTH_BOUNDARY, GH_SETUP_COMMAND, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE,
-    MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL,
+    GH_AUTH_BOUNDARY, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE, MCP_GUIDANCE_TOOLS,
+    MCP_RUN_TESTS_TOOL, gh_setup_command_with_origin, public_origin,
 };
 use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
@@ -1465,7 +1465,10 @@ fn suggested_tool(method: &HttpMethod, path: &str) -> Option<&'static str> {
 /// Capability manifest: advertises the live endpoints plus a `gh` command -> jeryu
 /// mapping so external agents can discover and prefer the faster MCP path.
 async fn capabilities(State(state): State<Arc<WebState>>) -> Json<Value> {
-    Json(capabilities_payload(&live_mcp_tools(&state)))
+    Json(capabilities_payload(
+        public_origin().as_deref(),
+        &live_mcp_tools(&state),
+    ))
 }
 
 /// The MCP tool names this server actually dispatches, read from the live
@@ -1485,15 +1488,20 @@ fn live_mcp_tools(state: &Arc<WebState>) -> BTreeSet<String> {
 /// `tools` is the live backend catalog: every MCP tool named here is looked up
 /// in it first, and a `gh` command whose jeryu answer is a tool that is not
 /// installed is left out of the map rather than advertised.
-fn capabilities_payload(tools: &BTreeSet<String>) -> Value {
+///
+/// `origin` is the deployment's public origin, which the gh-setup guidance
+/// names as the host to configure; the manifest is served to anonymous
+/// callers, so it has to be a host they can actually reach.
+fn capabilities_payload(origin: Option<&str>, tools: &BTreeSet<String>) -> Value {
     let installed = |tool: &str| tools.contains(tool);
+    let gh_setup_command = gh_setup_command_with_origin(origin);
     let mut gh_command_map = serde_json::Map::new();
     let mut map_rest = |command: &str, target: &str| {
         gh_command_map.insert(command.to_string(), Value::String(target.to_string()));
     };
     map_rest(
         "gh auth login",
-        &format!("Do not run direct gh auth against a Jeryu host; run {GH_SETUP_COMMAND} instead."),
+        &format!("Do not run direct gh auth against a Jeryu host; run {gh_setup_command} instead."),
     );
     map_rest(
         "gh auth refresh",
@@ -1542,7 +1550,7 @@ fn capabilities_payload(tools: &BTreeSet<String>) -> Value {
 
     let mut gh_auth_policy = json!({
         "do_not_run": ["gh auth login", "gh auth refresh", "credential-store token hunting"],
-        "run_instead": GH_SETUP_COMMAND,
+        "run_instead": gh_setup_command,
         "token_file": GH_SETUP_TOKEN_FILE,
         "stale_host_repair": GH_SETUP_REPAIR_COMMAND,
         "host_auth_boundary": GH_AUTH_BOUNDARY,

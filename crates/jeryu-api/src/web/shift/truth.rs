@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use super::super::WebState;
 use super::queue::{Queue, git, resolve};
 use super::shifts::{find_pr, pr_summary};
-use super::types::{ShiftTodo, TodoPr, TodoStatus};
+use super::types::{ShiftTodo, TodoLanding, TodoLandingState, TodoPr, TodoStatus};
 
 /// How far back the base branch is searched for `Todo:` trailers.
 const TRAILER_SCAN_COMMITS: &str = "500";
@@ -207,13 +207,90 @@ impl TruthCache {
                     .collect();
                 todo.pr = todo.prs.first().cloned();
             }
-            if todo.status != TodoStatus::Done || todo.commits.is_empty() {
+            enrich_landing(state, queue, &git_bin, &facts, todo);
+            if todo.commits.is_empty() {
                 continue;
             }
             let derived = derive(&mut inner, &git_bin, &facts, todo);
+            apply_landed_to_entries(todo, &derived);
+            if todo.status != TodoStatus::Done {
+                continue;
+            }
             todo.merged = todo.merged || derived.merged;
             todo.released = derived.released;
         }
+    }
+}
+
+fn enrich_landing(
+    state: &WebState,
+    queue: &Queue,
+    git_bin: &str,
+    facts: &BTreeMap<String, RepoFacts>,
+    todo: &mut ShiftTodo,
+) {
+    for entry in &mut todo.landing {
+        let Some(fact) = facts.get(&entry.repo) else {
+            continue;
+        };
+        enrich_rescue(git_bin, fact, &queue.family.base_branch, entry);
+        let repo = entry.repo.clone();
+        enrich_check(state, fact, &repo, entry);
+    }
+}
+
+fn enrich_rescue(git_bin: &str, fact: &RepoFacts, base: &str, entry: &mut TodoLanding) {
+    let Some(branch) = entry.rescue_branch.as_deref() else {
+        return;
+    };
+    let Some(head) = resolve(git_bin, &fact.path, &format!("refs/heads/{branch}")) else {
+        return;
+    };
+    entry.rescue_sha = Some(head);
+    entry.rescue_ahead = Some(patch_ahead(git_bin, &fact.path, base, branch));
+}
+
+fn patch_ahead(git_bin: &str, dir: &Path, base: &str, branch: &str) -> i64 {
+    let base_ref = format!("refs/heads/{base}");
+    let branch_ref = format!("refs/heads/{branch}");
+    git(git_bin, dir, &["cherry", &base_ref, &branch_ref], &[], None)
+        .ok()
+        .map(|out| {
+            String::from_utf8_lossy(&out)
+                .lines()
+                .filter(|line| line.starts_with('+'))
+                .count() as i64
+        })
+        .unwrap_or(0)
+}
+
+fn enrich_check(state: &WebState, fact: &RepoFacts, repo: &str, entry: &mut TodoLanding) {
+    if entry.check.is_some() {
+        return;
+    }
+    let Some(sha) = entry.rescue_sha.as_deref() else {
+        return;
+    };
+    let Ok(checks) = state.core.list_check_runs(&fact.owner, repo, Some(sha)) else {
+        return;
+    };
+    entry.check = checks
+        .check_runs
+        .into_iter()
+        .find(|check| check.head_sha == sha)
+        .map(|check| check.name);
+}
+
+fn apply_landed_to_entries(todo: &mut ShiftTodo, derived: &Derived) {
+    for entry in &mut todo.landing {
+        let Some(main_sha) = derived.landed.get(&entry.repo) else {
+            continue;
+        };
+        entry.state = TodoLandingState::Landed;
+        if entry.sha.is_none() {
+            entry.sha = Some(main_sha.clone());
+        }
+        entry.main_sha = Some(main_sha.clone());
     }
 }
 

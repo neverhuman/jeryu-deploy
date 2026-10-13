@@ -122,6 +122,8 @@ pub(crate) struct Row {
     pub attempts: u64,
     pub merged: u64,
     pub first_pass: u64,
+    pub reworked: u64,
+    pub rework_usd: f64,
     pub spend_usd: f64,
     pub author_usd: f64,
     pub review_usd: f64,
@@ -175,6 +177,7 @@ pub(crate) struct TodoRef {
     pub title: String,
     pub status: TodoStatus,
     pub merged: bool,
+    pub rework: bool,
     pub spend_usd: f64,
     pub attempts: u64,
     pub agent: String,
@@ -228,6 +231,7 @@ struct Facts<'a> {
     review: f64,
     triage: f64,
     first_pass: bool,
+    rework: bool,
 }
 
 impl Facts<'_> {
@@ -247,6 +251,8 @@ struct Acc {
     attempts: u64,
     merged: u64,
     first_pass: u64,
+    reworked: u64,
+    rework: f64,
     author: f64,
     review: f64,
     triage: f64,
@@ -256,7 +262,7 @@ struct Acc {
     killed: f64,
     estimated: f64,
     /// Whole spend of each merged todo that landed in this group.
-    merged_spend: Vec<f64>,
+    merged_spend: Vec<(String, f64)>,
 }
 
 impl Acc {
@@ -277,6 +283,8 @@ impl Acc {
             attempts: self.attempts,
             merged: self.merged,
             first_pass: self.first_pass,
+            reworked: self.reworked,
+            rework_usd: money(self.rework),
             spend_usd: money(spend),
             author_usd: money(self.author),
             review_usd: money(self.review),
@@ -287,8 +295,14 @@ impl Acc {
             killed_usd: money(self.killed),
             estimated_usd: money(self.estimated),
             r#yield: (kept > 0.0).then(|| rate(self.main / kept)),
-            usd_per_merged: (self.merged > 0).then(|| money(self.main / merged)),
-            usd_per_merged_ci95: ci95(&self.merged_spend),
+            usd_per_merged: (self.merged > 0).then(|| money((self.main + self.rework) / merged)),
+            usd_per_merged_ci95: ci95(
+                &self
+                    .merged_spend
+                    .iter()
+                    .map(|(_, spend)| *spend)
+                    .collect::<Vec<_>>(),
+            ),
             first_pass_rate: (self.merged > 0).then(|| rate(self.first_pass as f64 / merged)),
         }
     }
@@ -414,7 +428,28 @@ fn aggregate<K: Ord>(
         if fact.end == End::Main {
             acc.merged += 1;
             acc.first_pass += u64::from(fact.first_pass);
-            acc.merged_spend.push(fact.spend());
+            acc.merged_spend.push((fact.todo.id.clone(), fact.spend()));
+        }
+    }
+    let by_id: BTreeMap<_, _> = facts
+        .iter()
+        .map(|fact| ((fact.todo.family.as_str(), fact.todo.id.as_str()), fact))
+        .collect();
+    for fact in facts.iter().filter(|fact| !fact.todo.reworks.is_empty()) {
+        for target_id in &fact.todo.reworks {
+            if let Some(target) = by_id.get(&(fact.todo.family.as_str(), target_id.as_str())) {
+                let acc = groups.entry(key(target.todo, target.landing)).or_default();
+                acc.reworked += 1;
+                acc.rework += fact.spend();
+                if target.end == End::Main
+                    && let Some((_, spend)) = acc
+                        .merged_spend
+                        .iter_mut()
+                        .find(|(id, _)| id == target.todo.id.as_str())
+                {
+                    *spend += fact.spend();
+                }
+            }
         }
     }
     groups
@@ -427,6 +462,7 @@ fn todo_ref(fact: &Facts<'_>) -> TodoRef {
         title: fact.todo.title.clone(),
         status: fact.todo.status,
         merged: fact.todo.merged,
+        rework: fact.rework,
         spend_usd: money(fact.spend()),
         attempts: fact.todo.worked_by.len() as u64,
         agent: agent_of(fact.landing).to_string(),
@@ -484,6 +520,14 @@ pub(crate) fn build(request: &Request, todos: &[ShiftTodo], reviews: &[LedgerRow
         }
     }
 
+    let reworked: BTreeSet<(&str, &str)> = todos
+        .iter()
+        .flat_map(|todo| {
+            todo.reworks
+                .iter()
+                .map(|id| (todo.family.as_str(), id.as_str()))
+        })
+        .collect();
     let mut sources = BTreeSet::new();
     let mut facts = Vec::new();
     for todo in todos {
@@ -526,7 +570,8 @@ pub(crate) fn build(request: &Request, todos: &[ShiftTodo], reviews: &[LedgerRow
             landing,
             review,
             triage: todo.triage_cost_usd.unwrap_or(0.0),
-            first_pass: tries == 1,
+            first_pass: tries == 1 && !reworked.contains(&(todo.family.as_str(), todo.id.as_str())),
+            rework: !todo.reworks.is_empty(),
         });
     }
 

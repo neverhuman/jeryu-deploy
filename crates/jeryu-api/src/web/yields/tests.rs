@@ -60,6 +60,103 @@ fn todo(
     todo
 }
 
+#[test]
+fn rework_is_charged_to_the_original_arm_across_a_two_step_chain() {
+    let mut original = todo(
+        "a",
+        "acme",
+        TodoStatus::Done,
+        true,
+        vec![attempt("model-a", "done", 1.0, "2026-10-05T01:00:00Z")],
+    );
+    original.worked_by[0].experiment = Some("routing".into());
+    original.worked_by[0].agent = Some("arm-a".into());
+    let mut redo = todo(
+        "b",
+        "acme",
+        TodoStatus::Done,
+        true,
+        vec![attempt("model-b", "done", 2.0, "2026-10-06T01:00:00Z")],
+    );
+    redo.reworks = vec!["a".into()];
+    redo.worked_by[0].experiment = Some("routing".into());
+    redo.worked_by[0].agent = Some("arm-b".into());
+    let mut second_redo = todo(
+        "c",
+        "acme",
+        TodoStatus::Done,
+        true,
+        vec![attempt("model-c", "done", 3.0, "2026-10-07T01:00:00Z")],
+    );
+    second_redo.reworks = vec!["b".into()];
+    second_redo.worked_by[0].experiment = Some("routing".into());
+    second_redo.worked_by[0].agent = Some("arm-c".into());
+    let request = Request {
+        window: Window {
+            since: day("2026-10-01"),
+            until: day("2026-10-14"),
+        },
+        family: None,
+        by: By::Experiment,
+        now: Utc.with_ymd_and_hms(2026, 10, 14, 12, 0, 0).unwrap(),
+    };
+    let result =
+        serde_json::to_value(build(&request, &[original, redo, second_redo], &[])).unwrap();
+    let arms = result["experiments"][0]["arms"].as_array().unwrap();
+    let arm_a = arms.iter().find(|arm| arm["agent"] == "arm-a").unwrap();
+    let arm_b = arms.iter().find(|arm| arm["agent"] == "arm-b").unwrap();
+    assert_eq!(arm_a["row"]["first_pass"], 0);
+    assert_eq!(arm_a["row"]["reworked"], 1);
+    close(&arm_a["row"]["rework_usd"], 2.0);
+    close(&arm_a["row"]["usd_per_merged"], 3.0);
+    assert_eq!(arm_b["row"]["reworked"], 1);
+    close(&arm_b["row"]["rework_usd"], 3.0);
+    close(&arm_b["row"]["spend_usd"], 2.0);
+    assert_eq!(result["costliest"].as_array().unwrap()[1]["rework"], true);
+}
+
+#[test]
+fn rework_accounting_keeps_same_id_todos_in_separate_families() {
+    let a = todo(
+        "shared-id",
+        "acme",
+        TodoStatus::Done,
+        true,
+        vec![attempt("model-a", "done", 1.0, "2026-10-05T01:00:00Z")],
+    );
+    let b = todo(
+        "shared-id",
+        "other",
+        TodoStatus::Done,
+        true,
+        vec![attempt("model-b", "done", 2.0, "2026-10-05T01:00:00Z")],
+    );
+    let mut redo = todo(
+        "redo",
+        "acme",
+        TodoStatus::Done,
+        true,
+        vec![attempt("model-c", "done", 3.0, "2026-10-06T01:00:00Z")],
+    );
+    redo.reworks = vec!["shared-id".into()];
+    let request = Request {
+        window: Window {
+            since: day("2026-10-01"),
+            until: day("2026-10-14"),
+        },
+        family: None,
+        by: By::Model,
+        now: Utc.with_ymd_and_hms(2026, 10, 14, 12, 0, 0).unwrap(),
+    };
+    let result = serde_json::to_value(build(&request, &[a, b, redo], &[])).unwrap();
+    let groups = result["groups"].as_array().unwrap();
+    let a = groups.iter().find(|row| row["group"] == "model-a").unwrap();
+    let b = groups.iter().find(|row| row["group"] == "model-b").unwrap();
+    close(&a["rework_usd"], 3.0);
+    close(&b["rework_usd"], 0.0);
+    assert_eq!(b["first_pass"], 1);
+}
+
 fn pr(repo: &str, number: u64) -> TodoPr {
     TodoPr {
         repo: repo.to_string(),
@@ -211,7 +308,7 @@ fn totals_count_spend_against_where_each_todo_ended_up() {
     assert_eq!(
         report["costliest"][0],
         json!({"id": "b", "family": "acme", "title": "Title b", "status": "done",
-               "merged": true, "spend_usd": 4.75, "attempts": 2,
+               "merged": true, "rework": false, "spend_usd": 4.75, "attempts": 2,
                "agent": "codex", "model": "model-b"})
     );
     let scrap = report["scrap"].as_array().unwrap();

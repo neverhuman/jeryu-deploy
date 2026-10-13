@@ -55,8 +55,8 @@ pub(crate) use board::{BoardFacts, BoardLane, board_items};
 pub(crate) use flow::gate_definition_paths;
 pub(crate) use flow::{
     DraftFacts, LatestDeployment, MainRedFacts, ProductionFacts, PullFacts,
-    ReviewerOfflineThresholds, draft_items, drop_shadowed_pull_rows, main_red_items, pull_items,
-    queue_items, release_items, runner_items,
+    ReviewerOfflineThresholds, SupersededPullFacts, draft_items, drop_shadowed_pull_rows,
+    main_red_items, pull_items, queue_items, release_items, runner_items, superseded_pull_items,
 };
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
@@ -157,6 +157,7 @@ pub(crate) const KINDS: &[&str] = &[
     "pr_checks_failing",
     "pr_draft_waiting",
     "pr_ready_to_merge",
+    "pr_superseded",
     "queue_failed",
     "queue_refused",
     "queue_stuck",
@@ -445,6 +446,14 @@ pub(super) fn ready_for_review_call(repo: &str, number: u64) -> ApiCall {
     }
 }
 
+pub(super) fn close_pull_call(repo: &str, number: u64) -> ApiCall {
+    ApiCall {
+        method: "PATCH",
+        path: format!("/api/v3/repos/{repo}/pulls/{number}"),
+        body: Some(json!({"state":"closed"})),
+    }
+}
+
 fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     let mut pulls = Vec::new();
     // An archived repository is read-only: nothing on it can be acted on, so
@@ -477,6 +486,48 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
                 landed: super::super::pulls::landed::already_landed(state, &pr),
             });
         }
+    }
+    pulls
+}
+
+fn all_pull_facts(state: &WebState) -> Vec<SupersededPullFacts> {
+    let mut pulls = Vec::new();
+    for repo in state.core.list_repositories(None) {
+        if repo.archived {
+            continue;
+        }
+        let Ok(listed) = state.core.list_pull_requests(&repo.owner, &repo.name, None) else {
+            continue;
+        };
+        pulls.extend(listed.into_iter().map(|pr| SupersededPullFacts {
+            repo: format!("{}/{}", pr.owner, pr.repo),
+            author: pr.author,
+            base_ref: pr.base.ref_name,
+            source_repository: pr.source_repository,
+            number: pr.number,
+            title: pr.title,
+            body: pr.body,
+            head_ref: pr.head.ref_name,
+            created_at: pr.created_at,
+            status: if pr.merged {
+                "merged"
+            } else if matches!(
+                pr.state,
+                jeryu_core::PullRequestState::Open
+                    | jeryu_core::PullRequestState::Draft
+                    | jeryu_core::PullRequestState::ReadyForReview
+                    | jeryu_core::PullRequestState::Approved
+                    | jeryu_core::PullRequestState::Mergeable
+                    | jeryu_core::PullRequestState::Queued
+                    | jeryu_core::PullRequestState::BlockedByChecks
+                    | jeryu_core::PullRequestState::BlockedByPolicy
+                    | jeryu_core::PullRequestState::SpeculativeMergeTesting
+            ) {
+                "open"
+            } else {
+                "closed"
+            },
+        }));
     }
     pulls
 }
@@ -810,12 +861,14 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         &super::super::mirror_reconcile::drift_rows(state),
     ));
     let pulls = open_pull_facts(state);
+    let superseded_pulls = all_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
     let waiting_review_count = pulls.iter().filter(|pull| waits_for_review(pull)).count();
     let entries = state.merge_queue.entries(state, |_| true);
     let building = entries.iter().any(|e| e.state == QueueState::Building);
     items.extend(main_red_items(&main_red_facts(state)));
     items.extend(pull_items(&pulls, &entries, now, &hosts));
+    items.extend(superseded_pull_items(&superseded_pulls));
     items.extend(draft_items(&draft_facts(state), draft_idle_days(), now));
     items.extend(queue_items(&entries, &open, now));
     items.extend(runner_items(

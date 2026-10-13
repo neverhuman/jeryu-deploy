@@ -334,7 +334,8 @@ impl Git<'_> {
             .filter(|line| !line.starts_with("index "))
             .map(|line| {
                 if line.starts_with("@@") {
-                    // "@@ -12,3 +14,3 @@ context": positions move with the base.
+                    // Positions move with the base; retain the enclosing
+                    // context so the same lines in another function need review.
                     match line.rfind("@@") {
                         Some(end) if end > 1 => format!("@@{}", &line[end + 2..]),
                         _ => "@@".to_string(),

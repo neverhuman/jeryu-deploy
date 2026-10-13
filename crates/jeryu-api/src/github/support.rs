@@ -53,12 +53,42 @@ pub(crate) const MCP_GUIDANCE_TOOLS: &[&str] = &[
 ];
 
 pub(crate) const MCP_RUN_TESTS_TOOL: &str = "jeryu.run_tests";
-pub(crate) const GH_SETUP_TOKEN_FILE: &str = "~/.jeryu/secrets/merge-token";
-pub(crate) const GH_SETUP_COMMAND: &str =
-    "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token";
-/// Repair form of [`GH_SETUP_COMMAND`] for a host entry that already exists.
+
+/// What the gh-setup guidance says to pass as the token file. The guidance goes
+/// out to anonymous callers, so it asks for a path the caller already has
+/// instead of naming one on the host: where a host keeps its own files is not
+/// something a stranger needs to be told.
+pub(crate) const GH_SETUP_TOKEN_FILE: &str = "<your-token-file>";
+
+/// Host the gh-setup guidance names when no public origin is configured — the
+/// developer's own forge, which is what an unconfigured build is.
+const GH_SETUP_LOCAL_HOST: &str = "http://127.0.0.1:8787";
+
+/// Repair form of [`gh_setup_command`] for a host entry that already exists.
+/// It names no host of its own, so it reads the same wherever it is served.
 pub(crate) const GH_SETUP_REPAIR_COMMAND: &str =
-    "jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token";
+    "jeryu gh-setup --host <the-same-host> --token-file <your-token-file>";
+
+/// The public origin this deployment is reached at, if it has one.
+pub(crate) fn public_origin() -> Option<String> {
+    std::env::var(PUBLIC_ORIGIN_ENV).ok()
+}
+
+/// `jeryu gh-setup` for the host the caller reached. Production sets
+/// [`PUBLIC_ORIGIN_ENV`], and a loopback address is an instruction an internet
+/// client cannot follow, so the public origin wins wherever one is configured.
+pub(crate) fn gh_setup_command() -> String {
+    gh_setup_command_with_origin(public_origin().as_deref())
+}
+
+pub(crate) fn gh_setup_command_with_origin(origin: Option<&str>) -> String {
+    let host = match origin.map(|origin| origin.trim().trim_end_matches('/')) {
+        Some(origin) if !origin.is_empty() => origin,
+        _ => GH_SETUP_LOCAL_HOST,
+    };
+    format!("jeryu gh-setup --host {host} --token-file {GH_SETUP_TOKEN_FILE}")
+}
+
 pub(crate) const GH_AUTH_BOUNDARY: &str = "GitHub.com auth and local Jeryu host auth are separate; do not run gh auth login for Jeryu hosts.";
 
 /// The fast-path pointer surfaced on every error body so a confused agent is
@@ -531,20 +561,20 @@ pub(super) fn gh_auth_workaround_response(path: &str) -> Response {
                 "reason": "Jeryu uses an explicit gh hosts.yml entry plus portable agent-auth receipts; running gh auth login, refresh, or token-hunting workarounds against the Jeryu host is the wrong repair path. GitHub.com auth and local Jeryu host auth are separate.",
                 "common_fixes": [
                     "stop running gh auth login, gh auth refresh, or credential-store searches for the Jeryu host",
-                    GH_SETUP_COMMAND,
-                    "for a stale gh host token entry, rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token",
+                    gh_setup_command(),
+                    format!("for a stale gh host token entry, rerun {GH_SETUP_REPAIR_COMMAND}"),
                     GH_AUTH_BOUNDARY,
                     "use GET /api/v1/capabilities or the listed jeryu.* MCP tools for PR, CI, issue, and repo workflows",
                     "for agent native CLI credentials, run jeryu agent auth doctor <tool> and jeryu agent auth import --from-host <tool>"
                 ],
                 "docs_url": GH_AUTH_DOCS,
-                "repair_hint": "rerun jeryu gh-setup for the Jeryu host with --token-file ~/.jeryu/secrets/merge-token, then retry the original Jeryu CLI/MCP/API operation instead of gh auth"
+                "repair_hint": format!("rerun jeryu gh-setup for the Jeryu host with --token-file {GH_SETUP_TOKEN_FILE}, then retry the original Jeryu CLI/MCP/API operation instead of gh auth")
             },
             "jeryu_connection": {
                 "capabilities": FASTER_PATH,
                 "first_contact": "/.jeryu/agents/first-contact",
                 "mcp": "/mcp",
-                "gh_setup": GH_SETUP_COMMAND,
+                "gh_setup": gh_setup_command(),
                 "gh_token_file": GH_SETUP_TOKEN_FILE,
                 "agent_auth_doctor": "jeryu agent auth doctor <codex|claude|jekko>",
                 "agent_auth_import": "jeryu agent auth import --from-host <codex|claude|jekko>"
@@ -602,16 +632,16 @@ pub(super) fn first_contact_response() -> Response {
             "advice": [
                 "GET /api/v1/capabilities for the live endpoint + gh-command map.",
                 "Prefer the typed jeryu.* MCP tools over bespoke gh REST calls; they are faster and never dead-end.",
-                "Do not run gh auth login or gh auth refresh for a Jeryu host; run jeryu gh-setup with --token-file ~/.jeryu/secrets/merge-token for the host entry.",
-                "If gh reports a stale local host token, rerun jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token.",
+                format!("Do not run gh auth login or gh auth refresh for a Jeryu host; run {} for the host entry.", gh_setup_command()),
+                format!("If gh reports a stale host token entry, rerun {GH_SETUP_REPAIR_COMMAND}."),
                 GH_AUTH_BOUNDARY,
                 "Every error reply carries a jeryu_steering block naming the MCP tool that serves your intent.",
             ],
             "gh_auth_policy": {
                 "do_not_run": ["gh auth login", "gh auth refresh", "credential-store token hunting"],
-                "run_instead": GH_SETUP_COMMAND,
+                "run_instead": gh_setup_command(),
                 "token_file": GH_SETUP_TOKEN_FILE,
-                "stale_host_repair": "jeryu gh-setup --host <same-local-host> --token-file ~/.jeryu/secrets/merge-token",
+                "stale_host_repair": GH_SETUP_REPAIR_COMMAND,
                 "host_auth_boundary": GH_AUTH_BOUNDARY,
                 "agent_auth": "jeryu agent auth doctor <tool>; jeryu agent auth import --from-host <tool>",
             },
@@ -619,6 +649,50 @@ pub(super) fn first_contact_response() -> Response {
             "documentation_url": docs_url(),
         }),
     )
+}
+
+#[cfg(test)]
+mod gh_setup_tests {
+    use super::{
+        GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE, first_contact_response,
+        gh_auth_workaround_response, gh_setup_command_with_origin,
+    };
+
+    #[test]
+    fn the_setup_command_names_the_public_origin_where_one_is_configured() {
+        assert_eq!(
+            gh_setup_command_with_origin(Some("https://forge.example-invented.test/")),
+            "jeryu gh-setup --host https://forge.example-invented.test --token-file <your-token-file>"
+        );
+    }
+
+    /// Without a configured origin the build is somebody's own forge, so the
+    /// guidance keeps naming the local address they reach it at.
+    #[test]
+    fn the_setup_command_falls_back_to_the_local_host() {
+        for origin in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                gh_setup_command_with_origin(origin),
+                "jeryu gh-setup --host http://127.0.0.1:8787 --token-file <your-token-file>"
+            );
+        }
+    }
+
+    /// The guidance asks for the caller's own token file everywhere it is
+    /// served; none of it names a path on the host.
+    #[test]
+    fn the_guidance_asks_for_the_callers_own_token_file() {
+        assert!(GH_SETUP_REPAIR_COMMAND.contains(GH_SETUP_TOKEN_FILE));
+        for body in [
+            gh_auth_workaround_response("/login/device/code").body,
+            first_contact_response().body,
+        ] {
+            assert!(
+                !body.contains(".jeryu/secrets"),
+                "a guided reply names a path on the host: {body}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

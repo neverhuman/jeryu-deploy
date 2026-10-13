@@ -64,6 +64,7 @@ pub(crate) struct ShiftTodo {
     /// What a reader is shown for `family`.
     pub family_label: String,
     pub title: String,
+    pub reworks: Vec<String>,
     pub body: String,
     pub repos: Vec<String>,
     pub mode: String,
@@ -79,6 +80,9 @@ pub(crate) struct ShiftTodo {
     pub shift: String,
     pub change_set: String,
     pub commits: BTreeMap<String, String>,
+    /// Per-repository landing facts for this todo, including saved work that
+    /// did not reach the base branch.
+    pub landing: Vec<TodoLanding>,
     /// True when the file says so or, on `GET /api/v1/shift/todos`, when the
     /// server finds every commit on its base branch (see `truth.rs`).
     pub merged: bool,
@@ -206,6 +210,39 @@ pub(crate) struct TodoPr {
     pub number: u64,
     pub state: String,
     pub url: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TodoLandingState {
+    Landed,
+    GateFailed,
+    Conflict,
+    PushRace,
+    Kept,
+    Pending,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TodoLanding {
+    pub repo: String,
+    pub state: TodoLandingState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_ahead: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failing: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -341,6 +378,8 @@ pub(crate) struct TodoActionRequest {
     pub body: Option<String>,
     #[serde(default)]
     pub repos: Option<Vec<String>>,
+    #[serde(default)]
+    pub reworks: Option<Vec<String>>,
 }
 
 /// A slot's report. `slot` is a string (todoq names slots `w1`, `w2`, ...);

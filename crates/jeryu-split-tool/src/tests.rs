@@ -389,6 +389,60 @@ lfs_required = false
 }
 
 #[test]
+fn relative_member_paths_use_manifest_or_site_root_and_accept_prior_authorities() {
+    let temporary = tempfile::tempdir().unwrap();
+    let site = temporary.path().join("site");
+    let control = site.join("pelago-release-ops");
+    let member = site.join("pelago");
+    let tool_member = site.join("pelago-tool");
+    for root in [&control, &member, &tool_member] {
+        fs::create_dir_all(root.join("agent")).unwrap();
+        for path in ["AGENTS.md", "agent/owner-map.json", "agent/test-map.json"] {
+            fs::write(root.join(path), b"{}\n").unwrap();
+        }
+    }
+    let source = authority("pelago-release-ops", "pelago")
+        .replace("split_root = \"/srv/pelago-split\"\n", "")
+        .replace("/srv/pelago-split/pelago-tool", "pelago-tool");
+    let manifest = temporary.path().join("repos.manifest.toml");
+    fs::write(&manifest, &source).unwrap();
+    let by_manifest = family::read(&manifest).unwrap();
+    assert_eq!(
+        by_manifest.members[0].path,
+        temporary.path().join("pelago-release-ops")
+    );
+    assert!(by_manifest.check_paths().is_err());
+
+    let by_site = family::read_with_root(&manifest, Some(&site)).unwrap();
+    assert_eq!(by_site.members[0].path, control);
+    by_site.check_paths().unwrap();
+
+    // Authorities that still include split_root remain readable.
+    let old_style = authority("pelago-release-ops", "pelago");
+    let old_manifest = temporary.path().join("old.toml");
+    fs::write(&old_manifest, old_style).unwrap();
+    let legacy = family::read_with_root(&old_manifest, Some(&site)).unwrap();
+    assert_eq!(legacy.members[1].path, member);
+}
+
+#[test]
+fn present_but_blank_split_root_is_rejected_even_with_a_site_override() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("repos.manifest.toml");
+    for blank in ["", "   "] {
+        let source = authority("pelago-release-ops", "pelago").replace(
+            "split_root = \"/srv/pelago-split\"",
+            &format!("split_root = \"{blank}\""),
+        );
+        fs::write(&manifest, source).unwrap();
+        for root in [None, Some(temp.path())] {
+            let error = family::read_with_root(&manifest, root).unwrap_err();
+            assert!(format!("{error:#}").contains("split_root must not be blank"));
+        }
+    }
+}
+
+#[test]
 fn fleet_plan_preserves_authority_order_and_selects_one_lane() {
     let parsed = family::parse(&authority(
         "/srv/pelago-split/pelago-release-ops",

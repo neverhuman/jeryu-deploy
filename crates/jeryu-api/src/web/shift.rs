@@ -13,6 +13,7 @@
 mod access;
 mod assignment;
 mod heartbeats;
+mod landing;
 pub(crate) mod queue;
 mod shifts;
 pub(crate) mod todo_file;
@@ -635,8 +636,12 @@ pub(crate) fn apply_action(
             }
         }
         "edit" => {
-            if request.title.is_none() && request.body.is_none() && request.repos.is_none() {
-                return Err("edit needs one of title, body or repos".to_string());
+            if request.title.is_none()
+                && request.body.is_none()
+                && request.repos.is_none()
+                && request.reworks.is_none()
+            {
+                return Err("edit needs one of title, body, repos or reworks".to_string());
             }
             if let Some(title) = &request.title {
                 let title = title.trim();
@@ -656,6 +661,15 @@ pub(crate) fn apply_action(
                     }
                 }
                 todo.repos = repos.clone();
+            }
+            if let Some(reworks) = &request.reworks {
+                if reworks.iter().any(|id| id.trim().is_empty()) {
+                    return Err("reworks ids must not be empty".to_string());
+                }
+                if reworks.iter().any(|id| id == &todo.id) {
+                    return Err("a todo cannot rework itself".to_string());
+                }
+                todo.reworks = reworks.clone();
             }
             // A todo filed without a title and repos is untriaged; giving it
             // both is exactly what triage is.
@@ -692,6 +706,54 @@ pub(crate) fn apply_action(
                  priority, mode, claim, assign or unassign"
             ));
         }
+    }
+    Ok(())
+}
+
+// Validate against the same queue snapshot that commit_change will update.
+// Failed edits leave both the Git ref and the todo file unchanged.
+fn validate_reworks(
+    id: &str,
+    targets: &[String],
+    existing: &[queue::QueuedTodo],
+) -> Result<(), String> {
+    if targets.len() > 64 {
+        return Err("reworks may name at most 64 todos".into());
+    }
+    let unique: std::collections::BTreeSet<_> = targets.iter().collect();
+    if unique.len() != targets.len() {
+        return Err("reworks ids must be unique".into());
+    }
+    let todos: std::collections::BTreeMap<_, _> = existing
+        .iter()
+        .map(|row| (row.todo.id.as_str(), &row.todo))
+        .collect();
+    let mut pending: Vec<_> = targets
+        .iter()
+        .map(|target| (target.as_str(), false))
+        .collect();
+    let mut visiting = std::collections::BTreeSet::new();
+    let mut finished = std::collections::BTreeSet::new();
+    while let Some((target, leaving)) = pending.pop() {
+        if leaving {
+            visiting.remove(target);
+            finished.insert(target);
+            continue;
+        }
+        if target == id {
+            return Err("reworks must not reference itself or form a cycle".into());
+        }
+        if finished.contains(target) {
+            continue;
+        }
+        let todo = todos
+            .get(target)
+            .ok_or_else(|| format!("reworks target {target:?} does not exist in this queue"))?;
+        if !visiting.insert(target) {
+            return Err("reworks must not form a cycle".into());
+        }
+        pending.push((target, true));
+        pending.extend(todo.reworks.iter().map(|next| (next.as_str(), false)));
     }
     Ok(())
 }
@@ -826,6 +888,11 @@ pub(crate) async fn todo_action(
                 return Err(Refused::ClaimLive(found.todo.claim_by.clone()));
             }
             let mut todo = found.todo.clone();
+            if request.action == "edit"
+                && let Some(targets) = &request.reworks
+            {
+                validate_reworks(&todo.id, targets, existing).map_err(Refused::Invalid)?;
+            }
             if assignment::ASSIGNMENT_ACTIONS.contains(&request.action.as_str()) {
                 assignment::apply(&mut todo, &request, caller, |login| {
                     people::assignable_person(&state, login)

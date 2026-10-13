@@ -189,7 +189,7 @@ fn installed_mcp_tools() -> BTreeSet<String> {
 
 #[test]
 fn capabilities_payload_exposes_the_gh_command_map() {
-    let payload = capabilities_payload(&installed_mcp_tools());
+    let payload = capabilities_payload(None, &installed_mcp_tools());
     assert_eq!(payload["server"], "jeryu");
     assert_eq!(payload["api_version"], "v4");
     assert_eq!(payload["graphql"], "/graphql");
@@ -229,17 +229,14 @@ fn capabilities_payload_exposes_the_gh_command_map() {
     );
     assert_eq!(
         payload["gh_auth_policy"]["run_instead"],
-        "jeryu gh-setup --host http://127.0.0.1:8787 --token-file ~/.jeryu/secrets/merge-token"
+        "jeryu gh-setup --host http://127.0.0.1:8787 --token-file <your-token-file>"
     );
-    assert_eq!(
-        payload["gh_auth_policy"]["token_file"],
-        "~/.jeryu/secrets/merge-token"
-    );
+    assert_eq!(payload["gh_auth_policy"]["token_file"], "<your-token-file>");
     assert!(
         payload["gh_auth_policy"]["stale_host_repair"]
             .as_str()
             .expect("stale host repair")
-            .contains("--token-file ~/.jeryu/secrets/merge-token")
+            .contains("--token-file <your-token-file>")
     );
     assert!(
         payload["gh_auth_policy"]["host_auth_boundary"]
@@ -248,6 +245,37 @@ fn capabilities_payload_exposes_the_gh_command_map() {
             .contains("GitHub.com auth and local Jeryu host auth are separate")
     );
     assert!(!payload.to_string().contains("JERYU-TOKEN"));
+}
+
+/// The manifest is anonymous, so its gh-setup guidance names the host the
+/// caller reached — the configured public origin, not the loopback address only
+/// a process on the forge itself can connect to — and asks the caller for their
+/// own token file instead of naming a path on the host.
+#[test]
+fn capabilities_payload_names_the_public_origin_and_no_host_path() {
+    let payload = capabilities_payload(
+        Some("https://forge.example-invented.test/"),
+        &installed_mcp_tools(),
+    );
+    assert_eq!(
+        payload["gh_auth_policy"]["run_instead"],
+        "jeryu gh-setup --host https://forge.example-invented.test --token-file <your-token-file>"
+    );
+    assert!(
+        payload["gh_command_map"]["gh auth login"]
+            .as_str()
+            .expect("gh auth login guidance")
+            .contains("--host https://forge.example-invented.test ")
+    );
+    let served = payload.to_string();
+    assert!(
+        !served.contains("127.0.0.1"),
+        "the manifest offers a loopback host an internet caller cannot reach: {served}"
+    );
+    assert!(
+        !served.contains(".jeryu/secrets"),
+        "the manifest names a path on the host: {served}"
+    );
 }
 
 /// The manifest is built from the live backend catalog, so a tool the `/mcp`
@@ -264,7 +292,7 @@ fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
         tools.contains(MCP_AGENT_WORK_TOOL),
         "the live backend is expected to dispatch {MCP_AGENT_WORK_TOOL}"
     );
-    let payload = capabilities_payload(&tools);
+    let payload = capabilities_payload(None, &tools);
 
     let advertised = payload["mcp_tools"].as_array().expect("mcp_tools array");
     assert!(
@@ -281,7 +309,7 @@ fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
     // Dropping the installed agent-work tool drops its hint too.
     let mut without_agent_work = tools.clone();
     assert!(without_agent_work.remove(MCP_AGENT_WORK_TOOL));
-    let payload = capabilities_payload(&without_agent_work);
+    let payload = capabilities_payload(None, &without_agent_work);
     assert!(payload["gh_auth_policy"].get("agent_auth").is_none());
 }
 
@@ -289,7 +317,7 @@ fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
 #[test]
 fn capabilities_payload_only_names_installed_tools() {
     let installed = installed_mcp_tools();
-    let payload = capabilities_payload(&installed);
+    let payload = capabilities_payload(None, &installed);
     for tool in payload["mcp_tools"].as_array().expect("mcp_tools array") {
         let tool = tool.as_str().expect("tool name");
         assert!(installed.contains(tool), "uninstalled MCP tool: {tool}");
@@ -373,7 +401,7 @@ fn bootstrap_flags_close_write_surfaces_without_a_grant() {
 /// policy from one that is off for want of a grant.
 #[test]
 fn capabilities_payload_explains_every_bootstrap_feature_flag() {
-    let payload = capabilities_payload(&installed_mcp_tools());
+    let payload = capabilities_payload(None, &installed_mcp_tools());
     let notes = payload["web_feature_flags"]["flags"]
         .as_object()
         .expect("feature flag notes object");

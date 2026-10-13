@@ -327,10 +327,11 @@ run the write twice. A repeat while the first still runs answers
 answers `idempotency_key_reused` (use a fresh key). 5xx answers are not kept, so
 a retry after a server error runs the write. A write whose answer holds a
 once-shown secret (bot enrollment, key rotation, agent tokens, token exchange
-and refresh) keeps only a placeholder: a repeat answers 409
-`idempotent_secret_withheld` and still does not run the write twice, and the
-secret never reaches the store. The keys are kept in
-`<data_dir>/shift.sqlite`, so a retry that arrives after a restart or a deploy
+and refresh, personal access token creation, login) keeps only a placeholder: a
+repeat answers 409 `idempotent_secret_withheld` and still does not run the
+write twice, and the secret never reaches the store. A kept answer also carries
+no `Set-Cookie`, so a session published by a write is never left at rest. A successful session-cookie write, including signup and password change, replays as 409 `idempotent_secret_withheld` instead of a success without the session. The
+keys are kept in `<data_dir>/shift.sqlite`, so a retry that arrives after a restart or a deploy
 still replays the first answer; when that store cannot be read the write is
 refused with `idempotency_store_failed` rather than run a second time. `PUT`,
 `PATCH` and `DELETE` set a named resource and are idempotent without a key.
@@ -350,14 +351,14 @@ owner/test-map proof lane and regenerate the witness before retrying merge.
 
 Jeryu does not repair a local-host GitHub CLI problem by running `gh auth login`,
 `gh auth refresh`, scraping `hosts.yml`, or hunting credential stores. Configure
-the host entry with `jeryu gh-setup --host <local-jeryu-url> --token-file
-~/.jeryu/secrets/merge-token`, then use `/api/v1/capabilities`, the Jeryu REST
+the host entry with `jeryu gh-setup --host <the-jeryu-url-you-reached>
+--token-file <your-token-file>`, then use `/api/v1/capabilities`, the Jeryu REST
 routes, or the `jeryu.*` MCP tools for the original PR, CI, issue, or repository
 task.
 
-If `gh` reports a stale or invalid token for an existing local Jeryu host entry,
-rerun `jeryu gh-setup --host <same-local-host> --token-file
-~/.jeryu/secrets/merge-token`. GitHub.com auth and local Jeryu host auth are
+If `gh` reports a stale or invalid token for an existing Jeryu host entry,
+rerun `jeryu gh-setup --host <the-same-host> --token-file
+<your-token-file>`. GitHub.com auth and local Jeryu host auth are
 separate; do not run `gh auth login` for Jeryu hosts. The vault bootstrap file
 at `~/.jeryu/vault/bootstrap.json` contains vault bootstrap material and is not
 the `gh` host repair path.

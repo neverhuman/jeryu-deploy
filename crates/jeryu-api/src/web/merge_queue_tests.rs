@@ -331,6 +331,23 @@ async fn a_pr_behind_main_is_replayed_gated_and_landed() {
     );
 }
 
+/// A union merge can place identical added lines under a different context.
+/// Preserve main's context guard until a stronger equivalence proof is ready.
+#[tokio::test]
+async fn a_replay_under_a_changed_hunk_context_requires_review() {
+    let fx = Fixture::new("shared.txt", "one\ntwo\nthree\nfeature\n");
+    std::fs::write(
+        fx.bare.join("info").join("attributes"),
+        "shared.txt merge=union\n",
+    )
+    .unwrap();
+    let moved = fx.advance_main("shared.txt", "one\ntwo\nthree\nmain\n");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "queue_mismatch");
+    assert_eq!(git(&fx.bare, &["rev-parse", "refs/heads/main"]), moved);
+}
+
 #[tokio::test]
 async fn a_conflicting_replay_is_refused_and_main_is_untouched() {
     let fx = Fixture::new("shared.txt", "one\nFEATURE\nthree\n");

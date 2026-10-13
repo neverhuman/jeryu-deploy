@@ -79,7 +79,8 @@ pub struct Family {
 struct RawManifest {
     schema_version: String,
     repo_family: String,
-    split_root: String,
+    #[serde(default)]
+    split_root: Option<String>,
     required_repos: Vec<String>,
     control_plane: RawControlPlane,
     #[serde(default)]
@@ -119,29 +120,53 @@ enum IdentityStatus {
     Bound,
 }
 
-/// Parse and validate the authority manifest at `path`.
+/// Parse and validate the authority manifest at `path`. The binary resolves
+/// paths through [`read_with_root`]; this is the tests' shorthand.
+#[cfg(test)]
 pub fn read(path: &Path) -> Result<Family> {
-    let source = fs::read_to_string(path)
-        .with_context(|| format!("read the family authority from {}", path.display()))?;
-    parse(&source).with_context(|| format!("family authority {}", path.display()))
+    read_with_root(path, None)
 }
 
-/// Parse and validate authority-manifest text.
+/// Read a family authority, resolving relative member paths from `site_root`
+/// when supplied, or from the manifest directory otherwise.
+pub fn read_with_root(path: &Path, site_root: Option<&Path>) -> Result<Family> {
+    let source = fs::read_to_string(path)
+        .with_context(|| format!("read the family authority from {}", path.display()))?;
+    let manifest_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    parse_at(&source, site_root, manifest_dir)
+        .with_context(|| format!("family authority {}", path.display()))
+}
+
+/// Parse and validate authority-manifest text (the tests' shorthand).
+#[cfg(test)]
 pub fn parse(source: &str) -> Result<Family> {
+    parse_at(source, None, Path::new("."))
+}
+
+fn parse_at(source: &str, site_root: Option<&Path>, manifest_dir: &Path) -> Result<Family> {
     let raw: RawManifest = toml::from_str(source).context("parse the family authority")?;
     if raw.schema_version != "1" {
         bail!("unsupported schema_version {}", raw.schema_version);
     }
-    for (field, value) in [
-        ("repo_family", raw.repo_family.as_str()),
-        ("split_root", raw.split_root.as_str()),
-    ] {
+    for (field, value) in [("repo_family", raw.repo_family.as_str())] {
         if value.trim().is_empty() {
             bail!("manifest missing {field}");
         }
     }
 
-    let mut members = vec![control_plane_member(&raw.control_plane)?];
+    if raw
+        .split_root
+        .as_deref()
+        .is_some_and(|root| root.trim().is_empty())
+    {
+        bail!("manifest split_root must not be blank");
+    }
+
+    let root = site_root
+        .map(PathBuf::from)
+        .or_else(|| raw.split_root.as_deref().map(PathBuf::from))
+        .unwrap_or_else(|| manifest_dir.to_path_buf());
+    let mut members = vec![control_plane_member(&raw.control_plane, &root)?];
     for repo in &raw.repo {
         if repo.inventory_status.trim().is_empty() {
             bail!("{} missing inventory_status", repo.name);
@@ -149,7 +174,7 @@ pub fn parse(source: &str) -> Result<Family> {
         if repo.inventory_status != "active" {
             continue;
         }
-        members.push(repository_member(repo)?);
+        members.push(repository_member(repo, &root)?);
     }
 
     let mut names = BTreeSet::new();
@@ -187,12 +212,12 @@ pub fn parse(source: &str) -> Result<Family> {
 
     Ok(Family {
         repo_family: raw.repo_family,
-        split_root: PathBuf::from(raw.split_root),
+        split_root: root,
         members,
     })
 }
 
-fn control_plane_member(control: &RawControlPlane) -> Result<Member> {
+fn control_plane_member(control: &RawControlPlane, root: &Path) -> Result<Member> {
     let tag = match (control.identity_status, control.predecessor_tag.trim()) {
         (IdentityStatus::Bound, tag) if !tag.is_empty() => Some(tag.to_owned()),
         (IdentityStatus::Bound, _) => bail!("{} is bound without a tag", control.name),
@@ -205,7 +230,7 @@ fn control_plane_member(control: &RawControlPlane) -> Result<Member> {
     }
     member(
         &control.name,
-        &control.path,
+        &resolve_member_path(&control.path, root),
         &control.jeryu_slug,
         &control.required_check,
         &control.default_branch,
@@ -214,7 +239,7 @@ fn control_plane_member(control: &RawControlPlane) -> Result<Member> {
     )
 }
 
-fn repository_member(repo: &RawRepository) -> Result<Member> {
+fn repository_member(repo: &RawRepository, root: &Path) -> Result<Member> {
     let tag = match (repo.identity_status, repo.current_tag.as_deref()) {
         (IdentityStatus::Bound, Some(tag)) if !tag.trim().is_empty() => Some(tag.trim().to_owned()),
         (IdentityStatus::Bound, _) => bail!("{} is bound without a current_tag", repo.name),
@@ -225,13 +250,22 @@ fn repository_member(repo: &RawRepository) -> Result<Member> {
     };
     member(
         &repo.name,
-        &repo.path,
+        &resolve_member_path(&repo.path, root),
         &repo.jeryu_slug,
         &repo.required_check,
         &repo.default_branch,
         &repo.runtime_authority,
         tag,
     )
+}
+
+fn resolve_member_path(path: &str, root: &Path) -> String {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_string_lossy().into_owned()
+    } else {
+        root.join(path).to_string_lossy().into_owned()
+    }
 }
 
 fn member(

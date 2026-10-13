@@ -266,12 +266,14 @@ fn edit_sets_the_title_body_and_repos_and_refuses_a_repo_the_family_lacks() {
     let request: TodoActionRequest = serde_json::from_value(json!({
         "action": "edit", "title": "  Pin jeryu-web  ", "body": "do the thing",
         "repos": ["jeryu-web"],
+        "reworks": ["20261001-120000-aaaaaa"],
     }))
     .unwrap();
     act(&mut todo, &request).expect("edit");
     assert_eq!(todo.title, "Pin jeryu-web");
     assert_eq!(todo.body, "do the thing");
     assert_eq!(todo.repos, vec!["jeryu-web".to_string()]);
+    assert_eq!(todo.reworks, vec!["20261001-120000-aaaaaa".to_string()]);
     // A title and repos are exactly what triage is, so the edit triages it.
     assert!(todo.triaged);
     assert_eq!(todo.status, TodoStatus::Open, "edit moved the lifecycle");

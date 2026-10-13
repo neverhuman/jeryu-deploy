@@ -2,7 +2,10 @@ use std::path::Path;
 
 use axum::http::{Method as HttpMethod, Request, StatusCode, header};
 use chrono::{SecondsFormat, TimeZone, Utc};
-use jeryu_core::{CreateRepositoryRequest, ForgeCore, UserRole};
+use jeryu_core::{
+    CheckConclusion, CheckRunStatus, CreateCheckRunRequest, CreateRepositoryRequest, ForgeCore,
+    UserRole,
+};
 use jeryu_gitd::{GitdConfig, RepoManager};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -72,6 +75,20 @@ fn todoq_files_round_trip_byte_for_byte() {
     assert_eq!(api.worked_by[0].slot, "w2");
     assert_eq!(api.commits["jeryu-web"], "0123456789abcdef");
     assert!(!api.lease_live);
+}
+
+#[test]
+fn reworks_front_matter_accepts_one_id_or_a_list_and_reaches_the_api() {
+    for (value, expected) in [
+        ("\"one\"", vec!["one"]),
+        ("[\"one\", \"two\"]", vec!["one", "two"]),
+    ] {
+        let text = format!("+++\nid = \"todo\"\nreworks = {value}\n+++\nwork\n");
+        let file = TodoFile::parse(&text).unwrap();
+        assert_eq!(file.reworks, expected);
+        assert_eq!(file.to_api(Utc::now()).reworks, expected);
+        assert!(TodoFile::parse(&file.dump()).is_ok());
+    }
 }
 
 /// A todo todoq wrote with the cost fields: routed attempts, a killed one
@@ -1169,6 +1186,200 @@ async fn todos_route_derives_merged_released_and_pr() {
     assert_eq!(released["released"], true);
 }
 
+#[tokio::test]
+async fn todos_route_reports_partial_landing_and_rescued_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let owner = root.join("acme");
+    std::fs::create_dir_all(&owner).unwrap();
+
+    let api = root.join("work-api");
+    std::fs::create_dir_all(&api).unwrap();
+    run_git(&api, &["init", "-q"]);
+    std::fs::write(api.join("README"), "api\n").unwrap();
+    run_git(&api, &["add", "."]);
+    run_git(
+        &api,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "land api\n\nTodo: 20261013-120000-abcdef",
+        ],
+    );
+    let landed_api = run_git(&api, &["rev-parse", "HEAD"]);
+    run_git(&owner, &["init", "-q", "--bare", "acme-api.git"]);
+    run_git(
+        &api,
+        &[
+            "push",
+            "-q",
+            owner.join("acme-api.git").to_str().unwrap(),
+            "main",
+        ],
+    );
+
+    let web = root.join("work-web");
+    std::fs::create_dir_all(&web).unwrap();
+    run_git(&web, &["init", "-q"]);
+    std::fs::write(web.join("README"), "web\n").unwrap();
+    run_git(&web, &["add", "."]);
+    run_git(&web, &["commit", "-q", "-m", "base"]);
+    run_git(
+        &web,
+        &[
+            "checkout",
+            "-q",
+            "-b",
+            "todoq-rescue/20261013-120000-abcdef",
+        ],
+    );
+    std::fs::write(web.join("README"), "web rescue\n").unwrap();
+    run_git(&web, &["commit", "-q", "-am", "rescue web"]);
+    let rescue_web = run_git(&web, &["rev-parse", "HEAD"]);
+    run_git(&owner, &["init", "-q", "--bare", "acme-web.git"]);
+    run_git(
+        &web,
+        &[
+            "push",
+            "-q",
+            owner.join("acme-web.git").to_str().unwrap(),
+            "main",
+            "todoq-rescue/20261013-120000-abcdef",
+        ],
+    );
+
+    let queue = root.join("work-todo");
+    std::fs::create_dir_all(queue.join("todos")).unwrap();
+    run_git(&queue, &["init", "-q"]);
+    std::fs::write(
+        queue.join("family.toml"),
+        r#"
+[family]
+name = "acme"
+base_branch = "main"
+landing = "shifts"
+
+[[repo]]
+name = "acme-api"
+order = 1
+
+[[repo]]
+name = "acme-web"
+order = 2
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        queue.join("todos/20261013-120000-abcdef-partial.md"),
+        format!(
+            r#"+++
+id = "20261013-120000-abcdef"
+family = "acme"
+title = "Ship partial landing facts"
+repos = ["acme-api", "acme-web"]
+mode = "night"
+priority = 3
+blocked_by = []
+status = "blocked"
+attempts = 1
+requested_by = "operator"
+filed_at = "2026-10-13T12:00:00Z"
+claim_by = ""
+lease_until = ""
+shift = "nightshift/2026-10-12"
+change_set = "cs-1"
+commits = {{ "acme-api" = "{landed_api}" }}
+merged = false
+note = "could not land acme-web on nightshift/2026-10-12: the gate failed after rebasing onto the target: todoq/gate; finished work kept on todoq-rescue/20261013-120000-abcdef in acme-web; already landed: {{'acme-api': '{landed_api}'}} (partial change set cs-1)"
+triaged = true
+worked_by = []
++++
+body
+"#
+        ),
+    )
+    .unwrap();
+    run_git(&queue, &["checkout", "-q", "-b", "queue"]);
+    run_git(&queue, &["add", "."]);
+    run_git(&queue, &["commit", "-q", "-m", "seed acme queue"]);
+    run_git(&owner, &["init", "-q", "--bare", "acme-todo.git"]);
+    run_git(
+        &queue,
+        &[
+            "push",
+            "-q",
+            owner.join("acme-todo.git").to_str().unwrap(),
+            "queue",
+        ],
+    );
+
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    for repo in ["acme-todo", "acme-api", "acme-web"] {
+        core.create_repository(
+            "acme",
+            CreateRepositoryRequest {
+                name: repo.to_string(),
+                private: false,
+                description: None,
+                default_branch: Some(if repo == "acme-todo" { "queue" } else { "main" }.into()),
+            },
+        )
+        .unwrap();
+    }
+    core.create_check_run(
+        "acme",
+        "acme-web",
+        CreateCheckRunRequest {
+            name: "todoq/gate".to_string(),
+            head_sha: rescue_web.clone(),
+            status: Some(CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let router = app(
+        WebState::new_with_git_storage(core, root.to_path_buf()).with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+
+    let body = body_json(
+        router
+            .oneshot(request(
+                HttpMethod::GET,
+                "/api/v1/shift/todos?family=acme&status=blocked",
+                &admin,
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let landing = body["todos"][0]["landing"].as_array().unwrap();
+    let api = landing
+        .iter()
+        .find(|entry| entry["repo"] == "acme-api")
+        .unwrap();
+    assert_eq!(api["state"], "landed");
+    assert_eq!(api["sha"], landed_api);
+    let web = landing
+        .iter()
+        .find(|entry| entry["repo"] == "acme-web")
+        .unwrap();
+    assert_eq!(web["state"], "gate_failed");
+    assert_eq!(web["rescue_branch"], "todoq-rescue/20261013-120000-abcdef");
+    assert_eq!(web["rescue_sha"], rescue_web);
+    assert_eq!(web["rescue_ahead"], 1);
+    assert_eq!(web["check"], "todoq/gate");
+}
+
 /// The jain queue is `jain-split/jain-todo` while its code is `veox/*`: a
 /// family repo hosted under another owner than its queue still lists its
 /// shift branches and gets its review PR.
@@ -1746,4 +1957,89 @@ async fn a_named_reporter_may_beat_but_may_not_act_on_todos() {
             .unwrap();
         assert_eq!(workers.status(), StatusCode::OK);
     }
+}
+
+#[tokio::test]
+async fn rework_edits_reject_self_missing_duplicate_and_cyclic_targets_without_mutating() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, admin) = crate::web::pipeline::tests::shift_forge(dir.path());
+    let mut ids = Vec::new();
+    for text in ["original", "rework one", "rework two"] {
+        let response = router
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                "/api/v1/shift/todos",
+                &admin,
+                Some(json!({"family":"jeryu", "text":text, "mode":"now"})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        ids.push(
+            body_json(response).await["id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    for (source, target) in [(1, 0), (2, 1)] {
+        let response = router
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                &format!("/api/v1/shift/todos/jeryu/{}/action", ids[source]),
+                &admin,
+                Some(json!({"action":"edit", "reworks":[ids[target]]})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{}",
+            body_json(response).await
+        );
+    }
+    for targets in [
+        vec![ids[0].clone()],
+        vec!["missing-id".into()],
+        vec![ids[1].clone(), ids[1].clone()],
+        vec![ids[2].clone()],
+        vec!["".into()],
+    ] {
+        let response = router
+            .clone()
+            .oneshot(request(
+                HttpMethod::POST,
+                &format!("/api/v1/shift/todos/jeryu/{}/action", ids[0]),
+                &admin,
+                Some(json!({"action":"edit", "reworks":targets})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            body_json(response).await
+        );
+    }
+    let response = router
+        .oneshot(request(
+            HttpMethod::GET,
+            "/api/v1/shift/todos?family=jeryu",
+            &admin,
+            None,
+        ))
+        .await
+        .unwrap();
+    let listed = body_json(response).await;
+    let original = listed["todos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|todo| todo["id"] == ids[0])
+        .unwrap();
+    assert_eq!(original["reworks"], json!([]));
 }

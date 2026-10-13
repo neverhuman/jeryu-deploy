@@ -8,7 +8,8 @@ use chrono::{DateTime, Utc};
 use super::{
     BRANCH_CAMPAIGN_PRS, Draft, Hosts, Item, MERGER_STALLED_MINUTES, PullLink,
     QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES, Severity, Shell,
-    enqueue_call, parse_time, pull_href, ready_for_review_call, regate_call, web_pin_bump_prs,
+    close_pull_call, enqueue_call, parse_time, pull_href, ready_for_review_call, regate_call,
+    web_pin_bump_prs,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
@@ -37,6 +38,61 @@ pub(crate) struct PullFacts {
     /// Set when the change is already on the base branch, so the only step
     /// left is to close the pull request ([`landed_item`]).
     pub landed: Option<Landed>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SupersededPullFacts {
+    pub repo: String,
+    pub author: String,
+    pub base_ref: String,
+    pub source_repository: String,
+    pub number: u64,
+    pub title: String,
+    pub body: Option<String>,
+    pub head_ref: String,
+    pub created_at: DateTime<Utc>,
+    pub status: &'static str,
+}
+
+/// One action row for each older open pull request replaced by a later pull.
+pub(crate) fn superseded_pull_items(pulls: &[SupersededPullFacts]) -> Vec<Item> {
+    pulls.iter().filter(|old| old.status == "open").filter_map(|old| {
+        let replacement = pulls.iter().filter(|new| new.repo == old.repo
+            && !old.author.trim().is_empty()
+            && new.author.eq_ignore_ascii_case(&old.author)
+            && new.base_ref == old.base_ref
+            && source_repository(new) == source_repository(old)
+            && new.status != "closed" && new.created_at > old.created_at && (explicitly_replaces(new, old.number) || new.head_ref.strip_prefix(&old.head_ref).is_some_and(|suffix| suffix.starts_with("-r") && suffix[2..].parse::<u32>().is_ok())))
+            .max_by_key(|new| new.created_at)?;
+        let label = format!("{}#{}", old.repo, old.number);
+        let state = if replacement.status == "merged" { "merged" } else { "open" };
+        let mut item = Draft { id: format!("pr-superseded:{}:{}", old.repo, old.number), kind: "pr_superseded", severity: Severity::Action,
+            title: format!("{label} was replaced by {}#{}", replacement.repo, replacement.number),
+            reason: format!("\"{}\" was superseded by \"{}\" ({}). Close the older pull request and leave a comment pointing to its replacement.", old.title, replacement.title, state),
+            href: pull_href(&old.repo, old.number), label: "Close it and point to the replacement", api: Some(close_pull_call(&old.repo, old.number)), command: None }.build();
+        item.repo = Some(old.repo.clone()); item.pr = Some(old.number); Some(item)
+    }).collect()
+}
+
+fn source_repository(pr: &SupersededPullFacts) -> &str {
+    if pr.source_repository.trim().is_empty() {
+        &pr.repo
+    } else {
+        &pr.source_repository
+    }
+}
+
+fn explicitly_replaces(pr: &SupersededPullFacts, number: u64) -> bool {
+    let text = format!("{} {}", pr.title, pr.body.as_deref().unwrap_or("")).to_ascii_lowercase();
+    ["replaces", "supersedes"].iter().any(|verb| {
+        let needle = format!("{verb} #{number}");
+        text.match_indices(&needle).any(|(start, _)| {
+            text[start + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !next.is_ascii_digit())
+        })
+    })
 }
 
 #[derive(Clone, Debug)]

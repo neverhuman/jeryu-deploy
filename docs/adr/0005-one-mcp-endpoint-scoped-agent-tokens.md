@@ -79,8 +79,10 @@ working, unchanged, for hosts that already use them.
   transport withhold local-dev trust from any request carrying a forwarding
   header (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP` and the common CDN
   variants); a proxy that sends none of them still looks local.
-- Secrets that are shown once (enrollment keys, agent tokens, exchanged tokens)
-  are never kept by the idempotency store.
+- Secrets that are shown once (enrollment keys, agent tokens, exchanged tokens,
+  personal access tokens, session cookies) are never kept by the idempotency
+  store: their answer is kept as a placeholder, and no kept answer carries
+  `Set-Cookie`.
 - Existing personal-token MCP callers on the forge host stop working until the
   operator lists their peer address in `JERYU_MCP_PERSONAL_TOKEN_PEERS`; moving
   them to agent tokens is the intended path.

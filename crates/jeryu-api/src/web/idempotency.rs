@@ -216,6 +216,17 @@ fn rendered_headers(headers: &HeaderMap) -> String {
     serde_json::to_string(&pairs).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// A kept answer never carries a session cookie: a route that publishes one
+/// hands out a credential, and the kept copy would leave it at rest outside
+/// the credential store. The live answer keeps its own `Set-Cookie`.
+fn without_set_cookie(headers: &HeaderMap) -> HeaderMap {
+    headers
+        .iter()
+        .filter(|(name, _)| *name != header::SET_COOKIE)
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
 fn kept_reply(status: i64, headers: Option<String>, body: Option<Vec<u8>>) -> Option<KeptReply> {
     let status = u16::try_from(status)
         .ok()
@@ -320,12 +331,14 @@ pub(super) async fn replay(
             "response body could not be read",
         );
     };
-    let kept = if secret_route && parts.status.is_success() {
+    let kept = if (secret_route || parts.headers.contains_key(header::SET_COOKIE))
+        && parts.status.is_success()
+    {
         secret_withheld_reply()
     } else {
         KeptReply {
             status: parts.status,
-            headers: parts.headers.clone(),
+            headers: without_set_cookie(&parts.headers),
             body: bytes.clone(),
         }
     };
@@ -340,14 +353,22 @@ fn applies(method: &Method, path: &str) -> bool {
             .any(|prefix| path.starts_with(prefix))
 }
 
-/// Bot enrollment, key rotation, agent-token issue, token exchange and token
-/// refresh answer with a secret. Their successful answer is not kept as is: a
-/// placeholder without the secret is, so a retry with the same key still does
-/// not run the write twice, and the secret never reaches the store.
+/// Bot enrollment, key rotation, agent-token issue, token exchange, token
+/// refresh, personal-access-token creation and login answer with a secret
+/// (the last two with the plaintext token and the session cookie). Their
+/// successful answer is not kept as is: a placeholder without the secret is,
+/// so a retry with the same key still does not run the write twice, and the
+/// secret never reaches the store.
 fn returns_a_secret(path: &str) -> bool {
     if matches!(
         path,
-        "/api/v1/bots" | "/api/v1/bot/token" | "/api/v1/bot/token/refresh"
+        "/api/v1/bots"
+            | "/api/v1/bot/token"
+            | "/api/v1/bot/token/refresh"
+            | "/api/v1/auth/tokens"
+            | "/api/v1/auth/login"
+            | "/api/v1/auth/signup"
+            | "/api/v1/auth/password"
     ) {
         return true;
     }
@@ -450,6 +471,10 @@ mod tests {
             "/api/v1/bots/4f1c/tokens",
             "/api/v1/bot/token",
             "/api/v1/bot/token/refresh",
+            "/api/v1/auth/tokens",
+            "/api/v1/auth/login",
+            "/api/v1/auth/signup",
+            "/api/v1/auth/password",
         ] {
             assert!(returns_a_secret(path), "{path}");
             assert!(applies(&Method::POST, path), "{path}");
@@ -458,6 +483,7 @@ mod tests {
             "/api/v1/bots/4f1c/suspend",
             "/api/v1/bots/4f1c/revoke",
             "/api/v1/bots/4f1c/tokens/abc/revoke",
+            "/api/v1/auth/logout",
         ] {
             assert!(!returns_a_secret(path), "{path}");
             assert!(applies(&Method::POST, path), "{path}");
@@ -465,6 +491,7 @@ mod tests {
     }
     use axum::Router;
     use axum::middleware::from_fn_with_state;
+    use axum::response::IntoResponse;
     use axum::routing::post;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
@@ -646,6 +673,83 @@ mod tests {
             restarted.reserve("s", print, now),
             Reservation::Reserved
         ));
+    }
+
+    /// A route that publishes a session cookie keeps no copy of it: the
+    /// retry explains that the credential was shown once, never a false success.
+    #[tokio::test]
+    async fn a_kept_answer_carries_no_session_cookie() {
+        let handler = || async {
+            let mut response = (StatusCode::CREATED, "rotated".to_string()).into_response();
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                HeaderValue::from_static("jeryu_session=s3cret; HttpOnly"),
+            );
+            response
+        };
+        let app = Router::new()
+            .route("/api/v1/auth/password", post(handler))
+            .layer(from_fn_with_state(IdempotencyStore::in_memory(), replay));
+        let first = send(&app, "/api/v1/auth/password", Some("k1"), "token a", "{}").await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+        assert!(first.headers().contains_key(header::SET_COOKIE));
+
+        let again = send(&app, "/api/v1/auth/password", Some("k1"), "token a", "{}").await;
+        assert_eq!(again.headers()[REPLAYED], "true");
+        assert!(!again.headers().contains_key(header::SET_COOKIE));
+        assert_eq!(again.status(), StatusCode::CONFLICT);
+        assert!(text(again).await.contains("idempotent_secret_withheld"));
+    }
+
+    #[tokio::test]
+    async fn any_successful_session_cookie_write_replays_as_withheld_without_repeating() {
+        let store = IdempotencyStore::in_memory();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let handler = move || {
+            let counted = counted.clone();
+            async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut response = (StatusCode::CREATED, "created session").into_response();
+                response.headers_mut().insert(
+                    header::SET_COOKIE,
+                    HeaderValue::from_static("jeryu_session=s3cret; HttpOnly"),
+                );
+                response
+            }
+        };
+        let app = Router::new()
+            .route("/api/v1/future-session-write", post(handler))
+            .layer(from_fn_with_state(store.clone(), replay));
+        let first = send(
+            &app,
+            "/api/v1/future-session-write",
+            Some("k"),
+            "token a",
+            "{}",
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+        assert!(first.headers().contains_key(header::SET_COOKIE));
+        let again = send(
+            &app,
+            "/api/v1/future-session-write",
+            Some("k"),
+            "token a",
+            "{}",
+        )
+        .await;
+        assert_eq!(again.status(), StatusCode::CONFLICT);
+        assert!(text(again).await.contains("idempotent_secret_withheld"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let (headers, body): (String, Vec<u8>) = store
+            .lock()
+            .query_row("SELECT headers, body FROM idempotency_keys", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert!(!headers.contains("s3cret"));
+        assert!(!String::from_utf8(body).unwrap().contains("created session"));
     }
 
     #[test]

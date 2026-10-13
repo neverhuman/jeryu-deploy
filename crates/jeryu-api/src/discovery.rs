@@ -114,7 +114,7 @@ pub(crate) fn rest_document() -> Value {
         "jeryu_api_routes": crate::github::V3_ROUTES,
         "auth": {
             "schemes": ["Bearer <token>", "Basic <login>:<token>"],
-            "host_setup": crate::github::GH_SETUP_COMMAND,
+            "host_setup": crate::github::gh_setup_command(),
             "boundary": crate::github::GH_AUTH_BOUNDARY,
         },
         "faster_paths": {

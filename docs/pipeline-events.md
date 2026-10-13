@@ -424,6 +424,7 @@ that wants linear history, deciding a title.
 | `todo_blocked` (`handoff`, `agent_blocked`), `todo_handoff`, `todo_parked` (`action`) | the same route with `{"action": "release"}` |
 | `pr_draft_waiting` | `POST /api/v1/repos/<owner>/<name>/pulls/<n>/ready` |
 | `pr_ready_to_merge` | `POST /api/v1/repos/<owner>/<name>/pulls/<n>/queue` |
+| `pr_superseded` | `PATCH /api/v3/repos/<owner>/<name>/pulls/<n>` with `{"state":"closed"}`; the row names the replacement to cite when closing; both PRs must share the author, base and source repository |
 | `queue_failed` | the same: the entry is retried by queueing it again once the reason is fixed |
 | `queue_refused` (a code with no step of its own) | the same |
 
@@ -604,6 +605,18 @@ person that work is waiting for a tag.
   its sha; a repo that ships inside another's release is looked up in that
   deployment's payload as `<repo_name_with_underscores>_commit`
   (`jeryu_web_commit`).
+- `landing`: one row per repo the todo names or records, so `/work/<id>` can
+  link landed and saved work without parsing `note`. Each row has `repo` and
+  `state` (`landed`, `gate_failed`, `conflict`, `push_race`, `kept`, or
+  `pending`). Optional fields appear only when known: `target` (the branch
+  todoq tried to land on), `sha`, `main_sha` (the commit on the base branch,
+  found by ancestry or the `Todo: <id>` trailer), `rescue_branch`,
+  `rescue_sha`, `rescue_ahead` (rescue commits not already on the base by
+  patch), `failing` (up to ten failing step or test names), and `check` (a
+  check run name on `rescue_sha`, such as `todoq/gate`). The server first reads
+  a structured `landing` front-matter value when todoq writes one, then falls
+  back to todoq's fixed note wording and the todo's `commits`, and finally
+  verifies rescue branches in the hosted repo.
 - `pr`: `{repo, number, state, url}` or null, the shift pull request that
   carries the todo; `prs` lists one per repo it committed to. `repo` is the
   family repo name, as in `commits`. `state` is the core pull request state
@@ -615,6 +628,8 @@ person that work is waiting for a tag.
   model runs it, as the claiming worker wrote them; null unless the todo is
   `claimed` (an attempt reaches `worked_by` only once it ends) and from older
   workers.
+- `reworks`: todo ids this todo redoes. API edits accept at most 64 unique IDs in the same queue and refuse missing targets, self-reference and cycles. Read from optional front matter as one
+  string or a list. Editing a todo can set or clear this relationship.
 - `worked_by[]` attempts carry, besides `by, host, slot, model, session,
   started, ended, outcome, cost_usd, note, shift`, whichever of these the file
   has (omitted when it has not): `agent` (harness CLI, e.g. `claude` or
@@ -759,18 +774,22 @@ Where a todo ended up: **main** when merged; **scrap** when `blocked`,
 ```
 
 `Row` (money in USD, rates 0..1, null when undefined): `todos`, `attempts`,
-`merged`, `first_pass`, `spend_usd` (= `author_usd + review_usd +
-triage_usd`), `author_usd`, `review_usd`, `triage_usd`, `main_usd`,
+`merged`, `first_pass`, `reworked`, `rework_usd`, `spend_usd` (= `author_usd + review_usd +
+triage_usd` for the arm's own todos), `author_usd`, `review_usd`, `triage_usd`, `main_usd`,
 `scrap_usd`, `pending_usd`, `killed_usd` (attempts with outcome `killed`),
 `estimated_usd` (attempts with `cost_estimated`), `yield` (`main_usd /
-(main_usd + scrap_usd)`), `usd_per_merged` (`main_usd / merged`),
+(main_usd + scrap_usd)`), `usd_per_merged` (`(main_usd + rework_usd) / merged`),
 `usd_per_merged_ci95` (`[lo, hi]`, mean ± 1.96·sd/√n over the whole spend of
 each merged todo landing in the group; null below two), `first_pass_rate`
 (`first_pass / merged`). A merged todo is a first pass when exactly one of its
-attempts is not `ratelimit`, `retarget` or `killed`. An experiment arm has
+attempts is not `ratelimit`, `retarget` or `killed`, and no todo names it in
+`reworks`. A reworked todo's spend is also charged as `rework_usd` and
+`reworked` to the original todo's landing arm. A todo with its own `reworks`
+relationship is marked `rework` in `TodoRef`, while its spend stays with its
+landing arm. An experiment arm has
 `enough_data` once it has 20 merged todos.
 
-`TodoRef`: `{id, family, title, status, merged, spend_usd, attempts, agent,
+`TodoRef`: `{id, family, title, status, merged, rework, spend_usd, attempts, agent,
 model}`, agent and model of the landing attempt.
 
 ## Flow
