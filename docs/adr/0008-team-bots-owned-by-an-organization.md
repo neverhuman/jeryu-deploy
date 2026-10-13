@@ -55,7 +55,10 @@ a login (`repo_access_for`).
    from the steward team, revokes the tokens that steward issued, because they
    may still have a copy; tokens issued by other stewards keep working. A
    steward can revoke every token they issued in one action. Suspending or
-   revoking the bot ends all of its tokens, as in 0005.
+   revoking the bot ends all of its tokens, as in 0005. A team bot
+   authenticates with agent tokens only: its enrollment key is never
+   exchangeable, so no credential a steward once saw outlives their
+   stewardship.
 5. **A team bot is never a person.** It acts, authors and is audited as
    `<organization>.<slug>[bot]`, a name no account can have, and that name
    resolves to the bot's own grants wherever a login's access is checked. It
