@@ -27,6 +27,9 @@ authority. Durable detail is intentionally routed rather than duplicated:
   `agent/generated-zones.toml`, and `docs/generated-zones.md`.
 - Audit and release controls: `agent/audit-policy.toml`, `docs/audit-rubric.md`,
   and `scripts/release/README.md` (the release procedure; run it on the release host only).
+- Running a forge: every environment variable it reads, with defaults and
+  formats, in `configs/jeryu.env.example`; how to load it, the minimal and
+  production sets, and how to check them in `docs/configuration.md`.
 - Tool-finder scheduled scan and proposal decisions: `docs/tool-finder.md`.
 - Account Grokbots and Musebots (enroll, reach, setup, edge): `docs/bots.md`.
 - Page to hand an external agent so it connects itself (MCP, REST, git):

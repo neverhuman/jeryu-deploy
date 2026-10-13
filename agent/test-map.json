@@ -105,6 +105,16 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
+    "configs/jeryu.env.example": {
+      "command": "cargo test --locked --offline -p jeryu-api --features web --test operator_env_reference",
+      "lane": "check",
+      "purpose": "prove the operator env reference lists every variable the server reads and none it no longer reads"
+    },
+    "crates/jeryu-api/tests/operator_env_reference.rs": {
+      "command": "cargo test --locked --offline -p jeryu-api --features web --test operator_env_reference",
+      "lane": "check",
+      "purpose": "prove the operator env reference lists every variable the server reads and none it no longer reads"
+    },
     "crates/jeryu-api/tests/jankurai_governance.rs": {
       "command": "cargo test --locked --offline -p jeryu-api --features web --test jankurai_governance",
       "lane": "check",
