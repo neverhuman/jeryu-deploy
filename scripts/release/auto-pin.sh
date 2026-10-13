@@ -32,6 +32,15 @@
 #      this repository, only while the branch is still its head, never one an open pull request
 #      uses and never the current web head's. A refused delete is logged with git's reason.
 #
+#      It then closes its own open bump pull requests that have nothing left to land: every commit
+#      of the bump is already on jeryu-deploy main as another commit, and merging it would leave
+#      main's tree as it is. #184 and #193 stayed open after the same pin reached main by another
+#      route; #193 was gated anyway, hit a flaky test and asked for a human about a change that had
+#      already shipped. The close names the commit the work landed as, in a comment first so the
+#      reason survives the close. Only this repository's auto/pin-web-* pull requests, and only
+#      while git says both of those things; the branch goes on a later tick's prune. Which branches
+#      are candidates is asked of git alone, so a tick with no landed bump sends no extra request.
+#
 #   7. Every tick ends with one runner heartbeat (`<host>/auto-pin`, label `automation`), so
 #      /runners shows the timer alive and the last thing it did: opened a bump, is waiting behind
 #      one or for the web gate, or failed on a head. Best-effort: it never fails or delays a tick.
@@ -196,6 +205,81 @@ prune_branches() {
   else bump_refs >"$state/prune-seen" || : >"$state/prune-seen"; fi
 }
 
+# landed_sha REPO_DIR UPSTREAM REF -> the commit of UPSTREAM that already carries REF's work, when
+# merging REF would land nothing; exit 1 otherwise. REF is a no-op only when it has commits of its
+# own, every one of them is already upstream (git cherry marks it "-"), AND merging it produces
+# exactly upstream's tree. Both, because a commit whose patch is upstream may also take away
+# something upstream has. Anything git cannot answer is "not a no-op", so nothing is closed on a
+# guess. The landing commit is found by patch id over what upstream gained since REF's base; with no
+# twin there (a squash, a rebase that reworded) upstream's tip is named instead.
+# jeryu-ci-runner's gate decides the same thing the same way (gate_noop_landing in
+# ops/pr-gate/bin/pr-gate-state.sh) and answers such a head green without a build.
+patch_id() { # REPO_DIR COMMIT -> its patch identity, or nothing (a merge commit has none)
+  local identity
+  identity="$(git -C "$1" diff-tree --patch --no-commit-id --root "$2" 2>/dev/null | git patch-id --stable)" || return 1
+  [ -n "$identity" ] || return 1
+  printf '%s' "${identity%% *}"
+}
+landed_sha() {
+  local dir="$1" upstream="$2" ref="$3" own line newest="" tree merged identity candidate landing=""
+  own="$(git -C "$dir" cherry "$upstream" "$ref" 2>/dev/null)" || return 1
+  [ -n "$own" ] || return 1
+  while read -r line; do
+    case "$line" in "- "*) newest="${line#- }" ;; *) return 1 ;; esac
+  done <<<"$own"
+  tree="$(git -C "$dir" rev-parse --verify "$upstream^{tree}" 2>/dev/null)" || return 1
+  merged="$(git -C "$dir" merge-tree --write-tree "$upstream" "$ref" 2>/dev/null)" || return 1
+  [ "$merged" = "$tree" ] || return 1
+  identity="$(patch_id "$dir" "$newest")" || identity=""
+  if [ -n "$identity" ]; then
+    while read -r candidate; do
+      [ "$(patch_id "$dir" "$candidate")" = "$identity" ] || continue
+      landing="$candidate"; break
+    done < <(git -C "$dir" rev-list --max-count=2000 "$ref..$upstream" 2>/dev/null)
+  fi
+  [ -n "$landing" ] || landing="$(git -C "$dir" rev-parse --verify "$upstream" 2>/dev/null)" || return 1
+  printf '%s' "$landing"
+}
+
+# close_landed_bumps: close this repository's open auto/pin-web-* pull requests whose content is
+# already on main (see the header, step 6). git decides which branches are candidates, so the pull
+# requests are listed only when there is one; each close is a comment naming the landing commit and
+# then the state change, and a refusal is logged and tried again on the next tick.
+# Best-effort: it never fails a tick.
+close_landed_bumps() {
+  local refs sha ref name number landing rows=""
+  [ -z "$token_problem" ] || return 0
+  refs="$(git ls-remote "$remote" 'refs/heads/auto/pin-web-*' 2>/dev/null)" || return 0
+  [ -n "$refs" ] || return 0
+  git -C "$cache" fetch -q --prune "$remote" \
+    '+refs/heads/auto/pin-web-*:refs/auto-pin/bumps/pin-web-*' 2>/dev/null || return 0
+  while read -r sha ref; do
+    name="${ref#refs/heads/}"
+    landing="$(landed_sha "$cache" refs/heads/main "refs/auto-pin/bumps/${name#auto/}")" || continue
+    rows="$rows$name $sha $landing"$'\n'
+  done <<<"$(tr '\t' ' ' <<<"$refs")"
+  [ -n "$rows" ] || return 0
+  list_pulls || return 0
+  while read -r name sha landing; do
+    [ -n "$name" ] || continue
+    number="$(jq -r --arg b "$name" --arg sha "$sha" --arg repo "$repo_path" '
+      [.[] | select(.state == "open" and .head.ref == $b and .head.sha == $sha
+        and .head.repo.full_name == $repo)][0].number // empty' <<<"$pulls")"
+    [ -n "$number" ] || continue
+    # The comment goes first: it is the reason the pull request was closed, and a close whose
+    # comment never arrived would say nothing. A refused comment leaves it open for a person.
+    jq -n --arg landing "$landing" --arg name "$name" '{body: ("Closing this bump: its change is already on main as `\($landing)`, and merging it would leave main exactly as it is, so there is nothing left for it to land. Branch `\($name)` is deleted by a later tick.\n\nClosed by the release automation that opened it.")}' \
+      | api POST "/api/v3/repos/$repo_path/issues/$number/comments" --data-binary @- >/dev/null 2>&1 \
+      || { say "could not comment on #$number before closing it (ignored); leaving it open"; continue; }
+    if printf '{"state":"closed"}' \
+      | api PATCH "/api/v3/repos/$repo_path/pulls/$number" --data-binary @- >/dev/null 2>&1; then
+      say "closed #$number ($name): already on main as ${landing:0:12}"
+    else
+      say "could not close #$number ($name; ignored): it is already on main as ${landing:0:12}"
+    fi
+  done <<<"$rows"
+}
+
 main="$(git ls-remote "$remote" refs/heads/main | cut -f1)"
 head="$(git ls-remote "$web_remote" refs/heads/main | cut -f1)"
 [[ "$main" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve jeryu-deploy main ($main)"; exit 1; }
@@ -205,6 +289,7 @@ cache="$state/jeryu-deploy.git"
 [ -d "$cache" ] || git clone -q --bare "$remote" "$cache"
 git -C "$cache" fetch -q "$remote" "+refs/heads/main:refs/heads/main"
 prune_branches
+close_landed_bumps
 # The jeryu-web [[repo]] block of the lock, as build-web-dist.sh reads it.
 pin="$(git -C "$cache" show "$main:$lock_file" | awk '
   /^\[\[repo\]\]/ { inweb = 0 }

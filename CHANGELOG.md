@@ -5,6 +5,11 @@
 - Pull lists report actual reviewer records instead of a synthetic pending
   review identity. Main-health annotations apply to pull requests targeting
   the default branch and use that branch's current head and log digest.
+- Release automation closes an auto-pin bump whose commits are already on main
+  by patch identity and whose merge leaves main's tree unchanged. It comments
+  the landing commit first and leaves the pull request open on a refusal. The
+  inbox retains its existing live-head `pr_already_landed` rule and cache.
+
 - The idempotency store keeps no personal access token and no session cookie.
   Token creation and session-cookie writes answer with a
   once-shown credential, so they join the routes that keep only a placeholder

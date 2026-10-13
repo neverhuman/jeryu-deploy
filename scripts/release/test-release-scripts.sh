@@ -413,8 +413,14 @@ case "\$method \$url" in
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/merge-queue?"*) cat "$P/queue.json" ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*) cat "$P/detail.json" ;;
   "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/issues/"*"/comments")
-    echo "\${url%/comments}" >>"$P/comments.log"; cat >>"$P/comments.log"; echo >>"$P/comments.log"; echo '{}' ;;
-  "PATCH https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*) [ -e "$P/refuse-close" ] && exit 22; echo "\${url##*/} \$(cat)" >>"$P/closed.log"; echo '{}' ;;
+    [ -e "$P/refuse-comment" ] && exit 22
+    body="\$(cat)"
+    echo "\${url%/comments}" >>"$P/comments.log"; printf '%s\n' "\$body" >>"$P/comments.log"
+    printf '%s' "\$body" | jq -c --arg url "\$url" '. + {url: \$url}' >>"$P/comments.jsonl"; echo '{}' ;;
+  "PATCH https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*)
+    [ -e "$P/refuse-close" ] && exit 22
+    body="\$(cat)"; echo "\${url##*/} \$body" >>"$P/closed.log"
+    printf '%s' "\$body" | jq -c --arg url "\$url" '. + {url: \$url}' >>"$P/closes.jsonl"; echo '{}' ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-web/commits/"*"/status") echo "{\"state\":\"\$(cat "$P/gate")\"}" ;;
   *) echo "unexpected curl: \$method \$url" >&2; exit 22 ;;
 esac
@@ -431,6 +437,7 @@ EOF
 chmod +x "$P/bin/git"
 echo "not-a-real-pin-token" >"$P/token"; chmod 600 "$P/token"
 echo '{"entries":[],"page":{"has_more":false}}' >"$P/queue.json"; echo '{"reviews":[]}' >"$P/detail.json"; : >"$P/comments.log"; : >"$P/closed.log"
+: >"$P/comments.jsonl"; : >"$P/closes.jsonl"
 echo '[]' >"$P/pulls.json"; echo pending >"$P/gate";: >"$P/curl-args"; : >"$P/events.jsonl"; : >"$P/prs.jsonl"; : >"$P/builds"; : >"$P/beats.jsonl"
 # The bump identity and the credential path are site settings with no default,
 # so every invocation names them. The identity below is this test's, not a site's.
@@ -736,6 +743,70 @@ grep -qx "commit = \"$h3\"" <<<"$lock_now" && grep -qx "web_dist_sha256 = \"$dis
 git -C "$P/deploy.git" log -1 --format=%B "$b3" | grep -q "byte-identical" || fail "the same-bundle bump does not say the bundle is unchanged"
 jq -es '.[0] | .kind == "pin.bump_opened"' "$P/events.jsonl" >/dev/null || fail "the same-bundle bump posted no event"
 ok "auto-pin pins a head whose bundle is unchanged by moving the commit only"
+
+# A bump whose change reached main by another route has nothing left to land: #184 and #193 stayed
+# open in that state, and #193 was gated anyway, hit a flaky test and asked for a human about a
+# change that had already shipped. Such a pull request is closed, with a comment naming the commit
+# its work landed as; the branch goes on a later tick's prune.
+echo '[]' >"$P/pulls.json"; : >"$P/comments.jsonl"; : >"$P/closes.jsonl"
+landed_sha="$(git -C "$P/deploy.git" rev-parse "refs/heads/$b3")"
+# main takes the same change as another commit: a commit of its own first, then the bump's patch.
+g "$P/deploy" fetch -q "$P/deploy.git" "+refs/heads/main:refs/remotes/d/main" "+refs/heads/$b3:refs/remotes/d/b3"
+g "$P/deploy" checkout -q -B landing refs/remotes/d/main
+echo "a change of main's own" >"$P/deploy/NOTES.md"; g "$P/deploy" add NOTES.md
+g "$P/deploy" commit -q -m "main moves first"
+g "$P/deploy" cherry-pick refs/remotes/d/b3 >/dev/null
+g "$P/deploy" push -q "$P/deploy.git" HEAD:refs/heads/main
+landing="$(git -C "$P/deploy.git" rev-parse refs/heads/main)"
+[[ "$landing" != "$landed_sha" ]] || fail "the fixture did not land the bump as another commit"
+jq -n --arg b "$b3" --arg sha "$landed_sha" '
+  [{number: 193, state: "open", title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}},
+   {number: 194, state: "open", title: "something else", head: {ref: "work/other", sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a tick that closes a landed bump failed"; }
+grep -q "closed #193 ($b3): already on main as ${landing:0:12}" "$P/run.log" \
+  || { cat "$P/run.log" >&2; fail "auto-pin did not close the bump whose change is on main"; }
+jq -es --arg landing "$landing" '.[0].url == "https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/issues/193/comments"
+  and (.[0].body | contains($landing)) and length == 1' "$P/comments.jsonl" >/dev/null \
+  || { cat "$P/comments.jsonl" >&2; fail "the close did not comment once, naming the landing commit"; }
+jq -es '.[0].url == "https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/193"
+  and .[0].state == "closed" and length == 1' "$P/closes.jsonl" >/dev/null \
+  || { cat "$P/closes.jsonl" >&2; fail "exactly the landed bump must be closed"; }
+ok "auto-pin closes its own bump whose change is already on main, naming the landing commit"
+
+# A bump with something to land is left alone, and so is one whose comment the forge refuses: a
+# close nobody can read the reason for is worse than an open pull request.
+: >"$P/comments.jsonl"; : >"$P/closes.jsonl"
+# $b1 is an older pin the prune pass above deleted: put it back, so it is a candidate git has to
+# answer about rather than a branch the close pass never sees.
+git -C "$P/deploy.git" update-ref "refs/heads/$b1" "$s1"
+jq -n --arg b "$b1" --arg sha "$s1" '
+  [{number: 7, state: "open", title: "release: pin jeryu-web old", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a tick with an unlanded bump open failed"; }
+[[ ! -s "$P/closes.jsonl" && ! -s "$P/comments.jsonl" ]] || fail "a bump with something to land was closed"
+jq -n --arg b "$b3" --arg sha "$landed_sha" '
+  [{number: 193, state: "open", title: "release: pin jeryu-web x", head: {ref: $b, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+git -C "$P/deploy.git" update-ref "refs/heads/$b3" "$landed_sha"
+touch "$P/refuse-comment"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a refused comment failed the tick"; }
+grep -q "could not comment on #193 before closing it (ignored); leaving it open" "$P/run.log" \
+  || { cat "$P/run.log" >&2; fail "a refused comment was not logged with its consequence"; }
+[[ ! -s "$P/closes.jsonl" ]] || fail "a pull request was closed without its reason"
+rm "$P/refuse-comment"
+# A refused close is logged and tried again on the next tick, never fatal.
+touch "$P/refuse-close"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a refused close failed the tick"; }
+grep -q "could not close #193 ($b3; ignored)" "$P/run.log" \
+  || { cat "$P/run.log" >&2; fail "a refused close was not logged with its reason"; }
+rm "$P/refuse-close"
+# A tick with no landed bump asks the forge nothing extra: which branches are candidates is git's
+# answer, so the pull requests are listed only when there is one.
+git -C "$P/deploy.git" update-ref -d "refs/heads/$b3"
+jq -n '[]' >"$P/pulls.json"
+: >"$P/curl-args"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "an idle tick after the close pass failed"; }
+[[ "$(lines "$P/curl-args")" == 1 ]] \
+  || { cat "$P/curl-args" >&2; fail "a tick with no landed bump listed the pull requests"; }
+ok "auto-pin leaves an unlanded bump alone, keeps one it cannot explain open, and asks nothing extra when there is none"
 
 # --- deploy-release.sh: keep switch.sh's output, and say in the failure status why it failed ---
 # Stand-ins: ssh that answers the staged metadata and runs a switch that prints and exits 3 (or 0),

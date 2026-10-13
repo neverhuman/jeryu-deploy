@@ -143,6 +143,24 @@ restarts in between should be asked again rather than replay an older ask. It is
 the attention inbox's `action.api` for a `pr_checks_failing` item whose failing
 check is one the base requires.
 
+## A pull request with nothing left to land
+
+A pull request whose change has already reached its base branch has nothing
+to merge. The inbox retains `pr_already_landed`, its live-head checks and its
+cache (`docs/pipeline-events.md`). It links to the pull request page for a
+person to close it and keeps gate-definition changes visible.
+
+Separately, release automation can close an open `auto/pin-web-*` bump it
+opened in this repository when every commit is upstream by patch identity
+(`git cherry` answers `-`) **and** merging its head produces exactly main's
+tree. It comments the landing commit before closing; a refused comment or
+close leaves the request open. Branch retention follows the existing prune
+policy on a later tick.
+
+A head whose patch is upstream but which removes something main has fails
+the tree check. A head with no commits of its own is not a cleanup candidate.
+This cleanup does not establish a gate result or approval on another head.
+
 ## Starting a gate on the push
 
 A gate runner slot used to learn about work only when its own timer fired, so
