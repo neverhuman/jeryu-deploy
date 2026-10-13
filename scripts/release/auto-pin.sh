@@ -340,7 +340,20 @@ give_up() { # REASON: count the failure, tell the forge, stop this tick
   exit 1
 }
 
-shipped="$(git -C "$web_cache" log --format='- %h %s' -n 30 "$pin..$head")"
+shipped="$(git -C "$web_cache" log --format='- %h %s' -n 30 "$pin..$head")" || give_up "could not read shipped commits"
+# Keep cross-repository prose and file names out of the review body. Exact
+# forge links let the reviewer inspect the full source, without truncating
+# messages or terminating a large diff producer early under pipefail.
+review_commit_pointers() {
+  local commits sha changed
+  commits="$(git -C "$web_cache" rev-list -n 30 "$pin..$head")" || return 1
+  for sha in $commits; do
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+    changed="$(git -C "$web_cache" diff-tree --no-commit-id --name-only -r "$sha" | awk 'END { print NR }')" || return 1
+    printf -- '- [`%s`](%s/repos/jeryu/%s/commit/%s): %s changed paths.\n' "$sha" "$base" "$web_path" "$sha" "$changed"
+  done
+}
+shipped_detail="$(review_commit_pointers)" || give_up "could not prepare shipped commit review pointers"
 if [ -z "$pushed" ]; then
   say "building jeryu-web ${head:0:12} (gate success; pin is ${pin:0:12})"
   git -C "$cache" archive "$main" scripts/release "$lock_file" | tar -x -C "$work"
@@ -394,11 +407,19 @@ else
       inweb && $1 == "web_dist_sha256" && $2 == "=" { gsub(/"/, "", $3); print $3; exit }')" || hash=""
 fi
 
+contexts="$(api GET "/api/v3/repos/$web_path/commits/$head/status" 2>/dev/null \
+  | jq -r '[.statuses[]? | "\(.context): \(.state)"] | unique | join(", ")' 2>/dev/null)" || contexts=""
 body="Pins jeryu-web main \`${head:0:7}\` so the next staged release ships it. Only \`$lock_file\` changes (\`commit\`, \`web_dist_sha256\`).
 
 Ships (${pin:0:7}..${head:0:7}):
-$shipped
+$shipped_detail
 
+**Evidence for review.**
+- Verify \`$head\` against jeryu-web main and its native checks/review. The ancestry lane is \`ops/ci/web-pin-on-main.sh\`, called by \`ops/ci/web.sh\`; check the exact deploy required result and any changes to those scripts or their environment. This template is a pointer, not a gate receipt.
+- jeryu-web status snapshot at that exact commit: ${contexts:-not reported}.
+- \`web_dist_sha256\` is not trusted from this diff: \`crates/jeryu-api/build.rs\` and \`scripts/release/stage-release.sh\` rebuild the bundle from the pinned commit and refuse a mismatch.
+
+The links above cover at most 30 shipped commits. Full messages and changed files remain on the forge; commit prose is not copied into this review body. Ancestry permits a reviewed rollback to an older main commit; it does not enforce monotonic pins.
 Opened by \`scripts/release/auto-pin.sh\` because jeryu-web main is green and ahead of the pin. It never merges: review and the merge queue land this, auto-stage then stages main, and a person deploys."
 # Building and pushing may take time: check every open bump again before creating.
 list_pulls fresh || give_up "could not re-read open pull requests"

@@ -345,7 +345,25 @@ ok "auto-stage beats once per tick with what it last did; a refused beat never f
 P="$T/pin"; mkdir -p "$P/bin" "$P/web" "$P/deploy/scripts/release"
 g() { git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
 g "$P/web" init -q -b main
-for n in 1 2 3; do echo "$n" >"$P/web/index.html"; g "$P/web" add .; g "$P/web" commit -q -m "web change $n"; done
+for n in 1 2 3; do
+  echo "$n" >"$P/web/index.html"
+  if [ "$n" = 3 ]; then
+    # Both producer outputs exceed a pipe buffer. Commit text and names
+    # are untrusted review data and must not be copied into the PR body.
+    for i in {1..1500}; do
+      printf -v name '%04d-%0100d-review-data.txt' "$i" "$i"
+      printf 'fixture\n' >"$P/web/$name"
+    done
+    { printf 'web change 3\n\nNote: preserve this complete message on the forge.\n';
+      for i in {1..2000}; do printf 'REVIEW_DATA_DO_NOT_COPY %0100d\n' "$i"; done;
+    } >"$P/large-message"
+    g "$P/web" add .
+    g "$P/web" commit -q -F "$P/large-message"
+  else
+    g "$P/web" add .
+    g "$P/web" commit -q -m "web change $n"
+  fi
+done
 git clone -q --bare "$P/web" "$P/web.git"
 w1="$(git -C "$P/web" rev-parse HEAD~2)"; h1="$(git -C "$P/web" rev-parse HEAD)"
 dist_a="$(printf a%.0s {1..64})"; dist_b="$(printf b%.0s {1..64})"
@@ -402,6 +420,15 @@ case "\$method \$url" in
 esac
 EOF
 chmod +x "$P/bin/curl"
+pin_real_git="$(command -v git)"
+cat >"$P/bin/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" diff-tree "*) [ ! -e "$P/fail-review-detail" ] || exit 42 ;;
+esac
+exec "$pin_real_git" "\$@"
+EOF
+chmod +x "$P/bin/git"
 echo "not-a-real-pin-token" >"$P/token"; chmod 600 "$P/token"
 echo '{"entries":[],"page":{"has_more":false}}' >"$P/queue.json"; echo '{"reviews":[]}' >"$P/detail.json"; : >"$P/comments.log"; : >"$P/closed.log"
 echo '[]' >"$P/pulls.json"; echo pending >"$P/gate";: >"$P/curl-args"; : >"$P/events.jsonl"; : >"$P/prs.jsonl"; : >"$P/builds"; : >"$P/beats.jsonl"
@@ -457,7 +484,13 @@ grep -q "commit = \"$(printf c%.0s {1..40})\"" <<<"$lock_now" || fail "another l
 msg="$(git -C "$P/deploy.git" log -1 --format=%B "$b1")"
 [[ "$msg" == "release: pin jeryu-web ${h1:0:7}"* ]] && grep -q "web change 3" <<<"$msg" && grep -q "web change 2" <<<"$msg" && ! grep -q "web change 1" <<<"$msg" || fail "the commit does not list what the bump ships"
 [[ "$(posted "$P/prs.jsonl")" == 1 ]] || fail "auto-pin did not open exactly one pull request"
-jq -es --arg b "$b1" --arg t "release: pin jeryu-web ${h1:0:7}" '.[0] | .head == $b and .base == "main" and .title == $t and (.body | contains("web change 3"))' "$P/prs.jsonl" >/dev/null || fail "the pull request is not the bump"
+jq -es --arg b "$b1" --arg t "release: pin jeryu-web ${h1:0:7}" '.[0] | .head == $b and .base == "main" and .title == $t' "$P/prs.jsonl" >/dev/null || fail "the pull request is not the bump"
+jq -es --arg h "$h1" '.[0].body | contains("**Evidence for review.**") and contains("Verify `\($h)` against jeryu-web main")
+  and contains("ops/ci/web-pin-on-main.sh") and contains("jeryu-web status snapshot at that exact commit:")
+  and contains("/jeryu-web/commit/\($h)") and contains("1501 changed paths.")
+  and (contains("REVIEW_DATA_DO_NOT_COPY") | not) and (contains("web change 3") | not)
+  and contains("pointer, not a gate receipt")' "$P/prs.jsonl" >/dev/null \
+  || fail "the pull request body does not carry the review evidence and each shipped commit"
 jq -es --arg to "$h1" --arg from "$w1" --arg hash "$dist_b" '.[0] | .kind == "pin.bump_opened" and .source == "auto-pin" and .pr == 7 and .repo == "jeryu/jeryu-deploy" and .needs_human == false and .detail.to == $to and .detail.from == $from and .detail.web_dist_sha256 == $hash and .detail.dependency == "jeryu/jeryu-web"' "$P/events.jsonl" >/dev/null || fail "no pin.bump_opened event"
 beat_is '.last == {repo: "jeryu/jeryu-deploy", pr: 7, sha: $sha, recipe: "auto-pin", conclusion: "opened", seconds: 0, finishedAt: $at}' \
   --arg sha "$h1" --arg at "$(tail -n 1 "$P/state/opened.tsv" | cut -f3)" || fail "after opening a bump the heartbeat does not name its pull request"
@@ -610,6 +643,18 @@ jq -es 'any(.[]; .kind == "pin.bump_failed" and .needs_human == true)
 mv "$P/post-create-detail.json" "$P/post-create-detail.saved"; undo_bump
 ok "fresh lists detect a new bump, preserve manual closes and approvals, and signal replacement cleanup"
 
+echo '[]' >"$P/pulls.json"; touch "$P/fail-review-detail"; : >"$P/events.jsonl"
+if PIN_STATE="$P/state-evidence-failure" auto_pin >"$P/run.log" 2>&1; then
+  fail "failed evidence generation reported success"
+fi
+[[ "$(cat "$P/state-evidence-failure/failures/$h2")" == 1 ]] || fail "evidence failure was not counted"
+grep -q "could not prepare shipped commit review pointers" "$P/run.log" || fail "evidence failure lost its reason"
+jq -es '.[0] | .kind == "pin.bump_failed" and .needs_human == false' "$P/events.jsonl" >/dev/null || fail "evidence failure lost its event"
+: >"$P/events.jsonl"
+if PIN_STATE="$P/state-evidence-failure" auto_pin >"$P/run.log" 2>&1; then fail "repeated evidence failure passed"; fi
+jq -es '.[0] | .kind == "pin.bump_failed" and .needs_human == true' "$P/events.jsonl" >/dev/null || fail "evidence failures never ask for a human"
+rm -f "$P/fail-review-detail"
+ok "auto-pin counts evidence-generation failures and reaches its human backstop"
 
 echo '[]' >"$P/pulls.json"; touch "$P/fail"; : >"$P/events.jsonl"
 if auto_pin >"$P/run.log" 2>&1; then fail "a failed build reported success"; fi

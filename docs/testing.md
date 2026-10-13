@@ -36,9 +36,19 @@ Primary lanes:
   full workflow lanes.
 - `bash ops/ci/web.sh`: validates the jeryu-web pin in `jeryu-split.lock.toml`
   (a 40-hex `commit` plus the `web_dist_sha256` of its dist; no SPA is tracked
-  here), the fail-closed dist verification in `crates/jeryu-api/build.rs`, and
+  here), that the pinned commit is on jeryu-web main (`ops/ci/web-pin-on-main.sh`,
+  which fetches jeryu-web main into `target/ci/`; `JERYU_WEB_REMOTE` overrides
+  where from; `JERYU_SPLIT_LOCK` selects the lock and `JERYU_WEB_PIN_CACHE` the
+  retained bare cache), the fail-closed dist verification in `crates/jeryu-api/build.rs`, and
   the API serving integration. Web source, Playwright, and rendered UX gates run
   in the standalone `jeryu-web` repository.
+  The ancestry regression runs inside this lane, including a cached side-branch
+  object, an absent object and an invalid local cache. An older main commit also
+  passes: reviewed rollback remains possible; this lane proves membership on
+  main rather than pin monotonicity. Release-script fixtures cover large commit
+  messages/file lists and evidence failures reaching the retry backstop. Bump
+  descriptions link exact commits without copying their prose and must be
+  checked against the native required result.
 - `bash ci-fast-push.sh`: local publish path after gates pass; it pushes the
   current branch and opens or reports a PR. Direct `HEAD:main` push requires
   explicit `--push-main` or `JERYU_CI_PUSH_MAIN=1`.
