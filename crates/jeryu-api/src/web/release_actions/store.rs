@@ -45,7 +45,8 @@ impl ReleaseActionStore {
         // Time-ordered and unique within this forge's life, which is the
         // store's life.
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        let id = format!("ra-{}-{n}", now.replace([':', '-', '.'], ""));
+        let stamp: String = now.chars().filter(char::is_ascii_alphanumeric).collect();
+        let id = format!("ra-{stamp}-{n}");
         let action = ReleaseAction {
             id: id.clone(),
             action: new.action,

@@ -47,3 +47,5 @@ ask for the same step is open. While one is open, the row says who asked and whe
 offering a second button. Without a poller the rows keep their copyable command only.
 
 The pinned web commit `83534746af1bd2aa240456d65628fb736bdd2199` passes `action.confirm` to `ActionPreviewDialog` in `apps/web/src/pages/needsYou/AttentionRow.tsx` before sending the request.
+
+Ask IDs contain only ASCII letters, digits and hyphens, including when the server clock serializes UTC with `+00:00`. Requests and poller check-ins resolve hosted repository identities; invented repositories are refused. Staging eligibility requires an event authenticated as a currently authorized deployer, rather than another event reporter. Release-action reads accept only `state=pending|all`; unknown query keys and values are 422. Before the generated drift check, the CI environment preflight asserts `workspace = "jeryu-deploy"`.

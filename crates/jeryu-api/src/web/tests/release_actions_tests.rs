@@ -10,6 +10,144 @@ const STAGED: &str = "prod-20261012T171717Z-f1b1fb4-unsigned";
 const NEVER_STAGED: &str = "prod-20261012T181818Z-0123abc-unsigned";
 
 #[tokio::test]
+async fn a_real_server_id_round_trips_through_the_release_host_poller() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = fixture();
+    let (status, body) = ask(
+        &state,
+        authenticated_admin_account("operator"),
+        json!({"action": "auto_pin", "repo": REPO}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["id"].as_str().unwrap();
+    assert!(id.starts_with("ra-") && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-'));
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let queue = dir.path().join("queue.json");
+    let claim = dir.path().join("claimed");
+    let ran = dir.path().join("ran");
+    std::fs::write(&queue, json!({"actions": [body]}).to_string()).unwrap();
+    let curl = bin.join("curl");
+    std::fs::write(
+        &curl,
+        r##"#!/bin/sh
+case "$*" in
+  *release-actions/poller*) echo '{}' ;;
+  *'release-actions?state=pending'*) cat "$RA_TEST_QUEUE" ;;
+  */claim*) printf '%s\n' "$*" > "$RA_TEST_CLAIM"; echo '{}' ;;
+  */result*) printf 200 ;;
+  *) exit 2 ;;
+esac
+"##,
+    )
+    .unwrap();
+    let systemctl = bin.join("systemctl");
+    std::fs::write(
+        &systemctl,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RA_TEST_RAN\"\necho fixture-ran\n",
+    )
+    .unwrap();
+    for script in [&curl, &systemctl] {
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let credential = dir.path().join("credential");
+    std::fs::write(&credential, "fixture").unwrap();
+    std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/release/release-action.sh");
+    let output = std::process::Command::new("bash")
+        .arg(script)
+        .arg("poll")
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("JERYU_RELEASE_ENV", dir.path().join("absent.env"))
+        .env("JERYU_RELEASE_ACTIONS_STATE", dir.path().join("state"))
+        .env("JERYU_DEPLOY_REPO", REPO)
+        .env("JERYU_DEPLOY_TOKEN_FILE", credential)
+        .env("JERYU_FORGE_URL", "https://forge.invalid")
+        .env("RA_TEST_QUEUE", queue)
+        .env("RA_TEST_CLAIM", &claim)
+        .env("RA_TEST_RAN", &ran)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(claim)
+            .unwrap()
+            .contains(&format!("release-actions/{id}/claim"))
+    );
+    assert!(
+        std::fs::read_to_string(ran)
+            .unwrap()
+            .contains("start jeryu-auto-pin.service")
+    );
+}
+
+#[tokio::test]
+async fn invented_repositories_and_untrusted_staging_events_are_refused() {
+    let state = fixture();
+    assert_eq!(
+        ask(
+            &state,
+            authenticated_admin_account("operator"),
+            json!({"action": "auto_pin", "repo": "acme/invented"})
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let check = release_actions::check_in(
+        State(state.clone()),
+        authenticated_admin_account("operator"),
+        Json(serde_json::from_value(json!({"repo": "acme/invented"})).unwrap()),
+    )
+    .await;
+    assert_eq!(check.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    crate::web::pipeline::record(
+        &state,
+        "review-bot",
+        crate::web::pipeline::NewEvent {
+            repo: Some(REPO.into()),
+            detail: Some(json!({"release": NEVER_STAGED})),
+            ..crate::web::pipeline::NewEvent::forge("release.staged", "untrusted")
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        ask(
+            &state,
+            authenticated_admin_account("operator"),
+            deploy(NEVER_STAGED)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn release_action_queries_refuse_unknown_keys_and_values() {
+    use axum::extract::FromRequestParts;
+    for query in ["state=al", "state=landed", "unexpected=all"] {
+        let request = axum::http::Request::builder()
+            .uri(format!("/api/v1/release-actions?{query}"))
+            .body(())
+            .unwrap();
+        let (mut parts, _) = request.into_parts();
+        let parsed = crate::web::strict_query::StrictQuery::<release_actions::ListQuery>::from_request_parts(&mut parts, &()).await;
+        assert!(parsed.is_err(), "{query}");
+    }
+}
+
+#[tokio::test]
 async fn only_deployers_can_advertise_pollers_and_cancel_pending_asks() {
     let state = fixture();
     state
@@ -104,15 +242,32 @@ async fn retry_requires_a_reported_give_up_for_the_exact_repository_and_head() {
 /// A forge where auto-stage reported [`STAGED`] for [`REPO`]. `operator` is
 /// the test site's deployer (an admin named in `JERYU_DEPLOYERS`).
 fn fixture() -> Arc<WebState> {
-    let state = Arc::new(WebState::new(ForgeCore::new()));
-    crate::web::pipeline::emit(
+    let core = ForgeCore::new();
+    for name in ["forge-deploy", "other"] {
+        core.create_repository(
+            "acme",
+            jeryu_core::CreateRepositoryRequest {
+                name: name.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    core.create_account("operator", "fixture credential", UserRole::Admin)
+        .unwrap();
+    core.create_account("review-bot", "fixture credential", UserRole::Admin)
+        .unwrap();
+    let state = Arc::new(WebState::new(core));
+    crate::web::pipeline::record(
         &state,
+        "operator",
         crate::web::pipeline::NewEvent {
             repo: Some(REPO.to_string()),
             detail: Some(json!({ "release": STAGED })),
             ..crate::web::pipeline::NewEvent::forge("release.staged", "staged")
         },
-    );
+    )
+    .unwrap();
     state
 }
 
@@ -139,7 +294,9 @@ async fn pending(state: &Arc<WebState>) -> Value {
     let response = release_actions::list(
         State(state.clone()),
         authenticated_admin_account("operator"),
-        Query(serde_json::from_value(json!({})).expect("list query")),
+        Ok(crate::web::strict_query::StrictQuery(
+            serde_json::from_value(json!({})).expect("list query"),
+        )),
     )
     .await;
     response_json(response).await["actions"].clone()
@@ -214,7 +371,9 @@ async fn an_admin_who_is_not_a_deployer_is_forbidden_and_a_plain_user_too() {
     let list = release_actions::list(
         State(state.clone()),
         authenticated_admin_account("review-bot"),
-        Query(serde_json::from_value(json!({})).expect("list query")),
+        Ok(crate::web::strict_query::StrictQuery(
+            serde_json::from_value(json!({})).expect("list query"),
+        )),
     )
     .await;
     assert_eq!(list.status(), StatusCode::FORBIDDEN);

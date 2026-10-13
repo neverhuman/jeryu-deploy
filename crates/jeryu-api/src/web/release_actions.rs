@@ -298,11 +298,15 @@ fn was_staged(state: &WebState, repo: &str, release: &str) -> bool {
         .unwrap_or_default()
         .iter()
         .any(|event| {
-            event
-                .detail
-                .as_ref()
-                .and_then(|detail| detail["release"].as_str())
-                == Some(release)
+            state
+                .core
+                .get_account(&event.reporter)
+                .is_ok_and(|account| super::auth::can_record_deployments(&account))
+                && event
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail["release"].as_str())
+                    == Some(release)
         })
 }
 
@@ -330,7 +334,7 @@ pub(super) struct PollerCheckIn {
 pub(super) async fn check_in(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
-    Json(check_in): Json<PollerCheckIn>,
+    Json(mut check_in): Json<PollerCheckIn>,
 ) -> AxumResponse {
     if !super::auth::can_record_deployments(&account) {
         return not_deployer();
@@ -338,6 +342,10 @@ pub(super) async fn check_in(
     if !is_repo_slug(&check_in.repo) {
         return invalid("repo must be owner/name");
     }
+    let Some(repo) = super::repositories::find_repo(&state, &check_in.repo) else {
+        return invalid("repo must name a hosted repository");
+    };
+    check_in.repo = repo.full_name;
     match state
         .release_actions
         .check_in(&check_in.repo, chrono::Utc::now())
@@ -374,7 +382,7 @@ pub(super) async fn cancel(
 pub(super) async fn request(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
-    Json(new): Json<NewAction>,
+    Json(mut new): Json<NewAction>,
 ) -> AxumResponse {
     if !super::auth::can_record_deployments(&account) {
         return not_deployer();
@@ -382,6 +390,10 @@ pub(super) async fn request(
     if let Err(message) = validate(&new) {
         return invalid(message);
     }
+    let Some(repo) = super::repositories::find_repo(&state, &new.repo) else {
+        return invalid("repo must name a hosted repository");
+    };
+    new.repo = repo.full_name;
     if let Some(release) = new.release.as_deref()
         && !was_staged(&state, &new.repo, release)
     {
@@ -416,20 +428,35 @@ pub(super) async fn request(
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct ListQuery {
+pub(crate) struct ListQuery {
     /// `pending` (the default) or `all`.
     state: Option<String>,
+}
+
+impl super::strict_query::StrictFields for ListQuery {
+    const KEYS: &'static [&'static str] = &["state"];
+    fn check_values(&self) -> Result<(), String> {
+        super::strict_query::one_of(
+            "state",
+            self.state.as_deref().unwrap_or("pending"),
+            &["pending", "all"],
+        )
+    }
 }
 
 /// `GET /api/v1/release-actions`: what the release host reads each tick.
 pub(super) async fn list(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
-    Query(query): Query<ListQuery>,
+    query: Result<super::strict_query::StrictQuery<ListQuery>, super::strict_query::QueryRefused>,
 ) -> AxumResponse {
     if !super::auth::can_record_deployments(&account) {
         return not_deployer();
     }
+    let query = match query {
+        Ok(super::strict_query::StrictQuery(query)) => query,
+        Err(refused) => return refused.into_response(),
+    };
     let pending = query.state.as_deref().unwrap_or("pending") != "all";
     let actions: Vec<ReleaseAction> = state
         .release_actions
