@@ -262,7 +262,7 @@ It is on for every repository unless an administrator turns it off, in GitHub's
 spelling: `PATCH /repos/{owner}/{repo}` with `{"delete_branch_on_merge": false}`
 (so `gh repo edit --delete-branch-on-merge=false` works), read back on
 `GET /repos/{owner}/{repo}`. The value is kept per repository id in
-`shift.sqlite` (migration `0012_repo_merge_settings.sql`).
+`shift.sqlite` (migration `0013_repo_merge_settings.sql`).
 
 The branch is kept, and the reason reported, when its head lives in another
 repository, when it is the base or the default branch, when it has branch

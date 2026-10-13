@@ -1,4 +1,4 @@
--- 0012_repo_merge_settings: per-repository merge settings an administrator
+-- 0013_repo_merge_settings: per-repository merge settings an administrator
 -- sets through `PATCH /repos/{owner}/{repo}` (GitHub's spelling). The first
 -- setting is `delete_branch_on_merge`: whether the forge deletes a pull
 -- request's head branch after the pull request merges.
@@ -11,7 +11,7 @@
 -- zero-padded 4-digit sequence.
 --
 -- Rollback: stop the server, then `DROP TABLE repo_merge_settings` and delete
--- version 12 from shift_schema_migrations. Every repository falls back to the
+-- version 13 from shift_schema_migrations. Every repository falls back to the
 -- default (delete the head branch on merge); no repository, branch or pull
 -- request row is touched.
 -- Backfill: none; the table starts empty and only admins write to it. A
