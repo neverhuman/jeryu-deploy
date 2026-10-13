@@ -794,7 +794,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
             })
             .unwrap_or_default(),
     );
-    pin_events.sort_by(|a, b| b.seq.cmp(&a.seq));
+    pin_events.sort_by_key(|event| std::cmp::Reverse(event.seq));
     pin_events.dedup_by_key(|event| event.seq);
     items.extend(pin_items(
         &super::pins::snapshot(state).consumers,
