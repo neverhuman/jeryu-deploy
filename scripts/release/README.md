@@ -279,11 +279,12 @@ auto-pin now** buttons, and also the one-line way to run those steps by hand fro
 ```
 
 It fills unset settings from `~/.config/jeryu/release.env` itself, takes `deploy-release.sh` from
-main (keeping its own copy of the history for the downgrade check), and waits for auto-stage's lock,
+the immutable staged commit after verifying its ancestry on protected main, holds a host deploy lock,
+and waits for auto-stage's lock (keeping history for the downgrade check),
 so no shell needs `cd`, `set -a; . release.env` or a check that auto-stage is idle.
 Install it with `scripts/release/install-release-actions.sh`: that also enables
-`jeryu-release-actions.timer`, which every 30 seconds sends a heartbeat (`<host>/release-actions`)
-and runs one step a deployer asked for. The forge offers the buttons only while that heartbeat is
+`jeryu-release-actions.timer`, which every 30 seconds sends an authenticated repository poller check-in
+and runs one step a deployer asked for. The forge offers the buttons only while that check-in is
 fresh, and auto-stage names the installed script in its "deploy with" line once it exists. The
 forge never sends a command, only one of three named steps, which this script checks again. How the
 asks work is in [`docs/release-actions.md`](../../docs/release-actions.md).

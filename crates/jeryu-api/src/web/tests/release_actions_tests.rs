@@ -222,15 +222,17 @@ async fn retry_requires_a_reported_give_up_for_the_exact_repository_and_head() {
         .0,
         StatusCode::CONFLICT
     );
-    crate::web::pipeline::emit(
+    crate::web::pipeline::record(
         &state,
+        "operator",
         crate::web::pipeline::NewEvent {
             repo: Some(REPO.into()),
             sha: Some(head),
             needs_human: true,
             ..crate::web::pipeline::NewEvent::forge("pin.bump_failed", "retry needed")
         },
-    );
+    )
+    .unwrap();
     assert_eq!(
         ask(&state, authenticated_admin_account("operator"), body)
             .await
@@ -290,7 +292,18 @@ fn deploy(release: &str) -> Value {
     json!({ "action": "deploy", "repo": REPO, "release": release })
 }
 
+async fn advertise(state: &Arc<WebState>, by: &str, repo: &str) {
+    let response = release_actions::check_in(
+        State(state.clone()),
+        authenticated_admin_account(by),
+        Json(serde_json::from_value(json!({"repo": repo})).unwrap()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
 async fn pending(state: &Arc<WebState>) -> Value {
+    advertise(&state, "operator", REPO).await;
     let response = release_actions::list(
         State(state.clone()),
         authenticated_admin_account("operator"),
@@ -328,6 +341,7 @@ async fn a_deployer_asks_and_the_release_host_claims_it_once_then_finishes_it() 
     assert_eq!(pending(&state).await.as_array().map(Vec::len), Some(1));
 
     let claim = |who| release_actions::claim(State(state.clone()), who, AxumPath(id.clone()));
+    advertise(&state, "rel-bot", REPO).await;
     let first = claim(authenticated_admin_account("rel-bot")).await;
     assert_eq!(first.status(), StatusCode::OK);
     // Claimed, so no second poller can run it, and it is no longer pending.
@@ -335,6 +349,14 @@ async fn a_deployer_asks_and_the_release_host_claims_it_once_then_finishes_it() 
     assert_eq!(second.status(), StatusCode::CONFLICT);
     assert_eq!(pending(&state).await, json!([]));
 
+    let impostor = release_actions::result(
+        State(state.clone()),
+        authenticated_admin_account("operator"),
+        AxumPath(id.clone()),
+        Json(serde_json::from_value(json!({"ok": true})).unwrap()),
+    )
+    .await;
+    assert_eq!(impostor.status(), StatusCode::CONFLICT);
     let finished = release_actions::result(
         State(state.clone()),
         authenticated_admin_account("rel-bot"),
@@ -351,6 +373,112 @@ async fn a_deployer_asks_and_the_release_host_claims_it_once_then_finishes_it() 
     let finished = response_json(finished).await;
     assert_eq!(finished["state"], "succeeded");
     assert_eq!(finished["claimed_by"], "rel-bot");
+}
+
+#[tokio::test]
+async fn pending_and_claim_require_the_callers_live_repository_poller() {
+    let state = fixture();
+    let (_, body) = ask(
+        &state,
+        authenticated_admin_account("operator"),
+        json!({"action": "auto_pin", "repo": "acme/other"}),
+    )
+    .await;
+    assert_eq!(pending(&state).await, json!([]));
+    let id = body["id"].as_str().unwrap().to_string();
+    let response = release_actions::claim(
+        State(state.clone()),
+        authenticated_admin_account("operator"),
+        AxumPath(id.clone()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    advertise(&state, "rel-bot", "acme/other").await;
+    assert_eq!(
+        pending(&state).await,
+        json!([]),
+        "another principal's heartbeat must not grant scope"
+    );
+    advertise(&state, "operator", "acme/other").await;
+    assert_eq!(pending(&state).await.as_array().unwrap().len(), 1);
+    let response = release_actions::claim(
+        State(state.clone()),
+        authenticated_admin_account("operator"),
+        AxumPath(id),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn retained_release_prerequisites_survive_more_than_one_event_page() {
+    let state = fixture();
+    let head = "b".repeat(40);
+    let new_retry = json!({"action": "auto_pin_retry", "repo": REPO, "head": head});
+    crate::web::pipeline::record(
+        &state,
+        "review-bot",
+        crate::web::pipeline::NewEvent {
+            repo: Some(REPO.into()),
+            sha: Some(head.clone()),
+            needs_human: true,
+            ..crate::web::pipeline::NewEvent::forge("pin.bump_failed", "untrusted")
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        ask(
+            &state,
+            authenticated_admin_account("operator"),
+            new_retry.clone()
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    crate::web::pipeline::record(
+        &state,
+        "operator",
+        crate::web::pipeline::NewEvent {
+            repo: Some(REPO.into()),
+            sha: Some(head),
+            needs_human: true,
+            ..crate::web::pipeline::NewEvent::forge("pin.bump_failed", "retry needed")
+        },
+    )
+    .unwrap();
+    for n in 0..205 {
+        for kind in ["release.staged", "pin.bump_failed"] {
+            crate::web::pipeline::record(
+                &state,
+                "operator",
+                crate::web::pipeline::NewEvent {
+                    repo: Some(REPO.into()),
+                    sha: Some(format!("{n:040x}")),
+                    needs_human: true,
+                    detail: Some(json!({"release": format!("other-{n}")})),
+                    ..crate::web::pipeline::NewEvent::forge(kind, "newer unrelated event")
+                },
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(
+        ask(
+            &state,
+            authenticated_admin_account("operator"),
+            deploy(STAGED)
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        ask(&state, authenticated_admin_account("operator"), new_retry)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
 }
 
 #[tokio::test]

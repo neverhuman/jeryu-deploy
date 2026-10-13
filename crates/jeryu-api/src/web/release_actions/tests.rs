@@ -57,6 +57,7 @@ fn expired_pending_and_claimed_asks_are_terminal_and_cannot_run_again() {
         store
             .finish(
                 &claimed.id,
+                "host",
                 ActionResult {
                     ok: true,
                     message: None,
@@ -94,7 +95,9 @@ fn pollers_and_auto_pin_requests_are_scoped_to_each_repository() {
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-13T10:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
-    store.check_in("acme/first", now).unwrap();
+    store.check_in("acme/first", "host", now).unwrap();
+    assert_eq!(store.poller_repos_for("host", now), vec!["acme/first"]);
+    assert!(store.poller_repos_for("other-host", now).is_empty());
     assert_eq!(store.poller_repos(now), vec!["acme/first"]);
     assert!(
         store
@@ -176,6 +179,7 @@ fn an_ask_is_claimed_once_and_finished_once() {
     let done = store
         .finish(
             &ask.id,
+            "release-host",
             ActionResult {
                 ok: true,
                 message: Some("live".into()),
@@ -202,10 +206,13 @@ fn only_a_claimed_ask_takes_a_result() {
         log_tail: None,
     };
     assert_eq!(
-        store.finish(&ask.id, result.clone(), "t1".into()),
+        store.finish(&ask.id, "host", result.clone(), "t1".into()),
         Err(Some(ActionState::Pending))
     );
-    assert_eq!(store.finish("ra-missing", result, "t1".into()), Err(None));
+    assert_eq!(
+        store.finish("ra-missing", "host", result, "t1".into()),
+        Err(None)
+    );
 }
 
 #[test]
@@ -247,6 +254,7 @@ fn a_full_store_forgets_a_finished_ask_never_an_open_one() {
     store
         .finish(
             &done.id,
+            "host",
             ActionResult {
                 ok: true,
                 message: None,

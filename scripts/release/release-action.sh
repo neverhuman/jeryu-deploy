@@ -4,7 +4,7 @@
 # forge's attention inbox (GET /api/v1/release-actions, docs/release-actions.md).
 #
 #   release-action.sh deploy RELEASE_ID [--dry-run]
-#       Switch production to a staged release with deploy-release.sh taken from jeryu-deploy the staged commit
+#       Switch production using deploy-release.sh from the immutable staged commit
 #       (git archive of scripts/release, the recipe the release README says to run), after
 #       waiting for auto-stage to finish if it is staging (its lock), so the two never share the
 #       release build directory.
@@ -62,8 +62,12 @@ chmod 700 "$state"
 # deploy RELEASE [--dry-run]
 deploy() {
   local rel="${1:-}" dry="${2:-}" work rc revision short
-  [[ "$rel" =~ $release_re ]] || usage "not a release id: '$rel'"
-  [[ -z "$dry" || "$dry" == --dry-run ]] || usage "deploy takes only --dry-run after the release id"
+  [[ "$rel" =~ $release_re ]] || { say "not a release id: '$rel'"; return 64; }
+  [[ -z "$dry" || "$dry" == --dry-run ]] || { say "deploy takes only --dry-run after the release id"; return 64; }
+  # Hold before touching the shared cache and through the whole deployment.
+  # An expired forge claim does not allow another tick to overlap this host step.
+  exec 9>"$state/deploy.lock"
+  flock -n 9 || { say "another deployment is still running on this host"; return 75; }
   # The ancestry check in deploy-release.sh needs jeryu-deploy's history; keep a cache of it.
   [ -d "$state/git" ] || git init -q --bare "$state/git"
   git -C "$state/git" fetch -q "$remote" "+refs/heads/main:refs/heads/main"
@@ -99,7 +103,7 @@ auto_pin() {
 
 auto_pin_retry() {
   local head="${1:-}"
-  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || usage "not a 40-hex head: '$head'"
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { say "not a 40-hex head: '$head'"; return 64; }
   rm -f "$pin_failures/$head"
   say "forgot auto-pin's failures for $head"
   auto_pin

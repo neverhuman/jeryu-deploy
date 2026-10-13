@@ -331,6 +331,35 @@ impl EventStore {
         self.read(query, page_limit(query))
     }
 
+    /// Exact release prerequisites across the retained log, independent of a
+    /// list page's size. Authentication is checked against the returned identities.
+    pub(crate) fn release_precondition_reporters(
+        &self,
+        repo: &str,
+        kind: &str,
+        release: Option<&str>,
+        sha: Option<&str>,
+        needs_human: bool,
+    ) -> Result<Vec<String>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner
+            .conn
+            .prepare(
+                "SELECT DISTINCT reporter FROM pipeline_events WHERE repo = ?1 AND kind = ?2
+             AND (?3 IS NULL OR json_extract(detail_json, '$.release') = ?3)
+             AND (?4 IS NULL OR sha = ?4) AND (?5 = 0 OR needs_human = 1)",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![repo, kind, release, sha, needs_human],
+                |row| row.get(0),
+            )
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())
+    }
+
     /// One page of [`Self::query`] plus whether the log holds another row
     /// behind it. The page is read one row longer than asked for; the extra
     /// row, if it came back, is the whole answer, and it is dropped before the

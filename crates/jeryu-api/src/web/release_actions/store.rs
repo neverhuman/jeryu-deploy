@@ -4,7 +4,7 @@ use super::*;
 pub(crate) struct ReleaseActionStore {
     actions: Arc<Mutex<BTreeMap<String, ReleaseAction>>>,
     next: Arc<std::sync::atomic::AtomicU64>,
-    pollers: Arc<Mutex<BTreeMap<String, chrono::DateTime<chrono::Utc>>>>,
+    pollers: Arc<Mutex<BTreeMap<(String, String), chrono::DateTime<chrono::Utc>>>>,
 }
 
 impl ReleaseActionStore {
@@ -116,6 +116,7 @@ impl ReleaseActionStore {
     pub(super) fn check_in(
         &self,
         repo: &str,
+        by: &str,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), &'static str> {
         let mut pollers = self
@@ -123,10 +124,11 @@ impl ReleaseActionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         pollers.retain(|_, stamp| now - *stamp < chrono::Duration::seconds(POLLER_TTL_SECONDS));
-        if !pollers.contains_key(repo) && pollers.len() >= MAX_ACTIONS {
-            return Err("at most 256 release repositories may report a poller");
+        let key = (repo.to_string(), by.to_string());
+        if !pollers.contains_key(&key) && pollers.len() >= MAX_ACTIONS {
+            return Err("at most 256 authenticated release pollers may report");
         }
-        pollers.insert(repo.to_string(), now);
+        pollers.insert(key, now);
         Ok(())
     }
 
@@ -136,7 +138,29 @@ impl ReleaseActionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         pollers.retain(|_, stamp| now - *stamp < chrono::Duration::seconds(POLLER_TTL_SECONDS));
-        pollers.keys().cloned().collect()
+        pollers
+            .keys()
+            .map(|(repo, _)| repo.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub(super) fn poller_repos_for(
+        &self,
+        by: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<String> {
+        let mut pollers = self
+            .pollers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pollers.retain(|_, stamp| now - *stamp < chrono::Duration::seconds(POLLER_TTL_SECONDS));
+        pollers
+            .keys()
+            .filter(|(_, reporter)| reporter == by)
+            .map(|(repo, _)| repo.clone())
+            .collect()
     }
 
     pub(crate) fn all(&self) -> Vec<ReleaseAction> {
@@ -166,6 +190,7 @@ impl ReleaseActionStore {
     pub(super) fn finish(
         &self,
         id: &str,
+        by: &str,
         result: ActionResult,
         now: String,
     ) -> Result<ReleaseAction, Option<ActionState>> {
@@ -174,7 +199,7 @@ impl ReleaseActionStore {
         let Some(action) = actions.get_mut(id) else {
             return Err(None);
         };
-        if action.state != ActionState::Claimed {
+        if action.state != ActionState::Claimed || action.claimed_by.as_deref() != Some(by) {
             return Err(Some(action.state));
         }
         action.state = if result.ok {

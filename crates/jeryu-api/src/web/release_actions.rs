@@ -35,7 +35,7 @@
 //! deployment record `deploy-release.sh` writes is the durable answer, and a
 //! restarted forge replays no ask from before it started.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use super::*;
@@ -289,39 +289,35 @@ fn validate(new: &NewAction) -> Result<(), &'static str> {
 fn was_staged(state: &WebState, repo: &str, release: &str) -> bool {
     state
         .events
-        .query(&super::pipeline::EventsQuery {
-            kind: Some("release.staged".to_string()),
-            repo: Some(repo.to_string()),
-            limit: Some(200),
-            ..Default::default()
-        })
+        .release_precondition_reporters(repo, "release.staged", Some(release), None, false)
         .unwrap_or_default()
         .iter()
-        .any(|event| {
+        .any(|reporter| {
             state
                 .core
-                .get_account(&event.reporter)
+                .get_account(reporter)
                 .is_ok_and(|account| super::auth::can_record_deployments(&account))
-                && event
-                    .detail
-                    .as_ref()
-                    .and_then(|detail| detail["release"].as_str())
-                    == Some(release)
         })
 }
 
 fn retry_was_requested(state: &WebState, new: &NewAction) -> bool {
     state
         .events
-        .query(&super::pipeline::EventsQuery {
-            kind: Some("pin.bump_failed".into()),
-            repo: Some(new.repo.clone()),
-            limit: Some(200),
-            ..Default::default()
-        })
+        .release_precondition_reporters(
+            &new.repo,
+            "pin.bump_failed",
+            None,
+            new.head.as_deref(),
+            true,
+        )
         .unwrap_or_default()
         .iter()
-        .any(|event| event.sha == new.head && event.needs_human)
+        .any(|reporter| {
+            state
+                .core
+                .get_account(reporter)
+                .is_ok_and(|account| super::auth::can_record_deployments(&account))
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,7 +344,7 @@ pub(super) async fn check_in(
     check_in.repo = repo.full_name;
     match state
         .release_actions
-        .check_in(&check_in.repo, chrono::Utc::now())
+        .check_in(&check_in.repo, &account.login, chrono::Utc::now())
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => api_error(StatusCode::TOO_MANY_REQUESTS, "release_queue_full", message),
@@ -458,11 +454,14 @@ pub(super) async fn list(
         Err(refused) => return refused.into_response(),
     };
     let pending = query.state.as_deref().unwrap_or("pending") != "all";
+    let repos = state
+        .release_actions
+        .poller_repos_for(&account.login, chrono::Utc::now());
     let actions: Vec<ReleaseAction> = state
         .release_actions
         .all_at(&server_time())
         .into_iter()
-        .filter(|a| !pending || a.state == ActionState::Pending)
+        .filter(|a| !pending || (a.state == ActionState::Pending && repos.contains(&a.repo)))
         .collect();
     Json(json!({ "actions": actions })).into_response()
 }
@@ -475,6 +474,20 @@ pub(super) async fn claim(
 ) -> AxumResponse {
     if !super::auth::can_record_deployments(&account) {
         return not_deployer();
+    }
+    let Some(action) = state.release_actions.all().into_iter().find(|a| a.id == id) else {
+        return api_error(StatusCode::NOT_FOUND, "not_found", "no such release action");
+    };
+    if !state
+        .release_actions
+        .poller_repos_for(&account.login, chrono::Utc::now())
+        .contains(&action.repo)
+    {
+        return api_error(
+            StatusCode::CONFLICT,
+            "not_claimed",
+            "register this authenticated poller for the action's repository before claiming it",
+        );
     }
     match state
         .release_actions
@@ -502,13 +515,16 @@ pub(super) async fn result(
     if !super::auth::can_record_deployments(&account) {
         return not_deployer();
     }
-    match state.release_actions.finish(&id, result, server_time()) {
+    match state
+        .release_actions
+        .finish(&id, &account.login, result, server_time())
+    {
         Ok(action) => Json(action).into_response(),
         Err(None) => api_error(StatusCode::NOT_FOUND, "not_found", "no such release action"),
         Err(Some(_)) => api_error(
             StatusCode::CONFLICT,
             "not_claimed",
-            "only a claimed release action takes a result",
+            "only the deployer that claimed this release action may report its result",
         ),
     }
 }

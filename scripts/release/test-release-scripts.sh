@@ -1074,6 +1074,33 @@ redacted="$(jq -cn --argjson ok false --arg message "Bearer $redaction_input" --
 [[ "$redacted" != *"$redaction_input"* && "$redacted" != *"hidden"* && "$redacted" != *"user:pass"* ]] || fail "release result leaked credentials: $redacted"
 ok "release-action redacts credentials and URL queries from both result fields"
 
+for prefix in jpat jat; do
+  redaction_input="${prefix}_$(printf X%.0s {1..32})"
+  redacted="$(jq -cn --argjson ok false --arg message "$redaction_input" --arg log "$redaction_input" -f "$here/redact-release-result.jq")"
+  [[ "$redacted" != *"$redaction_input"* ]] || fail "release result leaked a variable-format token"
+done
+ok "release-action redacts bare agent and variable-format personal tokens"
+
+# A forged/malformed host argument must still produce the claimed ask's failure result.
+rm -f "$R/claimed"
+jq -n '{actions: [{id: "ra-20261012T181000Z-3", action: "deploy", repo: "acme/forge-deploy", release: "bad-release", requested_by: "operator"}]}' >"$R/pending.json"
+action poll >/dev/null 2>&1 || fail "poll exited before reporting malformed arguments"
+[[ "$(jq -r '.message' "$R/results.jsonl" | tail -1)" == "exit 64:"* ]] || fail "malformed argument was not reported"
+ok "release-action reports malformed arguments after claiming an ask"
+
+# The local deployment lock survives any forge claim expiry and is checked before cache writes.
+(
+  exec 9>"$R/state/deploy.lock"
+  flock 9
+  rc=0; action deploy "$rel" >/dev/null 2>&1 || rc=$?
+  [[ $rc == 75 ]] || fail "a concurrent deployment was not refused"
+) || exit 1
+ok "release-action refuses a second deployment while the host lock is held"
+
+rm -f "$R/claimed"
+jq -n --arg rel "$rel" '{actions: [{id: "ra-20261012T180500Z-2", action: "deploy", repo: "acme/forge-deploy", release: $rel, requested_by: "operator"}]}' >"$R/pending.json"
+action poll >/dev/null 2>&1 || fail "valid poll after malformed argument failed"
+
 
 # Claimed elsewhere first: nothing runs. Then a failing deploy is reported as failed.
 : >"$R/results.jsonl"

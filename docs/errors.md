@@ -153,7 +153,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `needs_reconciliation` | 409 | a bot operation with this key is still in progress |
 | `not_a_file` | 422 | the path names a directory, not a file |
 | `not_acceptable` | 406 | the Accept header excludes the JSON this route answers |
-| `not_claimed` | 409 | only a claimed release action takes a result |
+| `not_claimed` | 409 | a claim needs the caller's live repository poller; a result needs the original claimant |
 | `not_found` | 404 | the requested entity was not found |
 | `not_open` | 409 | the pull request is not open |
 | `not_queued` | 409 | the pull request is not in the merge queue |
