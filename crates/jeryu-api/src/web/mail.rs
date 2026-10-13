@@ -458,7 +458,7 @@ mod tests {
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv\"\ncat > \"$(dirname \"$0\")/message\"\n")
             .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let recipient = "-Cattack@attacker.test";
+        let recipient = "-fattack@attacker.test";
         assert_eq!(
             super::super::account_email::normalize_address(recipient).as_deref(),
             Some(recipient)
@@ -472,7 +472,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.path().join("argv")).unwrap(),
-            "-t\n-i\n--\n-Cattack@attacker.test\n"
+            "-t\n-i\n--\n-fattack@attacker.test\n"
         );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("message")).unwrap(),
