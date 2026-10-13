@@ -15,10 +15,13 @@
 //! * `GET /api/v1/release-actions?state=pending` is what the release host's
 //!   `release-action.sh poll` reads every half minute
 //!   (`scripts/release/release-action.sh`).
+//! * `POST /api/v1/release-actions/poller` advertises a repository-specific poller,
+//!   with the same deployer authentication as execution.
+//! * `POST /api/v1/release-actions/:id/cancel` cancels a pending ask atomically.
 //! * `POST /api/v1/release-actions/:id/claim` takes one ask, once: a second
 //!   claim is refused, so two pollers never run the same step.
 //! * `POST /api/v1/release-actions/:id/result` says how it ended, with the log's
-//!   tail.
+//!   redacted tail.
 //!
 //! The forge never sends a command. An ask names one of three actions and its
 //! validated argument, and the host maps each to a fixed script of its own; a
@@ -41,6 +44,9 @@ use super::*;
 const MAX_ACTIONS: usize = 256;
 /// Characters of a result's log kept; the full log stays on the release host.
 const MAX_LOG_TAIL: usize = 8_000;
+const PENDING_TTL_MINUTES: i64 = 15;
+const CLAIMED_TTL_MINUTES: i64 = 90;
+const POLLER_TTL_SECONDS: i64 = 90;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +66,8 @@ pub(crate) enum ActionState {
     Claimed,
     Succeeded,
     Failed,
+    Expired,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,136 +112,33 @@ impl ReleaseAction {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ReleaseActionStore {
-    actions: Arc<Mutex<BTreeMap<String, ReleaseAction>>>,
-    next: Arc<std::sync::atomic::AtomicU64>,
-}
-
-impl ReleaseActionStore {
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, ReleaseAction>> {
-        self.actions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Records an ask, or answers the open ask for the same step. The `bool`
-    /// says whether this call recorded it.
-    fn record(&self, new: NewAction, by: &str, now: String) -> (ReleaseAction, bool) {
-        let mut actions = self.lock();
-        if let Some(existing) = actions.values().find(|a| a.open() && a.same_step(&new)) {
-            return (existing.clone(), false);
-        }
-        if actions.len() >= MAX_ACTIONS {
-            // Forget the oldest finished ask; an open one is never dropped.
-            if let Some(oldest) = actions
-                .values()
-                .filter(|a| !a.open())
-                .min_by(|a, b| a.requested_at.cmp(&b.requested_at))
-                .map(|a| a.id.clone())
-            {
-                actions.remove(&oldest);
-            }
-        }
-        // Time-ordered and unique within this forge's life, which is the
-        // store's life.
-        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        let id = format!("ra-{}-{n}", now.replace([':', '-', '.'], ""));
-        let action = ReleaseAction {
-            id: id.clone(),
-            action: new.action,
-            repo: new.repo,
-            release: new.release,
-            head: new.head,
-            state: ActionState::Pending,
-            requested_by: by.to_string(),
-            requested_at: now,
-            claimed_by: None,
-            claimed_at: None,
-            finished_at: None,
-            message: None,
-            log_tail: None,
-        };
-        actions.insert(id, action.clone());
-        (action, true)
-    }
-
-    pub(crate) fn all(&self) -> Vec<ReleaseAction> {
-        self.lock().values().cloned().collect()
-    }
-
-    fn claim(&self, id: &str, by: &str, now: String) -> Result<ReleaseAction, ActionState> {
-        let mut actions = self.lock();
-        let Some(action) = actions.get_mut(id) else {
-            return Err(ActionState::Failed);
-        };
-        if action.state != ActionState::Pending {
-            return Err(action.state);
-        }
-        action.state = ActionState::Claimed;
-        action.claimed_by = Some(by.to_string());
-        action.claimed_at = Some(now);
-        Ok(action.clone())
-    }
-
-    fn finish(
-        &self,
-        id: &str,
-        result: ActionResult,
-        now: String,
-    ) -> Result<ReleaseAction, Option<ActionState>> {
-        let mut actions = self.lock();
-        let Some(action) = actions.get_mut(id) else {
-            return Err(None);
-        };
-        if action.state != ActionState::Claimed {
-            return Err(Some(action.state));
-        }
-        action.state = if result.ok {
-            ActionState::Succeeded
-        } else {
-            ActionState::Failed
-        };
-        action.finished_at = Some(now);
-        action.message = result.message.map(|m| m.chars().take(500).collect());
-        action.log_tail = result.log_tail.map(|tail| {
-            let skip = tail.chars().count().saturating_sub(MAX_LOG_TAIL);
-            tail.chars().skip(skip).collect()
-        });
-        Ok(action.clone())
-    }
-}
-
-/// The label a release host's poller heartbeat carries
-/// (`release-action.sh poll`, `POST /api/v1/runners/heartbeat`).
-pub(crate) const POLLER_LABEL: &str = "release-actions";
+#[path = "release_actions/store.rs"]
+mod store;
+pub(crate) use store::ReleaseActionStore;
 
 /// What the attention inbox needs to know about release actions: whether a
 /// release host is polling for them now (no poller, no button: an ask nobody
 /// reads would only wait), and which asks are still open.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ReleaseQueue {
-    pub(crate) poller: bool,
+    pub(crate) poller_repos: Vec<String>,
     pub(crate) open: Vec<ReleaseAction>,
 }
 
 impl ReleaseQueue {
     pub(crate) fn snapshot(state: &WebState, now: chrono::DateTime<chrono::Utc>) -> Self {
-        let poller = state.gate_runners.snapshot().iter().any(|record| {
-            record
-                .heartbeat
-                .labels
-                .iter()
-                .any(|label| label == POLLER_LABEL)
-                && super::control_plane::is_online(record, now)
-        });
+        let poller_repos = state.release_actions.poller_repos(now);
         let open = state
             .release_actions
-            .all()
+            .all_at(&now.to_rfc3339())
             .into_iter()
             .filter(ReleaseAction::open)
             .collect();
-        Self { poller, open }
+        Self { poller_repos, open }
+    }
+
+    pub(crate) fn polls(&self, repo: &str) -> bool {
+        self.poller_repos.iter().any(|polled| polled == repo)
     }
 
     /// The open ask to deploy this staged release, if one is waiting or running.
@@ -246,8 +151,10 @@ impl ReleaseQueue {
     }
 
     /// The open auto-pin ask of either kind, if one is waiting or running.
-    pub(crate) fn open_auto_pin(&self) -> Option<&ReleaseAction> {
-        self.open.iter().find(|a| a.action != ActionKind::Deploy)
+    pub(crate) fn open_auto_pin(&self, repo: &str) -> Option<&ReleaseAction> {
+        self.open
+            .iter()
+            .find(|a| a.action != ActionKind::Deploy && a.repo == repo)
     }
 }
 
@@ -399,6 +306,67 @@ fn was_staged(state: &WebState, repo: &str, release: &str) -> bool {
         })
 }
 
+fn retry_was_requested(state: &WebState, new: &NewAction) -> bool {
+    state
+        .events
+        .query(&super::pipeline::EventsQuery {
+            kind: Some("pin.bump_failed".into()),
+            repo: Some(new.repo.clone()),
+            limit: Some(200),
+            ..Default::default()
+        })
+        .unwrap_or_default()
+        .iter()
+        .any(|event| event.sha == new.head && event.needs_human)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PollerCheckIn {
+    repo: String,
+}
+
+/// Only a deployer can advertise a live release poller, for its own repository.
+pub(super) async fn check_in(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    Json(check_in): Json<PollerCheckIn>,
+) -> AxumResponse {
+    if !super::auth::can_record_deployments(&account) {
+        return not_deployer();
+    }
+    if !is_repo_slug(&check_in.repo) {
+        return invalid("repo must be owner/name");
+    }
+    match state
+        .release_actions
+        .check_in(&check_in.repo, chrono::Utc::now())
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => api_error(StatusCode::TOO_MANY_REQUESTS, "release_queue_full", message),
+    }
+}
+
+/// Cancelling only a pending ask cannot race an already claimed release step.
+pub(super) async fn cancel(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath(id): AxumPath<String>,
+) -> AxumResponse {
+    if !super::auth::can_record_deployments(&account) {
+        return not_deployer();
+    }
+    match state.release_actions.cancel(&id, server_time()) {
+        Ok(action) => Json(action).into_response(),
+        Err(None) => api_error(StatusCode::NOT_FOUND, "not_found", "no such release action"),
+        Err(Some(_)) => api_error(
+            StatusCode::CONFLICT,
+            "already_claimed",
+            "only a pending ask can be cancelled; cancellation cannot stop a release step",
+        ),
+    }
+}
+
 /// `POST /api/v1/release-actions`: ask the release host for one step.
 ///
 /// 201 with the new ask, or 200 with the open ask for the same step: a second
@@ -423,9 +391,22 @@ pub(super) async fn request(
             "the forge has no record of this release being staged for this repository",
         );
     }
-    let (action, created) = state
+    if new.action == ActionKind::AutoPinRetry && !retry_was_requested(&state, &new) {
+        return api_error(
+            StatusCode::CONFLICT,
+            "not_retryable",
+            "auto-pin has not requested a human retry for this repository and head",
+        );
+    }
+    let (action, created) = match state
         .release_actions
-        .record(new, &account.login, server_time());
+        .record(new, &account.login, server_time())
+    {
+        Ok(record) => record,
+        Err(message) => {
+            return api_error(StatusCode::TOO_MANY_REQUESTS, "release_queue_full", message);
+        }
+    };
     let status = if created {
         StatusCode::CREATED
     } else {
@@ -452,7 +433,7 @@ pub(super) async fn list(
     let pending = query.state.as_deref().unwrap_or("pending") != "all";
     let actions: Vec<ReleaseAction> = state
         .release_actions
-        .all()
+        .all_at(&server_time())
         .into_iter()
         .filter(|a| !pending || a.state == ActionState::Pending)
         .collect();
@@ -506,133 +487,5 @@ pub(super) async fn result(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn deploy(release: &str) -> NewAction {
-        NewAction {
-            action: ActionKind::Deploy,
-            repo: "acme/forge-deploy".to_string(),
-            release: Some(release.to_string()),
-            head: None,
-        }
-    }
-
-    const REL: &str = "prod-20261012T171717Z-f1b1fb4-unsigned";
-
-    #[test]
-    fn a_second_ask_for_the_same_step_is_the_first() {
-        let store = ReleaseActionStore::default();
-        let (first, created) = store.record(deploy(REL), "operator", "2026-10-12T18:00:00Z".into());
-        assert!(created);
-        let (again, created) = store.record(deploy(REL), "operator", "2026-10-12T18:00:05Z".into());
-        assert!(!created);
-        assert_eq!(again.id, first.id);
-        assert_eq!(store.all().len(), 1);
-    }
-
-    #[test]
-    fn an_ask_is_claimed_once_and_finished_once() {
-        let store = ReleaseActionStore::default();
-        let (ask, _) = store.record(deploy(REL), "operator", "t0".into());
-        let claimed = store.claim(&ask.id, "release-host", "t1".into()).unwrap();
-        assert_eq!(claimed.state, ActionState::Claimed);
-        assert_eq!(
-            store.claim(&ask.id, "another-host", "t2".into()),
-            Err(ActionState::Claimed)
-        );
-        let done = store
-            .finish(
-                &ask.id,
-                ActionResult {
-                    ok: true,
-                    message: Some("live".into()),
-                    log_tail: None,
-                },
-                "t3".into(),
-            )
-            .unwrap();
-        assert_eq!(done.state, ActionState::Succeeded);
-        assert!(!store.all().iter().any(ReleaseAction::open));
-        // Finished, so a new click is a new ask.
-        let (next, created) = store.record(deploy(REL), "operator", "t4".into());
-        assert!(created);
-        assert_ne!(next.id, ask.id);
-    }
-
-    #[test]
-    fn only_a_claimed_ask_takes_a_result() {
-        let store = ReleaseActionStore::default();
-        let (ask, _) = store.record(deploy(REL), "operator", "t0".into());
-        let result = ActionResult {
-            ok: false,
-            message: None,
-            log_tail: None,
-        };
-        assert_eq!(
-            store.finish(&ask.id, result.clone(), "t1".into()),
-            Err(Some(ActionState::Pending))
-        );
-        assert_eq!(store.finish("ra-missing", result, "t1".into()), Err(None));
-    }
-
-    #[test]
-    fn each_action_takes_exactly_its_own_argument() {
-        assert!(validate(&deploy(REL)).is_ok());
-        assert!(validate(&deploy("prod-1; rm -rf ~")).is_err());
-        assert!(validate(&deploy("../../etc/passwd")).is_err());
-        let mut bad_repo = deploy(REL);
-        bad_repo.repo = "acme/forge deploy".into();
-        assert!(validate(&bad_repo).is_err());
-        let pin = NewAction {
-            action: ActionKind::AutoPin,
-            repo: "acme/forge-deploy".into(),
-            release: None,
-            head: None,
-        };
-        assert!(validate(&pin).is_ok());
-        let retry = |head: &str| NewAction {
-            action: ActionKind::AutoPinRetry,
-            repo: "acme/forge-deploy".into(),
-            release: None,
-            head: Some(head.into()),
-        };
-        assert!(validate(&retry(&"a".repeat(40))).is_ok());
-        assert!(validate(&retry("abc123")).is_err());
-        assert!(validate(&retry(&"A".repeat(40))).is_err());
-    }
-
-    #[test]
-    fn a_full_store_forgets_a_finished_ask_never_an_open_one() {
-        let store = ReleaseActionStore::default();
-        let (done, _) = store.record(deploy(REL), "operator", "2026-01-01T00:00:00Z".into());
-        store.claim(&done.id, "host", "t".into()).unwrap();
-        store
-            .finish(
-                &done.id,
-                ActionResult {
-                    ok: true,
-                    message: None,
-                    log_tail: None,
-                },
-                "t".into(),
-            )
-            .unwrap();
-        for i in 1..MAX_ACTIONS {
-            let release = format!("prod-20261012T{:06}Z-f1b1fb4-unsigned", i);
-            store.record(
-                deploy(&release),
-                "operator",
-                format!("2026-10-12T00:00:{i:05}Z"),
-            );
-        }
-        assert_eq!(store.all().len(), MAX_ACTIONS);
-        store.record(
-            deploy("prod-20261013T000000Z-f1b1fb4-unsigned"),
-            "operator",
-            "z".into(),
-        );
-        assert!(!store.all().iter().any(|a| a.id == done.id));
-        assert!(store.all().iter().all(|a| a.open()));
-    }
-}
+#[path = "release_actions/tests.rs"]
+mod tests;

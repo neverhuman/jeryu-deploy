@@ -169,9 +169,9 @@ fn pin_item(
     };
     // The button that asks the release host to run auto-pin: only while a
     // poller is live and no auto-pin ask is already open.
-    let asked = hosts.release_queue.open_auto_pin();
+    let asked = hosts.release_queue.open_auto_pin(&consumer.repo);
     let pin_call = |head: Option<&str>| {
-        (hosts.release_queue.poller && asked.is_none())
+        (hosts.release_queue.polls(&consumer.repo) && asked.is_none())
             .then(|| super::auto_pin_call(&consumer.repo, head))
     };
     let asked_note = asked.map_or_else(String::new, |ask| format!(" {}", ask.progress()));

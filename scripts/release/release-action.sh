@@ -4,7 +4,7 @@
 # forge's attention inbox (GET /api/v1/release-actions, docs/release-actions.md).
 #
 #   release-action.sh deploy RELEASE_ID [--dry-run]
-#       Switch production to a staged release with deploy-release.sh taken from jeryu-deploy main
+#       Switch production to a staged release with deploy-release.sh taken from jeryu-deploy the staged commit
 #       (git archive of scripts/release, the recipe the release README says to run), after
 #       waiting for auto-stage to finish if it is staging (its lock), so the two never share the
 #       release build directory.
@@ -13,9 +13,8 @@
 #   release-action.sh auto-pin-retry HEAD
 #       Forget auto-pin's failure count for one 40-hex jeryu-web head, then start it.
 #   release-action.sh poll
-#       One tick of the timer: send a heartbeat (`<host>/release-actions`, labels automation and
-#       release-actions; the forge offers the button only while it is fresh), read the pending
-#       asks, claim the oldest, run it as above, and report how it ended with its log's tail.
+#       One tick: advertise this repository's poller with a deployer-authenticated check-in,
+#       read pending asks, claim the oldest for this repository, run it and report a redacted tail.
 #
 # The forge never sends a command. An ask names one of three actions and an argument, and this
 # script checks both again and maps each to the fixed steps above; anything else is refused. The
@@ -40,7 +39,7 @@ set -euo pipefail
 env_file="${JERYU_RELEASE_ENV:-$HOME/.config/jeryu/release.env}"
 if [ -r "$env_file" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    [[ "$line" =~ ^[[:space:]]*(JERYU_[A-Za-z0-9_]*)=(.*)$ ]] || continue
     key="${BASH_REMATCH[1]}" value="${BASH_REMATCH[2]}"
     value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
     [ -n "${!key+set}" ] || export "$key=$value"
@@ -62,7 +61,7 @@ chmod 700 "$state"
 
 # deploy RELEASE [--dry-run]
 deploy() {
-  local rel="${1:-}" dry="${2:-}" work rc
+  local rel="${1:-}" dry="${2:-}" work rc revision short
   [[ "$rel" =~ $release_re ]] || usage "not a release id: '$rel'"
   [[ -z "$dry" || "$dry" == --dry-run ]] || usage "deploy takes only --dry-run after the release id"
   # The ancestry check in deploy-release.sh needs jeryu-deploy's history; keep a cache of it.
@@ -71,14 +70,21 @@ deploy() {
   work="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" RETURN
-  git -C "$state/git" archive main scripts/release | tar -x -C "$work"
+  short="${rel%-unsigned}"; short="${short##*-}"
+  revision="$(git -C "$state/git" rev-parse --verify "$short^{commit}")" || {
+    say "release commit is missing or ambiguous in protected main's history"; return 65;
+  }
+  git -C "$state/git" merge-base --is-ancestor "$revision" main || {
+    say "release commit is not on protected main"; return 65;
+  }
+  git -C "$state/git" archive "$revision" scripts/release | tar -x -C "$work"
   # auto-stage builds in a shared directory; wait for a staging in progress (up to 45 min, its
   # own limit) rather than race it.
   mkdir -p "$(dirname "$stage_lock")"
   exec 8>"$stage_lock"
   say "waiting for auto-stage to be idle"
   flock -w 2700 8 || { say "auto-stage held its lock for 45 minutes; not deploying"; return 75; }
-  say "deploying $rel with deploy-release.sh from main $(git -C "$state/git" rev-parse --short=12 main)"
+  say "deploying $rel with deploy-release.sh from staged commit ${revision:0:12}"
   rc=0
   JERYU_DEPLOY_GIT="$state/git" bash "$work/scripts/release/deploy-release.sh" ${dry:+"$dry"} "$rel" || rc=$?
   exec 8>&-
@@ -108,18 +114,16 @@ api() { # METHOD PATH [JSON] -> body on stdout; fails on a non-2xx answer
   curl "${args[@]}" "$forge$2"
 }
 
-beat() { # best-effort heartbeat; the forge shows the button only while this is fresh
-  local host body
-  host="$(hostname -s)" || return 0
-  body="$(jq -cn --arg host "$host" '{runnerId: ($host + "/release-actions"), host: $host,
-    slot: 0, labels: ["automation", "release-actions"], intervalSeconds: 30}')"
-  api POST /api/v1/runners/heartbeat "$body" >/dev/null 2>&1 || say "heartbeat: not accepted (ignored)"
+beat() { # deployer-authenticated repository-specific poller check-in
+  local body
+  body="$(jq -cn --arg repo "$repo_path" '{repo: $repo}')"
+  api POST /api/v1/release-actions/poller "$body" >/dev/null 2>&1 || say "poller check-in: not accepted (ignored)"
 }
 
 report() { # ID OK MESSAGE LOG — retried while a deploy restarts the forge
   local id="$1" body code
   body="$(jq -cn --argjson ok "$2" --arg message "$3" --rawfile log "$4" \
-    '{ok: $ok, message: $message, log_tail: ($log | .[-8000:])}')"
+    -f "$(dirname "${BASH_SOURCE[0]}")/redact-release-result.jq")"
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     code="$(curl --silent --max-time 30 -o /dev/null -w '%{http_code}' -X POST --config "$cfg" \
       -H 'Content-Type: application/json' --data-binary "$body" \
@@ -146,7 +150,7 @@ poll() {
   beat
   asks="$(api GET '/api/v1/release-actions?state=pending')" || { say "could not read the asks"; return 0; }
   # One ask per tick, oldest first: a deploy restarts the forge, and the next tick reads afresh.
-  ask="$(jq -c '.actions | sort_by(.requested_at) | .[0] // empty' <<<"$asks")"
+  ask="$(jq -c --arg repo "$repo_path" '.actions | map(select(.repo == $repo)) | sort_by(.requested_at) | .[0] // empty' <<<"$asks")"
   [ -n "$ask" ] || return 0
   id="$(jq -r .id <<<"$ask")" action="$(jq -r .action <<<"$ask")" repo="$(jq -r .repo <<<"$ask")"
   release="$(jq -r '.release // ""' <<<"$ask")" head="$(jq -r '.head // ""' <<<"$ask")"
@@ -168,7 +172,7 @@ poll() {
   ok=true; ((rc == 0)) || ok=false
   msg="$(grep -v '^[[:space:]]*$' "$log" | tail -n 1 | cut -c1-400)"
   ((rc == 0)) || msg="exit $rc: $msg"
-  say "$id finished: $msg"
+  say "$id finished: exit $rc (details kept in host log)"
   report "$id" "$ok" "$msg" "$log"
   find "$state/logs" -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\n' | sort -rn | tail -n +31 \
     | cut -d' ' -f2- | xargs -r rm -f

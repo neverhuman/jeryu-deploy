@@ -1195,7 +1195,7 @@ fn staging_items(
                 .and_then(|repo| hosts.release_queue.open_deploy(repo, release));
             let api = match (event.repo.as_deref(), asked) {
                 (Some(repo), None)
-                    if hosts.release_queue.poller
+                    if hosts.release_queue.polls(repo)
                         && crate::web::release_actions::is_release_id(release) =>
                 {
                     Some(super::deploy_call(repo, release))

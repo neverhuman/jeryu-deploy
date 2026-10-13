@@ -9,6 +9,98 @@ const REPO: &str = "acme/forge-deploy";
 const STAGED: &str = "prod-20261012T171717Z-f1b1fb4-unsigned";
 const NEVER_STAGED: &str = "prod-20261012T181818Z-0123abc-unsigned";
 
+#[tokio::test]
+async fn only_deployers_can_advertise_pollers_and_cancel_pending_asks() {
+    let state = fixture();
+    state
+        .gate_runners
+        .record(
+            serde_json::from_value(json!({
+                "runnerId": "invented/release-actions", "host": "invented", "slot": 0,
+                "labels": ["automation", "release-actions"], "intervalSeconds": 30
+            }))
+            .unwrap(),
+            "review-bot",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    assert!(!release_actions::ReleaseQueue::snapshot(&state, chrono::Utc::now()).polls(REPO));
+    let check_in = |who| {
+        release_actions::check_in(
+            State(state.clone()),
+            who,
+            Json(serde_json::from_value(json!({"repo": REPO})).unwrap()),
+        )
+    };
+    assert_eq!(
+        check_in(authenticated_admin_account("review-bot"))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(!release_actions::ReleaseQueue::snapshot(&state, chrono::Utc::now()).polls(REPO));
+    assert_eq!(
+        check_in(authenticated_admin_account("rel-bot"))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(release_actions::ReleaseQueue::snapshot(&state, chrono::Utc::now()).polls(REPO));
+    let (_, body) = ask(
+        &state,
+        authenticated_admin_account("operator"),
+        deploy(STAGED),
+    )
+    .await;
+    let id = body["id"].as_str().unwrap().to_string();
+    let cancel = |who| release_actions::cancel(State(state.clone()), who, AxumPath(id.clone()));
+    assert_eq!(
+        cancel(authenticated_admin_account("review-bot"))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        cancel(authenticated_admin_account("operator"))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(pending(&state).await, json!([]));
+}
+
+#[tokio::test]
+async fn retry_requires_a_reported_give_up_for_the_exact_repository_and_head() {
+    let state = fixture();
+    let head = "a".repeat(40);
+    let body = json!({"action": "auto_pin_retry", "repo": REPO, "head": head});
+    assert_eq!(
+        ask(
+            &state,
+            authenticated_admin_account("operator"),
+            body.clone()
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    crate::web::pipeline::emit(
+        &state,
+        crate::web::pipeline::NewEvent {
+            repo: Some(REPO.into()),
+            sha: Some(head),
+            needs_human: true,
+            ..crate::web::pipeline::NewEvent::forge("pin.bump_failed", "retry needed")
+        },
+    );
+    assert_eq!(
+        ask(&state, authenticated_admin_account("operator"), body)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+}
+
 /// A forge where auto-stage reported [`STAGED`] for [`REPO`]. `operator` is
 /// the test site's deployer (an admin named in `JERYU_DEPLOYERS`).
 fn fixture() -> Arc<WebState> {

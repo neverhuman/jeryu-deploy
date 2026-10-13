@@ -1238,6 +1238,14 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             post(release_actions::request).get(release_actions::list),
         ),
         (
+            "/api/v1/release-actions/poller",
+            post(release_actions::check_in),
+        ),
+        (
+            "/api/v1/release-actions/:id/cancel",
+            post(release_actions::cancel),
+        ),
+        (
             "/api/v1/release-actions/:id/claim",
             post(release_actions::claim),
         ),

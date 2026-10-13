@@ -2271,7 +2271,10 @@ fn a_staged_release_is_a_button_while_the_release_host_polls_for_asks() {
     assert!(no_poller[0].action.command.is_some());
 
     let mut polled = hosts();
-    polled.release_queue.poller = true;
+    polled
+        .release_queue
+        .poller_repos
+        .push("jeryu/jeryu-deploy".into());
     let items = release_items(slice(&staged), &[], &[], &polled);
     let api = items[0].action.api.as_ref().expect("a deploy button");
     assert_eq!(api.path, "/api/v1/release-actions");

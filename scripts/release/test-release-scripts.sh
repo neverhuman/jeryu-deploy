@@ -1001,7 +1001,7 @@ cat >"$R/bin/curl" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$R/curl-args"
 case "\$*" in
-  *"/api/v1/runners/heartbeat"*) echo '{}' ;;
+  *"/api/v1/release-actions/poller"*) echo '{}' ;;
   *"release-actions?state=pending"*) cat "$R/pending.json" ;;
   *"/claim"*) [ -e "$R/claimed" ] && { echo '{"code":"already_claimed"}'; exit 22; }; touch "$R/claimed"; echo '{}' ;;
   *"/result"*) prev=""; for a in "\$@"; do [ "\$prev" = --data-binary ] && printf '%s\n' "\$a" >>"$R/results.jsonl"; prev="\$a"; done; echo 200 ;;
@@ -1017,7 +1017,7 @@ action() {
     JERYU_AUTO_STAGE_STATE="$R/stage" JERYU_FORGE_URL="https://forge.invalid" \
     bash "$here/release-action.sh" "$@"
 }
-rel="prod-20261012T171717Z-f1b1fb4-unsigned"
+rel="prod-20261012T171717Z-$(git -C "$R/src" rev-parse --short=12 HEAD)-unsigned"
 
 for bad in "prod-1; reboot" "../../etc/passwd" "prod-20261012T171717Z-F1B1FB4-unsigned"; do
   rc=0; action deploy "$bad" >/dev/null 2>&1 || rc=$?
@@ -1030,14 +1030,25 @@ ok "release-action refuses a malformed release id and an unknown step"
 out="$(action deploy "$rel" --dry-run 2>&1)" || fail "a dry-run deploy failed: $out"
 grep -q "DEPLOYED --dry-run $rel build=build-1 git=set" <<<"$out" \
   || fail "deploy did not run main's deploy-release.sh with release.env and the history cache: $out"
-ok "release-action deploy runs main's deploy-release.sh from any directory with release.env loaded"
+ok "release-action deploy runs the staged commit's script from any directory with release.env loaded"
+
+# Advancing main must not change the script the already staged release executes.
+printf '\necho UNEXPECTED_MAIN_SCRIPT\n' >>"$R/src/scripts/release/deploy-release.sh"
+git -C "$R/src" add .
+git -C "$R/src" -c user.name=t -c user.email=t@t commit -q -m newer
+# The local bare stand-in is the transport source, not an external publication.
+git -C "$R/src" push -q "$R/remote.git" main
+out="$(action deploy "$rel" --dry-run 2>&1)" || fail "pinned script failed after main advanced: $out"
+[[ "$out" != *UNEXPECTED_MAIN_SCRIPT* ]] || fail "staged release executed an unrelated newer script"
+ok "release-action pins execution to the staged commit after main advances"
+
 
 # The forge asks for another repository's release: not this host's to run, never claimed.
 jq -n --arg rel "$rel" '{actions: [{id: "ra-20261012T180000Z-1", action: "deploy", repo: "acme/other",
   release: $rel, requested_by: "operator", requested_at: "2026-10-12T18:00:00Z"}]}' >"$R/pending.json"
 action poll >/dev/null 2>&1 || fail "poll failed on another repository's ask"
 ! grep -q "/claim" "$R/curl-args" || fail "poll claimed an ask for another repository"
-grep -q "/api/v1/runners/heartbeat" "$R/curl-args" || fail "poll sent no heartbeat"
+grep -q "/api/v1/release-actions/poller" "$R/curl-args" || fail "poll sent no heartbeat"
 ok "release-action poll beats, and leaves an ask for another repository alone"
 
 jq -n --arg rel "$rel" '{actions: [{id: "ra-20261012T180500Z-2", action: "deploy", repo: "acme/forge-deploy",
@@ -1048,6 +1059,21 @@ grep -q "release-actions/ra-20261012T180500Z-2/claim" "$R/curl-args" || fail "po
 tail -n 1 "$R/results.jsonl" | jq -r '.log_tail' | grep -q "DEPLOYED $rel build=build-1" \
   || fail "the reported log tail is not the deploy's own output"
 ok "release-action poll claims a deploy ask, runs it, and reports it with its log"
+
+# A foreign oldest ask must not starve the local ask after it.
+rm -f "$R/claimed"
+jq --arg rel "$rel" '.actions += [{id: "ra-20261012T180000Z-1", action: "deploy", repo: "acme/other", release: $rel, requested_by: "operator", requested_at: "2026-10-12T18:00:00Z"}]' "$R/pending.json" >"$R/mixed.json"
+mv "$R/mixed.json" "$R/pending.json"
+: >"$R/results.jsonl"
+action poll >/dev/null 2>&1 || fail "poll failed on a mixed-repository queue"
+[[ "$(jq -s length "$R/results.jsonl")" == 1 ]] || fail "a foreign oldest ask starved the local ask"
+ok "release-action skips foreign asks before selecting the oldest local ask"
+
+secret="jpat_$(printf a%.0s {1..64})"
+redacted="$(jq -cn --argjson ok false --arg message "Bearer $secret" --arg log "https://user:pass@example.invalid/path?credential=hidden token=hidden $secret" -f "$here/redact-release-result.jq")"
+[[ "$redacted" != *"$secret"* && "$redacted" != *"hidden"* && "$redacted" != *"user:pass"* ]] || fail "release result leaked credentials: $redacted"
+ok "release-action redacts credentials and URL queries from both result fields"
+
 
 # Claimed elsewhere first: nothing runs. Then a failing deploy is reported as failed.
 : >"$R/results.jsonl"

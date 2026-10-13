@@ -157,6 +157,8 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `not_found` | 404 | the requested entity was not found |
 | `not_open` | 409 | the pull request is not open |
 | `not_queued` | 409 | the pull request is not in the merge queue |
+| `not_retryable` | 409 | auto-pin has not requested a human retry for this repository and head |
+| `release_queue_full` | 429 | cancel a pending release ask or wait for an outcome; the queue is bounded |
 | `not_staged` | 409 | the forge has no record of this release being staged for the repository |
 | `origin_denied` | 403 | a cookie-authenticated WebSocket came from another origin |
 | `password_change_required` | 403 | the account must change its password first |
