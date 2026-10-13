@@ -1,6 +1,6 @@
 # 0008. Let an organization own a bot the team shares
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-13
 Supersedes: none
 Superseded-by: none
