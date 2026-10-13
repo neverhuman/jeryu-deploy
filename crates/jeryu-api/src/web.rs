@@ -11,6 +11,7 @@ mod ci_evidence;
 mod codegraph;
 mod conditional;
 mod control_plane;
+pub mod dev_data;
 mod discovery;
 mod ecosystem;
 mod embedded_web;

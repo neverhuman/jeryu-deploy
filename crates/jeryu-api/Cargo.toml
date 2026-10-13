@@ -44,6 +44,7 @@ toml_edit = { workspace = true }
 uuid = { workspace = true, optional = true }
 tower = { version = "0.5", default-features = false, features = ["util"], optional = true }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"], optional = true }
+reqwest = { version = "0.13", features = ["json"], optional = true }
 
 [build-dependencies]
 sha2 = { workspace = true }
@@ -52,14 +53,13 @@ toml = { workspace = true }
 [dev-dependencies]
 base64 = "0.23"
 sha2 = { workspace = true }
-reqwest = { version = "0.13", features = ["json"] }
 tempfile = { workspace = true }
 tower = "0.5"
 tokio-tungstenite = "0.24"
 
 [features]
 default = []
-web = ["dep:axum", "dep:rusqlite", "dep:pulldown-cmark", "dep:base64", "dep:flate2", "dep:futures-util", "dep:hex", "dep:hmac", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:libc", "dep:sha2", "dep:tokio", "dep:tower", "dep:uuid"]
+web = ["dep:axum", "dep:rusqlite", "dep:pulldown-cmark", "dep:base64", "dep:flate2", "dep:futures-util", "dep:hex", "dep:hmac", "dep:jeryu-agent-stream", "dep:jeryu-agentbridge", "dep:jeryu-ci-compiler", "dep:jeryu-ci-ir", "dep:jeryu-codegraph", "dep:jeryu-gitd", "dep:jeryu-mcp", "dep:jeryu-runner-core", "dep:jeryu-runner-oci", "dep:jeryu-runnerd", "dep:jeryu-wsversion", "dep:libc", "dep:reqwest", "dep:sha2", "dep:tokio", "dep:tower", "dep:uuid"]
 
 [lints]
 workspace = true

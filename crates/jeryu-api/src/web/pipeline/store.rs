@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use chrono::DateTime;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
@@ -177,6 +178,130 @@ impl EventStore {
                 last_prune_ms: 0,
             })),
         })
+    }
+
+    /// Import one event read back from another jeryu instance. This preserves
+    /// the source sequence, timestamp and reporter so a local dev server can
+    /// rebuild projections as if it had held the same event log.
+    pub(crate) fn import(&self, event: &Event) -> Result<Inserted, String> {
+        let ts_ms = DateTime::parse_from_rfc3339(&event.ts)
+            .map_err(|err| format!("event {} has invalid ts: {err}", event.seq))?
+            .timestamp_millis();
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let existing = inner
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {COLUMNS} FROM pipeline_events
+                      WHERE seq = ?1"
+                ),
+                params![event.seq],
+                event_from_row,
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        if let Some(existing) = existing {
+            return Ok(Inserted {
+                event: existing,
+                duplicate: true,
+            });
+        }
+        let detail = event.detail.as_ref().map(|d| d.to_string());
+        let tx = inner
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        tx.execute(
+            "INSERT INTO pipeline_events (seq, ts_ms, event_id, source, kind, reporter, actor,
+                   family, repo, pr, sha, todo_id, shift, outcome, needs_human, summary, reason,
+                   cost_usd, seconds, log_tail, log_url, detail_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                   ?17, ?18, ?19, ?20, ?21, ?22)",
+            params![
+                event.seq,
+                ts_ms,
+                event.event_id,
+                event.source,
+                event.kind,
+                event.reporter,
+                event.actor,
+                event.family,
+                event.repo,
+                event.pr,
+                event.sha,
+                event.todo_id,
+                event.shift,
+                event.outcome,
+                event.needs_human,
+                event.summary,
+                event.reason,
+                event.cost_usd,
+                event.seconds,
+                event.log_tail,
+                event.log_url,
+                detail,
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        if event.cost_usd.is_some() {
+            tx.execute(
+                "INSERT OR IGNORE INTO cost_ledger (reporter, event_id, ts_ms, source, kind,
+                   family, repo, pr, sha, todo_id, shift, outcome, cost_usd, seconds, detail_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    event.reporter,
+                    event.event_id,
+                    ts_ms,
+                    event.source,
+                    event.kind,
+                    event.family,
+                    event.repo,
+                    event.pr,
+                    event.sha,
+                    event.todo_id,
+                    event.shift,
+                    event.outcome,
+                    event.cost_usd,
+                    event.seconds,
+                    detail,
+                ],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+        project::apply(
+            &tx,
+            &project::EventView {
+                seq: event.seq,
+                reporter: &event.reporter,
+                event_id: event.event_id.as_deref(),
+                ts_ms,
+                kind: &event.kind,
+                outcome: event.outcome.as_deref(),
+                family: event.family.as_deref(),
+                repo: event.repo.as_deref(),
+                pr: event.pr,
+                todo_id: event.todo_id.as_deref(),
+                shift: event.shift.as_deref(),
+            },
+        )?;
+        tx.commit().map_err(|err| err.to_string())?;
+        Ok(Inserted {
+            event: event.clone(),
+            duplicate: false,
+        })
+    }
+
+    pub(crate) fn projection_counts(&self) -> Result<(i64, i64), String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let flow = inner
+            .conn
+            .query_row("SELECT COUNT(*) FROM flow_ledger", [], |row| row.get(0))
+            .map_err(|err| err.to_string())?;
+        let cost = inner
+            .conn
+            .query_row("SELECT COUNT(*) FROM cost_ledger", [], |row| row.get(0))
+            .map_err(|err| err.to_string())?;
+        Ok((flow, cost))
     }
 
     /// Append one already-normalised event and return it as stored. When the

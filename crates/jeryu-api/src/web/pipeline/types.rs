@@ -79,7 +79,7 @@ impl NewEvent {
 
 /// A stored event, as `GET /api/v1/events` and the `pipeline` WebSocket scope
 /// return it.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub(crate) struct Event {
     pub seq: i64,
     pub ts: String,

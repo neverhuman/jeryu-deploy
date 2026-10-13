@@ -21,6 +21,10 @@ enum Command {
         #[command(subcommand)]
         command: WebCommand,
     },
+    Dev {
+        #[command(subcommand)]
+        command: DevCommand,
+    },
 }
 
 #[cfg(feature = "web")]
@@ -39,8 +43,27 @@ enum WebCommand {
 }
 
 #[cfg(feature = "web")]
+#[derive(Debug, Subcommand)]
+enum DevCommand {
+    PullEvents {
+        #[arg(long = "from")]
+        from: Option<String>,
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        #[arg(long)]
+        data_dir: PathBuf,
+        #[arg(long)]
+        since: Option<String>,
+    },
+    Compare {
+        #[arg(long)]
+        data_dir: PathBuf,
+    },
+}
+
+#[cfg(feature = "web")]
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Web {
@@ -66,6 +89,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 secure_cookies: !trust_local_dev,
             })
             .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
+        }
+        Some(Command::Dev {
+            command:
+                DevCommand::PullEvents {
+                    from,
+                    token_file,
+                    data_dir,
+                    since,
+                },
+        }) => {
+            let summary = jeryu_api::web::dev_data::pull_events(
+                jeryu_api::web::dev_data::PullConfig {
+                    base_url: from
+                        .or_else(|| std::env::var("JERYU_REAL_DATA_URL").ok())
+                        .ok_or(anyhow::anyhow!(
+                            "pass --from or set JERYU_REAL_DATA_URL in private operator config"
+                        ))?,
+                    token_file: expand_tilde(
+                        token_file
+                            .or_else(|| {
+                                std::env::var_os("JERYU_REAL_DATA_TOKEN_FILE").map(PathBuf::from)
+                            })
+                            .ok_or(anyhow::anyhow!(
+                                "pass --token-file or set JERYU_REAL_DATA_TOKEN_FILE in private operator config"
+                            ))?,
+                    ),
+                    data_dir: expand_tilde(data_dir),
+                    since,
+                },
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
+            println!("{}", summary.line());
+            Ok(())
+        }
+        Some(Command::Dev {
+            command: DevCommand::Compare { data_dir },
+        }) => {
+            let report =
+                jeryu_api::web::dev_data::compare(jeryu_api::web::dev_data::CompareConfig {
+                    data_dir: expand_tilde(data_dir),
+                })
+                .map_err(|err| anyhow::anyhow!("{err}"))?;
+            println!("{report}");
+            Ok(())
         }
         None => {
             let mut router = jeryu_api::Router::default();

@@ -137,3 +137,45 @@ These sources are separate todos. A tile depending on an absent source displays
 to whatever rows exist. Public product and documentation use invented
 examples only (for example families `acme` and `globex`, host `node-a`); never
 expose real hostnames, filesystem paths or personal names.
+
+## Validating against real data
+
+Scorecard, Flow and Yield arithmetic may be checked locally against a real
+jeryu instance, but the data is private operational data. It is used only in an
+operator-owned data directory or in the production instance that already owns
+it; it is never committed, copied into fixtures, pasted into PR text, or used
+as public test evidence. Committed tests and fixtures stay invented, using
+families such as `acme` and `globex` and hosts such as `node-a`, because jeryu
+is public.
+
+Use the read-only dev path:
+
+```bash
+jeryu-api dev pull-events \
+  --from "$JERYU_REAL_DATA_URL" \
+  --token-file "$JERYU_REAL_DATA_TOKEN_FILE" \
+  --data-dir /path/outside/any/git/worktree
+
+jeryu-api web serve --data-dir /path/outside/any/git/worktree
+jeryu-api dev compare --data-dir /path/outside/any/git/worktree
+```
+
+`pull-events` reads the token from a mode-`600` file, never from argv or logs,
+and only issues `GET` requests to the source: `/api/v1/events?after_seq=...`,
+`/api/v1/yield`, `/api/v1/flow`, and `/api/v1/scorecard` when present. The
+source URL and token file have no code defaults; pass flags or set
+`JERYU_REAL_DATA_URL` and `JERYU_REAL_DATA_TOKEN_FILE` in private operator
+configuration. The data directory is refused if it is inside any git work tree.
+
+The pull stores events in the local `<data-dir>/shift.sqlite` event store and
+stores source aggregates as `<data-dir>/source-yield.json`,
+`<data-dir>/source-flow.json`, and, when the endpoint exists,
+`<data-dir>/source-scorecard.json`. Starting a dev server on that data
+directory runs the same startup migrations and projections as production, so
+`flow_ledger`, `cost_ledger`, and Scorecard ledgers added later are rebuilt
+from the pulled events. `dev compare` prints local-versus-source metric
+summaries and the Flow lot ids behind mismatches; it does not print full event
+payloads.
+
+When a real-data check is part of a todo, record counts only in the private todo
+note: events pulled, sequence range, ledgers rebuilt, and compare result.
