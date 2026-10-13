@@ -28,6 +28,7 @@ mod merge_attempts;
 mod merge_queue;
 pub(crate) mod mirror_reconcile;
 mod operator_resources;
+mod organizations;
 mod paging;
 mod people;
 pub(crate) use merge_queue::{gate_verdict, is_queue_owned_ref, rebase_onto};
@@ -90,7 +91,7 @@ use axum::extract::{DefaultBodyLimit, Extension, Path as AxumPath, Query, Reques
 use axum::http::{HeaderName, HeaderValue, Method as HttpMethod, StatusCode, header};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response as AxumResponse};
-use axum::routing::{MethodRouter, any, get, post};
+use axum::routing::{MethodRouter, any, get, post, put};
 use axum::{Json, Router as AxumRouter};
 use jeryu_codegraph::CodeGraphStore;
 use jeryu_core::{AccountSummary, ForgeCore, UserRole};
@@ -1001,6 +1002,30 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/bots/:id/tokens/:token_id/revoke",
             post(bots::revoke_token),
         ),
+        (
+            "/api/v1/bots/tokens/revoke-issued",
+            post(bots::revoke_issued_tokens),
+        ),
+        ("/api/v1/bots/:id/grants", get(bots::list_grants)),
+        (
+            "/api/v1/bots/:id/grants/:owner/:repo",
+            put(bots::put_grant).delete(bots::delete_grant),
+        ),
+        (
+            "/api/v1/orgs",
+            get(organizations::list).post(organizations::create),
+        ),
+        ("/api/v1/orgs/:org", get(organizations::detail)),
+        (
+            "/api/v1/orgs/:org/owners/:login",
+            put(organizations::add_owner).delete(organizations::remove_owner),
+        ),
+        ("/api/v1/orgs/:org/teams", post(organizations::create_team)),
+        (
+            "/api/v1/orgs/:org/teams/:team/members/:login",
+            put(organizations::add_member).delete(organizations::remove_member),
+        ),
+        ("/api/v1/orgs/:org/bots", post(bots::enroll_team)),
         ("/api/v1/bot/token", post(bots::exchange_token)),
         ("/api/v1/bot/token/refresh", post(bots::refresh_token)),
         ("/api/v1/bot/whoami", get(bots::whoami)),

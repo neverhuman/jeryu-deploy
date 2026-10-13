@@ -125,7 +125,9 @@ pub(super) fn authenticate_bearer(
         .core
         .authenticate_bot_access(claims.bot_id, claims.generation, &claims.key_id)
         .ok()?;
-    let mut account = state.core.get_account(&summary.owner).ok()?;
+    // A person's bot runs as its owner; a team bot as its own
+    // `<organization>.<slug>[bot]` name, which is no account (ADR 0008).
+    let mut account = state.core.bot_acting_account(summary.id).ok()?;
     // Stored admin must not widen repository checks. Callers that still consult
     // `account.role` see a normal user; bot reach is `authorize_bot`'s job.
     account.role = UserRole::User;
@@ -146,7 +148,7 @@ pub(super) fn authenticate_agent_token(
     token: &str,
 ) -> Option<(AccountSummary, BotPrincipal)> {
     let auth = state.core.authenticate_bot_access_token(token).ok()?;
-    let mut account = state.core.get_account(&auth.bot.owner).ok()?;
+    let mut account = state.core.bot_acting_account(auth.bot.id).ok()?;
     account.role = UserRole::User;
     Some((
         account,

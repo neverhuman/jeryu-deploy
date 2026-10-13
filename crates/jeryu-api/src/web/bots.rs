@@ -12,8 +12,8 @@ use axum::extract::{ConnectInfo, Extension, Path as AxumPath, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use jeryu_core::{
-    AccountSummary, BotCall, BotEffect, BotEnrollment, BotKind, BotObservation, BotReach,
-    BotSession, BotTaskKind, ForgeError,
+    AccountSummary, BotCall, BotEffect, BotEnrollment, BotKind, BotObservation, BotOwnerKind,
+    BotReach, BotRepoAccess, BotSession, BotTaskKind, ForgeError,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -66,12 +66,145 @@ pub(super) async fn enroll(
     }
 }
 
+/// `GET /api/v1/bots` — the caller's own bots, and the team bots they
+/// steward (every team bot for a forge administrator).
 pub(super) async fn list(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
 ) -> AxumResponse {
-    match state.core.list_account_bots(&account.login) {
-        Ok(bots) => Json(json!({ "bots": bots })).into_response(),
+    let own = state.core.list_account_bots(&account.login);
+    let team = state.core.list_team_bots(&account.login);
+    match (own, team) {
+        (Ok(bots), Ok(team_bots)) => {
+            Json(json!({ "bots": bots, "team_bots": team_bots })).into_response()
+        }
+        (Err(error), _) | (_, Err(error)) => map_bot_error(error),
+    }
+}
+
+/// `POST /api/v1/orgs/:org/bots` — an owner of the organization, or a forge
+/// administrator, enrolls a team bot stewarded by one of its teams (ADR 0008).
+/// The answer carries no enrollment key: a team bot authenticates only with
+/// agent tokens its stewards issue.
+pub(super) async fn enroll_team(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath(org): AxumPath<String>,
+    body: Bytes,
+) -> AxumResponse {
+    let Some(fields) = object_fields(&body) else {
+        return invalid_body();
+    };
+    let (Some(slug), Some(display_name), Some(steward_team)) = (
+        text(&fields, "slug"),
+        text(&fields, "display_name"),
+        text(&fields, "steward_team"),
+    ) else {
+        return invalid_body();
+    };
+    let kind = match fields.get("kind") {
+        None | Some(Value::Null) => BotKind::default(),
+        Some(Value::String(kind)) => match BotKind::parse(kind) {
+            Ok(kind) => kind,
+            Err(error) => return map_bot_error(error),
+        },
+        Some(_) => return invalid_kind(),
+    };
+    let reach = match fields.get("reach") {
+        None | Some(Value::Null) => BotReach::General,
+        Some(value) => match serde_json::from_value::<BotReach>(value.clone()) {
+            Ok(reach) => reach,
+            Err(_) => return invalid_body(),
+        },
+    };
+    match state.core.enroll_team_bot(
+        &account.login,
+        &org,
+        steward_team,
+        slug,
+        display_name,
+        kind,
+        reach,
+    ) {
+        Ok(enrollment) => {
+            (StatusCode::CREATED, Json(json!({ "bot": enrollment.bot }))).into_response()
+        }
+        Err(error) => map_bot_error(error),
+    }
+}
+
+/// `GET /api/v1/bots/:id/grants` — a team bot's own repository grants, for
+/// its stewards.
+pub(super) async fn list_grants(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath(id): AxumPath<String>,
+) -> AxumResponse {
+    let Some(bot_id) = parse_bot_id(&id) else {
+        return invalid_bot_id();
+    };
+    match state.core.list_bot_repo_grants(&account.login, bot_id) {
+        Ok(grants) => Json(json!({ "grants": grants })).into_response(),
+        Err(error) => map_bot_error(error),
+    }
+}
+
+/// `PUT /api/v1/bots/:id/grants/:owner/:repo` with `{"access": "read"|"write"}`
+/// — an administrator of that repository grants a team bot. Never `admin`.
+pub(super) async fn put_grant(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath((id, owner, repo)): AxumPath<(String, String, String)>,
+    body: Bytes,
+) -> AxumResponse {
+    let Some(bot_id) = parse_bot_id(&id) else {
+        return invalid_bot_id();
+    };
+    let Some(access) = object_fields(&body)
+        .and_then(|fields| fields.get("access").cloned())
+        .and_then(|value| serde_json::from_value::<BotRepoAccess>(value).ok())
+    else {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_input",
+            "access must be read or write; a bot is never granted admin",
+        );
+    };
+    match state
+        .core
+        .grant_bot_repository(&account.login, bot_id, &owner, &repo, access)
+    {
+        Ok(grant) => Json(grant).into_response(),
+        Err(error) => map_bot_error(error),
+    }
+}
+
+/// `DELETE /api/v1/bots/:id/grants/:owner/:repo`
+pub(super) async fn delete_grant(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    AxumPath((id, owner, repo)): AxumPath<(String, String, String)>,
+) -> AxumResponse {
+    let Some(bot_id) = parse_bot_id(&id) else {
+        return invalid_bot_id();
+    };
+    match state
+        .core
+        .revoke_bot_repository_grant(&account.login, bot_id, &owner, &repo)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => map_bot_error(error),
+    }
+}
+
+/// `POST /api/v1/bots/tokens/revoke-issued` — revoke every agent token the
+/// caller issued for any team bot.
+pub(super) async fn revoke_issued_tokens(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+) -> AxumResponse {
+    match state.core.revoke_issued_team_bot_tokens(&account.login) {
+        Ok(revoked) => Json(json!({ "revoked": revoked })).into_response(),
         Err(error) => map_bot_error(error),
     }
 }
@@ -298,6 +431,8 @@ pub(super) async fn whoami(
             "slug": summary.slug,
             "reach": summary.reach,
             "owner": summary.owner,
+            "owner_kind": summary.owner_kind,
+            "acting_login": summary.acting_login,
             "generation": summary.credential_generation,
         }))
         .into_response(),
@@ -392,6 +527,11 @@ pub(super) fn body_digest(body: &[u8]) -> String {
 }
 
 fn enrollment_response(headers: &HeaderMap, enrollment: &BotEnrollment) -> AxumResponse {
+    // A team bot's key never exchanges, so it is not shown and no setup
+    // script is offered: its stewards issue agent tokens instead.
+    if enrollment.bot.owner_kind == BotOwnerKind::Organization {
+        return Json(json!({ "bot": enrollment.bot, "key_id": enrollment.key_id })).into_response();
+    }
     let forge =
         bot_token::request_base_url(headers).unwrap_or_else(|| "http://127.0.0.1:8787".to_string());
     let setup_script = render_bot_setup_script(

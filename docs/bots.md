@@ -200,9 +200,47 @@ pages, with a count and the peer each limit keyed on. Owner step: set
 `JERYU_TRUSTED_PROXIES` to the edge proxy's address in the forge's site env
 file on the forge host and restart the forge.
 
+## Team bots
+
+A team bot belongs to an organization, not to a person (ADR 0008). Use one
+for automation the team shares: it keeps working when anyone leaves, resets a
+password, or changes their own access. Organizations, owners and teams are
+described in `docs/organizations.md`.
+
+- **Enroll.** An owner of the organization, or a forge administrator, names a
+  team of that organization as the bot's stewards:
+
+  ```bash
+  curl -sS -X POST "$FORGE/api/v1/orgs/acme/bots" \
+    -H "Authorization: Bearer $PAT" -H 'Content-Type: application/json' \
+    -d '{"steward_team":"stewards","slug":"reviewer","display_name":"Reviewer"}'
+  ```
+
+  `kind` and `reach` are optional (`agent`, `general`). The answer has no
+  enrollment key: a team bot authenticates only with agent tokens.
+- **Rights.** Only grants made to the bot itself, on single repositories,
+  `read` or `write`, never `admin`. An administrator of the repository (or a
+  forge administrator) makes them:
+  `PUT /api/v1/bots/{id}/grants/{owner}/{repo}` with `{"access":"write"}`, and
+  `DELETE` the same path to remove one. Its reach narrows those grants as for
+  any bot. Organization membership gives it nothing.
+- **Name.** It acts, authors and is audited as `<organization>.<slug>[bot]`,
+  for example `acme.reviewer[bot]`. No account can have that name; repository
+  checks resolve it to the bot's own grants.
+- **Stewards.** Members of the steward team, and forge administrators, issue
+  and revoke its agent tokens, rotate its key, suspend or revoke it, and read
+  `GET /api/v1/bots/{id}/grants`. The organization's owners steward it only
+  from the team. `GET /api/v1/bots` lists the caller's team bots under
+  `team_bots`.
+- **Departures.** Each agent token records who issued it and works only while
+  that person may still steward the bot. Removing someone from the steward
+  team, or disabling or locking their account, revokes the tokens they issued;
+  a password change does not. `POST /api/v1/bots/tokens/revoke-issued` revokes
+  every team bot token the caller issued.
+
 ## Check
 
 - `GET /api/v1/bot/whoami` with the bot's access token returns its kind, slug,
-  owner and reach.
+  owner, owner kind, acting login and reach.
 - A read inside the reach returns 200; a private repository outside it returns 403.
 - Errors carry a machine code and a repair hint; see `docs/errors.md`.

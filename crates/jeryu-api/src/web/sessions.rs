@@ -346,12 +346,13 @@ fn create_for_bot(
         runner: None,
         timeout_ms: ttl.map(|seconds| seconds.saturating_mul(1_000)),
     };
-    // A bot session is owned by the account that owns the bot.
+    // A bot session is owned by the login the bot acts as: its owner, or a
+    // team bot's own name.
     let owner = state
         .core
         .authenticate_bot_access(bot.bot_id, bot.generation, &bot.key_id)
         .ok()
-        .map(|summary| summary.owner);
+        .map(|summary| summary.acting_login);
     match create_session(&state, repo_id, request, owner) {
         Ok(response) => {
             let narrow = json!({
@@ -368,7 +369,7 @@ fn create_for_bot(
             let actor = state
                 .core
                 .authenticate_bot_access(bot.bot_id, bot.generation, &bot.key_id)
-                .map(|summary| summary.owner)
+                .map(|summary| summary.acting_login)
                 .unwrap_or_else(|_| format!("bot:{}", bot.bot_id));
             let subject = find_repo(&state, repo_id)
                 .map(|repo| repo.full_name)

@@ -31,7 +31,8 @@ authority. Durable detail is intentionally routed rather than duplicated:
   formats, in `configs/jeryu.env.example`; how to load it, the minimal and
   production sets, and how to check them in `docs/configuration.md`.
 - Tool-finder scheduled scan and proposal decisions: `docs/tool-finder.md`.
-- Account Grokbots and Musebots (enroll, reach, setup, edge): `docs/bots.md`.
+- Bots, person-owned and team bots (enroll, reach, grants, setup, edge): `docs/bots.md`.
+- Organizations, owners and teams: `docs/organizations.md`.
 - Page to hand an external agent so it connects itself (MCP, REST, git):
   `docs/connect-an-agent.md`.
 - Pipeline event log, attention inbox and their agent guide:

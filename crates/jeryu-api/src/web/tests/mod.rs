@@ -57,6 +57,7 @@ mod signup_tests;
 mod site_settings_tests;
 mod source_tests;
 mod surface_tests;
+mod team_bots_tests;
 mod tools_tests;
 mod waitlist_tests;
 mod work_authorization;

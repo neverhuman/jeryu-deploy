@@ -141,6 +141,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_request` | 422 | credentials must not be passed as query parameters |
 | `invalid_session_id` | 422 | an agent_id or run_id has a character a ref may not carry |
 | `invalid_token` | 401 | invalid bot credential |
+| `last_owner` | 409 | an organization keeps at least one owner; add another before removing this one |
 | `mail_unavailable` | 503 | this forge cannot send mail |
 | `managed_runtime_invalid` | 422 | the configured managed runtime is unknown |
 | `merge_blocked` | 409 | merge policy blocks this pull request |
