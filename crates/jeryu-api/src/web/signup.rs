@@ -30,6 +30,10 @@
 //!   storing its address disables the new account: an account never exists
 //!   without the address it proved.
 //!
+//! Both routes are off unless an operator sets `JERYU_SIGNUP=email`; closed,
+//! they answer `403 signup_closed` with the waitlist to join instead
+//! ([`super::signup_policy`]).
+//!
 //! Operator configuration: `docs/account-email.md`.
 
 use std::net::SocketAddr;
@@ -54,6 +58,7 @@ use super::auth::{
     rate_limited,
 };
 use super::mail::OutgoingMail;
+use super::signup_policy;
 use super::{WebState, api_error};
 
 /// A sign-up link is good for a day, like a verification link: it proves the
@@ -315,6 +320,11 @@ pub(super) async fn start(
     headers: HeaderMap,
     Json(request): Json<SignupStartRequest>,
 ) -> AxumResponse {
+    // Closed is answered before anything else, so no message is ever sent
+    // while sign-up is by invitation.
+    if !state.signup_policy.is_open() {
+        return signup_policy::closed(&state.signup_policy);
+    }
     if !state.mailer.is_configured() {
         return api_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -452,6 +462,9 @@ pub(super) async fn complete(
     headers: HeaderMap,
     Json(request): Json<SignupRequest>,
 ) -> AxumResponse {
+    if !state.signup_policy.is_open() {
+        return signup_policy::closed(&state.signup_policy);
+    }
     if auth_rate_limit_exceeded(&state, peer.as_ref(), &headers, "signup", &request.login) {
         return rate_limited();
     }

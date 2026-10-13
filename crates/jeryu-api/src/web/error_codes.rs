@@ -700,6 +700,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("shift_todo_not_found", 404, "the shift todo was not found"),
     entry(
+        "signup_closed",
+        403,
+        "sign-up is by invitation; join the waitlist",
+    ),
+    entry(
         "signup_link_invalid",
         422,
         "that sign-up link is expired, already used, or not a link this forge issued",

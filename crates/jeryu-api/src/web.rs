@@ -53,6 +53,7 @@ mod search;
 mod sessions;
 pub(crate) mod shift;
 mod signup;
+mod signup_policy;
 mod site_settings;
 mod strict_query;
 mod surface;
@@ -218,6 +219,9 @@ pub(crate) struct WebState {
     /// default, in which case those routes answer as they always do and
     /// record that nothing was sent (`docs/account-email.md`).
     pub(crate) mailer: mail::Mailer,
+    /// Whether anybody may sign up (`JERYU_SIGNUP`, closed by default) and
+    /// where to join the waitlist instead (`JERYU_WAITLIST_URL`).
+    pub(crate) signup_policy: signup_policy::SignupPolicy,
     /// What the newest GitHub-mirror reconcile found per repository.
     pub(crate) mirror_state: mirror_reconcile::MirrorStateStore,
     /// Which repositories import their GitHub mirror's pull requests, read
@@ -416,6 +420,12 @@ impl WebState {
             mailer: mail::Mailer::recording(),
             #[cfg(not(test))]
             mailer: mail::Mailer::from_env(),
+            // Closed in a test unless the test opens it; production reads the
+            // operator's configuration.
+            #[cfg(test)]
+            signup_policy: signup_policy::SignupPolicy::default(),
+            #[cfg(not(test))]
+            signup_policy: signup_policy::SignupPolicy::from_env(),
             mirror_state: mirror_reconcile::MirrorStateStore::default(),
             pull_import: Arc::new(crate::github_pull_import::PullImport::default()),
             github_api: None,
@@ -982,6 +992,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/bot/token", post(bots::exchange_token)),
         ("/api/v1/bot/token/refresh", post(bots::refresh_token)),
         ("/api/v1/bot/whoami", get(bots::whoami)),
+        ("/api/v1/auth/signup/policy", get(signup_policy::get_policy)),
         (
             "/api/v1/auth/signup/start",
             post(signup::start).layer(DefaultBodyLimit::max(account_email::ACCOUNT_EMAIL_BODY_MAX)),

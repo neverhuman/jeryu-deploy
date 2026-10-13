@@ -60,8 +60,8 @@ Nothing is required for a forge on one machine. With an empty file:
 2. The first start creates the admin `jeryu-admin` and writes its one-time
    password to `<data_dir>/bootstrap-credentials.json` (mode 600). Sign in,
    set a new password, then delete that file.
-3. Mail, the GitHub mirror, the importer and every automation identity stay
-   off.
+3. Mail, sign-up, the GitHub mirror, the importer and every automation
+   identity stay off; accounts are made by the admin.
 
 ## Production forge
 
@@ -73,6 +73,7 @@ Put an edge proxy (TLS) in front of the loopback listener, then set:
 | Public origin | `JERYU_PRODUCTION_ORIGIN=https://forge.example.com` |
 | Edge proxy | `JERYU_TRUSTED_PROXIES` = the address the proxy connects from (`127.0.0.1,::1` for a proxy on the same host). Exact IPs only, no CIDR |
 | Mail | `JERYU_MAIL_FROM`, `JERYU_MAIL_BASE_URL`, and one of `JERYU_MAIL_SENDMAIL` / `JERYU_MAIL_SPOOL`; details in [account-email.md](account-email.md) |
+| Sign-up | closed unless `JERYU_SIGNUP=email` (needs mail); `JERYU_WAITLIST_URL` = an absolute https URL where people join the waitlist instead ([account-email.md](account-email.md#sign-up)) |
 | Automation | the `JERYU_*_IDENTITY`, `JERYU_*_REPORTERS`, `JERYU_CI_PUBLISHERS`, `JERYU_JANKURAI_SCORERS` and `JERYU_DEPLOYERS` logins your bots run as ([bots.md](bots.md), [pipeline-events.md](pipeline-events.md)) |
 | Mirror | `JERYU_MIRROR_REMOTE_ALLOWLIST` plus `--split-manifest` ([github-mirror.md](github-mirror.md)) |
 
@@ -95,6 +96,9 @@ After restarting:
   many addresses parsed) and `proxyTrust.message`.
 - `jeryu-api: JERYU_MCP_PERSONAL_TOKEN_PEERS ignores ...` names an entry that
   was dropped.
+- Sign-up: `GET /api/v1/auth/signup/policy` answers the effective
+  `{"mode","waitlistUrl"}`. A line starting `jeryu-api sign-up:` names a
+  `JERYU_SIGNUP` or `JERYU_WAITLIST_URL` value that was ignored.
 - Mail has no startup line. Ask for a password reset for an account with a
   proved address: a spool directory gains an `.eml` file, and the audit log
   records `account.password_reset.requested`; a `failed` phase means a piece is

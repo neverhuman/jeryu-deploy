@@ -415,25 +415,41 @@ fn main() -> Result<()> {
         probe(&client, &base_url, &mut probes, spec);
     }
 
-    // Sign-up needs a mailed link, which the smoke cannot read, so a bare
-    // login-and-password sign-up must be refused with its repair code, and
-    // the non-admin account is created the way an administrator creates one.
+    // Sign-up is closed by default (JERYU_SIGNUP unset), so a sign-up is
+    // refused and the non-admin account is created the way an administrator
+    // creates one.
     probe(
         &client,
         &base_url,
         &mut probes,
         Probe {
-            name: "signup_requires_email",
+            name: "signup_policy_closed",
+            method: "GET",
+            path: "/api/v1/auth/signup/policy",
+            expected: 200,
+            body: None,
+            auth: None,
+            accept: Some("application/json"),
+            contains: Some("\"mode\":\"closed\""),
+            ctype_prefix: Some("application/json"),
+        },
+    );
+    probe(
+        &client,
+        &base_url,
+        &mut probes,
+        Probe {
+            name: "signup_closed",
             method: "POST",
             path: "/api/v1/auth/signup",
-            expected: 422,
+            expected: 403,
             body: Some(json!({
                 "login": "release-smoke",
                 "password": "release-smoke-password-123"
             })),
             auth: None,
             accept: Some("application/json"),
-            contains: Some("email_required"),
+            contains: Some("signup_closed"),
             ctype_prefix: None,
         },
     );
@@ -829,6 +845,8 @@ fn spawn_server(
     command
         .current_dir(root)
         .env_remove("JERYU_WEB_TRUST_LOCAL")
+        // The smoke asserts the default sign-up policy, which is closed.
+        .env_remove("JERYU_SIGNUP")
         .env(BOOTSTRAP_ADMIN_PASSWORD_ENV, admin_password)
         .args([
             "serve",

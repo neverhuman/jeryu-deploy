@@ -25,8 +25,9 @@ temporary password to the account's address (see
 | `POST /api/v1/auth/email/verify` | none | `200 {"result":"verified","verified":true}` |
 | `POST /api/v1/auth/password/forgot` | none | `202 {"result":"sent"}` |
 | `POST /api/v1/auth/password/reset` | none | `200 {"result":"reset"}` |
-| `POST /api/v1/auth/signup/start` | none | `202 {"result":"sent"}` |
-| `POST /api/v1/auth/signup` | none | the account, its CSRF token and the session cookie |
+| `GET /api/v1/auth/signup/policy` | none | `{"mode":"closed"\|"email","waitlistUrl":…\|null}` |
+| `POST /api/v1/auth/signup/start` | none | `202 {"result":"sent"}`; `403 signup_closed` unless `JERYU_SIGNUP=email` |
+| `POST /api/v1/auth/signup` | none | the account, its CSRF token and the session cookie; `403 signup_closed` unless `JERYU_SIGNUP=email` |
 | `POST /api/v1/admin/users/:login/reset-password` | an administrator | `202 {"result":"sent","login":…,"email":…}` |
 
 The link routes need no credential because a mail client reaches them: a
@@ -35,7 +36,23 @@ names the account. The sign-up routes need none because no account exists yet.
 
 ## Sign-up
 
-An account is only ever created with its address already proved:
+**Sign-up is off unless `JERYU_SIGNUP=email`.** By default (unset, empty,
+`closed`, or any value this binary does not know) both sign-up routes answer
+`403 signup_closed`, "sign-up is by invitation; join the waitlist", with a
+`waitlistUrl` field, before anything else, so no message is ever sent.
+Accounts are then made by an administrator (`POST /api/v1/admin/users`, then
+the mailed reset below), and people join a waitlist: `JERYU_WAITLIST_URL`, an
+absolute `https` URL on another site, or, without one, the forge's own
+`POST /api/v1/waitlist`. An unknown `JERYU_SIGNUP` value or an invalid
+`JERYU_WAITLIST_URL` is named on one startup line starting
+`jeryu-api sign-up:` and ignored.
+
+`GET /api/v1/auth/signup/policy` (open) answers
+`{"mode":"closed"|"email","waitlistUrl":…|null}`, so the web app draws the
+right surface before anybody signs in.
+
+With `JERYU_SIGNUP=email`, an account is only ever created with its address
+already proved:
 
 1. `POST /api/v1/auth/signup/start` `{"email": "…"}` mails a link,
    `<base>/create-account?token=…`, good for a day. Every valid address
@@ -52,6 +69,7 @@ Refusals:
 
 | Answer | When |
 |---|---|
+| `403 signup_closed` | sign-up is closed (the default); the body carries `waitlistUrl` |
 | `503 mail_unavailable` | the forge cannot send mail; sign-up is impossible without it, so `start` says so for every address |
 | `422 invalid_input` | `start` got a malformed address, or `signup` a password under 12 bytes (checked before the link is spent) |
 | `422 email_required` | `signup` got no token: verify an address with `start` first |

@@ -16,7 +16,8 @@ async fn signup_issues_session_cookie_for_followup_api_calls() {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    let state = WebState::new(ForgeCore::new()).with_auth(true, false, false);
+    let mut state = WebState::new(ForgeCore::new()).with_auth(true, false, false);
+    state.signup_policy = crate::web::signup_policy::SignupPolicy::email();
     let token = signup_token(&state, "newuser@example.com");
     let app = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
     let response = app
@@ -260,7 +261,8 @@ async fn admin_sees_all_repositories_but_fresh_signup_sees_none() {
     }
     core.create_account("jeryu-admin", "admin-password-123", UserRole::Admin)
         .unwrap();
-    let state = WebState::new(core).with_auth(true, false, false);
+    let mut state = WebState::new(core).with_auth(true, false, false);
+    state.signup_policy = crate::web::signup_policy::SignupPolicy::email();
     let token = signup_token(&state, "freshuser@example.com");
     let app = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
 
@@ -505,7 +507,8 @@ async fn cookie_auth_mutations_require_csrf_and_pat_lifecycle_is_user_scoped() {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    let state = WebState::new(ForgeCore::new()).with_auth(true, false, false);
+    let mut state = WebState::new(ForgeCore::new()).with_auth(true, false, false);
+    state.signup_policy = crate::web::signup_policy::SignupPolicy::email();
     let token = signup_token(&state, "tokenuser@example.com");
     let app = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
     let signup = app

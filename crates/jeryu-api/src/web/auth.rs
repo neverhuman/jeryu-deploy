@@ -1135,6 +1135,7 @@ pub(super) fn open_path(path: &str) -> bool {
         "/api/v1/auth/signup"
             // Sign-up starts from an address, before any credential exists.
             | "/api/v1/auth/signup/start"
+            | "/api/v1/auth/signup/policy"
             | "/api/v1/auth/login"
             | "/api/v1/bot/token"
             | "/api/v1/bot/token/refresh"

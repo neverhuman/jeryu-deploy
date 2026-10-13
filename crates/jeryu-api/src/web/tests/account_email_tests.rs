@@ -11,6 +11,7 @@
 use super::*;
 use crate::web::account_email::{AccountEmailStore, LinkPurpose};
 use crate::web::mail::Mailer;
+use crate::web::signup_policy::SignupPolicy;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method as HttpMethod, Request, StatusCode, header};
 use jeryu_core::ForgeCore;
@@ -45,6 +46,13 @@ pub(super) fn audited_forge(mailer: Mailer) -> (Forge, tempfile::TempDir) {
 }
 
 fn forge_with(mailer: Mailer, core: ForgeCore) -> Forge {
+    // The sign-up tests share this forge, so sign-up is open on it; the
+    // routes this file covers do not read the policy.
+    forge_with_policy(mailer, core, SignupPolicy::email())
+}
+
+/// A forge with the given sign-up policy.
+pub(super) fn forge_with_policy(mailer: Mailer, core: ForgeCore, policy: SignupPolicy) -> Forge {
     core.create_account("ada", PASSWORD, UserRole::User)
         .expect("create the account under test");
     let ada = core
@@ -53,6 +61,7 @@ fn forge_with(mailer: Mailer, core: ForgeCore) -> Forge {
         .secret;
     let mut state = WebState::new(core.clone()).with_auth(true, false, false);
     state.mailer = mailer.clone();
+    state.signup_policy = policy;
     let store = state.account_email.clone();
     let router = app(state, Path::new("/tmp/jeryu-no-spa"));
     Forge {

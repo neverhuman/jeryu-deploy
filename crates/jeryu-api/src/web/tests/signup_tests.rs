@@ -6,12 +6,14 @@
 //! account that comes out holds its address already proved.
 
 use super::account_email_tests::{
-    Forge, audited_forge, forge, forge_with_mailer, json_reply, newest_link_secret, send,
-    verify_address,
+    Forge, audited_forge, forge, forge_with_mailer, forge_with_policy, json_reply,
+    newest_link_secret, send, verify_address,
 };
 use super::*;
 use crate::web::mail::Mailer;
+use crate::web::signup_policy::SignupPolicy;
 use axum::http::{Method as HttpMethod, StatusCode, header};
+use jeryu_core::ForgeCore;
 
 const SIGNUP_PASSWORD: &str = "signup-password-1";
 
@@ -340,4 +342,93 @@ async fn signup_is_audited_without_the_address() {
     let rendered = format!("{records:?}");
     assert!(!rendered.contains("grace@example.com"), "{rendered}");
     assert!(!rendered.contains(&secret), "{rendered}");
+}
+
+/// A closed forge: the default, with or without an external waitlist.
+fn closed_forge(waitlist_url: Option<&str>) -> Forge {
+    let (policy, complaints) = SignupPolicy::parse(None, waitlist_url);
+    assert!(complaints.is_empty(), "{complaints:?}");
+    forge_with_policy(Mailer::recording(), ForgeCore::new(), policy)
+}
+
+/// Sign-up is by invitation unless an operator opens it: both routes refuse
+/// with the waitlist to join, and no message is ever sent.
+#[tokio::test]
+async fn closed_sign_up_refuses_both_routes_and_sends_nothing() {
+    for waitlist_url in [None, Some("https://waitlist.example.com/join?from=forge")] {
+        let forge = closed_forge(waitlist_url);
+        let expected = json!({
+            "code": "signup_closed",
+            "message": "sign-up is by invitation; join the waitlist",
+            "waitlistUrl": waitlist_url,
+        });
+        let (status, reply) = start(&forge, "grace@example.com").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+        assert_eq!(reply["code"], expected["code"], "{reply}");
+        assert_eq!(reply["message"], expected["message"], "{reply}");
+        assert_eq!(reply["waitlistUrl"], expected["waitlistUrl"], "{reply}");
+        let link = forge
+            .store
+            .issue_signup("grace@example.com", chrono::Utc::now().timestamp_millis())
+            .expect("issue a link");
+        for body in [
+            json!({ "login": "grace", "password": SIGNUP_PASSWORD }),
+            json!({ "token": link.secret_for_test(), "login": "grace", "password": SIGNUP_PASSWORD }),
+        ] {
+            let (status, reply) = signup(&forge, &body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+            assert_eq!(reply["code"], "signup_closed", "{reply}");
+            assert_eq!(reply["waitlistUrl"], expected["waitlistUrl"], "{reply}");
+        }
+        assert!(forge.mailer.sent().is_empty(), "no mail while closed");
+        assert!(forge.core.get_account("grace").is_err(), "no account");
+    }
+}
+
+/// The policy route is open and says which surface to draw.
+#[tokio::test]
+async fn the_policy_route_reports_the_mode_and_the_waitlist() {
+    let closed = closed_forge(Some("https://waitlist.example.com/join"));
+    let (status, body) = json_reply(
+        &closed.router,
+        HttpMethod::GET,
+        "/api/v1/auth/signup/policy",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({ "mode": "closed", "waitlistUrl": "https://waitlist.example.com/join" })
+    );
+    let open = forge();
+    let (status, body) = json_reply(
+        &open.router,
+        HttpMethod::GET,
+        "/api/v1/auth/signup/policy",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "mode": "email", "waitlistUrl": null }));
+}
+
+/// An invalid waitlist URL is ignored, not served.
+#[tokio::test]
+async fn an_invalid_waitlist_url_is_not_served() {
+    let (policy, complaints) =
+        SignupPolicy::parse(Some("closed"), Some("http://insecure.example.com"));
+    assert_eq!(complaints.len(), 1, "{complaints:?}");
+    let forge = forge_with_policy(Mailer::recording(), ForgeCore::new(), policy);
+    let (_, body) = json_reply(
+        &forge.router,
+        HttpMethod::GET,
+        "/api/v1/auth/signup/policy",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(body, json!({ "mode": "closed", "waitlistUrl": null }));
 }

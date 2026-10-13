@@ -221,6 +221,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `shift_queue_read_failed` | 500 | the shift queue could not be read |
 | `shift_queue_write_failed` | 500 | the shift queue could not be written |
 | `shift_todo_not_found` | 404 | the shift todo was not found |
+| `signup_closed` | 403 | sign-up is by invitation; join the waitlist |
 | `signup_link_invalid` | 422 | that sign-up link is expired, already used, or not a link this forge issued |
 | `storage_failed` | 500 | the storage backend failed |
 | `task_not_granted` | 403 | the bot grant does not allow this task |
