@@ -22,7 +22,7 @@
   logins report only repositories they can write; admins and the logins in
   `JERYU_PRESENCE_REPORTERS` (no default) report any scope. Stored in
   `shift.sqlite` (migration `0012_agent_presence`).
-- Owners reach and free-form bot kinds (ADR 0006; needs jeryu-core with
+- Owners reach and free-form bot kinds (ADR 0007; needs jeryu-core with
   migration 0021). `POST /api/v1/bots` accepts
   `"reach":{"mode":"owners","owners":["acme"]}`: every repository of the listed
   owners that the bot's owner holds an explicit grant on, including later

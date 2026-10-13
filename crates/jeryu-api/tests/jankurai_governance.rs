@@ -229,7 +229,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         );
         assert_eq!(
             source.get("tag").and_then(toml::Value::as_str),
-            Some("jeryu-core-v5.0.0-split.16")
+            Some("jeryu-core-v5.0.0-split.17")
         );
         assert!(
             source.get("path").is_none(),
@@ -305,7 +305,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("API dependencies must be a table");
     let expected_groups = [
         (
-            "jeryu-core-v5.0.0-split.16",
+            "jeryu-core-v5.0.0-split.17",
             &[
                 "jeryu-core",
                 "jeryu-enterprise",
@@ -358,7 +358,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
                 dependency_git.is_some(),
                 "{package} must declare a Git source"
             );
-            if tag == "jeryu-core-v5.0.0-split.16" {
+            if tag == "jeryu-core-v5.0.0-split.17" {
                 assert_eq!(
                     dependency_git,
                     Some("http://127.0.0.1:8787/git/jeryu/jeryu-core.git"),
@@ -421,13 +421,13 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             core_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.16#9fe973d0ce5cec12002cca168c81780ea84ddadf"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.17#7b34bd7df4adb50fd19334bb07e0568a64e69c58"
             );
         } else if name == "jeryu-proof" {
             proof_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.16#9fe973d0ce5cec12002cca168c81780ea84ddadf"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.17#7b34bd7df4adb50fd19334bb07e0568a64e69c58"
             );
         } else if name == "jeryu-rustjet" {
             assert_eq!(

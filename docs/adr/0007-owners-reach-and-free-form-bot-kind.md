@@ -1,4 +1,4 @@
-# 0006. Let a bot reach whole owners and name its own kind
+# 0007. Let a bot reach whole owners and name its own kind
 
 Status: Accepted
 Date: 2026-10-12
