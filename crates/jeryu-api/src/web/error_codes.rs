@@ -22,6 +22,16 @@ const fn entry(code: &'static str, status: u16, summary: &'static str) -> ErrorC
 
 /// Every code, sorted by name.
 pub(crate) const ERROR_CODES: &[ErrorCode] = &[
+    entry(
+        "release_queue_full",
+        429,
+        "the bounded release action queue is full",
+    ),
+    entry(
+        "not_retryable",
+        409,
+        "auto-pin has not requested a human retry for this repository and head",
+    ),
     entry("account_not_found", 404, "no forge account has that login"),
     entry(
         "agent_run_control_closed",
