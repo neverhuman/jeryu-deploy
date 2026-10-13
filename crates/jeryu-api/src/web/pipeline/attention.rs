@@ -501,6 +501,7 @@ pub(super) fn close_pull_call(repo: &str, number: u64) -> ApiCall {
         method: "PATCH",
         path: format!("/api/v3/repos/{repo}/pulls/{number}"),
         body: Some(json!({"state":"closed"})),
+        confirm: None,
     }
 }
 
