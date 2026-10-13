@@ -1,7 +1,6 @@
 //! Typed API facade for Phase 10 endpoints plus the GitHub-compatible REST edge.
 
 #[cfg(feature = "web")]
-mod autonomy_bridge;
 #[cfg(feature = "web")]
 mod ci_bridge;
 pub mod discovery;

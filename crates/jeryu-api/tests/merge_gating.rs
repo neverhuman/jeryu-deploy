@@ -174,14 +174,10 @@ fn router_with_pr(fixture: &GitFixture) -> (GithubRouter, u64) {
     assert_eq!(opened.status, 201, "open pr: {}", opened.body);
     let number = body(&opened)["number"].as_u64().expect("pr number");
 
-    let runs = router
-        .core()
-        .list_check_runs("acme", "demo", Some(&fixture.head_oid))
-        .expect("list check-runs for head");
-    assert!(
-        runs.total_count >= 1,
-        "opening a PR should seed CI check-runs, got {runs:?}"
-    );
+    // Opening a PR seeds no check runs: the forge does not run GitHub Actions
+    // (only JERYU_CI_MOCK seeds them), and the record-only `jeryu/autonomy`
+    // verdict that used to appear here was removed. These tests gate on review,
+    // with no required status checks.
 
     // Require one approving review on main.
     let protect = router.put(

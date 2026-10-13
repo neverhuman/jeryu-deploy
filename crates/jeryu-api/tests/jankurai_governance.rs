@@ -154,9 +154,8 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("release graph must declare its Core source unifier");
     assert_eq!(
         patches.len(),
-        4,
-        "release graph may patch only the historical Core, Intelligence, CI Runner \
-         and release-ops sources"
+        3,
+        "release graph may patch only the historical Core, Intelligence and CI Runner sources"
     );
 
     // jeryu-api and the historical Intelligence release both name the GitHub
@@ -271,30 +270,15 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         "jeryu-rustjet must not resolve from a sibling path"
     );
 
-    let release_ops_patches = patches
-        .get("https://github.com/neverhuman/jeryu-release-ops.git")
-        .and_then(toml::Value::as_table)
-        .expect("historical release-ops source patch must be a table");
-    assert_eq!(
-        release_ops_patches.len(),
-        1,
-        "release-ops unifier must contain only jeryu-signing"
-    );
-    let signing_source = release_ops_patches
-        .get("jeryu-signing")
-        .and_then(toml::Value::as_table)
-        .expect("jeryu-signing unifier must be a table");
-    assert_eq!(
-        signing_source.get("git").and_then(toml::Value::as_str),
-        Some("http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git")
-    );
-    assert_eq!(
-        signing_source.get("tag").and_then(toml::Value::as_str),
-        Some("jeryu-release-ops-v5.0.0-split.8")
-    );
+    // The release-ops edge of the cycle came in through jeryu-autonomy (its
+    // jeryu-signing dependency). The forge no longer depends on jeryu-autonomy,
+    // so nothing reaches that edge and Cargo would keep its unifier only as an
+    // unused patch record.
     assert!(
-        signing_source.get("path").is_none(),
-        "jeryu-signing must not resolve from a sibling path"
+        patches
+            .get("https://github.com/neverhuman/jeryu-release-ops.git")
+            .is_none(),
+        "no release-ops unifier: nothing in the graph reaches jeryu-signing any more"
     );
 
     let api: toml::Value =
@@ -327,7 +311,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         ),
         (
             "jeryu-intelligence-v5.0.0-split.7",
-            &["jeryu-autonomy", "jeryu-codegraph", "jeryu-mcp"][..],
+            &["jeryu-codegraph", "jeryu-mcp"][..],
         ),
         (
             "jeryu-release-ops-v5.0.0-split.8",

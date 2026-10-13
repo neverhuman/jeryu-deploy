@@ -2,8 +2,8 @@
 //!
 //! When a push lands a new commit on a branch, read its GitHub Actions
 //! workflows from the bare repo, compile them, **execute** each job's steps in
-//! the real sandboxed runner, and record a check-run with the actual result so
-//! the autonomy gate has live CI state for the pushed commit. Execution runs
+//! the real sandboxed runner, and record a check-run with the actual result for
+//! the pushed commit. Execution runs
 //! on the blocking pool after the pushed refs are durable, so a push produces
 //! real green/red CI without the pusher waiting on the run.
 
@@ -116,9 +116,6 @@ pub(crate) fn on_push(
             update,
             origin_base_url,
         );
-        // Accumulate this head's recorded check-runs so the autonomy bridge can
-        // run the evidence-gate judge over the live CI state once they all land.
-        let mut ci_checks: Vec<(String, Option<CheckConclusion>)> = Vec::new();
         for (file, content) in read_workflows(&git_bin, &resolved.path, &update.new_oid) {
             // The forge does not execute GitHub Actions runners, so it does not execute these
             // workflows: they run on the GitHub mirror's real runners, and the forge
@@ -160,21 +157,8 @@ pub(crate) fn on_push(
                         ..Default::default()
                     },
                 );
-                ci_checks.push((name, Some(conclusion)));
             }
         }
-        // Record-only autonomy verdict: with the head's CI state recorded, let
-        // the autonomy bridge judge it and write an advisory check-run. The
-        // bridge never merges; best-effort, so it never fails the push.
-        let changed = changed_paths(&git_bin, &resolved.path, &update.new_oid);
-        crate::autonomy_bridge::evaluate_pushed_head(
-            core,
-            owner,
-            repo,
-            &update.new_oid,
-            &ci_checks,
-            &changed,
-        );
     }
 }
 
@@ -340,33 +324,6 @@ fn run_git_stdout(git_bin: &str, cwd: Option<&Path>, args: &[&str]) -> Option<St
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Files changed by `oid` relative to its first parent (root commit → all
-/// files in its tree). Feeds the autonomy bridge's risk classifier.
-fn changed_paths(git_bin: &str, bare: &Path, oid: &str) -> Vec<String> {
-    let bare = bare.to_string_lossy().to_string();
-    let parent = format!("{oid}^");
-    // `git diff --name-only <oid>^ <oid>` for a normal commit; fall back to the
-    // full tree listing for a root commit (no parent).
-    let out = std::process::Command::new(git_bin)
-        .args(["-C", &bare, "diff", "--name-only", &parent, oid])
-        .output();
-    let listing = match out {
-        Ok(o) if o.status.success() => o.stdout,
-        _ => match std::process::Command::new(git_bin)
-            .args(["-C", &bare, "ls-tree", "-r", "--name-only", oid])
-            .output()
-        {
-            Ok(o) if o.status.success() => o.stdout,
-            _ => return Vec::new(),
-        },
-    };
-    String::from_utf8_lossy(&listing)
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| l.to_string())
-        .collect()
 }
 
 const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.6.11";
