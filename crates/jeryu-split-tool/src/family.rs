@@ -378,8 +378,14 @@ impl Family {
             if !member.path.is_dir() {
                 bail!("{} path missing: {}", member.name, member.path.display());
             }
+            // A member that was absent when the authority was read is contained
+            // again now that it exists.
+            let physical = fs::canonicalize(&member.path)?;
+            if !physical.starts_with(&self.split_root) {
+                bail!("{} path escapes the physical family root", member.name);
+            }
             for required in ["AGENTS.md", "agent/owner-map.json", "agent/test-map.json"] {
-                if !member.path.join(required).is_file() {
+                if !physical.join(required).is_file() {
                     bail!("{} missing {required}", member.name);
                 }
             }

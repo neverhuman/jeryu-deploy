@@ -448,6 +448,23 @@ fn a_site_root_relocates_the_family_and_still_contains_every_member() {
             .contains("escapes the physical family root"),
         "{error:#}"
     );
+
+    // A member absent when the authority is read is contained again when its
+    // paths are checked, even if what appears is a complete repository.
+    fs::create_dir_all(outside.join("agent")).unwrap();
+    for path in ["AGENTS.md", "agent/owner-map.json", "agent/test-map.json"] {
+        fs::write(outside.join(path), b"{}\n").unwrap();
+    }
+    fs::remove_file(&member).unwrap();
+    let late = family::read_with_root(&manifest, Some(&site)).unwrap();
+    std::os::unix::fs::symlink(&outside, &member).unwrap();
+    let error = late.check_paths().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("escapes the physical family root"),
+        "{error:#}"
+    );
 }
 
 #[test]
