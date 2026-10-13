@@ -22,16 +22,6 @@ const fn entry(code: &'static str, status: u16, summary: &'static str) -> ErrorC
 
 /// Every code, sorted by name.
 pub(crate) const ERROR_CODES: &[ErrorCode] = &[
-    entry(
-        "release_queue_full",
-        429,
-        "the bounded release action queue is full",
-    ),
-    entry(
-        "not_retryable",
-        409,
-        "auto-pin has not requested a human retry for this repository and head",
-    ),
     entry("account_not_found", 404, "no forge account has that login"),
     entry(
         "agent_run_control_closed",
@@ -410,6 +400,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the pull request is not in the merge queue",
     ),
     entry(
+        "not_retryable",
+        409,
+        "auto-pin has not requested a human retry for this repository and head",
+    ),
+    entry(
         "not_staged",
         409,
         "the forge has no record of this release being staged for the repository",
@@ -590,6 +585,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the queue replay does not match the queued tree",
     ),
     entry("rate_limited", 429, "too many attempts; wait and retry"),
+    entry(
+        "release_queue_full",
+        429,
+        "the bounded release action queue is full",
+    ),
     entry(
         "repo_not_granted",
         403,
