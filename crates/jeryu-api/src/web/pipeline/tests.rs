@@ -1337,7 +1337,7 @@ fn the_family_backfill_fills_rows_from_what_the_log_knows_of_their_repo() {
 
     // Re-run the migration the way an upgrade applies it for the first time.
     let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute("DELETE FROM shift_schema_migrations WHERE version = 14", [])
+    conn.execute("DELETE FROM shift_schema_migrations WHERE version = 15", [])
         .unwrap();
     crate::web::shift::migrate_shift_store(&conn).unwrap();
 
