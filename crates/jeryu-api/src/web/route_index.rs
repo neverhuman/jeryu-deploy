@@ -257,6 +257,7 @@ fn query_params(path: &str) -> &'static [&'static str] {
         "/api/v1/scorecard" => keys::<super::scorecard::ScorecardQuery>(),
         "/api/v1/flow" => keys::<super::flow::FlowQuery>(),
         "/api/v1/events/histogram" => keys::<super::pipeline::histogram::HistogramQuery>(),
+        "/api/v1/outcomes" => keys::<super::outcomes::OutcomesQuery>(),
         "/api/v1/merge-queue" => keys::<super::merge_queue::QueueListQuery>(),
         "/api/v1/repos/:id/merge-queue" => keys::<super::merge_queue::QueuePageQuery>(),
         "/api/v1/shift/todos" => keys::<super::shift::TodosQuery>(),
@@ -393,6 +394,7 @@ mod tests {
             "/api/v1/yield",
             "/api/v1/scorecard",
             "/api/v1/flow",
+            "/api/v1/outcomes",
         ] {
             assert!(
                 !query_params(path).is_empty(),

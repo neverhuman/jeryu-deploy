@@ -162,6 +162,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `release_queue_full` | 429 | cancel a pending release ask or wait for an outcome; the queue is bounded |
 | `not_staged` | 409 | the forge has no record of this release being staged for the repository |
 | `origin_denied` | 403 | a cookie-authenticated WebSocket came from another origin |
+| `outcomes_read_failed` | 500 | the outcome ledger behind the change outcomes report could not be read |
 | `password_change_required` | 403 | the account must change its password first |
 | `payload_too_large` | 413 | the request body is larger than this route accepts |
 | `permission_denied` | 403 | the account lacks the permission this request needs |

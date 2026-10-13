@@ -179,3 +179,35 @@ payloads.
 
 When a real-data check is part of a todo, record counts only in the private todo
 note: events pulled, sequence range, ledgers rebuilt, and compare result.
+
+## Outcome ledger
+
+`outcome_ledger` (migration 0019) holds one durable row per change, keyed by
+the Flow lot key (a todo, or `<owner>/<repo>#<pr>` for a pull request no todo
+carries), projected in the same transaction as each pipeline event, never
+pruned and replayed from the event log on startup. A change that spans
+repositories is one row with one entry per repository in `repos`.
+`GET /api/v1/outcomes` (admin-only) returns the rows of a window
+(`days=7|28|90` or `window=7d|28d|90d`, a change belongs to the window of its
+merge, else its done report, else its filing), filtered by `family`, `repo`
+(any repository of the change) and `outcome`.
+
+The derived `outcome` is computed at read time: `failed` when the change was
+reverted, rolled back or has an incident traced to it; else `reworked` when a
+later todo's `reworks` links to it, whatever its age; else `pending` until it
+has been shipped (every merged repository released or deployed) for 14 days,
+then `successful`. `false_done` is set for a change reported done that was
+reworked or reverted. `work_kind` is `feature`, `fix`, `rework` or `ops`; pins,
+red-main repair, replacement PRs and reverts are ops; null when unclassified.
+
+Events it reads (all optional, the ledger shows what was posted):
+
+| Event | Field | Use |
+|---|---|---|
+| `todo.filed` | `detail.kind`/`detail.labels`, `detail.reworks[]` | work kind; rework links to the todos it reworks (any event naming a todo may carry `reworks`) |
+| `todo.attempt_finished` `done` | `detail.agent`, `detail.model`, `detail.experiment` | the arm that reported done |
+| `pr.merged`, `queue.landed`, `todo.merged` | `sha`, `detail.shas[]`, `detail.subject`/`body`/`message`/`commits[]` | merge time and commit; a `This reverts commit <sha>` trailer, a subject starting `Revert` that names a known sha, or `detail.reverts[]` marks that change reverted |
+| `release.staged` | `detail.release`, `detail.carries[]` | first release of merged changes of the repo (and of carried repos) |
+| `deploy.status` `success` | `detail.release`, `detail.carries[]` | deployment of merged changes |
+| `deploy.status` `rollback` | `detail.rolled_back` or `detail.release` | the changes of that release fail |
+| `incident.*` | `detail.incident_id`, `todo_id`, `detail.shas[]` | incident id on the changes it names; an incident naming none is not guessed |

@@ -25,6 +25,7 @@ file for an applied version stops the server at startup.
 | `0016_pipeline_event_families.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/store.rs` |
 | `0017_account_emails.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/account_email.rs` |
 | `0018_signup_links.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/signup.rs`, `crates/jeryu-api/src/web/admin_reset.rs` |
+| `0019_outcome_ledger.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/store.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. A migration that alters an existing table also has a

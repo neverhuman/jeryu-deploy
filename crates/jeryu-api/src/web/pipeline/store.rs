@@ -20,6 +20,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use super::super::flow::{Station, Visit, project};
+use super::super::outcomes;
 use super::super::shift::{migrate_shift_store, rfc3339_ms};
 use super::types::{Event, EventsQuery, NewEvent};
 
@@ -172,12 +173,28 @@ impl EventStore {
                 "jeryu-api pipeline: flow ledger replay failed, retried at next start: {err}"
             );
         }
+        if let Err(err) = replay_outcome_ledger(&conn) {
+            eprintln!(
+                "jeryu-api pipeline: outcome ledger replay failed, retried at next start: {err}"
+            );
+        }
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
                 conn,
                 last_prune_ms: 0,
             })),
         })
+    }
+
+    /// The change outcome rows `GET /api/v1/outcomes` reads (unfiltered by
+    /// window; the report applies it with the clock it answers for).
+    pub(crate) fn outcome_changes(
+        &self,
+        family: Option<&str>,
+        repo: Option<&str>,
+    ) -> Result<Vec<outcomes::project::Change>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        outcomes::project::read(&inner.conn, family, repo)
     }
 
     /// Import one event read back from another jeryu instance. This preserves
@@ -268,22 +285,24 @@ impl EventStore {
             )
             .map_err(|err| err.to_string())?;
         }
-        project::apply(
-            &tx,
-            &project::EventView {
-                seq: event.seq,
-                reporter: &event.reporter,
-                event_id: event.event_id.as_deref(),
-                ts_ms,
-                kind: &event.kind,
-                outcome: event.outcome.as_deref(),
-                family: event.family.as_deref(),
-                repo: event.repo.as_deref(),
-                pr: event.pr,
-                todo_id: event.todo_id.as_deref(),
-                shift: event.shift.as_deref(),
-            },
-        )?;
+        let view = project::EventView {
+            seq: event.seq,
+            reporter: &event.reporter,
+            event_id: event.event_id.as_deref(),
+            ts_ms,
+            kind: &event.kind,
+            outcome: event.outcome.as_deref(),
+            family: event.family.as_deref(),
+            repo: event.repo.as_deref(),
+            pr: event.pr,
+            todo_id: event.todo_id.as_deref(),
+            shift: event.shift.as_deref(),
+            sha: event.sha.as_deref(),
+            summary: Some(event.summary.as_str()),
+            detail: event.detail.as_ref(),
+        };
+        project::apply(&tx, &view)?;
+        outcomes::project::apply(&tx, &view)?;
         tx.commit().map_err(|err| err.to_string())?;
         Ok(Inserted {
             event: event.clone(),
@@ -403,22 +422,24 @@ impl EventStore {
         // The flow projection commits with the event too: a station visit
         // is never in the ledger without the event that moved it, nor an
         // event in the log without the visits it opened.
-        project::apply(
-            &tx,
-            &project::EventView {
-                seq,
-                reporter,
-                event_id: event.event_id.as_deref(),
-                ts_ms: now_ms,
-                kind: &event.kind,
-                outcome: event.outcome.as_deref(),
-                family: event.family.as_deref(),
-                repo: event.repo.as_deref(),
-                pr: event.pr,
-                todo_id: event.todo_id.as_deref(),
-                shift: event.shift.as_deref(),
-            },
-        )?;
+        let view = project::EventView {
+            seq,
+            reporter,
+            event_id: event.event_id.as_deref(),
+            ts_ms: now_ms,
+            kind: &event.kind,
+            outcome: event.outcome.as_deref(),
+            family: event.family.as_deref(),
+            repo: event.repo.as_deref(),
+            pr: event.pr,
+            todo_id: event.todo_id.as_deref(),
+            shift: event.shift.as_deref(),
+            sha: event.sha.as_deref(),
+            summary: Some(event.summary.as_str()),
+            detail: event.detail.as_ref(),
+        };
+        project::apply(&tx, &view)?;
+        outcomes::project::apply(&tx, &view)?;
         tx.commit().map_err(|err| err.to_string())?;
         if now_ms - inner.last_prune_ms >= PRUNE_EVERY_MS {
             inner
@@ -993,6 +1014,30 @@ fn replay_flow_ledger(conn: &Connection) -> Result<(), String> {
     tx.execute(
         "INSERT INTO flow_ledger_replay (replayed_ms, events, visits) VALUES (?1, ?2, ?3)",
         params![chrono::Utc::now().timestamp_millis(), events, visits],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())
+}
+
+/// Build `outcome_ledger` from every event the log still holds, once, like
+/// [`replay_flow_ledger`]; `outcome_ledger_replay` makes it happen once. It
+/// runs after the flow replay so the lot joins it reads are already settled.
+fn replay_outcome_ledger(conn: &Connection) -> Result<(), String> {
+    let replayed: i64 = conn
+        .query_row("SELECT COUNT(*) FROM outcome_ledger_replay", [], |row| {
+            row.get(0)
+        })
+        .map_err(|err| err.to_string())?;
+    if replayed > 0 {
+        return Ok(());
+    }
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    let (events, changes) = outcomes::project::replay(&tx)?;
+    tx.execute(
+        "INSERT INTO outcome_ledger_replay (replayed_ms, events, changes) VALUES (?1, ?2, ?3)",
+        params![chrono::Utc::now().timestamp_millis(), events, changes],
     )
     .map_err(|err| err.to_string())?;
     tx.commit().map_err(|err| err.to_string())

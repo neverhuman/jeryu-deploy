@@ -34,6 +34,7 @@ mod paging;
 mod people;
 pub(crate) use merge_queue::{gate_verdict, is_queue_owned_ref, rebase_onto};
 mod mcp_backend;
+mod outcomes;
 mod permissions;
 mod pipeline;
 mod principals;
@@ -1401,6 +1402,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/flow", get(flow::flow)),
         ("/api/v1/flow/layout", get(flow::layout)),
         ("/api/v1/usage", get(usage::usage)),
+        ("/api/v1/outcomes", get(outcomes::outcomes)),
         ("/api/v1/release-board", get(release_board::list_boards)),
         (
             "/api/v1/release-board/:family",

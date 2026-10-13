@@ -1,0 +1,31 @@
+# Structured metadata for 0019_outcome_ledger.sql. The SQL file is checksum-bound
+# once applied, so its lock and timeout posture lives here.
+#
+# The store is SQLite, not PostgreSQL: there is no `SET lock_timeout` or
+# `SET statement_timeout` to put in the SQL (SQLite rejects both). The
+# equivalents below are what bound this migration in practice.
+
+migration = "0019_outcome_ledger"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/pipeline/store.rs"
+apply = "HeartbeatStore::open / EventStore::open -> migrate(), one transaction per migration"
+
+[lock_timeout]
+# SQLite's lock wait is the connection busy timeout, set before migrate() runs.
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+
+[statement_timeout]
+# SQLite has no statement timeout. The bound is the replay's source: it folds
+# the rows of pipeline_events, which the server prunes to 30 days, so the
+# projection reads at most a month of events once.
+mechanism = "replay bounded by pipeline_events 30-day retention"
+value = "one pass over at most 30 days of events"
+
+[rollback]
+plan = "stop the server, DROP TABLE outcome_ledger, outcome_ledger_repos, outcome_ledger_shas, outcome_ledger_events and outcome_ledger_replay, and delete version 19 from shift_schema_migrations"
+backup = "sqlite3 shift.sqlite '.backup outcome-ledger.sqlite' before rollback; outcomes older than the log's 30-day retention exist nowhere else"
+
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::outcomes"

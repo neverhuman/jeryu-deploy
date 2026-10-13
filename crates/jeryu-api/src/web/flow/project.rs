@@ -132,6 +132,11 @@ pub(crate) struct EventView<'a> {
     pub pr: Option<i64>,
     pub todo_id: Option<&'a str>,
     pub shift: Option<&'a str>,
+    pub sha: Option<&'a str>,
+    pub summary: Option<&'a str>,
+    /// The producer's `detail` object, which the outcome ledger reads
+    /// (`web/outcomes/project.rs`); the flow fold ignores it.
+    pub detail: Option<&'a serde_json::Value>,
 }
 
 /// Project one event into `flow_ledger` on `conn`, which the caller has in a
@@ -200,10 +205,23 @@ fn first_projection(conn: &Connection, event: &EventView<'_>) -> Result<bool, St
 /// first. Answers how many events were read and how many visits they opened.
 /// The caller records the replay so it happens exactly once.
 pub(crate) fn replay(conn: &Connection) -> Result<(i64, i64), String> {
+    let read = for_each_event(conn, |event| apply(conn, event))?;
+    let visits = conn
+        .query_row("SELECT COUNT(*) FROM flow_ledger", [], |row| row.get(0))
+        .map_err(|err| err.to_string())?;
+    Ok((read, visits))
+}
+
+/// Call `fold` with every event the log still holds, oldest first, and answer
+/// how many there were. The one reader both projections replay from.
+pub(crate) fn for_each_event(
+    conn: &Connection,
+    mut fold: impl FnMut(&EventView<'_>) -> Result<(), String>,
+) -> Result<i64, String> {
     let mut stmt = conn
         .prepare(
             "SELECT seq, ts_ms, kind, outcome, family, repo, pr, todo_id, shift,
-                    reporter, event_id
+                    reporter, event_id, sha, detail_json, summary
                FROM pipeline_events ORDER BY seq",
         )
         .map_err(|err| err.to_string())?;
@@ -221,6 +239,9 @@ pub(crate) fn replay(conn: &Connection) -> Result<(i64, i64), String> {
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, String>(9)?,
                 row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
             ))
         })
         .map_err(|err| err.to_string())?
@@ -228,29 +249,45 @@ pub(crate) fn replay(conn: &Connection) -> Result<(i64, i64), String> {
         .map_err(|err| err.to_string())?;
     drop(stmt);
     let mut read = 0;
-    for (seq, ts_ms, kind, outcome, family, repo, pr, todo_id, shift, reporter, event_id) in &rows {
+    for (
+        seq,
+        ts_ms,
+        kind,
+        outcome,
+        family,
+        repo,
+        pr,
+        todo_id,
+        shift,
+        reporter,
+        event_id,
+        sha,
+        detail,
+        summary,
+    ) in &rows
+    {
         read += 1;
-        apply(
-            conn,
-            &EventView {
-                seq: *seq,
-                reporter,
-                event_id: event_id.as_deref(),
-                ts_ms: *ts_ms,
-                kind,
-                outcome: outcome.as_deref(),
-                family: family.as_deref(),
-                repo: repo.as_deref(),
-                pr: *pr,
-                todo_id: todo_id.as_deref(),
-                shift: shift.as_deref(),
-            },
-        )?;
+        let detail: Option<serde_json::Value> = detail
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok());
+        fold(&EventView {
+            seq: *seq,
+            reporter,
+            event_id: event_id.as_deref(),
+            ts_ms: *ts_ms,
+            kind,
+            outcome: outcome.as_deref(),
+            family: family.as_deref(),
+            repo: repo.as_deref(),
+            pr: *pr,
+            todo_id: todo_id.as_deref(),
+            shift: shift.as_deref(),
+            sha: sha.as_deref(),
+            summary: summary.as_deref(),
+            detail: detail.as_ref(),
+        })?;
     }
-    let visits = conn
-        .query_row("SELECT COUNT(*) FROM flow_ledger", [], |row| row.get(0))
-        .map_err(|err| err.to_string())?;
-    Ok((read, visits))
+    Ok(read)
 }
 
 /// One lot an event speaks about.
@@ -350,7 +387,7 @@ fn lots_for(conn: &Connection, event: &EventView<'_>) -> Result<Vec<(Lot, bool)>
 
 /// The lots the visits of `repo#pr` belong to, in the order they first
 /// named it.
-fn lots_of_pr(conn: &Connection, repo: &str, pr: i64) -> Result<Vec<String>, String> {
+pub(crate) fn lots_of_pr(conn: &Connection, repo: &str, pr: i64) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT lot_id FROM flow_ledger WHERE repo = ?1 AND pr = ?2

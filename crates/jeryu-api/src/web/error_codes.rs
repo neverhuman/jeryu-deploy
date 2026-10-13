@@ -420,6 +420,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "a cookie-authenticated WebSocket came from another origin",
     ),
     entry(
+        "outcomes_read_failed",
+        500,
+        "the outcome ledger behind the change outcomes report could not be read",
+    ),
+    entry(
         "password_change_required",
         403,
         "the account must change its password first",

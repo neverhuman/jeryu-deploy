@@ -1310,6 +1310,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || activity_reads_path(path)
         || flow_path(path)
         || usage_path(path)
+        || outcomes_path(path)
         || audit_path(path)
 }
 
@@ -1411,6 +1412,12 @@ fn flow_path(path: &str) -> bool {
 /// may post.
 fn usage_path(path: &str) -> bool {
     path == "/api/v1/usage" || path == "/api/v1/usage/"
+}
+
+/// The outcome ledger names every change, its todo, agent and model arm and
+/// the incidents traced to it, so like flow it is for global admins.
+fn outcomes_path(path: &str) -> bool {
+    path == "/api/v1/outcomes" || path == "/api/v1/outcomes/"
 }
 
 fn admin_only_path(path: &str) -> bool {

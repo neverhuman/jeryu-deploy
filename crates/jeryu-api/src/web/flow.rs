@@ -60,7 +60,7 @@ impl StrictFields for FlowQuery {
 
 /// The window one query names. `days=7` and `window=7d` are the same window;
 /// sending both with different values is a refusal, as on the event cursor.
-fn days(query: &FlowQuery) -> Result<i64, String> {
+pub(crate) fn days(query: &FlowQuery) -> Result<i64, String> {
     let text = |value: &Option<String>| {
         value
             .as_deref()
