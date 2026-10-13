@@ -24,8 +24,8 @@ mechanism = "backfill bounded by pipeline_events 30-day retention"
 value = "one pass over at most 30 days of events"
 
 [rollback]
-plan = "fix-forward: re-run the statement; or delete version 15 from shift_schema_migrations and run the previous binary (a derived family is a filter value in a telemetry-only table)"
+plan = "fix-forward: re-run the statement; or delete version 16 from shift_schema_migrations and run the previous binary (a derived family is a filter value in a telemetry-only table)"
 backup = "not required: telemetry only, nothing of record is lost"
 
 [verify]
-check = "cargo test -p jeryu-api --features web --lib web::pipeline::tests::the_family_backfill_fills_rows_from_what_the_log_knows_of_their_repo (re-applying version 15 fills from the log's own evidence and leaves unknowable repos null)"
+check = "cargo test -p jeryu-api --features web --lib web::pipeline::tests::the_family_backfill_fills_rows_from_what_the_log_knows_of_their_repo (re-applying version 16 fills from the log's own evidence and leaves unknowable repos null)"
