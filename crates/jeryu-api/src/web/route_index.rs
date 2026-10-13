@@ -254,6 +254,7 @@ fn query_params(path: &str) -> &'static [&'static str] {
         "/api/v1/events" => keys::<super::pipeline::EventsQuery>(),
         "/api/v1/release-actions" => keys::<super::release_actions::ListQuery>(),
         "/api/v1/yield" => keys::<super::yields::YieldQuery>(),
+        "/api/v1/scorecard" => keys::<super::scorecard::ScorecardQuery>(),
         "/api/v1/flow" => keys::<super::flow::FlowQuery>(),
         "/api/v1/events/histogram" => keys::<super::pipeline::histogram::HistogramQuery>(),
         "/api/v1/merge-queue" => keys::<super::merge_queue::QueueListQuery>(),
@@ -390,6 +391,7 @@ mod tests {
             "/api/v1/audit",
             "/api/v1/agent-runs",
             "/api/v1/yield",
+            "/api/v1/scorecard",
             "/api/v1/flow",
         ] {
             assert!(

@@ -198,6 +198,11 @@ fn admin_allow_list_matches_the_route_table() {
     }
     assert!(admin_routes >= 20, "only {admin_routes} admin routes found");
 
+    for route in ["/api/v1/scorecard", "/api/v1/scorecard/"] {
+        assert!(admin_only_request(&Method::GET, route), "{route}");
+        assert!(admin_only_request(&Method::POST, route), "{route}");
+    }
+
     for route in [
         "/api/v1/repos",
         "/api/v1/repos/:id/tree",

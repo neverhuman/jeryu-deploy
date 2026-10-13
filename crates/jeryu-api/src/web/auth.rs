@@ -1306,6 +1306,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || pins_path(path)
         || trace_path(path)
         || yield_path(path)
+        || scorecard_path(path)
         || activity_reads_path(path)
         || flow_path(path)
         || usage_path(path)
@@ -1391,6 +1392,10 @@ fn trace_path(path: &str) -> bool {
 /// every family, so like the event log it reads from it is for global admins.
 fn yield_path(path: &str) -> bool {
     path == "/api/v1/yield" || path == "/api/v1/yield/"
+}
+
+fn scorecard_path(path: &str) -> bool {
+    path == "/api/v1/scorecard" || path == "/api/v1/scorecard/"
 }
 
 /// Flow lays out the whole delivery line: the todos, pull requests and lots
