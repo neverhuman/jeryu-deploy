@@ -82,14 +82,16 @@ The flow, per head:
 
 3. **The gate host does the work.** `pr-gate-audit.sh` (jeryu-ci-runner
    `ops/pr-gate`, installed and kept current with the gate itself) claims jobs
-   (`POST /api/v1/jankurai-audits/claim`) as the gate identity and admits only
-   reviewed code: `main`, or the head of an open pull request marked
+   (`POST /api/v1/jankurai-audits/claim`) as the gate identity, for the
+   repositories that host serves, and admits only reviewed code: a `main` head
+   the clone's own `main` reaches, or the head of an open pull request marked
    `origin:internal`. A contribution is never checked out on the gate host, so it
    gets no `jankurai/proof` there; its job lapses with its lease. It clones the
-   head into a throwaway directory, replaces the head's
-   `agent/audit-policy.toml` with the base commit's (or a default at the forge's
-   floor) so a head never chooses the policy that scores it, runs the host's
-   governed auditor --
+   head into a throwaway directory and gives it `agent/` and `.jeryu/` (policy,
+   generated zones, boundaries, maps, CI declaration) only from a commit `main`
+   reaches -- the job's base, else `main`'s tip -- so a head never chooses the
+   metadata that scores it, and hides that substitution from the diff. It runs
+   the host's governed auditor --
    `diff-audit` against the job's base, or a whole-tree `audit` for a job with
    no commit base; niced, idle I/O and time-boxed -- and submits the report.
    The auditor is the one the host's tool installer keeps on the pin of record:
