@@ -10,14 +10,27 @@
 //! that applied a migration under a number the build now gives to another
 //! migration (a branch renumbered after a dev store migrated) would otherwise
 //! re-run that migration's DDL under its new number or report a checksum
-//! change on the wrong file. [`check_recorded`] names the disagreement.
+//! change on the wrong file. [`check_recorded`] names that disagreement and
+//! nothing else: a store ahead of the build (a rollback, or an older binary
+//! overlapping a newer one) opens as it always has, since an older binary
+//! checks only the migrations it knows.
 
 use std::collections::BTreeMap;
 
 use rusqlite::Connection;
 
-/// Compare the store's applied migrations with the build's list: every
-/// recorded version must be in the list under the same name.
+/// The shift store's migration names, in the order its runner applies them.
+/// `tests/migration_numbers.rs` compares them with `db/migrations/README.md`.
+pub fn shift_store_migrations() -> Vec<&'static str> {
+    super::heartbeats::MIGRATIONS
+        .iter()
+        .map(|(_, name, _)| *name)
+        .collect()
+}
+
+/// Compare the store's applied migrations with the build's list: a version
+/// both know must carry the same name. Recorded versions the build does not
+/// have are a newer release's and are left alone, as before this check.
 pub(super) fn check_recorded(
     conn: &Connection,
     migrations: &[(i64, &str, &str)],
@@ -36,11 +49,12 @@ pub(super) fn check_recorded(
         .map_err(|err| err.to_string())?;
     for row in recorded {
         let (version, applied) = row.map_err(|err| err.to_string())?;
-        let now = match embedded.get(&version) {
-            Some(name) if *name == applied => continue,
-            Some(name) => (*name).to_string(),
-            None => "no migration with that number".to_string(),
+        let Some(now) = embedded.get(&version) else {
+            continue;
         };
+        if *now == applied {
+            continue;
+        }
         return Err(format!(
             "migration {version} was applied as {applied} but the build now has {now}; \
              a landed or applied migration is never renumbered: restore the old number \
@@ -85,7 +99,7 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{check, check_recorded};
-    use crate::web::shift::heartbeats::{MIGRATIONS, migrate};
+    use crate::web::shift::heartbeats::{MIGRATIONS, migrate, migrate_through};
 
     #[test]
     fn the_embedded_list_is_a_clean_sequence() {
@@ -149,17 +163,18 @@ mod tests {
     }
 
     #[test]
-    fn a_store_that_applied_a_number_the_build_lacks_is_refused() {
-        let conn = store_with(&[(1, "0001_a"), (3, "0003_gone")]);
-        let error = check_recorded(&conn, &[(1, "0001_a", ""), (2, "0002_b", "")])
-            .expect_err("unknown version");
-        assert!(
-            error.starts_with(
-                "migration 3 was applied as 0003_gone but the build now has no migration \
-                 with that number;"
-            ),
-            "{error}"
-        );
+    fn a_store_ahead_of_the_build_is_left_alone() {
+        let conn = store_with(&[(1, "0001_a"), (2, "0002_b"), (3, "0003_newer_release")]);
+        check_recorded(&conn, &[(1, "0001_a", ""), (2, "0002_b", "")])
+            .expect("a rollback opens a store a newer release migrated");
+    }
+
+    #[test]
+    fn an_older_binary_opens_a_store_a_newer_one_migrated() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let (newest, _, _) = MIGRATIONS.last().expect("migrations");
+        migrate_through(&conn, newest - 1).expect("rollback: the older list opens the store");
     }
 
     #[test]
@@ -174,14 +189,20 @@ mod tests {
     fn a_renumbered_store_fails_to_open_with_the_specific_message() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        conn.execute(
-            "UPDATE shift_schema_migrations SET name = '0014_outcome_ledger' WHERE version = 14",
-            [],
-        )
-        .unwrap();
-        let error = migrate(&conn).expect_err("renamed version 14");
+        let (version, _, _) = MIGRATIONS.last().expect("migrations");
+        let renamed = format!("{version:04}_renumbered_away");
+        let changed = conn
+            .execute(
+                "UPDATE shift_schema_migrations SET name = ?1 WHERE version = ?2",
+                rusqlite::params![renamed, version],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "version {version} is recorded after migrate");
+        let error = migrate(&conn).expect_err("renamed version");
         assert!(
-            error.starts_with("migration 14 was applied as 0014_outcome_ledger but the build"),
+            error.starts_with(&format!(
+                "migration {version} was applied as {renamed} but the build"
+            )),
             "{error}"
         );
     }

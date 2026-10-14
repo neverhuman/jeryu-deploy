@@ -57,6 +57,7 @@ pub(crate) use heartbeats::migrate_through as migrate_shift_store_through;
 pub(crate) use heartbeats::{
     HEALTHY_MS, StoredHeartbeat, migrate as migrate_shift_store, rfc3339_ms,
 };
+pub use migration_sequence::shift_store_migrations;
 use queue::{Queue, WriteError, commit_change, discover};
 pub(crate) use queue::{git as run_git, resolve as resolve_commit};
 use todo_file::{MODES, TodoFile, iso, new_id};

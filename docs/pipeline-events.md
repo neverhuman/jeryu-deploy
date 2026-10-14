@@ -1202,7 +1202,10 @@ may be older than the client.
 - **Migration.** `0002_pipeline_events.sql` adds a table to `shift.sqlite`,
   which holds telemetry only. `switch.sh` does not snapshot that file, and does
   not need to: an older binary checks only the migrations it knows, so a
-  rollback runs against the migrated file unchanged.
+  rollback runs against the migrated file unchanged. The one startup stop
+  besides a changed migration file is a version the store and the binary both
+  know recorded under a different name (a renumbered migration); see
+  `db/migrations/README.md`.
   `0010_cost_ledger.sql` adds `cost_ledger`, which is a record, not telemetry:
   rows older than 30 days exist nowhere else, so back up `shift.sqlite`
   (`sqlite3 shift.sqlite '.backup <file>'`) before deleting it or rolling the

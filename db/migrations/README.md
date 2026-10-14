@@ -11,8 +11,11 @@ migration has one row in the table below naming its store, and the shift
 store's runner must embed exactly its rows, in order. The store
 that owns a migration embeds it and records its sha256 when applied; a changed
 file for an applied version stops the server at startup, and so does a store
-that recorded a version under a different name than the build gives it (a
-renumbered migration a dev store already applied).
+that recorded a version the build also has under a different name (a
+renumbered migration a dev store already applied). Nothing else stops it: a
+store ahead of the build, holding versions the build does not know, opens
+unchanged, so a rollback and an older binary overlapping a newer one keep
+working (an older binary checks only the migrations it knows).
 
 | Migration | Store | Owner |
 |---|---|---|

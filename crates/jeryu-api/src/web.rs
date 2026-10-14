@@ -82,6 +82,7 @@ pub use bots::{bot_kind_is_valid, render_bot_setup_script};
 /// reads it too: a repository may not turn off an audit the site enforces.
 pub(crate) use pulls::audit_gate_enforced_for;
 pub use route_index::api_v1_route_templates;
+pub use shift::shift_store_migrations;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;

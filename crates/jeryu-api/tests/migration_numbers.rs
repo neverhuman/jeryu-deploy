@@ -5,14 +5,16 @@
 //!
 //! The convention is written down in `db/migrations/README.md`, whose table
 //! also names the store each migration belongs to; the shift store's rows
-//! must match what `web/shift/heartbeats.rs` embeds.
+//! must match what its runner embeds (`jeryu_api::web::shift_store_migrations`).
+//!
+//! Only numbered `.sql` and `.meta.toml` files are judged. Anything else in
+//! the directory (README.md, a subdirectory, an editor backup) is ignored.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const SHIFT_STORE: &str = "<data_dir>/shift.sqlite";
-const SHIFT_RUNNER: &str = "src/web/shift/heartbeats.rs";
 const RETIRE: &str = "a landed migration is never deleted or renumbered; to retire \
                       one, land a new migration that undoes it";
 
@@ -32,20 +34,17 @@ fn numbers() -> BTreeMap<u32, Number> {
     for entry in fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
     {
-        let file = entry
-            .expect("read db/migrations entry")
-            .file_name()
-            .to_string_lossy()
-            .to_string();
-        if file == "README.md" {
+        let entry = entry.expect("read db/migrations entry");
+        if !entry.path().is_file() {
             continue;
         }
+        let file = entry.file_name().to_string_lossy().to_string();
         let (stem, is_sql) = if let Some(stem) = file.strip_suffix(".sql") {
             (stem, true)
         } else if let Some(stem) = file.strip_suffix(".meta.toml") {
             (stem, false)
         } else {
-            panic!("db/migrations holds only NNNN_name.sql and NNNN_name.meta.toml, found {file}");
+            continue;
         };
         let number = stem
             .get(..4)
@@ -148,22 +147,7 @@ fn every_migration_names_its_store_in_the_readme() {
     }
 }
 
-/// The migrations `heartbeats.rs` embeds, in order, by their `include_str!`
-/// paths: the shift store's runner applies exactly these.
-fn shift_store_embeds() -> Vec<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SHIFT_RUNNER);
-    let source = fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    source
-        .lines()
-        .filter_map(|line| {
-            let path = line.trim().strip_prefix("include_str!(\"")?;
-            let file = path.rsplit('/').next()?;
-            file.strip_suffix(".sql\"),").map(str::to_string)
-        })
-        .collect()
-}
-
+#[cfg(feature = "web")]
 #[test]
 fn the_shift_store_embeds_every_migration_the_readme_gives_it() {
     let mut expected: Vec<String> = readme_rows()
@@ -174,9 +158,9 @@ fn the_shift_store_embeds_every_migration_the_readme_gives_it() {
     expected.sort();
     assert!(!expected.is_empty(), "no README row names {SHIFT_STORE}");
     assert_eq!(
-        shift_store_embeds(),
+        jeryu_api::web::shift_store_migrations(),
         expected,
-        "{SHIFT_RUNNER} MIGRATIONS must embed, in order, every migration that \
-         db/migrations/README.md assigns to {SHIFT_STORE}"
+        "the shift store's runner (web/shift/heartbeats.rs MIGRATIONS) must embed, in \
+         order, every migration that db/migrations/README.md assigns to {SHIFT_STORE}"
     );
 }
