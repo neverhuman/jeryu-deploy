@@ -16,8 +16,13 @@ use crate::web::shift::migrate_shift_store;
 pub(crate) const LINGER_MS: i64 = 10 * 60 * 1000;
 /// Rows not beaten for this long are deleted on write.
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
+/// Listed (live, stale or lingering) sessions per reporter and forge-wide.
 pub(crate) const MAX_REPORTER_ROWS: i64 = 64;
 pub(crate) const MAX_ROWS: i64 = 1024;
+/// Stored rows per reporter and forge-wide, listed or not. Past these the
+/// oldest unlisted rows are deleted to make room; they are never refused.
+pub(crate) const MAX_REPORTER_RETAINED: i64 = 2048;
+pub(crate) const MAX_RETAINED: i64 = 16384;
 const WRITES_PER_MINUTE: u32 = 120;
 
 #[derive(Debug)]
@@ -176,16 +181,27 @@ impl PresenceStore {
             .as_ref()
             .map_or_else(|| actor.to_string(), |existing| existing.reporter.clone());
         if previous.is_none() {
-            let total: i64 =
-                tx.query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))?;
+            // Only sessions a reader still sees count against the caps: a reporter
+            // that starts many short sessions a day is not refused for ones that
+            // ended long ago. Churn stays bounded, because a new session stays
+            // listed for at least its TTL plus LINGER_MS and the write budget caps beats.
+            let cutoff = now_ms.saturating_sub(LINGER_MS);
+            let total: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM agent_presence
+                 WHERE COALESCE(ended_ms, expires_ms) >= ?1",
+                params![cutoff],
+                |row| row.get(0),
+            )?;
             let owned: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM agent_presence WHERE reporter = ?1",
-                params![row.reporter],
+                "SELECT COUNT(*) FROM agent_presence
+                 WHERE reporter = ?1 AND COALESCE(ended_ms, expires_ms) >= ?2",
+                params![row.reporter, cutoff],
                 |row| row.get(0),
             )?;
             if total >= MAX_ROWS || owned >= MAX_REPORTER_ROWS {
                 return Err(StoreError::Limit);
             }
+            evict_hidden(&tx, &row.reporter, cutoff)?;
         }
         row.received_ms = now_ms;
         row.expires_ms = now_ms.saturating_add(row.ttl_seconds.saturating_mul(1000));
@@ -321,6 +337,39 @@ impl PresenceStore {
             .query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))
             .expect("count agent presence rows")
     }
+}
+
+/// Make room for one more row of `reporter` under the retention bounds by
+/// deleting the oldest rows no reader sees any more (listed until `cutoff`),
+/// first the reporter's own, then forge-wide.
+fn evict_hidden(conn: &Connection, reporter: &str, cutoff: i64) -> rusqlite::Result<()> {
+    let owned: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM agent_presence WHERE reporter = ?1",
+        params![reporter],
+        |row| row.get(0),
+    )?;
+    let excess = owned.saturating_sub(MAX_REPORTER_RETAINED - 1);
+    if excess > 0 {
+        conn.execute(
+            "DELETE FROM agent_presence WHERE session_id IN (
+                 SELECT session_id FROM agent_presence
+                 WHERE reporter = ?1 AND COALESCE(ended_ms, expires_ms) < ?2
+                 ORDER BY received_ms ASC LIMIT ?3)",
+            params![reporter, cutoff, excess],
+        )?;
+    }
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))?;
+    let excess = total.saturating_sub(MAX_RETAINED - 1);
+    if excess > 0 {
+        conn.execute(
+            "DELETE FROM agent_presence WHERE session_id IN (
+                 SELECT session_id FROM agent_presence
+                 WHERE COALESCE(ended_ms, expires_ms) < ?1
+                 ORDER BY received_ms ASC LIMIT ?2)",
+            params![cutoff, excess],
+        )?;
+    }
+    Ok(())
 }
 
 fn get_row(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<PresenceRow>> {

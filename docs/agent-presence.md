@@ -115,7 +115,7 @@ Marks the session ended. `200 {"ok": true, "session_id": "…", "state":
 reads as `stale`. A stale session is listed until 10 minutes after
 `expires_at`, an ended one until 10 minutes after it ended; then both are
 left out. A session that beats `active` or `idle` after ending is live again.
-Rows not beaten for 14 days are deleted on write. Retained rows are capped at 64 per authenticated reporter and 1024 forge-wide (`429 presence_limit`); ending a session does not free its retained slot. Beats and ends share a 120-write-per-minute budget per authenticated login (`429 presence_write_budget`). Reuse session IDs rather than minting one per beat.
+Rows not beaten for 14 days are deleted on write. Listed rows (live, stale, or ended or expired less than 10 minutes ago) are capped at 64 per authenticated reporter and 1024 forge-wide (`429 presence_limit`); a session stops counting once it is no longer listed. Stored rows are bounded at 2048 per reporter and 16384 forge-wide: past that, the oldest rows no longer listed are deleted to make room, so a busy reporter is never refused for sessions that ended long ago. Beats and ends share a 120-write-per-minute budget per authenticated login (`429 presence_write_budget`). Reuse session IDs rather than minting one per beat.
 
 ## Read: `GET /api/v1/repos/:id/agent-presence`
 
@@ -166,6 +166,9 @@ Paged like every list (`limit`/`per_page`, `page`; `docs/pagination.md`).
 - `collides_with` lists at most 64 other items, using a repository/branch index to bound matching and response size. It lists the other live items with `via: repo` on the same
   branch. A family-scoped session is not known to work on this repository,
   so it collides with nothing; an item with no branch collides with nothing.
+  Nothing collides on the repository's default branch (it moves only by merge,
+  so sessions there are reading or reviewing), and two `queue_worker` items
+  never collide with each other (a queue lands its slots on one shared branch).
 
 Order: live first (`active`, `idle`), then `stale`, then `ended`; within
 each, `last_active_at` newest first.
@@ -195,7 +198,7 @@ same item shape without `via`, plus `repos` and `families`:
   repository they may read, or a family with at least one repository they may
   read; `repos` and `families` then list only those.
 - `collides_with` names other live items sharing a repository in `repos` and
-  the branch.
+  the branch, with the same default-branch and queue-worker exceptions.
 
 Unknown query keys answer `422 invalid_query`.
 

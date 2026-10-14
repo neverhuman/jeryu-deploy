@@ -457,7 +457,7 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     entry(
         "presence_limit",
         429,
-        "retained agent sessions reached the per-reporter or forge limit",
+        "listed agent sessions reached the per-reporter or forge limit",
     ),
     entry(
         "presence_repo_unknown",

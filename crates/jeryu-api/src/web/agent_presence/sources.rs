@@ -304,19 +304,25 @@ pub(crate) fn repo_items(
     items.extend(agent_runs(state, repo, family, now_ms));
     items.extend(gate_runners(state, repo, family, admin, now));
     items.extend(queue_workers(state, repo, family, admin, now_ms));
-    mark_collisions(&mut items, |item| {
-        (item.via == Some(Via::Repo)).then(|| vec![repo.full_name.clone()])
-    });
+    mark_collisions(
+        &mut items,
+        |item| (item.via == Some(Via::Repo)).then(|| vec![repo.full_name.clone()]),
+        |_| Some(repo.default_branch.clone()),
+    );
     sort(&mut items);
     items
 }
 
 /// For every live item, the other live items that share a repository (as
 /// `repos_of` names them) and the same branch. An item without a branch
-/// collides with nothing.
+/// collides with nothing. Nothing collides on a repository's default branch
+/// (`default_branch_of`): it moves only by merge, so sessions there are
+/// reading or reviewing, not writing the same commits. Two queue workers never
+/// collide with each other: a queue lands its slots on one shared branch by design.
 pub(crate) fn mark_collisions(
     items: &mut [PresenceItem],
     repos_of: impl Fn(&PresenceItem) -> Option<Vec<String>>,
+    default_branch_of: impl Fn(&str) -> Option<String>,
 ) {
     // Index by repository and branch; bound each payload even when many sessions collide.
     const MAX_COLLISIONS: usize = 64;
@@ -325,9 +331,14 @@ pub(crate) fn mark_collisions(
         .iter()
         .map(|item| {
             let branch = item.branch.as_ref().filter(|_| item.live())?;
-            Some((repos_of(item)?, branch.clone()))
+            let repos: Vec<String> = repos_of(item)?
+                .into_iter()
+                .filter(|repo| default_branch_of(repo).as_ref() != Some(branch))
+                .collect();
+            Some((repos, branch.clone()))
         })
         .collect();
+    let sources: Vec<Source> = items.iter().map(|item| item.source).collect();
     for (index, key) in keys.iter().enumerate() {
         if let Some((repos, branch)) = key {
             for repo in repos {
@@ -348,6 +359,10 @@ pub(crate) fn mark_collisions(
                         .iter()
                         .copied()
                         .filter(|other| *other != index)
+                        .filter(|other| {
+                            !(sources[index] == Source::QueueWorker
+                                && sources[*other] == Source::QueueWorker)
+                        })
                         .take(MAX_COLLISIONS)
                     {
                         others.insert(other);

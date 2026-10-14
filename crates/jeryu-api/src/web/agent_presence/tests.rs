@@ -34,6 +34,76 @@ fn retained_rows_are_bounded_and_beats_have_a_write_budget() {
 }
 
 #[test]
+fn only_listed_sessions_count_against_the_cap() {
+    let (_dir, store) = store();
+    for n in 0..super::store::MAX_REPORTER_ROWS {
+        store
+            .upsert(&row(&format!("s{n}"), 300, PresenceState::Ended), 0)
+            .unwrap();
+    }
+    // Still listed (ended less than LINGER_MS ago): the cap holds.
+    assert!(matches!(
+        store.upsert(&row("early", 300, PresenceState::Active), LINGER_MS),
+        Err(super::store::StoreError::Limit)
+    ));
+    // Once they are no longer listed, a new session is accepted and the old
+    // rows are kept (they still own their session ids).
+    store
+        .upsert(&row("later", 300, PresenceState::Active), LINGER_MS + 1)
+        .unwrap();
+    assert_eq!(store.count(), super::store::MAX_REPORTER_ROWS + 1);
+}
+
+#[test]
+fn retained_rows_past_the_bound_evict_the_oldest_unlisted_rows() {
+    let (_dir, store) = store();
+    // One ended session every 10 s: at most 61 are listed at once, under the
+    // listed cap, while the stored total runs past the retention bound.
+    let total = super::store::MAX_REPORTER_RETAINED + 5;
+    for n in 0..total {
+        store
+            .upsert(
+                &row(&format!("s{n}"), 300, PresenceState::Ended),
+                n * 10_000,
+            )
+            .unwrap();
+    }
+    assert_eq!(store.count(), super::store::MAX_REPORTER_RETAINED);
+    assert!(
+        store.get("s0").unwrap().is_none(),
+        "oldest unlisted row evicted"
+    );
+    assert!(store.get(&format!("s{}", total - 1)).unwrap().is_some());
+}
+
+#[test]
+fn two_queue_workers_on_one_shift_branch_do_not_collide_but_a_session_there_does() {
+    use super::sources::{external_item, mark_collisions};
+    use super::types::{Source, Via};
+    let item = |id: &str, source: Source| {
+        let mut row = row(id, 300, PresenceState::Active);
+        row.branch = Some("shift/acme".to_string());
+        row.expires_ms = 10 * MINUTE;
+        let mut item = external_item(&row, Some(Via::Repo), None, false, 0);
+        item.source = source;
+        item
+    };
+    let mut items = vec![
+        item("w1", Source::QueueWorker),
+        item("w2", Source::QueueWorker),
+        item("cli", Source::External),
+    ];
+    mark_collisions(
+        &mut items,
+        |_| Some(vec!["acme/widgets".to_string()]),
+        |_| Some("main".to_string()),
+    );
+    assert_eq!(items[0].collides_with, ["external:cli"]);
+    assert_eq!(items[1].collides_with, ["external:cli"]);
+    assert_eq!(items[2].collides_with, ["external:w1", "external:w2"]);
+}
+
+#[test]
 fn competing_first_registrations_cannot_change_the_winning_owner() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shift.sqlite");

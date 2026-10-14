@@ -128,7 +128,7 @@ fn write_failed(error: store::StoreError, session_id: &str) -> AxumResponse {
         store::StoreError::Limit => presence_error(
             StatusCode::TOO_MANY_REQUESTS,
             "presence_limit",
-            "at most 64 retained sessions per reporter and 1024 for the forge",
+            "at most 64 listed sessions per reporter and 1024 for the forge",
             "reuse an existing session id or wait for retention pruning",
         ),
         store::StoreError::WriteBudget => presence_error(
@@ -483,7 +483,11 @@ pub(crate) async fn overview(
         item.families = Some(families);
         items.push(item);
     }
-    mark_collisions(&mut items, |item| item.repos.clone());
+    mark_collisions(
+        &mut items,
+        |item| item.repos.clone(),
+        |name| hosted.get(name).map(|repo| repo.default_branch.clone()),
+    );
     sort(&mut items);
     let (items, info) = page.apply(items);
     Json(PresenceList {

@@ -309,6 +309,39 @@ async fn sessions_on_the_same_repo_and_branch_collide() {
 }
 
 #[tokio::test]
+async fn sessions_on_the_default_branch_do_not_collide() {
+    let fx = fixture();
+    for id in ["cli:main-a", "cli:main-b"] {
+        let mut beat = session(id, &["acme/widgets"], &[]);
+        beat["branch"] = json!("main");
+        let (status, body) = fx.post(&fx.ada, beat).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let items = fx.repo_items(&fx.ada, "acme%2Fwidgets").await;
+    assert_eq!(
+        find(&items, "external:cli:main-a")["collides_with"],
+        json!([])
+    );
+    assert_eq!(
+        find(&items, "external:cli:main-b")["collides_with"],
+        json!([])
+    );
+
+    let (status, body) = call(
+        &fx.router,
+        HttpMethod::GET,
+        "/api/v1/agent-presence?family=acme",
+        Some(&fx.ada),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for item in body["items"].as_array().unwrap() {
+        assert_eq!(item["collides_with"], json!([]), "{item}");
+    }
+}
+
+#[tokio::test]
 async fn a_non_writer_is_forbidden_to_claim_a_repo_or_family_it_cannot_write() {
     let fx = fixture();
     // grace writes widgets only: gears and the acme family are refused.
