@@ -180,55 +180,124 @@ fn a_reporter_past_its_bound_loses_only_its_own_oldest_unlisted_rows() {
 }
 
 #[test]
-fn a_full_forge_refuses_a_new_session_instead_of_evicting_another_reporters_rows() {
+fn global_pressure_reclaims_large_reporters_history_and_keeps_listed_ownership() {
     let (_dir, store) = store();
-    // Forge bound 4 (2 x reporter bound 2); listed caps out of the way.
     let store = store.with_limits(super::store::Limits {
         reporter_listed: 64,
         listed: 64,
-        reporter_retained: 2,
+        reporter_retained: 3,
         retained: 4,
     });
-    let rows = [
-        ("grace", "g-1"),
-        ("grace", "g-2"),
-        ("barbara", "b-1"),
-        ("barbara", "b-2"),
-    ];
-    for (at, (reporter, id)) in (0_i64..).zip(rows) {
+    // A sparse reporter's older history survives the prolific reporter's rows.
+    store
+        .upsert_as(
+            &row_of("sparse", "s-old", PresenceState::Ended),
+            "sparse",
+            false,
+            0,
+        )
+        .unwrap();
+    for n in 0..3 {
         store
             .upsert_as(
-                &row_of(reporter, id, PresenceState::Ended),
-                reporter,
+                &row_of("busy", &format!("b-{n}"), PresenceState::Ended),
+                "busy",
+                false,
+                n + 1,
+            )
+            .unwrap();
+    }
+    let now = 2 * LINGER_MS;
+    store
+        .upsert_as(
+            &row_of("new", "new-live", PresenceState::Active),
+            "new",
+            false,
+            now,
+        )
+        .unwrap();
+    assert_eq!(store.count(), 4);
+    assert!(store.get("b-0").unwrap().is_none());
+    assert!(store.get("s-old").unwrap().is_some());
+    for n in 0..8 {
+        let at = now + (n + 1) * (LINGER_MS + 1);
+        store
+            .upsert_as(
+                &row_of("new", "new-live", PresenceState::Active),
+                "new",
                 false,
                 at,
             )
             .unwrap();
+        store
+            .upsert_as(
+                &row_of("churn", &format!("c-{n}"), PresenceState::Ended),
+                "churn",
+                false,
+                at,
+            )
+            .unwrap();
+        assert!(store.count() <= 4);
     }
-    let later = 2 * LINGER_MS;
+    // The live reporter keeps its listed row while others churn history.
+    assert_eq!(store.get("new-live").unwrap().unwrap().reporter, "new");
+}
+
+#[test]
+fn ended_heartbeats_do_not_renew_retention_and_old_rows_are_pruned() {
+    let (_dir, store) = store();
+    let ended = row("ended", 300, PresenceState::Ended);
+    store.upsert(&ended, 0).unwrap();
+    let repeated = store.upsert(&ended, RETENTION_MS - MINUTE).unwrap();
+    assert_eq!(repeated.received_ms, 0);
+    assert_eq!(repeated.ended_ms, Some(0));
+    store
+        .upsert(
+            &row("fresh", 300, PresenceState::Active),
+            RETENTION_MS + 2 * 60 * MINUTE,
+        )
+        .unwrap();
+    assert!(store.get("ended").unwrap().is_none());
+}
+
+#[test]
+fn global_storage_never_evicts_a_listed_session() {
+    let (_dir, store) = store();
+    let store = store.with_limits(super::store::Limits {
+        reporter_listed: 8,
+        listed: 8,
+        reporter_retained: 8,
+        retained: 2,
+    });
+    for actor in ["one", "two"] {
+        store
+            .upsert_as(
+                &row_of(actor, actor, PresenceState::Active),
+                actor,
+                false,
+                0,
+            )
+            .unwrap();
+    }
     assert!(matches!(
         store.upsert_as(
-            &row_of("ada", "a-1", PresenceState::Active),
-            "ada",
+            &row_of("three", "three", PresenceState::Active),
+            "three",
             false,
-            later
+            1
         ),
         Err(super::store::StoreError::Full)
     ));
-    for id in ["g-1", "g-2", "b-1", "b-2"] {
-        assert!(store.get(id).unwrap().is_some(), "{id} kept");
-    }
-    // A reporter at its own bound still makes room from its own rows.
-    store
-        .upsert_as(
-            &row_of("grace", "g-3", PresenceState::Active),
-            "grace",
+    assert_eq!(store.count(), 2);
+    assert!(matches!(
+        store.upsert_as(
+            &row_of("three", "one", PresenceState::Active),
+            "three",
             false,
-            later,
-        )
-        .unwrap();
-    assert!(store.get("g-1").unwrap().is_none());
-    assert!(store.get("b-1").unwrap().is_some());
+            1
+        ),
+        Err(super::store::StoreError::Owned)
+    ));
 }
 
 #[test]

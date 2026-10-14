@@ -20,9 +20,9 @@ pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
 pub(crate) const MAX_REPORTER_ROWS: i64 = 64;
 pub(crate) const MAX_ROWS: i64 = 1024;
 /// Stored rows per reporter and forge-wide, listed or not. Past its own bound a
-/// reporter's oldest unlisted rows are deleted to make room; at the forge bound a
-/// new session is refused (`StoreError::Full`), never paid for with another
-/// reporter's rows.
+/// reporter's oldest unlisted rows are deleted to make room. At the forge bound,
+/// unlisted history is reclaimed from the largest retained reporter first;
+/// listed rows are never evicted. Refuse only when no unlisted row can make room.
 pub(crate) const MAX_REPORTER_RETAINED: i64 = 2048;
 pub(crate) const MAX_RETAINED: i64 = 16384;
 const WRITES_PER_MINUTE: u32 = 120;
@@ -229,7 +229,11 @@ impl PresenceStore {
         row.reporter = previous
             .as_ref()
             .map_or_else(|| actor.to_string(), |existing| existing.reporter.clone());
-        row.received_ms = now_ms;
+        // Repeating an ended heartbeat cannot renew retention indefinitely.
+        row.received_ms = previous
+            .as_ref()
+            .filter(|stored| stored.ended_ms.is_some() && row.state == PresenceState::Ended)
+            .map_or(now_ms, |stored| stored.received_ms);
         row.expires_ms = now_ms.saturating_add(row.ttl_seconds.saturating_mul(1000));
         row.ended_ms = match row.state {
             PresenceState::Ended => Some(match previous.as_ref() {
@@ -265,19 +269,24 @@ impl PresenceStore {
             }
         }
         if previous.is_none() {
-            // Storage: a reporter past its bound loses its own oldest unlisted rows;
-            // nobody else's row is ever deleted to make room. A full forge refuses.
+            // Reclaim this reporter's unlisted history first. Global pressure
+            // reclaims only unlisted history, favoring the largest retained
+            // reporter so a few prolific reporters cannot lock out everyone.
             evict_own_unlisted(
                 &tx,
                 &row.reporter,
                 limits.reporter_retained,
                 now_ms.saturating_sub(LINGER_MS),
             )?;
-            let stored: i64 =
-                tx.query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))?;
-            if stored >= limits.retained {
+            let owned: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM agent_presence WHERE reporter = ?1",
+                params![row.reporter],
+                |row| row.get(0),
+            )?;
+            if owned >= limits.reporter_retained {
                 return Err(StoreError::Full);
             }
+            make_global_room(&tx, limits.retained, now_ms.saturating_sub(LINGER_MS))?;
         }
         tx.execute(
             "INSERT INTO agent_presence (session_id, reporter, agent, model, host, operator,
@@ -429,6 +438,32 @@ fn evict_own_unlisted(
                  ORDER BY received_ms ASC LIMIT ?3)",
             params![reporter, cutoff, excess],
         )?;
+    }
+    Ok(())
+}
+
+/// Bound stored history without letting a full collection of tombstones deny
+/// new reporters. All changes share the insertion transaction. Listed rows and
+/// their ownership survive; reclaimed unlisted session ids are released.
+fn make_global_room(conn: &Connection, bound: i64, cutoff: i64) -> Result<(), StoreError> {
+    let stored: i64 =
+        conn.query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))?;
+    let excess = stored.saturating_sub(bound - 1);
+    if excess > 0 {
+        conn.execute(
+            "DELETE FROM agent_presence WHERE session_id IN (
+                SELECT p.session_id FROM agent_presence p
+                JOIN (SELECT reporter, COUNT(*) AS retained FROM agent_presence GROUP BY reporter) r
+                  ON p.reporter = r.reporter
+                WHERE COALESCE(p.ended_ms, p.expires_ms) < ?1
+                ORDER BY r.retained DESC, p.received_ms ASC, p.session_id ASC LIMIT ?2)",
+            params![cutoff, excess],
+        )?;
+        let remaining: i64 =
+            conn.query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))?;
+        if remaining >= bound {
+            return Err(StoreError::Full);
+        }
     }
     Ok(())
 }
