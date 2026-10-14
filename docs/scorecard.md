@@ -211,3 +211,31 @@ Events it reads (all optional, the ledger shows what was posted):
 | `deploy.status` `success` | `detail.release`, `detail.carries[]` | deployment of merged changes |
 | `deploy.status` `rollback` | `detail.rolled_back` or `detail.release` | the changes of that release fail |
 | `incident.*` | `detail.incident_id`, `todo_id`, `detail.shas[]` | incident id on the changes it names; an incident naming none is not guessed |
+
+## What `GET /api/v1/scorecard` computes
+
+Every tile carries `value`, `previous` (the equal window before), `daily` (one
+entry per day of the window), `sample_size`, `source`, and, where it has
+counts behind it, `detail`. A tile is `unknown` (value null, `unknown.reason`)
+when nothing in the window supports it; a count or rate is zero only when its
+source was recording then (an interval that ended before the source's first
+record is unknown, and a partly covered interval is divided by the days
+covered).
+
+| Computed from | Tiles |
+|---|---|
+| `flow_ledger` | `lead_time_p50`, `lead_time_p85`, `lead_time_spread` (filed to Deploy exit, nearest rank, seconds, bucketed by ship time), `station_breakdown`, `flow_efficiency`, `wip_by_station` (held only for now), `holds_by_age_and_action` (now only; aged from station arrival), `gate_queue_wait` (gate arrival is when Flow places the lot at the gate) |
+| `outcome_ledger` | `change_failure_rate`, `rework_rate`, `false_done_rate` (each with `detail.by_arm`), `successful_changes`, `completed_work_mix`, `changes_per_release`, `completed_work_items_per_day`, `prs_merged_per_day`, `arrival_vs_completion`, `merged_but_unreleased` |
+| `cost_ledger` | `cost_per_merged_change`, `cost_per_successful_change` (changes with a recorded cost; unattributed spend in `detail`), `review_cost` |
+| `pipeline_events` | `releases_per_day` (per service, `release.staged` and successful `deploy.status`), `gate_flake_rate` |
+
+Rates exclude changes still inside the 14-day observation and report them as
+`detail.pending`.
+
+Still unknown, with the reason in `unknown.reason`: `surviving_net_lines_per_day`,
+`raw_net_lines_per_day`, `escaped_defects_to_main`, `escaped_defects_to_prod`,
+`review_catch_rate`, `main_red_time_per_repo`, `time_to_detect`,
+`time_to_restore`, `human_minutes_per_successful_change`,
+`worker_slot_utilisation`, `runner_utilisation`, `hypotheses_checked_and_met`
+(their source todos have not landed) and `eta_error` (Flow computes ETAs at
+read time and stores no snapshot to compare with).

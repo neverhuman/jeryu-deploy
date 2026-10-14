@@ -638,6 +638,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "a verified Firecracker runner is unavailable",
     ),
     entry(
+        "scorecard_read_failed",
+        500,
+        "the ledgers behind the scorecard could not be read",
+    ),
+    entry(
         "serialization_failed",
         500,
         "the response could not be serialized",

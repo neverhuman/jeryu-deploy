@@ -1,107 +1,22 @@
-//! Admin scorecard contract. Each tile is present even before its producer is
+//! Admin scorecard. Each tile is present even before its producer is
 //! installed; absence is represented as unknown, never as a numeric zero.
+//! The arithmetic is `compute`, the ledger reads are `read`.
 
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::Utc;
 use serde::Deserialize;
-use serde::Serialize;
 
 use super::WebState;
 use super::strict_query::{StrictFields, StrictQuery};
+use super::workcells_support::{TypedError, typed_error};
 
-const METRICS: &[(&str, &str)] = &[
-    (
-        "lead_time_p50",
-        "flow_ledger, pipeline_events and release/deploy events",
-    ),
-    (
-        "lead_time_p85",
-        "flow_ledger, pipeline_events and release/deploy events",
-    ),
-    ("station_breakdown", "flow_ledger station visits"),
-    (
-        "flow_efficiency",
-        "flow_ledger classified active and waiting intervals",
-    ),
-    (
-        "completed_work_items_per_day",
-        "flow_ledger merge exits or pr.merged events",
-    ),
-    ("surviving_net_lines_per_day", "line survival ledger"),
-    ("releases_per_day", "release and deploy events"),
-    ("changes_per_release", "release membership"),
-    (
-        "prs_merged_per_day",
-        "pipeline_events pr.merged and queue.landed",
-    ),
-    (
-        "raw_net_lines_per_day",
-        "durable pull request diff statistics",
-    ),
-    ("wip_by_station", "flow_ledger open visits"),
-    (
-        "merged_but_unreleased",
-        "flow_ledger and release/deploy membership",
-    ),
-    (
-        "holds_by_age_and_action",
-        "flow_ledger holds and pipeline action events",
-    ),
-    (
-        "arrival_vs_completion",
-        "pipeline_events todo.filed and merge events",
-    ),
-    ("change_failure_rate", "change outcome and incident ledgers"),
-    (
-        "escaped_defects_to_main",
-        "outcome ledger and review findings",
-    ),
-    ("escaped_defects_to_prod", "outcome and incident ledgers"),
-    (
-        "false_done_rate",
-        "outcome ledger and todo completion events",
-    ),
-    (
-        "review_catch_rate",
-        "review finding outcomes and outcome ledger",
-    ),
-    ("rework_rate", "outcome ledger"),
-    ("main_red_time_per_repo", "main health transitions"),
-    (
-        "gate_flake_rate",
-        "pipeline_events gate.finished with run and SHA identity",
-    ),
-    ("time_to_detect", "incident ledger"),
-    (
-        "time_to_restore",
-        "incident ledger and successful deploy events",
-    ),
-    (
-        "cost_per_successful_change",
-        "cost_ledger and outcome ledger",
-    ),
-    (
-        "human_minutes_per_successful_change",
-        "human time and outcome ledgers",
-    ),
-    ("review_cost", "pipeline review events and cost_ledger"),
-    ("eta_error", "immutable Flow ETA snapshots"),
-    ("lead_time_spread", "flow_ledger and shipping events"),
-    ("gate_queue_wait", "flow_ledger proven gate queue entry"),
-    ("worker_slot_utilisation", "worker slot state history"),
-    ("runner_utilisation", "runner heartbeat history"),
-    (
-        "completed_work_mix",
-        "completion events and explicit work classification",
-    ),
-    (
-        "hypotheses_checked_and_met",
-        "hypothesis records and release/deploy events",
-    ),
-];
+pub(crate) mod compute;
+pub(crate) mod read;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct ScorecardQuery {
@@ -125,104 +40,71 @@ impl StrictFields for ScorecardQuery {
     }
 }
 
-#[derive(Serialize)]
-struct Metric {
-    value: Option<serde_json::Value>,
-    previous: Option<serde_json::Value>,
-    daily: Vec<Option<serde_json::Value>>,
-    sample_size: usize,
-    source: &'static str,
-    unknown: Option<Unknown>,
-}
-
-#[derive(Serialize)]
-struct Unknown {
-    reason: &'static str,
-}
-
 pub(crate) async fn scorecard(
-    State(_state): State<Arc<WebState>>,
+    State(state): State<Arc<WebState>>,
     StrictQuery(query): StrictQuery<ScorecardQuery>,
-) -> Json<serde_json::Value> {
-    let window = query.window.as_deref().unwrap_or("30d");
+) -> AxumResponse {
+    let family = match super::family::filter(&state, query.family.as_deref()) {
+        Ok(family) => family,
+        Err(response) => return *response,
+    };
+    let repo = query
+        .repo
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(ToString::to_string);
+    let window = query.window.as_deref().unwrap_or("30d").to_string();
     let days = window.trim_end_matches('d').parse::<usize>().unwrap_or(30);
-    let metrics: serde_json::Map<String, serde_json::Value> = METRICS
-        .iter()
-        .map(|(name, source)| {
-            let metric = Metric {
-                value: None,
-                previous: None,
-                daily: vec![None; days],
-                sample_size: 0,
-                source,
-                unknown: Some(Unknown {
-                    reason: "source_not_recorded",
-                }),
-            };
+    let now_ms = Utc::now().timestamp_millis();
+    let (read_family, read_repo, worker) = (family.clone(), repo.clone(), state.clone());
+    let read = tokio::task::spawn_blocking(move || {
+        let changes = worker
+            .events
+            .outcome_changes(read_family.as_deref(), read_repo.as_deref())?;
+        let raw = worker
+            .events
+            .scorecard_raw(read_family.as_deref(), now_ms, days as i64)?;
+        Ok::<_, String>((changes, raw))
+    })
+    .await
+    .map_err(|err| err.to_string())
+    .and_then(|read| read);
+    let (changes, raw) = match read {
+        Ok(read) => read,
+        Err(reason) => {
+            return typed_error(TypedError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "scorecard_read_failed",
+                purpose: "report delivery outcomes",
+                reason: &reason,
+                common_fixes: &["retry; check the server log for the ledger read"],
+                docs_url: "docs/scorecard.md",
+                repair_hint: "check <data_dir>/shift.sqlite and the server log for the projection",
+                message: &reason,
+            });
+        }
+    };
+    let ctx = compute::Ctx::new(&raw, &changes, repo.as_deref(), now_ms, days);
+    let metrics: serde_json::Map<String, serde_json::Value> = compute::metrics(&ctx)
+        .into_iter()
+        .map(|(name, metric)| {
             (
-                (*name).to_owned(),
+                name.to_owned(),
                 serde_json::to_value(metric).expect("scorecard metric serializes"),
             )
         })
         .collect();
     Json(serde_json::json!({
         "schema_version": "jeryu.scorecard/v1",
-        "generated_at": Utc::now().to_rfc3339(),
+        "generated_at": super::shift::rfc3339_ms(now_ms),
         "window": window,
-        "family": query.family,
-        "repo": query.repo,
+        "family": family,
+        "repo": repo,
         "metrics": metrics,
     }))
+    .into_response()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_design_metric_is_unknown_without_a_recorded_source() {
-        let metrics: serde_json::Map<String, serde_json::Value> = METRICS
-            .iter()
-            .map(|(name, source)| {
-                let metric = Metric {
-                    value: None,
-                    previous: None,
-                    daily: vec![None; 7],
-                    sample_size: 0,
-                    source,
-                    unknown: Some(Unknown {
-                        reason: "source_not_recorded",
-                    }),
-                };
-                ((*name).to_string(), serde_json::to_value(metric).unwrap())
-            })
-            .collect();
-        assert_eq!(metrics.len(), 34);
-        for metric in metrics.values() {
-            assert!(metric["value"].is_null());
-            assert_eq!(metric["unknown"]["reason"], "source_not_recorded");
-            assert_eq!(metric["sample_size"], 0);
-            assert_eq!(metric["daily"].as_array().unwrap().len(), 7);
-        }
-    }
-
-    #[test]
-    fn only_supported_windows_are_accepted() {
-        assert!(
-            ScorecardQuery {
-                window: Some("30d".into()),
-                ..Default::default()
-            }
-            .check_values()
-            .is_ok()
-        );
-        assert!(
-            ScorecardQuery {
-                window: Some("14d".into()),
-                ..Default::default()
-            }
-            .check_values()
-            .is_err()
-        );
-    }
-}
+mod tests;

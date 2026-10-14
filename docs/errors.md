@@ -207,6 +207,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `reset_link_invalid` | 422 | that password reset link is expired, already used, or not a link this forge issued |
 | `runner_policy_denied` | 422 | the runner policy denies this trust tier on the chosen runner |
 | `sandbox_unavailable` | 424 | a verified Firecracker runner is unavailable |
+| `scorecard_read_failed` | 500 | the ledgers behind the scorecard could not be read |
 | `serialization_failed` | 500 | the response could not be serialized |
 | `service_unavailable` | 503 | the service is temporarily unavailable |
 | `session_already_published` | 409 | the session was already published |

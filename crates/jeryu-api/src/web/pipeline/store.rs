@@ -197,6 +197,24 @@ impl EventStore {
         outcomes::project::read(&inner.conn, family, repo)
     }
 
+    /// The ledger rows and retained events `GET /api/v1/scorecard` computes
+    /// from, for a window of `days` ending at `now_ms` and the one before it.
+    pub(crate) fn scorecard_raw(
+        &self,
+        family: Option<&str>,
+        now_ms: i64,
+        days: i64,
+    ) -> Result<super::super::scorecard::compute::Raw, String> {
+        let day = 24 * 60 * 60 * 1000;
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        super::super::scorecard::read::read(
+            &inner.conn,
+            family,
+            now_ms - 2 * days * day,
+            now_ms - (2 * days).max(30) * day,
+        )
+    }
+
     /// Import one event read back from another jeryu instance. This preserves
     /// the source sequence, timestamp and reporter so a local dev server can
     /// rebuild projections as if it had held the same event log.
