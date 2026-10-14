@@ -1,6 +1,6 @@
 # 0011. Pin the governed Jankurai auditor centrally by approved release
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-14
 Supersedes: none
 Superseded-by: none
@@ -195,14 +195,14 @@ Compatible throughout: the #25 trust anchors and receipt schema, the legacy inst
 - **Offline.** With a verified cache, offline runs and reports `freshness: unknown`. With no cache, or a cache whose digest no longer verifies, it stops. It never uses `PATH`.
 - **Fail closed and rollback.** An invalid manifest (two active entries, a deleted entry, a bad digest) is rejected and recorded. Rollback rebinds new jobs with no install, render or rebuild.
 
-### Open questions for the owner
+### Owner decisions (2026-10-14)
 
-1. Emergency rollback: manifest PR only, or also a forge admin override recorded in history?
-2. Signer rotation: manifest-only, or a deploy-side acknowledgement and a client prompt?
-3. Parity bar: equal decisions with listed deltas, or a numeric tolerance?
-4. Compatibility range form: semver range or schema ids only?
-5. Retention store and window for retired artifacts on hosts?
-6. Persist audit tickets across forge restarts as part of step 2?
+1. **Emergency rollback** is a manifest activation PR only. There is no forge-side override; rollback re-activates an entry hosts already hold, so it needs no download, render or rebuild.
+2. **Signer or cosign rotation** is manifest-only, in a fixed order: add the new anchor alongside the old, activate releases signed by it, then retire the old anchor. No deploy-side acknowledgement or client prompt.
+3. **Parity bar** is identical pass/fail decisions on the corpus, with every score delta listed for owner review. There is no numeric tolerance.
+4. **Compatibility** is a semver range on the auditor (for example `>=1.7, <2`) plus the required report and policy schema ids.
+5. **Retention**: hosts keep retired auditors for the last three releases or 30 days, whichever is longer, and never prune one bound to a queued or claimed job.
+6. **Audit tickets persist across forge restarts**, delivered in migration step 2, so in-flight jobs keep their binding through a deploy.
 
 ## Appendix: inventory of today's copies
 
