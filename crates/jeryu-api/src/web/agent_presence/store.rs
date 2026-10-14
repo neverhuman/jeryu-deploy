@@ -115,6 +115,18 @@ pub(crate) fn listed(row: &PresenceRow, now_ms: i64) -> bool {
     }
 }
 
+/// When a stored session that has not ended yet ends at `now_ms`: now while a
+/// reader still sees it, else the moment it expired. Ending a session that has
+/// stopped being listed therefore never lists it again, so it cannot get past
+/// the listed caps.
+fn end_time(stored: &PresenceRow, now_ms: i64) -> i64 {
+    if listed(stored, now_ms) {
+        now_ms
+    } else {
+        stored.expires_ms.min(now_ms)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct PresenceStore {
     inner: Arc<Mutex<Inner>>,
@@ -220,12 +232,10 @@ impl PresenceStore {
         row.received_ms = now_ms;
         row.expires_ms = now_ms.saturating_add(row.ttl_seconds.saturating_mul(1000));
         row.ended_ms = match row.state {
-            PresenceState::Ended => Some(
-                previous
-                    .as_ref()
-                    .and_then(|stored| stored.ended_ms)
-                    .unwrap_or(now_ms),
-            ),
+            PresenceState::Ended => Some(match previous.as_ref() {
+                Some(stored) => stored.ended_ms.unwrap_or_else(|| end_time(stored, now_ms)),
+                None => now_ms,
+            }),
             _ => None,
         };
         // Only sessions a reader sees count against the listed caps, so a reporter
@@ -349,11 +359,12 @@ impl PresenceStore {
             return Ok(None);
         }
         if row.ended_ms.is_none() {
+            let ended = end_time(&row, now_ms);
             row.state = PresenceState::Ended;
-            row.ended_ms = Some(now_ms);
+            row.ended_ms = Some(ended);
             tx.execute(
                 "UPDATE agent_presence SET state = 'ended', ended_ms = ?2 WHERE session_id = ?1",
-                params![session_id, now_ms],
+                params![session_id, ended],
             )?;
         }
         tx.commit()?;

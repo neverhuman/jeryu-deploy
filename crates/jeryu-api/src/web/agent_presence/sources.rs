@@ -304,10 +304,12 @@ pub(crate) fn repo_items(
     items.extend(agent_runs(state, repo, family, now_ms));
     items.extend(gate_runners(state, repo, family, admin, now));
     items.extend(queue_workers(state, repo, family, admin, now_ms));
+    // One protection lookup for the repository, not one per item.
+    let merge_only = merge_only_branch(state, repo);
     mark_collisions(
         &mut items,
         |item| (item.via == Some(Via::Repo)).then(|| vec![repo.full_name.clone()]),
-        |_| merge_only_branch(state, repo),
+        |_| merge_only.clone(),
     );
     sort(&mut items);
     items

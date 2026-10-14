@@ -97,6 +97,48 @@ fn a_beat_that_brings_an_unlisted_session_back_counts_against_the_cap() {
 }
 
 #[test]
+fn ending_an_unlisted_session_does_not_list_it_again_past_the_cap() {
+    let (_dir, store) = store();
+    let store = store.with_limits(small(2, 100));
+    let gone = 300_000 + LINGER_MS + 1;
+    for id in ["hidden-1", "hidden-2"] {
+        store
+            .upsert(&row(id, 300, PresenceState::Active), 0)
+            .unwrap();
+    }
+    for id in ["live-1", "live-2"] {
+        store
+            .upsert(&row(id, 300, PresenceState::Active), gone)
+            .unwrap();
+    }
+    // DELETE of a session that stopped being listed ends it when it expired.
+    let ended = store
+        .end_as("hidden-1", "ada", false, gone)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ended.ended_ms, Some(300_000));
+    // So does an `ended` beat, and it is not refused for the cap.
+    let ended = store
+        .upsert(&row("hidden-2", 300, PresenceState::Ended), gone)
+        .unwrap();
+    assert_eq!(ended.ended_ms, Some(300_000));
+    // The reporter still sees exactly its two live sessions.
+    let visible: Vec<_> = store
+        .visible(gone)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.session_id)
+        .collect();
+    assert_eq!(visible, ["live-1", "live-2"]);
+    // Ending a listed session still stamps now.
+    let ended = store
+        .end_as("live-1", "ada", false, gone + 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ended.ended_ms, Some(gone + 1));
+}
+
+#[test]
 fn a_reporter_past_its_bound_loses_only_its_own_oldest_unlisted_rows() {
     let (_dir, store) = store();
     let store = store.with_limits(small(2, 3));
