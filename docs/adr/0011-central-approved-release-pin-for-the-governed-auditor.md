@@ -1,9 +1,9 @@
 # 0011. Pin the governed Jankurai auditor centrally by approved release
 
-Status: Accepted
+Status: Superseded
 Date: 2026-10-14
 Supersedes: none
-Superseded-by: none
+Superseded-by: 0012
 
 ## Context
 
