@@ -848,8 +848,8 @@ capacity value, or a tool whose latest heartbeat shows a failure.
 
 `/runners` is drawn from heartbeats, not from the event log. Gate runner slots,
 the pr-redteam reviewer, the release timers (`auto-pin.sh`, `auto-stage.sh`),
-host deploy timers and the jankurai audit runner (`ops/ci/jankurai-audit-runner.sh`)
-all report through one route; the forge keeps the latest beat per `runnerId` in
+host deploy timers and the jankurai audit runner (jeryu-ci-runner
+`ops/pr-gate/bin/pr-gate-audit.sh`) all report through one route; the forge keeps the latest beat per `runnerId` in
 memory, so a restarted forge repopulates within one tick of each reporter.
 Implementation: `crates/jeryu-api/src/web/control_plane/gate_runners.rs`.
 
@@ -898,10 +898,10 @@ event: the release scripts post their own `pin.*` and `release.*` events. Neithe
 
 #### The jankurai audit runner
 
-`ops/ci/jankurai-audit-runner.sh` (a 30-second timer on a gate host, installed by
-`ops/ci/install-jankurai-audit-runner.sh`) beats on every run through
-`ops/ci/jankurai-audit-heartbeat.sh`, with the token it already uses to claim
-audits, so that login must be allowed to report too:
+The gate host's auditor, `pr-gate-audit.sh` in jeryu-ci-runner `ops/pr-gate` (a
+30-second timer installed with the gate, see its README), beats on every pass with
+the gate identity's token, the same one it claims audits and submits reports with,
+so that login must be allowed to report too:
 
 ```json
 {"runnerId": "gate-a/jankurai-audit", "host": "gate-a", "slot": 0,
@@ -910,24 +910,24 @@ audits, so that login must be allowed to report too:
              "startedAt": "2026-09-30T12:00:00Z"},
  "last": {"repo": "acme/widgets", "sha": "0123456789…", "recipe": "jankurai audit",
           "conclusion": "scored", "seconds": 41, "finishedAt": "2026-09-30T11:59:20Z"},
- "code": {"repo": "acme/gate-scripts", "commit": "<VERSION commit>",
-          "installedAt": "2026-09-29T08:00:00Z"},
+ "code": {"repo": "acme/gate-scripts", "commit": "<installed commit>",
+          "installedAt": "2026-09-29T08:00:00Z", "version": "pr-gate 2.1.0"},
  "tools": [{"name": "jankurai", "version": "1.6.11", "sha256": "<64 hex>"}]}
 ```
 
-`runnerId` is `<short hostname>/jankurai-audit`. A run that claims nothing beats
-with no `current` and the previous `last` unchanged (kept in
-`$XDG_STATE_HOME/jeryu-jankurai-audit-runner/last.json`), so an idle runner never
-invents a result. An audit beats `current` when it starts, again every 60 seconds
-while it runs (`JERYU_AUDIT_BEAT_EVERY`; an audit can outlast the 180-second
-offline threshold), and `last` when it ends; `last.reason` says why one that went
-wrong did. Audit jobs are per head, so `pr` is left out. `code` is sent only when
-`JERYU_AUDIT_RUNNER_REPO` is set, with `commit` from the install's `VERSION` file
-and `installedAt` from its mtime. `tools` names the governed binary the runner
-actually invokes (`$JERYU_GOVERNED_JANKURAI_BIN`): `version` from its
-`--version`, `sha256` of the file. Beats are best-effort (5-second curl
-timeout, never fail the run); a `422` is retried once without `code` and `tools`
-for an older forge. `JERYU_AUDIT_HEARTBEAT=0` turns them off.
+`runnerId` is `<short hostname>/jankurai-audit`. A pass that claims nothing beats
+with no `current` and the previous `last` unchanged (kept in the gate home's
+`cache/audit-last.json`), so an idle auditor never invents a result. An audit
+beats `current` when it starts, again every 60 seconds while it runs (an audit
+can outlast the 180-second offline threshold), and `last` when it ends;
+`last.reason` says why one that went wrong did. Audit jobs are per head, so `pr`
+is left out. `code` is the gate's installed code, as its slots report it.
+`tools` names the governed binary the auditor actually invokes, after the host's
+verifier has checked it against its installation receipt: `version` from its
+`--version`, `sha256` of the file. Beats are best-effort (5-second curl timeout,
+never fail the pass); a `422` is retried once without `code` and `tools` for an
+older forge. Masking the auditor's timer on a host stops both the audits and the
+beats.
 
 ### Reading them: `GET /api/v1/control-plane/runners`
 

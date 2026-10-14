@@ -74,34 +74,33 @@ The flow, per head:
 
    The ingest keeps the two apart: a `full` job accepts only a `full` report
    (a diff report for it could only be a diff against nothing), while a `diff`
-   job still accepts a `full` one, which is how `<repo>/required` stands in.
+   job still accepts a `full` one.
    A report that comes back with nothing to audit and no verdict fields at all
    is recorded under its own decision, `no-base-diff` — proof title *no base to
    diff against* — never as a pass and no longer hidden inside a generic
    `tool-failed`.
 
-3. **Runners do the work.** `ops/ci/jankurai-audit-runner.sh` claims jobs
-   (`POST /api/v1/jankurai-audits/claim`), clones the head, runs the governed
-   auditor — `diff-audit` against the job's base, or a whole-tree `audit` for a
-   job with no commit base; niced, ionice'd and time-boxed — and submits the
-   report with
-   `ops/ci/submit-jankurai-score.sh`. On a gate runner host,
-   `ops/ci/install-jankurai-audit-runner.sh` installs it as
-   `jeryu-jankurai-audit-runner.timer` (user unit): one claim every 30 seconds,
-   never overlapping, niced, idle I/O and memory-capped, from files unpacked
-   with `git archive` at an exact commit (`VERSION`). The timer stays off until
-   `~/.config/jeryu/jankurai-audit-runner.env` names the runner's token file;
-   re-run the installer to update. Every run also posts a runner heartbeat
-   (`jankurai-audit` label, `<host>/jankurai-audit`), so `/runners` shows the
-   auditor, what it is auditing, how its last audit went, the runner's own
-   commit (`code`, when `JERYU_AUDIT_RUNNER_REPO` is set) and the digest of the
-   jankurai binary it really invokes (`tools`). The same token sends it, so the
-   scoring identity must also be allowed to report heartbeats (a forge admin or
-   a `JERYU_RUNNER_REPORTERS` login; configure the same
-   runner login in both lists). See docs/pipeline-events.md, "The jankurai audit runner".
-4. **One audit per head.** When `<repo>/required` (`ops/ci/pr-ci.sh`) already
-   audits a head, that run submits its own report (`--audit-mode full`) against
-   the same job, and the job is spent: no runner audits the head again.
+3. **The gate host does the work.** `pr-gate-audit.sh` (jeryu-ci-runner
+   `ops/pr-gate`, installed and kept current with the gate itself) claims jobs
+   (`POST /api/v1/jankurai-audits/claim`) as the gate identity, clones the
+   head into a throwaway directory, runs the host's governed auditor --
+   `diff-audit` against the job's base, or a whole-tree `audit` for a job with
+   no commit base; niced, idle I/O and time-boxed -- and submits the report.
+   The auditor is the one the host's tool installer keeps on the pin of record:
+   the repository's generated verifier checks the binary, its installation
+   receipt and the host's authority stamp, and a host whose auditor does not
+   verify audits nothing. One pass every 30 seconds, never overlapping. Every
+   pass also posts a runner heartbeat (`jankurai-audit` label,
+   `<host>/jankurai-audit`), so `/runners` shows the auditor, what it is
+   auditing, how its last audit went, the gate's installed code and the digest
+   of the jankurai binary it really invokes (`tools`). The same identity sends
+   it, so it must also be allowed to report heartbeats (a forge admin or a
+   `JERYU_RUNNER_REPORTERS` login). See docs/pipeline-events.md, "The jankurai
+   audit runner".
+4. **Only the auditor's own report counts.** A `<repo>/required` recipe that
+   enforces a score floor audits its head too, but that report is written by
+   the code under test, so it is never submitted: every recorded score comes
+   from the gate host's auditor running on a clean clone.
 5. **The ingest is the authority.**
    `POST /api/v1/repos/{id}/jankurai-scores` accepts a report only when
 

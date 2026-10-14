@@ -22,9 +22,6 @@ bash "${repo_root}/ops/ci/test-ci-env.sh"
 bash "${repo_root}/scripts/release/test-release-scripts.sh"
 # The release-board collector (/releases) against a throwaway forge and stand-in todoq/curl.
 bash "${repo_root}/scripts/release-board/test-release-board.sh"
-# The jankurai audit runner's heartbeat against a stand-in curl.
-bash "${repo_root}/ops/ci/test-jankurai-audit-heartbeat.sh"
-bash "${repo_root}/ops/ci/test-jankurai-audit-git-auth.sh"
 
 # Verify only this PR worktree against the family manifest; the post-rollout
 # control-plane check verifies the complete canonical family. The renderer is
@@ -131,19 +128,9 @@ echo "[pr-ci] jankurai score=${score} caps=${caps}" >&2
 jq -e '(.score // 0) >= 85 and ((.caps_applied // []) | length == 0)' \
   .jankurai/repo-score.json >/dev/null
 
-# One audit per head: this gate already ran the governed jankurai on this exact
-# head, so ITS report is the head's authoritative one. Submitting it here
-# satisfies the forge's open audit job, and no runner audits the head again.
-# Only when this run knows which forge head it is gating and holds a runner
-# credential; a local run posts nothing.
-if [ -n "${JERYU_CI_REPO:-}" ] && [ -n "${JERYU_CI_HEAD_SHA:-}" ] &&
-   [ -n "${JERYU_CI_BRANCH:-}" ] && [ -n "${JERYU_FORGE_TOKEN_FILE:-}" ]; then
-  echo "[pr-ci] submitting the jankurai report for ${JERYU_CI_REPO}@${JERYU_CI_HEAD_SHA}" >&2
-  bash "${repo_root}/ops/ci/submit-jankurai-score.sh" \
-    --repo "${JERYU_CI_REPO}" --branch "${JERYU_CI_BRANCH}" \
-    --head "${JERYU_CI_HEAD_SHA}" --score-json .jankurai/repo-score.json \
-    --audit-mode full
-fi
+# This report is the recipe's own floor check, written by the head under test, so it
+# is never submitted to the forge: the gate host's auditor scores the head itself
+# (jeryu-ci-runner ops/pr-gate, pr-gate-audit.sh) and completes jankurai/proof.
 
 # The pre-approval gate: the verdict the hosted jankurai/proof will publish for
 # this head, before the PR exists. Refuses only where the rollout is on

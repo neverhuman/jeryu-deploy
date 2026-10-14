@@ -29,8 +29,8 @@
 //! pipeline events either; the repository page reads them through
 //! `GET /api/v1/repos/:id/automation` so a reader can see what a merge starts.
 //!
-//! The jankurai audit runner (`ops/ci/jankurai-audit-runner.sh`, a 30-second
-//! timer on a gate host) reports with the [`JANKURAI_AUDIT_LABEL`] label. It
+//! The jankurai audit runner (jeryu-ci-runner `ops/pr-gate/bin/pr-gate-audit.sh`,
+//! a 30-second timer installed with the gate) reports with the [`JANKURAI_AUDIT_LABEL`] label. It
 //! claims one queued audit, runs the governed jankurai on that head and submits
 //! the report; its `last.conclusion` says how the last audit went (`scored`,
 //! `tool-failed`, `refused`, `failed`). A run that claims nothing beats with
