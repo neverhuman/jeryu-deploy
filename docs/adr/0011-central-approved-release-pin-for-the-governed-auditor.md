@@ -38,7 +38,7 @@ The owner approved the direction on 2026-10-14: a compatible auditor patch needs
 | Piece | State |
 |---|---|
 | `jeryu` CLI (`crates/jeryu-cli`), server chosen by `--api-url` / `JERYU_API_URL` | implemented; it has no auditor resolution and no version negotiation |
-| `GET /.jeryu/capabilities` discovery document (`api_version`, routes) | implemented; the `jankurai_auditors` field below is proposed |
+| `GET /api/v1/capabilities` discovery document (`api_version`, routes) | implemented and deployed; the `jankurai_auditors` field below is proposed. `/.jeryu/capabilities` is not served by the deployed forge (404) and is not relied on |
 | `GET /api/v1/jankurai/scores/:score_id`, `POST /api/v1/repos/:id/jankurai-scores`, `POST /api/v1/jankurai-audits/claim` | implemented; the binding fields below are proposed additions |
 | Consumer wrapper `require_jankurai` with pinned trust anchors (jeryu-tool#25), host installer and authority stamp | implemented; single release slot |
 | Approved table, forge snapshot, `GET /api/v1/jankurai/auditors`, job binding (`metadata_commit`, `policy_sha256`, `origin`, `purpose`), capability claim, `POST /api/v1/jankurai-audits/:job_id/release`, local resolution, digest cache, modes | proposed |
@@ -120,7 +120,7 @@ required_tool = "jankurai"
 | Step | CI (gate runner) | Local (`jeryu` CLI, proposed entry point) |
 |---|---|---|
 | 1. Installation | Fixed by the runner's enrolment | From explicit repo or client config, else the repository's origin remote. Ambiguity (several remotes, a mirror origin, config disagreeing with origin) is an error that asks for an explicit selection. It never guesses. |
-| 2. Compatibility | Runner and forge share a release line | Read `/.jeryu/capabilities`; pick a common manifest schema or stop (see below) |
+| 2. Compatibility | Runner and forge share a release line | Read `/api/v1/capabilities`; pick a common manifest schema or stop (see below) |
 | 3. Manifest | The job's `auditor` block from the claim | `GET /api/v1/jankurai/auditors` (normal) or `?snapshot=` (reproduce), authenticated as the user; recompute `manifest_sha256`; check trust anchors |
 | 4. Artifact | `binary_sha256` from the job | The entry's artifact for the local target; no artifact for the target is an explicit error |
 | 5. Install | Host staging (below) | Verified cache hit, or download from the release repo, verify signature, provenance and digests, then cache |
@@ -145,7 +145,7 @@ Fresh CI and local runs in normal mode select the same `active` entry from the s
 
 ### Contract: Jeryu client/server compatibility
 
-The `jeryu` client and the forge agree on the manifest schema and capabilities, not on a Jankurai version. `/.jeryu/capabilities` gains (proposed) `"jankurai_auditors": {"route": "/api/v1/jankurai/auditors", "manifest_schemas": [2], "modes": ["normal", "reproduce", "offline"]}`. The client picks the highest schema both support. If there is none, it stops with an actionable error that names its own version and schemas, the server's schemas, and the minimum client release that supports them. A Jankurai patch never changes the manifest schema. Schema changes are additive first, and the forge serves N and N-1 for a deprecation window, so clients upgrade on Jeryu's cadence, not Jankurai's.
+The `jeryu` client and the forge agree on the manifest schema and capabilities, not on a Jankurai version. `/api/v1/capabilities` gains (proposed) `"jankurai_auditors": {"route": "/api/v1/jankurai/auditors", "manifest_schemas": [2], "modes": ["normal", "reproduce", "offline"]}`. The client picks the highest schema both support. If there is none, it stops with an actionable error that names its own version and schemas, the server's schemas, and the minimum client release that supports them. A Jankurai patch never changes the manifest schema. Schema changes are additive first, and the forge serves N and N-1 for a deprecation window, so clients upgrade on Jeryu's cadence, not Jankurai's.
 
 ### Contract: policy, wrappers and images
 
@@ -155,7 +155,7 @@ The `jeryu` client and the forge agree on the manifest schema and capabilities, 
 
 1. **Candidate PR** (jeryu-tool) adds a `candidate` entry. It changes no binding, so it passes under the current active release.
 2. **Staging**: hosts and the image pipeline pick it up.
-3. **Parity**: `qualification` jobs run the candidate and the active release on a fixed corpus: each governed `main` as a full audit, and recent PR heads, including a no-base head, as diff audits. Both modes must validate against the declared schemas, with no new `tool-failed` or `no-base-diff` and matching decisions; score deltas are listed for review.
+3. **Parity**: `qualification` jobs run the candidate and the active release on a fixed corpus: each governed `main` as a full audit, and recent PR heads, including a no-base head, as diff audits, plus a no-base `full` job run with the runner's exact invocation (trusted policy bytes at `./agent/audit-policy.toml`). Both modes must validate against the declared schemas, with no new `tool-failed` or `no-base-diff` and matching decisions; score deltas are listed for review.
 4. **Readiness**: every gate host advertises the digest and the image is built.
 5. **Activation PR** sets it `active` and the old entry `retired`, gated by the outgoing release. New jobs bind to the new entry; queued and claimed jobs keep theirs.
 6. **Rollback** is an activation PR re-activating the previous entry, which hosts and the retention store still hold. It needs no download, render or rebuild, and both transitions appear in the history.
