@@ -91,6 +91,11 @@ fn proptest_equivalent_generated_jankurai_consumers_share_one_closed_identity() 
         "34a8a1fb59bc4ebfadf12c45d95f169d06acc781",
         "2fbca5d04083e3c8d32f383d5b6b4520b8911690b26968c6fbcb210e1202b938",
         "fdb42e5fa7d9851c0729e59bf1e582c895aa9cfc03a7175b420c6025d2fd014e",
+        "v1.6.11-deadlang-precision-split.6",
+        "2ec7eb2af47e16d2e0dce0bed31c521be4322920",
+        "d3c63d138583404a57dc3177f0972952b1b399c7",
+        "66849f13399e5a8b5d461c48a27322fe3b29a83e86cc5ce41d8c5d89e5d045ea",
+        "9aa101c10cdc40c8a15e3f5c1341be3bce78e86f61754d849bbe8229e485a783",
     ];
 
     for relative in active_projection {

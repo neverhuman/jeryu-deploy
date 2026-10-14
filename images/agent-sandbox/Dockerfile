@@ -38,11 +38,15 @@ RUN cargo fetch --locked || cargo fetch || true
 # ---- jankurai release stage: fetch the governed auditor (GENERATED — DO NOT EDIT) ----
 # Rendered by jeryu-tool from tool-manifest.toml, the one pin of record. The
 # auditor is a key-signed public Jankurai release: this stage downloads the
-# pinned asset and provenance, verifies their digests and offline signatures,
-# binds archive provenance and source identity to the pin, and checks binary
-# digest and version. The runtime container runs `--network none`, so the auditor
-# ships in the image. The approved release is qualified on Debian bookworm.
-FROM debian:bookworm-slim AS jankurai-build
+# pinned asset and its signed provenance, verifies both digests and both cosign
+# signatures offline against the pinned release key with the pinned cosign,
+# checks that the archive embeds that same provenance and that the provenance
+# records the pinned source, lockfiles and toolchain, then checks the binary
+# digest and version. The runtime container runs `--network none`, so the
+# auditor ships in the image. This stage is digest-pinned to the runtime
+# stage's Debian release (bookworm), so the version check below also proves
+# the release binary's glibc requirement is met by the runtime.
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS jankurai-build
 ARG JANKURAI_RELEASE_REPO="https://github.com/neverhuman/jankurai-audit"
 ARG JANKURAI_TAG="v1.7.5"
 ARG JANKURAI_VERSION="jankurai 1.7.5"
@@ -68,6 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN set -eu; \
     work="$(mktemp -d)"; cd "$work"; \
+    fail() { echo "jankurai release stage: $*" >&2; exit 1; }; \
     fetch() { curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$1" -o "$2"; }; \
     fetch "https://github.com/sigstore/cosign/releases/download/${JANKURAI_COSIGN_VERSION}/cosign-linux-amd64" cosign; \
     echo "${JANKURAI_COSIGN_SHA256}  cosign" | sha256sum -c -; \
@@ -86,23 +91,35 @@ RUN set -eu; \
     ./cosign verify-blob "${JANKURAI_PROVENANCE_ASSET}" --bundle "${JANKURAI_PROVENANCE_ASSET}.cosign.bundle" \
       --key release.pub --insecure-ignore-tlog=true --offline=true; \
     stem="${JANKURAI_ASSET%.tar.gz}"; \
-    tar -xzf "${JANKURAI_ASSET}" --no-same-owner --no-same-permissions "$stem/jankurai" "$stem/provenance.json" "$stem/family.lock" "$stem/Cargo.lock"; \
-    cmp "$stem/provenance.json" "${JANKURAI_PROVENANCE_ASSET}"; \
-    echo "${JANKURAI_FAMILY_LOCK_SHA256}  $stem/family.lock" | sha256sum -c -; \
-    echo "${JANKURAI_CARGO_LOCK_SHA256}  $stem/Cargo.lock" | sha256sum -c -; \
-    jq -e --arg repo "${JANKURAI_RELEASE_REPO}" --arg tag "${JANKURAI_TAG}" \
+    tar -tzf "${JANKURAI_ASSET}" | sed 's:/$::' | LC_ALL=C sort > inventory; \
+    printf '%s\n' "$stem" "$stem/jankurai" "$stem/family.lock" "$stem/Cargo.lock" \
+      "$stem/LICENSE" "$stem/provenance.json" | LC_ALL=C sort > expected-inventory; \
+    cmp -s inventory expected-inventory || fail "unexpected release archive inventory"; \
+    if tar -tvzf "${JANKURAI_ASSET}" | grep -qv '^[-d]'; then fail "unsafe release archive entry"; fi; \
+    mkdir payload; \
+    tar -xzf "${JANKURAI_ASSET}" --no-same-owner --no-same-permissions -C payload; \
+    cmp -s "payload/$stem/provenance.json" "${JANKURAI_PROVENANCE_ASSET}" || \
+      fail "archive provenance differs from the signed release provenance"; \
+    echo "${JANKURAI_FAMILY_LOCK_SHA256}  payload/$stem/family.lock" | sha256sum -c -; \
+    echo "${JANKURAI_CARGO_LOCK_SHA256}  payload/$stem/Cargo.lock" | sha256sum -c -; \
+    jq -e \
+      --arg repo "${JANKURAI_RELEASE_REPO}" --arg tag "${JANKURAI_TAG}" \
       --arg version "${JANKURAI_SEMVER}" --arg target "${JANKURAI_TARGET_TRIPLE}" \
       --arg commit "${JANKURAI_SOURCE_COMMIT}" --arg tree "${JANKURAI_SOURCE_TREE}" \
       --arg family "${JANKURAI_FAMILY_LOCK_SHA256}" --arg cargo_lock "${JANKURAI_CARGO_LOCK_SHA256}" \
       --arg rustc "${JANKURAI_RUSTC_VERSION}" --arg cargo "${JANKURAI_CARGO_VERSION}" \
-      ' .schema == "jankurai.release/v2" and .repository == $repo and .tag == $tag and \
-      .version == $version and .target == $target and .commit == $commit and .tree == $tree and \
-      .family_lock_sha256 == $family and .cargo_lock_sha256 == $cargo_lock and \
-      (.toolchain.rustc | split("\n") | .[0]) == $rustc and .toolchain.cargo == $cargo and \
-      .signing == "cosign-key"' "${JANKURAI_PROVENANCE_ASSET}" >/dev/null; \
-    install -D -m 0755 "$stem/jankurai" /opt/rust/cargo/bin/jankurai; \
+      '.schema == "jankurai.release/v2" and .repository == $repo and .tag == $tag and \
+       .version == $version and .target == $target and \
+       .commit == $commit and .tree == $tree and \
+       .family_lock_sha256 == $family and .cargo_lock_sha256 == $cargo_lock and \
+       (.toolchain.rustc | split("\n") | .[0]) == $rustc and .toolchain.cargo == $cargo and \
+       .signing == "cosign-key"' \
+      "${JANKURAI_PROVENANCE_ASSET}" >/dev/null || \
+      fail "release provenance disagrees with the pin"; \
+    install -D -m 0755 "payload/$stem/jankurai" /opt/rust/cargo/bin/jankurai; \
     echo "${JANKURAI_BINARY_SHA256}  /opt/rust/cargo/bin/jankurai" | sha256sum -c -; \
-    /opt/rust/cargo/bin/jankurai --version | grep -qx "${JANKURAI_VERSION}"; \
+    /opt/rust/cargo/bin/jankurai --version | grep -qx "${JANKURAI_VERSION}" || \
+      fail "release binary does not run on this base or reports another version"; \
     cd /; rm -rf "$work"
 
 # ---- runtime image -------------------------------------------------------------------
