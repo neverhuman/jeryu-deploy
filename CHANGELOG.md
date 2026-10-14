@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `GET /api/v1/yield` reports `adhoc`: the spend of agent sessions run by
+  hand, posted as `session.costed` events (a new producer-posted kind, one
+  per increase of a session's spend on a repository) and read from the cost
+  ledger over the report's window and family, by family, repository, agent,
+  model and week. It is never added to the todo economics (`totals`,
+  `groups`, `weekly`, `experiments`). A `JERYU_EVENT_REPORTERS` login may post
+  `session.costed` only for itself as the actor's operator, as for usage
+  samples.
 - Pull lists report actual reviewer records instead of a synthetic pending
   review identity. Main-health annotations apply to pull requests targeting
   the default branch and use that branch's current head and log digest.

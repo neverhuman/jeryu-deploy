@@ -143,3 +143,47 @@ fn insert_writes_the_ledger_for_costs_only_and_it_outlives_the_prune() {
         .sum();
     assert!((total - 1.25).abs() < 1e-9, "{total}");
 }
+
+/// `ledger_between` reads one kind over a half-open window of time, with the
+/// family and the time each row was recorded.
+#[test]
+fn ledger_between_reads_one_kind_inside_a_half_open_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = EventStore::open(&dir.path().join("shift.sqlite")).unwrap();
+    let start = 1_700_000_000_000;
+    let session = |id: &str, family: Option<&str>| NewEvent {
+        source: "todoq-agents".to_string(),
+        kind: "session.costed".to_string(),
+        summary: format!("session {id}"),
+        event_id: Some(id.to_string()),
+        family: family.map(str::to_string),
+        cost_usd: Some(0.5),
+        detail: Some(json!({"session": "claude:s-1"})),
+        ..NewEvent::default()
+    };
+    store
+        .insert("ada", &session("sc:before", None), start - 1)
+        .unwrap();
+    store
+        .insert("ada", &session("sc:first", Some("acme")), start)
+        .unwrap();
+    store
+        .insert("ada", &reviewed(Some("r-1"), Some(0.25)), start + 1)
+        .unwrap();
+    store
+        .insert("ada", &session("sc:last", None), start + DAY_MS - 1)
+        .unwrap();
+    store
+        .insert("ada", &session("sc:after", None), start + DAY_MS)
+        .unwrap();
+
+    let rows = store
+        .ledger_between("session.costed", start, start + DAY_MS)
+        .unwrap();
+    assert_eq!(rows.len(), 2, "both ends: since included, until excluded");
+    assert_eq!(rows[0].ts_ms, start);
+    assert_eq!(rows[0].family.as_deref(), Some("acme"));
+    assert_eq!(rows[0].detail, Some(json!({"session": "claude:s-1"})));
+    assert_eq!(rows[1].ts_ms, start + DAY_MS - 1);
+    assert_eq!(rows[1].family, None);
+}

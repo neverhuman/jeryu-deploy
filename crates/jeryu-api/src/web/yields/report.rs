@@ -12,7 +12,8 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::web::pipeline::LedgerRow;
+use super::adhoc::{self, Adhoc};
+use crate::web::pipeline::{LedgerRow, SpendRow};
 use crate::web::shift::{Attempt, ShiftTodo, TodoStatus};
 
 pub(crate) const SCHEMA: &str = "jeryu.yield/v1";
@@ -110,7 +111,7 @@ pub(crate) struct Window {
 }
 
 impl Window {
-    fn contains(self, day: NaiveDate) -> bool {
+    pub(super) fn contains(self, day: NaiveDate) -> bool {
         self.since <= day && day <= self.until
     }
 }
@@ -198,6 +199,9 @@ pub(crate) struct YieldReport {
     pub experiments: Vec<Experiment>,
     pub costliest: Vec<TodoRef>,
     pub scrap: Vec<TodoRef>,
+    /// Spend of agent sessions run by hand, outside the todo economics:
+    /// never part of `totals`, `groups`, `weekly` or `experiments`.
+    pub adhoc: Adhoc,
 }
 
 /// Where a todo ended up.
@@ -320,7 +324,7 @@ fn ci95(samples: &[f64]) -> Option<[f64; 2]> {
     Some([money(mean - half), money(mean + half)])
 }
 
-fn money(usd: f64) -> f64 {
+pub(super) fn money(usd: f64) -> f64 {
     (usd * 1e6).round() / 1e6
 }
 
@@ -347,10 +351,14 @@ fn started_day(attempt: &Attempt) -> Option<NaiveDate> {
     }
 }
 
+/// The Monday of the week `day` is in.
+pub(super) fn monday(day: NaiveDate) -> NaiveDate {
+    day - Duration::days(i64::from(day.weekday().num_days_from_monday()))
+}
+
 /// The Monday (UTC) of the week an attempt started.
 fn week_of(attempt: &Attempt) -> Option<NaiveDate> {
-    started_day(attempt)
-        .map(|day| day - Duration::days(i64::from(day.weekday().num_days_from_monday())))
+    started_day(attempt).map(monday)
 }
 
 /// [`week_of`] as a group name; an attempt without a readable start is
@@ -493,8 +501,14 @@ pub(crate) struct Request {
 /// family) with the merged truth already derived; `reviews` are the ledger's
 /// `pr.reviewed` rows. Review spend is split over every todo a pull request
 /// carries, inside the window or not, so a long-running shift is not charged
-/// twice to the todos that happen to be in view.
-pub(crate) fn build(request: &Request, todos: &[ShiftTodo], reviews: &[LedgerRow]) -> YieldReport {
+/// twice to the todos that happen to be in view. `sessions` are the ledger's
+/// `session.costed` rows, summed apart into `adhoc`.
+pub(crate) fn build(
+    request: &Request,
+    todos: &[ShiftTodo],
+    reviews: &[LedgerRow],
+    sessions: &[SpendRow],
+) -> YieldReport {
     let mut review_by_pr: BTreeMap<(String, u64), (f64, Vec<&LedgerRow>)> = BTreeMap::new();
     for row in reviews {
         let (Some(repo), Some(pr)) = (&row.repo, row.pr) else {
@@ -680,5 +694,6 @@ pub(crate) fn build(request: &Request, todos: &[ShiftTodo], reviews: &[LedgerRow
         experiments,
         costliest: top(&all),
         scrap: top(&scrapped),
+        adhoc: adhoc::summarise(request.window, request.family.as_deref(), sessions),
     }
 }

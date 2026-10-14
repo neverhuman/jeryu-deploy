@@ -51,7 +51,7 @@ use super::WebState;
 use super::workcells_support::{TypedError, typed_error};
 use store::Inserted;
 pub(crate) use store::RETENTION_MS as EVENT_RETENTION_MS;
-pub(crate) use store::{EventStore, LedgerRow};
+pub(crate) use store::{EventStore, LedgerRow, SpendRow};
 use types::{EVENTS_SCHEMA, EventsResponse, MAX_BATCH, normalize};
 pub(crate) use types::{Event, EventsQuery, NewEvent};
 
@@ -349,19 +349,22 @@ pub(crate) async fn post_events(
             );
         }
     };
+    // Usage samples and ad-hoc session spend are charged to the operator the
+    // actor names, so a reporter may only charge its own.
     if account.role != UserRole::Admin
         && events.iter().any(|event| {
-            event
-                .detail
-                .as_ref()
-                .is_some_and(|detail| detail.get("usage").is_some())
+            (event.kind == crate::web::yields::SESSION_KIND
+                || event
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.get("usage").is_some()))
                 && crate::web::usage::actor_slot(event.actor.as_deref()).0 != account.login
         })
     {
         return events_write_error(
             StatusCode::FORBIDDEN,
             "events_reporter_required",
-            "usage samples must name the authenticated reporter as their operator",
+            "usage samples and session spend must name the authenticated reporter as their operator",
             "report usage for your own operator or use an administrator identity",
         );
     }

@@ -101,7 +101,7 @@ fn rework_is_charged_to_the_original_arm_across_a_two_step_chain() {
         now: Utc.with_ymd_and_hms(2026, 10, 14, 12, 0, 0).unwrap(),
     };
     let result =
-        serde_json::to_value(build(&request, &[original, redo, second_redo], &[])).unwrap();
+        serde_json::to_value(build(&request, &[original, redo, second_redo], &[], &[])).unwrap();
     let arms = result["experiments"][0]["arms"].as_array().unwrap();
     let arm_a = arms.iter().find(|arm| arm["agent"] == "arm-a").unwrap();
     let arm_b = arms.iter().find(|arm| arm["agent"] == "arm-b").unwrap();
@@ -148,7 +148,7 @@ fn rework_accounting_keeps_same_id_todos_in_separate_families() {
         by: By::Model,
         now: Utc.with_ymd_and_hms(2026, 10, 14, 12, 0, 0).unwrap(),
     };
-    let result = serde_json::to_value(build(&request, &[a, b, redo], &[])).unwrap();
+    let result = serde_json::to_value(build(&request, &[a, b, redo], &[], &[])).unwrap();
     let groups = result["groups"].as_array().unwrap();
     let a = groups.iter().find(|row| row["group"] == "model-a").unwrap();
     let b = groups.iter().find(|row| row["group"] == "model-b").unwrap();
@@ -183,7 +183,7 @@ fn review(repo: &str, pr: i64, usd: f64, detail: Option<Value>) -> LedgerRow {
 /// - e: merged, but every attempt started before the window
 ///
 /// a and b ride the same shift pull request, reviewed for 1.00 + 0.50.
-fn scenario() -> (Vec<ShiftTodo>, Vec<LedgerRow>) {
+pub(super) fn scenario() -> (Vec<ShiftTodo>, Vec<LedgerRow>) {
     let mut a1 = attempt("model-a", "ratelimit", 0.5, "2026-10-04T23:30:00Z");
     a1.agent = Some("claude".to_string());
     // 01:00 at +02:00 is still Sunday in UTC: the week is the one before.
@@ -247,10 +247,10 @@ fn report(by: By) -> Value {
         by,
         now: Utc.with_ymd_and_hms(2026, 10, 14, 12, 0, 0).unwrap(),
     };
-    serde_json::to_value(build(&request, &todos, &reviews)).unwrap()
+    serde_json::to_value(build(&request, &todos, &reviews, &[])).unwrap()
 }
 
-fn close(value: &Value, want: f64) {
+pub(super) fn close(value: &Value, want: f64) {
     let got = value
         .as_f64()
         .unwrap_or_else(|| panic!("{value} is a number"));
@@ -478,7 +478,7 @@ fn experiment_arms_compare_side_by_side_once_they_have_enough_data() {
         by: By::Experiment,
         now: Utc::now(),
     };
-    let built = serde_json::to_value(build(&request, &todos, &[])).unwrap();
+    let built = serde_json::to_value(build(&request, &todos, &[], &[])).unwrap();
     let arm = &built["experiments"][0]["arms"][0];
     assert_eq!(arm["enough_data"], true);
     assert_eq!(arm["arm_p"], Value::Null, "no arm_p recorded");
@@ -515,11 +515,12 @@ fn merged_wins_over_status_and_scrap_is_only_unmerged_stops() {
         (TodoStatus::Claimed, false, "pending_usd"),
         (TodoStatus::Parked, false, "pending_usd"),
     ] {
-        let built = serde_json::to_value(build(&request, &[run(status, merged)], &[])).unwrap();
+        let built =
+            serde_json::to_value(build(&request, &[run(status, merged)], &[], &[])).unwrap();
         close(&built["totals"][bucket], 1.0);
     }
     // Nothing in the window: every rate is undefined, not zero.
-    let empty = serde_json::to_value(build(&request, &[], &[])).unwrap();
+    let empty = serde_json::to_value(build(&request, &[], &[], &[])).unwrap();
     for rate in [
         "yield",
         "usd_per_merged",

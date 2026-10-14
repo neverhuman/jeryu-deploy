@@ -42,7 +42,7 @@ projection and the Flow report), `db/migrations/0002_pipeline_events.sql`,
 
 | Route | Who |
 |---|---|
-| `POST /api/v1/events` | a global admin, or a login in `JERYU_EVENT_REPORTERS` (comma-separated site setting, e.g. `ci-bot,review-bot`) |
+| `POST /api/v1/events` | a global admin, or a login in `JERYU_EVENT_REPORTERS` (comma-separated site setting, e.g. `ci-bot,review-bot`). Such a login may post a `detail.usage` sample or a `session.costed` event only when the event's `actor` names it as the operator (`<login>@<host>[/<slot>]`) |
 | `POST /api/v1/shift/heartbeat` | a global admin, or a login in `JERYU_SHIFT_REPORTERS` (comma-separated site setting, e.g. `fleet-bot,pool-bot`) |
 | `POST /api/v1/agent-presence` | a global admin or a login in `JERYU_PRESENCE_REPORTERS` for any scope; any other login for repositories it can write (`docs/agent-presence.md`) |
 | `GET /api/v1/events` | global admins |
@@ -178,6 +178,7 @@ Posted by producers:
 | `auto-pin` | `pin.bump_opened` (`repo` is the consumer, `pr` the bump, `sha` the dependency commit; `detail` has `dependency`, `from`, `to`, `web_dist_sha256`), `pin.bump_failed` (`log_tail`; `needs_human` on the second failure for the same commit), `pin.bump_superseded` (a stale, unqueued bump closed for a newer head; `pr` is the new bump, `detail.superseded_pr` the closed one), `pin.bump_diverged` (`needs_human`; an open bump pins a commit that is not an ancestor of the dependency head, so it is left open) |
 | the pull request reviewer | `pr.reviewed` (`repo`, `pr`, `sha`, `outcome` is the review decision, `cost_usd`, `seconds`; `detail` has `usage`, `model`, `decision`). The yield report reads the kind, not the source name |
 | `pr-gate` | `gate.log` (`outcome` including `timed_out` and `inputs_changed`, `seconds`, `log_tail`, a receipt subset in `detail`) |
+| an agent session reporter | `session.costed`: one increase of a hand-run agent session's spend (not a queue worker, not a reviewer) on one repository. `cost_usd` is the delta since the session's previous event for that repository, never the running total; `event_id` is stable per delta, so a re-post is dropped. `repo` is `owner/name`, left out when the spend touched no forge repository; `family` only then, when the session declared one family. `actor` is `<login>@<host>`. `seconds` is the optional delta of active time. `detail` has `session` (`<agent>:<id>`), `agent`, `model` (the delta's dominant model), `seq`, `cumulative_usd` (display only) and `tokens` (per model `input`, `output`, `cache_read`, `cache_write`, `cost_usd`; not `usage`, which is a todo attempt's). The yield report sums the kind as `adhoc` |
 
 ### `POST /api/v1/events`
 
@@ -793,6 +794,36 @@ landing arm. An experiment arm has
 
 `TodoRef`: `{id, family, title, status, merged, rework, spend_usd, attempts, agent,
 model}`, agent and model of the landing attempt.
+
+### Ad-hoc sessions
+
+`adhoc` is what agent sessions run by hand spent: the cost ledger's
+`session.costed` rows recorded on a day of the window (UTC), and with `family`
+only the rows of that family. This spend did no todo, so it is reported beside
+the todo economics and is never part of `totals`, `groups`, `weekly`,
+`experiments` or any `usd_per_merged`. The block is always present.
+
+```jsonc
+"adhoc": {
+  "total_usd": 2.5,
+  "sessions": 4,                  // distinct detail.session
+  "unattributed_usd": 0.25,       // rows with neither repo nor family
+  "by_family": [{"group": "globex", "usd": 1.75, "sessions": 2}],
+  "by_repo":   [{"group": "globex/gadgets", "family": "globex", "usd": 1.0, "sessions": 1}],
+  "by_agent":  [{"group": "claude-code", "usd": 2.5, "sessions": 4}],
+  "by_model":  [{"group": "model-x", "usd": 2.5, "sessions": 4}],
+  "weekly":    [{"week": "2026-10-12", "usd": 2.5}]   // Monday (UTC), as in weekly
+}
+```
+
+A row's family is the one the ledger recorded (the producer's, or the one the
+server derived from `repo` when it was posted), else the repository's family
+when the report is read. Groups are sorted by `usd`, highest first, then by
+name; `weekly` by week. A row without a family is in no `by_family` group, a
+row without a repo in no `by_repo` group (`family` there is `null` for a
+repository in no family); spend with neither is `unattributed_usd`. A missing
+`detail.agent` or `detail.model` groups as `(unknown)`; a row without
+`detail.session` counts no session.
 
 ## Flow
 

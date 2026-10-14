@@ -120,6 +120,17 @@ pub(crate) struct LedgerRow {
     pub detail: Option<serde_json::Value>,
 }
 
+/// One ledger row with the time it was recorded and its family: what a
+/// report over a window of days reads ([`EventStore::ledger_between`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SpendRow {
+    pub ts_ms: i64,
+    pub family: Option<String>,
+    pub repo: Option<String>,
+    pub cost_usd: f64,
+    pub detail: Option<serde_json::Value>,
+}
+
 /// What [`EventStore::insert`] did.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Inserted {
@@ -463,6 +474,41 @@ impl EventStore {
                     repo: row.get(0)?,
                     pr: row.get(1)?,
                     cost_usd: row.get(2)?,
+                    detail: detail.and_then(|d| serde_json::from_str(&d).ok()),
+                })
+            })
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())
+    }
+
+    /// Every ledger row of `kind` recorded at or after `since_ms` and before
+    /// `until_ms`, oldest first. Like [`Self::ledger`] it reads spend older
+    /// than the event log keeps.
+    pub(crate) fn ledger_between(
+        &self,
+        kind: &str,
+        since_ms: i64,
+        until_ms: i64,
+    ) -> Result<Vec<SpendRow>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner
+            .conn
+            .prepare_cached(
+                "SELECT ts_ms, family, repo, cost_usd, detail_json
+                   FROM cost_ledger
+                  WHERE kind = ?1 AND ts_ms >= ?2 AND ts_ms < ?3
+                  ORDER BY seq",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![kind, since_ms, until_ms], |row| {
+                let detail: Option<String> = row.get(4)?;
+                Ok(SpendRow {
+                    ts_ms: row.get(0)?,
+                    family: row.get(1)?,
+                    repo: row.get(2)?,
+                    cost_usd: row.get(3)?,
                     detail: detail.and_then(|d| serde_json::from_str(&d).ok()),
                 })
             })

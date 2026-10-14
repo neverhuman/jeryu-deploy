@@ -5,25 +5,32 @@
 //! Admin-only like the event log it reads (see `auth::admin_only_request`).
 //! Todos and their merged truth come from the same derivation
 //! `GET /api/v1/shift/todos` uses (`shift::enriched_todos`); review spend
-//! comes from the never-pruned cost ledger (`pipeline::EventStore::ledger`).
+//! comes from the never-pruned cost ledger (`pipeline::EventStore::ledger`),
+//! and so does `adhoc`, the spend of agent sessions run by hand
+//! (`session.costed`, see `yields/adhoc.rs`).
 //! Contract: `docs/pipeline-events.md`, "Yield".
 
+mod adhoc;
+#[cfg(test)]
+mod adhoc_tests;
 mod report;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{Duration, NaiveDate, NaiveTime, Utc};
 use serde::Deserialize;
 
 use super::WebState;
 use super::strict_query::{StrictFields, StrictQuery, filter_one_of};
 use super::workcells_support::{TypedError, typed_error};
+pub(crate) use adhoc::SESSION_KIND;
 pub(crate) use report::{By, Request, Window, build};
 
 const DOCS: &str = "docs/pipeline-events.md";
@@ -80,6 +87,39 @@ pub(crate) fn window(query: &YieldQuery, today: NaiveDate) -> Result<Window, Str
     Ok(Window { since, until })
 }
 
+/// The window as ledger times: midnight UTC of `since` up to, not including,
+/// midnight UTC of the day after `until`.
+pub(crate) fn window_ms(window: Window) -> (i64, i64) {
+    let start = |day: NaiveDate| day.and_time(NaiveTime::MIN).and_utc().timestamp_millis();
+    (start(window.since), start(window.until + Duration::days(1)))
+}
+
+/// Ad-hoc session spend in `window`, each row's family filled from its
+/// repository when the ledger recorded none (the repository may have joined
+/// a family after the spend was posted).
+fn session_spend(
+    state: &WebState,
+    window: Window,
+) -> Result<Vec<crate::web::pipeline::SpendRow>, String> {
+    let (since_ms, until_ms) = window_ms(window);
+    let mut rows = state
+        .events
+        .ledger_between(SESSION_KIND, since_ms, until_ms)?;
+    let mut families: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for row in &mut rows {
+        if row.family.is_some() {
+            continue;
+        }
+        if let Some(repo) = row.repo.clone() {
+            row.family = families
+                .entry(repo)
+                .or_insert_with_key(|repo| super::repositories::family_for_slug(state, repo))
+                .clone();
+        }
+    }
+    Ok(rows)
+}
+
 fn refuse(status: StatusCode, code: &str, reason: &str, hint: &str) -> AxumResponse {
     typed_error(TypedError {
         status,
@@ -129,20 +169,21 @@ pub(crate) async fn yield_report(
     let read = tokio::task::spawn_blocking(move || {
         let todos = super::shift::enriched_todos(&worker_state, read_family.as_deref())?;
         let reviews = worker_state.events.ledger(REVIEW_KIND)?;
-        Ok::<_, String>((todos, reviews))
+        let sessions = session_spend(&worker_state, window)?;
+        Ok::<_, String>((todos, reviews, sessions))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((todos, reviews)) => {
+        Ok((todos, reviews, sessions)) => {
             let request = Request {
                 window,
                 family,
                 by,
                 now,
             };
-            Json(build(&request, &todos, &reviews)).into_response()
+            Json(build(&request, &todos, &reviews, &sessions)).into_response()
         }
         Err(reason) => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
