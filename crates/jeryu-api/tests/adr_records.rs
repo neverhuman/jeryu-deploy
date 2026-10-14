@@ -87,10 +87,12 @@ fn records() -> BTreeMap<u32, Record> {
         );
         let body = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {file}: {error}"));
         if let Some(previous) = records.get(&number) {
+            let mut pair = [previous.file.as_str(), file.as_str()];
+            pair.sort_unstable();
             panic!(
-                "two records numbered {number:04}: {} and {file}; a number is never reused, \
-                 so renumber the newer one to the next free number on current main",
-                previous.file
+                "two records numbered {number:04}: {} and {}; renumber the one your branch \
+                 added, taking the next number from current origin/main",
+                pair[0], pair[1]
             );
         }
         records.insert(number, Record { number, file, body });
@@ -148,7 +150,8 @@ fn numbers_run_from_one_with_no_gap() {
         assert_eq!(
             record.number, expected,
             "docs/adr numbers must run 0001, 0002, ... with no gap: found {} where {expected:04} \
-             was expected",
+             was expected; a landed record is never deleted or renumbered: to retire one, \
+             mark it Superseded (or Rejected) and keep the file",
             record.file
         );
     }

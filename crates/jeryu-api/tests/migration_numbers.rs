@@ -3,11 +3,18 @@
 //! describes. Two branches cut from the same base can each take "the next"
 //! number; this check fails the gate on the combined tree when that happens.
 //!
-//! The convention is written down in `db/migrations/README.md`.
+//! The convention is written down in `db/migrations/README.md`, whose table
+//! also names the store each migration belongs to; the shift store's rows
+//! must match what `web/shift/heartbeats.rs` embeds.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const SHIFT_STORE: &str = "<data_dir>/shift.sqlite";
+const SHIFT_RUNNER: &str = "src/web/shift/heartbeats.rs";
+const RETIRE: &str = "a landed migration is never deleted or renumbered; to retire \
+                      one, land a new migration that undoes it";
 
 #[derive(Default)]
 struct Number {
@@ -15,8 +22,12 @@ struct Number {
     meta: Vec<String>,
 }
 
+fn migrations_directory() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../db/migrations")
+}
+
 fn numbers() -> BTreeMap<u32, Number> {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../db/migrations");
+    let directory = migrations_directory();
     let mut numbers: BTreeMap<u32, Number> = BTreeMap::new();
     for entry in fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
@@ -48,6 +59,10 @@ fn numbers() -> BTreeMap<u32, Number> {
             slot.meta.push(stem.to_string());
         }
     }
+    for slot in numbers.values_mut() {
+        slot.sql.sort();
+        slot.meta.sort();
+    }
     assert!(!numbers.is_empty(), "db/migrations holds no migrations");
     numbers
 }
@@ -55,22 +70,19 @@ fn numbers() -> BTreeMap<u32, Number> {
 #[test]
 fn each_number_names_exactly_one_migration() {
     for (number, files) in numbers() {
-        let mut sql = files.sql.clone();
-        sql.sort();
+        let (sql, meta) = (&files.sql, &files.meta);
         assert!(
             !sql.is_empty(),
             "migration number {number:04} has {}.meta.toml but no .sql file",
-            files.meta.join(".meta.toml, ")
+            meta.join(".meta.toml, ")
         );
         assert!(
             sql.len() == 1,
-            "migration number {number:04} is used by {} .sql files ({}); a number is \
-             never reused, so renumber the newer one to the next free number on current main",
+            "migration number {number:04} is used by {} .sql files ({}); renumber the one \
+             your branch added, taking the next number from current origin/main",
             sql.len(),
             sql.join(".sql, ") + ".sql"
         );
-        let mut meta = files.meta.clone();
-        meta.sort();
         assert!(
             meta.len() <= 1,
             "migration number {number:04} has {} .meta.toml files ({})",
@@ -94,7 +106,77 @@ fn numbers_run_from_one_with_no_gap() {
         assert_eq!(
             *number, expected,
             "db/migrations numbers must run 0001, 0002, ... with no gap: found {number:04} \
-             where {expected:04} was expected"
+             where {expected:04} was expected; {RETIRE}"
         );
     }
+}
+
+/// `(stem, store)` for each row of the README's migration table.
+fn readme_rows() -> Vec<(String, String)> {
+    let path = migrations_directory().join("README.md");
+    let readme = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    readme
+        .lines()
+        .filter_map(|line| {
+            let mut cells = line.split('|').map(str::trim).skip(1);
+            let file = cells.next()?.strip_prefix('`')?.strip_suffix(".sql`")?;
+            let store = cells.next()?.trim_matches('`');
+            Some((file.to_string(), store.to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn every_migration_names_its_store_in_the_readme() {
+    let rows = readme_rows();
+    for (number, files) in numbers() {
+        for stem in &files.sql {
+            let named = rows.iter().filter(|(file, _)| file == stem).count();
+            assert_eq!(
+                named, 1,
+                "{stem}.sql (number {number:04}) needs exactly one row in \
+                 db/migrations/README.md naming its store"
+            );
+        }
+    }
+    for (file, _) in &rows {
+        assert!(
+            migrations_directory().join(format!("{file}.sql")).is_file(),
+            "db/migrations/README.md lists {file}.sql, which does not exist"
+        );
+    }
+}
+
+/// The migrations `heartbeats.rs` embeds, in order, by their `include_str!`
+/// paths: the shift store's runner applies exactly these.
+fn shift_store_embeds() -> Vec<String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SHIFT_RUNNER);
+    let source = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    source
+        .lines()
+        .filter_map(|line| {
+            let path = line.trim().strip_prefix("include_str!(\"")?;
+            let file = path.rsplit('/').next()?;
+            file.strip_suffix(".sql\"),").map(str::to_string)
+        })
+        .collect()
+}
+
+#[test]
+fn the_shift_store_embeds_every_migration_the_readme_gives_it() {
+    let mut expected: Vec<String> = readme_rows()
+        .into_iter()
+        .filter(|(_, store)| store == SHIFT_STORE)
+        .map(|(file, _)| file)
+        .collect();
+    expected.sort();
+    assert!(!expected.is_empty(), "no README row names {SHIFT_STORE}");
+    assert_eq!(
+        shift_store_embeds(),
+        expected,
+        "{SHIFT_RUNNER} MIGRATIONS must embed, in order, every migration that \
+         db/migrations/README.md assigns to {SHIFT_STORE}"
+    );
 }

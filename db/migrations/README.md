@@ -4,10 +4,15 @@ Numbered, immutable SQL migrations for the SQLite stores jeryu-api owns.
 Numbering is a zero-padded four-digit sequence (`0001_<name>.sql`): one `.sql`
 per number, no gap, any `<stem>.meta.toml` beside its own `.sql`. Take the next
 number from current `origin/main` when you land, not from your branch's base;
-`crates/jeryu-api/tests/migration_numbers.rs` fails a shared or skipped number,
-and the shift.sqlite runner refuses to start with a repeated version. The store
+`crates/jeryu-api/tests/migration_numbers.rs` fails a shared or skipped number.
+A landed migration file is never deleted or renumbered, so the sequence never
+needs a gap: to retire a migration, land a new one that undoes it. Every
+migration has one row in the table below naming its store, and the shift
+store's runner must embed exactly its rows, in order. The store
 that owns a migration embeds it and records its sha256 when applied; a changed
-file for an applied version stops the server at startup.
+file for an applied version stops the server at startup, and so does a store
+that recorded a version under a different name than the build gives it (a
+renumbered migration a dev store already applied).
 
 | Migration | Store | Owner |
 |---|---|---|

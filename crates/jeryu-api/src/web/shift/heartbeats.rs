@@ -317,7 +317,6 @@ pub(crate) fn migrate_through(conn: &Connection, version: i64) -> Result<(), Str
 }
 
 fn apply_migrations(conn: &Connection, migrations: &[(i64, &str, &str)]) -> Result<(), String> {
-    super::migration_sequence::check(migrations)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS shift_schema_migrations (
             version INTEGER PRIMARY KEY,
@@ -327,6 +326,7 @@ fn apply_migrations(conn: &Connection, migrations: &[(i64, &str, &str)]) -> Resu
         )",
     )
     .map_err(|err| err.to_string())?;
+    super::migration_sequence::check_recorded(conn, migrations)?;
     for (version, name, sql) in migrations {
         let checksum = hex::encode(Sha256::digest(sql.as_bytes()));
         let applied: Option<String> = conn

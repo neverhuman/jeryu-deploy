@@ -18,6 +18,8 @@ One file per decision, named `NNNN-kebab-title.md`, `NNNN` a zero-padded
 four-digit number that is never reused and never renumbered once it lands.
 Take the next number from current `origin/main` when you land, not from your
 branch's base, and renumber an unlanded record if `main` has moved past it.
+A landed record is never deleted either, so numbers have no gaps: to retire a
+decision, mark its record `Superseded` (or `Rejected`) and keep the file.
 The file starts
 with an `# NNNN. Title` heading, then the header lines, then four sections in
 this order:

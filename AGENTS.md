@@ -48,5 +48,6 @@ release-CI sibling path patches are not permitted.
   ready if `main` has moved past you.
 - Renumbering is fine until the file lands; after that a number is never
   reused or changed. `crates/jeryu-api/tests/migration_numbers.rs` and
-  `crates/jeryu-api/tests/adr_records.rs` fail on a shared or skipped number,
-  and the shift.sqlite runner refuses to start with a repeated version.
+  `crates/jeryu-api/tests/adr_records.rs` fail on a shared or skipped number.
+  A landed file is never deleted: supersede an ADR, or land a migration that
+  undoes an old one.
