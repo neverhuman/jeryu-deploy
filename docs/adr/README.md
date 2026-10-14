@@ -15,7 +15,10 @@ moment the work lands; a record here stays, with the reasons and the price.
 ## Shape
 
 One file per decision, named `NNNN-kebab-title.md`, `NNNN` a zero-padded
-four-digit number that is never reused and never renumbered. The file starts
+four-digit number that is never reused and never renumbered once it lands.
+Take the next number from current `origin/main` when you land, not from your
+branch's base, and renumber an unlanded record if `main` has moved past it.
+The file starts
 with an `# NNNN. Title` heading, then the header lines, then four sections in
 this order:
 
@@ -48,5 +51,6 @@ the new number, and name the old number in the new record's `Supersedes:`. The
 two lines are kept consistent in both directions, which is what makes the
 directory readable back to front.
 
-`crates/jeryu-api/tests/adr_records.rs` checks the numbering, the header
-lines, the section order, and that every supersession points both ways.
+`crates/jeryu-api/tests/adr_records.rs` checks the numbering (unique, from
+0001, no gap), the header lines, the section order, and that every
+supersession points both ways.

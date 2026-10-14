@@ -1,7 +1,11 @@
 # Migrations
 
 Numbered, immutable SQL migrations for the SQLite stores jeryu-api owns.
-Numbering is a zero-padded four-digit sequence (`0001_<name>.sql`). The store
+Numbering is a zero-padded four-digit sequence (`0001_<name>.sql`): one `.sql`
+per number, no gap, any `<stem>.meta.toml` beside its own `.sql`. Take the next
+number from current `origin/main` when you land, not from your branch's base;
+`crates/jeryu-api/tests/migration_numbers.rs` fails a shared or skipped number,
+and the shift.sqlite runner refuses to start with a repeated version. The store
 that owns a migration embeds it and records its sha256 when applied; a changed
 file for an applied version stops the server at startup.
 

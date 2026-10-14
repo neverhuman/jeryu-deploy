@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use super::types::{CapacityBucket, Heartbeat, HistoryResponse, Segment, SlotHistory, WorkerKind};
 
-const MIGRATIONS: &[(i64, &str, &str)] = &[
+pub(super) const MIGRATIONS: &[(i64, &str, &str)] = &[
     (
         1,
         "0001_shift_heartbeats",
@@ -317,6 +317,7 @@ pub(crate) fn migrate_through(conn: &Connection, version: i64) -> Result<(), Str
 }
 
 fn apply_migrations(conn: &Connection, migrations: &[(i64, &str, &str)]) -> Result<(), String> {
+    super::migration_sequence::check(migrations)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS shift_schema_migrations (
             version INTEGER PRIMARY KEY,

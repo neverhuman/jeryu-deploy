@@ -38,3 +38,15 @@ release-CI sibling path patches are not permitted.
 - Re-read live PR heads, merged flags, and tags before each landing step.
 - Do not edit `CHANGELOG.md` in a change: release notes are generated at release
   time from commit subjects and `Todo:` trailers.
+
+## Numbering a migration or an ADR
+
+- `db/migrations/` and `docs/adr/` are numbered sequences. Take the next
+  number from current `origin/main` at the time you land, not from your
+  branch's base: a branch cut from an older `main` sees numbers that are no
+  longer free. Fetch, look at `origin/main`, and renumber before the PR goes
+  ready if `main` has moved past you.
+- Renumbering is fine until the file lands; after that a number is never
+  reused or changed. `crates/jeryu-api/tests/migration_numbers.rs` and
+  `crates/jeryu-api/tests/adr_records.rs` fail on a shared or skipped number,
+  and the shift.sqlite runner refuses to start with a repeated version.

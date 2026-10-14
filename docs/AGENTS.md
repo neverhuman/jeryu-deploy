@@ -41,4 +41,6 @@ Proof lane:
   when workcell export-slice docs change.
 - `cargo test -p jeryu-api --features web --jobs 40 --test adr_records`
   when `docs/adr/` changes.
+- `cargo test -p jeryu-api --features web --jobs 40 --test migration_numbers`
+  when `db/migrations/` changes.
 - `bash ci-fast-push.sh --no-push` before release-facing docs are signed.

@@ -1,6 +1,7 @@
 //! The architecture decision records in `docs/adr/` are a durable record, so
-//! their shape is checked rather than trusted: numbering, the four header
-//! lines, the section order, and supersession that points both ways.
+//! their shape is checked rather than trusted: numbering (unique, from 0001,
+//! no gap), the four header lines, the section order, and supersession that
+//! points both ways.
 //!
 //! The convention itself is written down in `docs/adr/README.md`.
 
@@ -59,7 +60,7 @@ fn adr_directory() -> PathBuf {
 
 fn records() -> BTreeMap<u32, Record> {
     let directory = adr_directory();
-    let mut records = BTreeMap::new();
+    let mut records: BTreeMap<u32, Record> = BTreeMap::new();
     for entry in fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
     {
@@ -85,8 +86,14 @@ fn records() -> BTreeMap<u32, Record> {
             "{file}: name must be NNNN-kebab-title.md"
         );
         let body = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {file}: {error}"));
-        let previous = records.insert(number, Record { number, file, body });
-        assert!(previous.is_none(), "two records numbered {number}");
+        if let Some(previous) = records.get(&number) {
+            panic!(
+                "two records numbered {number:04}: {} and {file}; a number is never reused, \
+                 so renumber the newer one to the next free number on current main",
+                previous.file
+            );
+        }
+        records.insert(number, Record { number, file, body });
     }
     assert!(!records.is_empty(), "docs/adr holds no records");
     records
@@ -131,6 +138,19 @@ fn every_record_carries_the_standard_shape() {
                 .unwrap_or_else(|| panic!("{}: missing `{section}` in order", record.file));
             offset += found + section.len();
         }
+    }
+}
+
+#[test]
+fn numbers_run_from_one_with_no_gap() {
+    for (index, record) in records().values().enumerate() {
+        let expected = u32::try_from(index).expect("few records") + 1;
+        assert_eq!(
+            record.number, expected,
+            "docs/adr numbers must run 0001, 0002, ... with no gap: found {} where {expected:04} \
+             was expected",
+            record.file
+        );
     }
 }
 

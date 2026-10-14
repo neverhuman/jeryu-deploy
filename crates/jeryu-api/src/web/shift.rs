@@ -14,6 +14,7 @@ mod access;
 mod assignment;
 mod heartbeats;
 mod landing;
+mod migration_sequence;
 pub(crate) mod queue;
 mod shifts;
 pub(crate) mod todo_file;
