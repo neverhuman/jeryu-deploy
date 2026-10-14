@@ -41,7 +41,7 @@ The owner approved the direction on 2026-10-14: a compatible auditor patch needs
 | `GET /.jeryu/capabilities` discovery document (`api_version`, routes) | implemented; the `jankurai_auditors` field below is proposed |
 | `GET /api/v1/jankurai/scores/:score_id`, `POST /api/v1/repos/:id/jankurai-scores`, `POST /api/v1/jankurai-audits/claim` | implemented; the binding fields below are proposed additions |
 | Consumer wrapper `require_jankurai` with pinned trust anchors (jeryu-tool#25), host installer and authority stamp | implemented; single release slot |
-| Approved table, forge snapshot, `GET /api/v1/jankurai/auditors`, job binding, capability claim, local resolution, digest cache, modes | proposed |
+| Approved table, forge snapshot, `GET /api/v1/jankurai/auditors`, job binding (`metadata_commit`, `policy_sha256`, `origin`, `purpose`), capability claim, `POST /api/v1/jankurai-audits/:job_id/release`, local resolution, digest cache, modes | proposed |
 
 No new subcommand name is fixed here. The implementing PR adds one local entry point to the existing `jeryu` CLI and documents it.
 
@@ -74,16 +74,46 @@ Rules, checked by jeryu-tool and again by the forge loader: exactly one `active`
 
 - **Snapshot.** Read at jeryu-tool protected `main` from the forge's own store after the branch-protection readback, on startup, on each push to that ref and periodically. Key `{manifest_revision, manifest_sha256}` (sha256 of the file bytes). Snapshots are immutable and kept forever. Each transition (candidate added, activated, retired, rolled back) and each rejected snapshot is appended to a forge table that is never updated or deleted.
 - **Route (proposed).** `GET /api/v1/jankurai/auditors` returns `snapshot`, `active`, `staged`, `history` and `rejected_snapshots`, plus the raw manifest bytes so a client can recompute `manifest_sha256`. `?snapshot=<manifest_sha256>` returns any past snapshot (for reproduce mode).
-- **Binding.** A ticket gains the following, fixed at dispatch:
+Everything in this section is proposed unless it names something that exists today.
+
+- **Binding.** A ticket gains the following fields. The forge fixes them at dispatch and the runner never recomputes them:
 
 ```json
-{"job_id": "…", "head_sha": "<40 hex>", "base_sha": "<40 hex>", "audit_mode": "diff", "policy_sha256": "<64 hex>", "purpose": "proof",
+{"job_id": "…", "purpose": "proof", "origin": "internal", "head_sha": "<40 hex>", "base_sha": "<40 hex>", "audit_mode": "diff",
+ "metadata_commit": "<40 hex>", "policy_sha256": "<64 hex>",
  "auditor": {"manifest_revision": "<40 hex>", "manifest_sha256": "<64 hex>", "version": "1.7.4", "target": "x86_64-unknown-linux-gnu",
              "binary_sha256": "<64 hex>", "signing_identity": "<64 hex>"}}
 ```
 
-  `purpose` is `proof` or `qualification`; a qualification job never writes a score or `jankurai/proof`. The submission echoes `job_id`, the `auditor` block, `policy_sha256`, head and base, and adds `receipt_sha256`. Any difference is refused (422 `auditor_mismatch`, recorded as a rejected publication naming the field). Score rows and `GET /api/v1/jankurai/scores/:score_id` keep and show the binding.
-- **Runner (gate-runner session's proposal).** Claim body adds `"capabilities": {"jankurai": ["<binary_sha256>", …]}` and receives only jobs it can run. A job no runner can serve shows `waiting-for-tool`. The pin-free verifier checks the binary under `<tools>/jankurai/<binary_sha256>/` and its receipt against the job's `auditor` block before checkout; on mismatch the job is released with a reason and never scored. `/runners` shows `waiting-for-tool`, `running`, `publishing` and the conclusion `rejected-publication` with its reason.
+- **Metadata.** The forge chooses `metadata_commit` by the runner's existing rule:
+  - the base, when main reaches it;
+  - a job for main's own head uses that head;
+  - otherwise main's tip.
+
+  A head's own `agent/` and `.jeryu/` are never trusted. `policy_sha256` is the sha256 of `agent/audit-policy.toml` at `metadata_commit`. When that commit has no regular policy file, it is the sha256 of the fixed default below, whose bytes carry no auditor version (today's default in pr-gate writes the verified auditor's version and so changes with every release). The runner checks out metadata from exactly `metadata_commit` and verifies the digest. The report-level `jeryu_audit_policy` that pr-gate 2.1.0 adds goes away once the binding carries both fields.
+
+```toml
+schema_version = "1.0.0"
+workspace = "unconfigured"
+minimum_score = 85
+hard_findings_allowed = 0
+required_tool = "jankurai"
+```
+
+- **No base.** A `full` job keeps today's `base_sha`, git's empty tree `4b825dc642cb6eb9a060e54bf8d69288fbee4904`, as the "no base" marker. Runner and ingest both treat it as a marker and never as a diff argument.
+- **Submission.** The submission echoes `job_id`, `auditor`, `metadata_commit`, `policy_sha256`, head and base, and adds `receipt_sha256`. Any difference is refused with 422 `auditor_mismatch` and recorded as a rejected publication naming the field. Score rows and `GET /api/v1/jankurai/scores/:score_id` keep and show the binding.
+- **Qualification.** A `qualification` job submits to the same ingest with its `job_id`. It is recorded as qualification evidence for the candidate, never as a score or a `jankurai/proof` check. The ingest answers 202 with `{"job_id": "…", "recorded_as": "qualification", "qualification": "<record id>"}`.
+- **Runner claim.** This is the gate-runner session's proposal. The claim adds `"capabilities": {"jankurai": ["<binary_sha256>", …], "sandbox": false}`, and the runner receives only jobs whose `binary_sha256` it lists. A `contributed` job goes only to a runner with `sandbox: true`. Jobs no runner can serve are visible as `waiting-for-tool` or `waiting-for-sandbox`. The heartbeat's `tools` field lists every staged digest.
+- **Verify and release.** The pin-free verifier checks the binary under `<tools>/jankurai/<binary_sha256>/` and its receipt against `auditor` before checkout, and again right before running. `<tools>` is a host setting, not a repository path. A job the runner will not run is handed back at once through `POST /api/v1/jankurai-audits/:job_id/release {"reason": …}`, never by letting the lease lapse silently. The reasons are:
+  - `verifier-mismatch`
+  - `staged-digest-missing`
+  - `not-served-by-this-host`
+  - `not-on-main`
+  - `contributed`
+  - `tool-gone` (the binary vanished after claim)
+
+  A released job is never scored, and it stays visible with its reason.
+- **States.** `/runners` shows `waiting-for-tool`, `waiting-for-sandbox`, `running` and `publishing`, plus the conclusions `released` and `rejected-publication`, each with its reason.
 
 ### Contract: CI and local resolution sequence
 
@@ -110,7 +140,7 @@ Fresh CI and local runs in normal mode select the same `active` entry from the s
 - **Trust roots.** The signer digest and cosign digest come from the repository's rendered wrapper (implemented in jeryu-tool#25) or from the client's recorded installation. A manifest whose trust section disagrees is refused as an unacknowledged rotation. The forge connection is TLS plus the user's existing token. The manifest digest binds what was served, and table membership is the approval.
 - **Artifact checks.** Every install verifies the cosign signature offline with the pinned cosign, then asset, provenance and binary digests against the entry. A tampered, unsigned or unlisted artifact is refused and never cached.
 - **Cache.** `<cache>/jankurai/<binary_sha256>/{bin/jankurai,receipt.json}` and `<cache>/manifests/<manifest_sha256>.toml`. Entries are written atomically and never overwritten, and the binary digest is rechecked on every use. Nothing on `PATH` and nothing labelled latest upstream is ever consulted.
-- **Hosts.** jeryu-tool's installer stages every `active` and `candidate` artifact into the same digest-keyed layout and publishes the ready digests (the runner's capability list). Retired entries stay for a retention window.
+- **Hosts.** jeryu-tool's installer stages every `active` and `candidate` artifact into the same digest-keyed layout and publishes the ready digests (the runner's capability list). Retired entries stay for a retention window, and the installer never prunes a digest bound to a queued or claimed job.
 - **Retention.** The forge keeps every snapshot. Released artifacts of every entry ever active are kept in an installation-owned store keyed by digest, so reproduction and rollback do not depend on the public release repository staying up.
 
 ### Contract: Jeryu client/server compatibility
@@ -136,6 +166,7 @@ The `jeryu` client and the forge agree on the manifest schema and capabilities, 
 - The forge depends on jeryu-tool main as configuration. A broken manifest cannot loosen anything but can stall new bindings, visibly.
 - Hosts, caches and the retention store use more disk; the installer becomes multi-release.
 - Policy files change shape once in about 40 repositories; splitctl's exact equality becomes a range check.
+- Contributed heads need a sandbox-capable runner. Until one exists, merge-gated repositories cannot merge contributions; those jobs sit visibly in `waiting-for-sandbox`.
 - Tickets are in-process today; one lost to a restart is re-enqueued under the then-active entry. That is safe because no evidence existed, but persisting them is a follow-up.
 
 ## Migration
@@ -144,8 +175,8 @@ The `jeryu` client and the forge agree on the manifest schema and capabilities, 
 |---|---|---|---|
 | 0 | jankurai | Confirm whether the auditor reads `required_tool_version`; if so, accept a range first | jankurai |
 | 1 | jeryu-tool | Manifest schema 2 (1.7.4 sole `active`), check, side-by-side installer, pin-free verifier; legacy path and stamp track `active` | jeryu-tool |
-| 2 | jeryu-deploy | Snapshot loader, history, auditors route, capabilities field, binding, ingest validation; legacy unbound reports accepted only if equal to `active` | deploy |
-| 3 | jeryu-ci-runner | Capability claim, verifier, `/runners` states, drop constants | gate-runner session |
+| 2 | jeryu-deploy | Snapshot loader, history, auditors route, capabilities field, binding with `metadata_commit` and `origin`, release route, qualification ingest, validation; legacy unbound reports accepted only if equal to `active` | deploy |
+| 3 | jeryu-ci-runner | Capability claim (digests, sandbox), metadata from `metadata_commit`, verifier, release route use, `/runners` states, drop constants and `jeryu_audit_policy` | gate-runner session |
 | 4 | jeryu-deploy | `jeryu` CLI local resolution, cache and modes; image pipeline; remove compiled constants and the `include_str!` receipt | deploy |
 | 5 | jeryu-tool + consumers | Renderer stops writing per-release values; one last render de-pins every claimed consumer | jeryu-tool |
 | 6 | jain repos, splitctl | Literal checks become the wrapper; splitctl compares compatibility | jain owners |
@@ -158,7 +189,7 @@ Compatible throughout: the #25 trust anchors and receipt schema, the legacy inst
 - **Manifest-only patch.** Candidate, qualify, activate 1.7.N+1. No file outside `tool-manifest.toml` changes in any repository, and the forge and `jeryu` binaries are the same builds.
 - **Same release everywhere.** A fresh CI job and a fresh local normal-mode run after activation both report the new `version` and `manifest_sha256`.
 - **Reproduce.** A job scored before activation (and one before a rollback) reruns locally on its bound snapshot and binary and matches its stored report.
-- **Refusal.** Tampered, unsigned or unlisted artifacts, a candidate on a `proof` job, a retired entry on a new job, any mismatched binding field, and a claim without the digest are refused and never scored or cached.
+- **Refusal.** Tampered, unsigned or unlisted artifacts, a candidate on a `proof` job, a retired entry on a new job, any mismatched binding field, and a claim without the digest, a `metadata_commit` or `policy_sha256` mismatch, and a contributed job offered to a non-sandbox runner are refused and never scored or cached. A binary removed after claim produces a `tool-gone` release, not a score.
 - **In flight.** A job claimed before activation completes and is accepted under its old binding.
 - **Compatibility.** A client without a common manifest schema stops with the actionable error. An ambiguous origin asks for an explicit selection.
 - **Offline.** With a verified cache, offline runs and reports `freshness: unknown`. With no cache, or a cache whose digest no longer verifies, it stops. It never uses `PATH`.
