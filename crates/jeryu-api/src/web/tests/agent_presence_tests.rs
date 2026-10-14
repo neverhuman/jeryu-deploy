@@ -309,7 +309,7 @@ async fn sessions_on_the_same_repo_and_branch_collide() {
 }
 
 #[tokio::test]
-async fn sessions_on_the_default_branch_do_not_collide() {
+async fn sessions_on_a_protected_default_branch_do_not_collide_but_on_an_unprotected_one_they_do() {
     let fx = fixture();
     for id in ["cli:main-a", "cli:main-b"] {
         let mut beat = session(id, &["acme/widgets"], &[]);
@@ -317,6 +317,24 @@ async fn sessions_on_the_default_branch_do_not_collide() {
         let (status, body) = fx.post(&fx.ada, beat).await;
         assert_eq!(status, StatusCode::OK, "{body}");
     }
+    // Opted out of default-branch protection: anyone with write access may push
+    // to main, so sessions there collide.
+    fx.state
+        .core
+        .set_default_branch_protection_opt_out("root", "acme", "widgets", true)
+        .unwrap();
+    let items = fx.repo_items(&fx.ada, "acme%2Fwidgets").await;
+    assert_eq!(
+        find(&items, "external:cli:main-a")["collides_with"],
+        json!(["external:cli:main-b"])
+    );
+
+    // Protected (the forge default): main moves only by merge, so sessions there
+    // do not collide, on the repository list or the family overview.
+    fx.state
+        .core
+        .set_default_branch_protection_opt_out("root", "acme", "widgets", false)
+        .unwrap();
     let items = fx.repo_items(&fx.ada, "acme%2Fwidgets").await;
     assert_eq!(
         find(&items, "external:cli:main-a")["collides_with"],
@@ -326,7 +344,6 @@ async fn sessions_on_the_default_branch_do_not_collide() {
         find(&items, "external:cli:main-b")["collides_with"],
         json!([])
     );
-
     let (status, body) = call(
         &fx.router,
         HttpMethod::GET,

@@ -54,26 +54,139 @@ fn only_listed_sessions_count_against_the_cap() {
     assert_eq!(store.count(), super::store::MAX_REPORTER_ROWS + 1);
 }
 
+fn small(listed: i64, retained: i64) -> super::store::Limits {
+    super::store::Limits {
+        reporter_listed: listed,
+        listed: listed * 4,
+        reporter_retained: retained,
+        retained: retained * 2,
+    }
+}
+
+fn row_of(reporter: &str, session_id: &str, state: PresenceState) -> PresenceRow {
+    let mut row = row(session_id, 300, state);
+    row.reporter = reporter.to_string();
+    row
+}
+
 #[test]
-fn retained_rows_past_the_bound_evict_the_oldest_unlisted_rows() {
+fn a_beat_that_brings_an_unlisted_session_back_counts_against_the_cap() {
     let (_dir, store) = store();
-    // One ended session every 10 s: at most 61 are listed at once, under the
-    // listed cap, while the stored total runs past the retention bound.
-    let total = super::store::MAX_REPORTER_RETAINED + 5;
-    for n in 0..total {
+    let store = store.with_limits(small(2, 100));
+    let gone = 300_000 + LINGER_MS + 1;
+    for id in ["old-1", "old-2"] {
         store
-            .upsert(
-                &row(&format!("s{n}"), 300, PresenceState::Ended),
-                n * 10_000,
+            .upsert(&row(id, 300, PresenceState::Active), 0)
+            .unwrap();
+    }
+    // Both have expired and stopped being listed; two new sessions fill the cap.
+    for id in ["new-1", "new-2"] {
+        store
+            .upsert(&row(id, 300, PresenceState::Active), gone)
+            .unwrap();
+    }
+    // Re-beating a stored but unlisted session would list a third: refused.
+    assert!(matches!(
+        store.upsert(&row("old-1", 300, PresenceState::Active), gone),
+        Err(super::store::StoreError::Limit)
+    ));
+    // A listed session keeps beating freely.
+    store
+        .upsert(&row("new-1", 300, PresenceState::Active), gone + 1)
+        .unwrap();
+}
+
+#[test]
+fn a_reporter_past_its_bound_loses_only_its_own_oldest_unlisted_rows() {
+    let (_dir, store) = store();
+    let store = store.with_limits(small(2, 3));
+    // grace's one row is older than everything ada stores.
+    store
+        .upsert_as(
+            &row_of("grace", "g-1", PresenceState::Ended),
+            "grace",
+            false,
+            0,
+        )
+        .unwrap();
+    for n in 0..5_i64 {
+        let at = (n + 1) * (LINGER_MS + 1);
+        store
+            .upsert_as(
+                &row_of("ada", &format!("a-{n}"), PresenceState::Ended),
+                "ada",
+                false,
+                at,
             )
             .unwrap();
     }
-    assert_eq!(store.count(), super::store::MAX_REPORTER_RETAINED);
-    assert!(
-        store.get("s0").unwrap().is_none(),
-        "oldest unlisted row evicted"
-    );
-    assert!(store.get(&format!("s{}", total - 1)).unwrap().is_some());
+    // ada keeps her newest 3; grace's older row is untouched.
+    assert!(store.get("a-0").unwrap().is_none());
+    assert!(store.get("a-1").unwrap().is_none());
+    assert!(store.get("a-4").unwrap().is_some());
+    assert_eq!(store.get("g-1").unwrap().unwrap().reporter, "grace");
+    // grace still owns her id: another non-admin login cannot take it.
+    assert!(matches!(
+        store.upsert_as(
+            &row_of("ada", "g-1", PresenceState::Active),
+            "ada",
+            false,
+            10 * LINGER_MS
+        ),
+        Err(super::store::StoreError::Owned)
+    ));
+}
+
+#[test]
+fn a_full_forge_refuses_a_new_session_instead_of_evicting_another_reporters_rows() {
+    let (_dir, store) = store();
+    // Forge bound 4 (2 x reporter bound 2); listed caps out of the way.
+    let store = store.with_limits(super::store::Limits {
+        reporter_listed: 64,
+        listed: 64,
+        reporter_retained: 2,
+        retained: 4,
+    });
+    let rows = [
+        ("grace", "g-1"),
+        ("grace", "g-2"),
+        ("barbara", "b-1"),
+        ("barbara", "b-2"),
+    ];
+    for (at, (reporter, id)) in (0_i64..).zip(rows) {
+        store
+            .upsert_as(
+                &row_of(reporter, id, PresenceState::Ended),
+                reporter,
+                false,
+                at,
+            )
+            .unwrap();
+    }
+    let later = 2 * LINGER_MS;
+    assert!(matches!(
+        store.upsert_as(
+            &row_of("ada", "a-1", PresenceState::Active),
+            "ada",
+            false,
+            later
+        ),
+        Err(super::store::StoreError::Full)
+    ));
+    for id in ["g-1", "g-2", "b-1", "b-2"] {
+        assert!(store.get(id).unwrap().is_some(), "{id} kept");
+    }
+    // A reporter at its own bound still makes room from its own rows.
+    store
+        .upsert_as(
+            &row_of("grace", "g-3", PresenceState::Active),
+            "grace",
+            false,
+            later,
+        )
+        .unwrap();
+    assert!(store.get("g-1").unwrap().is_none());
+    assert!(store.get("b-1").unwrap().is_some());
 }
 
 #[test]

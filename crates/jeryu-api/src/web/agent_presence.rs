@@ -129,7 +129,13 @@ fn write_failed(error: store::StoreError, session_id: &str) -> AxumResponse {
             StatusCode::TOO_MANY_REQUESTS,
             "presence_limit",
             "at most 64 listed sessions per reporter and 1024 for the forge",
-            "reuse an existing session id or wait for retention pruning",
+            "reuse an existing session id, or end sessions you no longer run; an ended or expired session stops counting 10 minutes later",
+        ),
+        store::StoreError::Full => presence_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "presence_limit",
+            "the forge stores at most 16384 sessions",
+            "reuse an existing session id; stored sessions are pruned 14 days after their last beat",
         ),
         store::StoreError::WriteBudget => presence_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -483,10 +489,21 @@ pub(crate) async fn overview(
         item.families = Some(families);
         items.push(item);
     }
+    // One protection lookup per repository named, not per item.
+    let merge_only: BTreeMap<String, String> = items
+        .iter()
+        .flat_map(|item| item.repos.iter().flatten())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|name| {
+            let repo = hosted.get(name)?;
+            Some((name.clone(), sources::merge_only_branch(&state, repo)?))
+        })
+        .collect();
     mark_collisions(
         &mut items,
         |item| item.repos.clone(),
-        |name| hosted.get(name).map(|repo| repo.default_branch.clone()),
+        |name| merge_only.get(name).cloned(),
     );
     sort(&mut items);
     let (items, info) = page.apply(items);

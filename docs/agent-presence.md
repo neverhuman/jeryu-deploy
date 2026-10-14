@@ -34,7 +34,7 @@ Reporting scope:
   when it can write every hosted repository of that family (a family with no
   hosted repository cannot be claimed). Otherwise `403
   presence_scope_forbidden`, naming each repository or family refused.
-- A session belongs to the login that registered it. A beat from another login answers `409 presence_session_owned`. A `DELETE` of a missing or foreign session answers the same `404 presence_session_not_found`. Ownership checks and writes share one SQLite transaction. An admin may beat
+- A session belongs to the login that registered it while its row is stored (see the bounds below: rows go 14 days after the last beat, or earlier when their own reporter stores more than 2048). A beat from another login answers `409 presence_session_owned`. A `DELETE` of a missing or foreign session answers the same `404 presence_session_not_found`. Ownership checks and writes share one SQLite transaction. An admin may beat
   or end anyone's session; the session stays its reporter's.
 
 Bot tokens (`jat_…`) reach only `/api/v1/repos/*`, so they read a repository's
@@ -115,7 +115,7 @@ Marks the session ended. `200 {"ok": true, "session_id": "…", "state":
 reads as `stale`. A stale session is listed until 10 minutes after
 `expires_at`, an ended one until 10 minutes after it ended; then both are
 left out. A session that beats `active` or `idle` after ending is live again.
-Rows not beaten for 14 days are deleted on write. Listed rows (live, stale, or ended or expired less than 10 minutes ago) are capped at 64 per authenticated reporter and 1024 forge-wide (`429 presence_limit`); a session stops counting once it is no longer listed. Stored rows are bounded at 2048 per reporter and 16384 forge-wide: past that, the oldest rows no longer listed are deleted to make room, so a busy reporter is never refused for sessions that ended long ago. Beats and ends share a 120-write-per-minute budget per authenticated login (`429 presence_write_budget`). Reuse session IDs rather than minting one per beat.
+Rows not beaten for 14 days are deleted on write. Listed rows (live, stale, or ended or expired less than 10 minutes ago) are capped at 64 per authenticated reporter and 1024 forge-wide (`429 presence_limit`). The cap is checked on every write that makes a row listed: a new session, and a beat that brings back a session that had stopped being listed. A row already listed keeps beating freely. Stored rows are bounded at 2048 per reporter: past that, that reporter's own oldest rows that are no longer listed are deleted, and their session ids are released. Another reporter's rows are never deleted to make room; when the forge stores 16384 rows, a new session is refused (`429 presence_limit`) until pruning frees space. Beats and ends share a 120-write-per-minute budget per authenticated login (`429 presence_write_budget`). Reuse session IDs rather than minting one per beat.
 
 ## Read: `GET /api/v1/repos/:id/agent-presence`
 
@@ -166,8 +166,11 @@ Paged like every list (`limit`/`per_page`, `page`; `docs/pagination.md`).
 - `collides_with` lists at most 64 other items, using a repository/branch index to bound matching and response size. It lists the other live items with `via: repo` on the same
   branch. A family-scoped session is not known to work on this repository,
   so it collides with nothing; an item with no branch collides with nothing.
-  Nothing collides on the repository's default branch (it moves only by merge,
-  so sessions there are reading or reviewing), and two `queue_worker` items
+  Nothing collides on the repository's default branch when a branch
+  protection rule guards it, which is the forge default unless the repository
+  opts out (it then moves only by merge, so sessions there are
+  reading or reviewing); an unprotected default branch collides like any other
+  branch. Two `queue_worker` items
   never collide with each other (a queue lands its slots on one shared branch).
 
 Order: live first (`active`, `idle`), then `stale`, then `ended`; within

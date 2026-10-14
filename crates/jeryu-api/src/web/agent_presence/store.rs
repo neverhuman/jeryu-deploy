@@ -19,16 +19,40 @@ pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
 /// Listed (live, stale or lingering) sessions per reporter and forge-wide.
 pub(crate) const MAX_REPORTER_ROWS: i64 = 64;
 pub(crate) const MAX_ROWS: i64 = 1024;
-/// Stored rows per reporter and forge-wide, listed or not. Past these the
-/// oldest unlisted rows are deleted to make room; they are never refused.
+/// Stored rows per reporter and forge-wide, listed or not. Past its own bound a
+/// reporter's oldest unlisted rows are deleted to make room; at the forge bound a
+/// new session is refused (`StoreError::Full`), never paid for with another
+/// reporter's rows.
 pub(crate) const MAX_REPORTER_RETAINED: i64 = 2048;
 pub(crate) const MAX_RETAINED: i64 = 16384;
 const WRITES_PER_MINUTE: u32 = 120;
+
+/// The four session bounds, the constants above unless a test shrinks them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Limits {
+    pub reporter_listed: i64,
+    pub listed: i64,
+    pub reporter_retained: i64,
+    pub retained: i64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            reporter_listed: MAX_REPORTER_ROWS,
+            listed: MAX_ROWS,
+            reporter_retained: MAX_REPORTER_RETAINED,
+            retained: MAX_RETAINED,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum StoreError {
     Owned,
     Limit,
+    /// The forge stores its bound of sessions; a new one is refused.
+    Full,
     WriteBudget,
     Database(String),
 }
@@ -100,6 +124,7 @@ struct Inner {
     conn: Connection,
     last_prune_ms: i64,
     budgets: BTreeMap<String, (i64, u32)>,
+    limits: Limits,
 }
 
 impl PresenceStore {
@@ -113,8 +138,19 @@ impl PresenceStore {
                 conn,
                 last_prune_ms: 0,
                 budgets: BTreeMap::new(),
+                limits: Limits::default(),
             })),
         })
+    }
+
+    /// The same store with smaller bounds, so tests reach them quickly.
+    #[cfg(test)]
+    pub(crate) fn with_limits(self, limits: Limits) -> Self {
+        self.inner
+            .lock()
+            .expect("agent presence mutex poisoned")
+            .limits = limits;
+        self
     }
 
     /// The stored session, if any.
@@ -159,6 +195,7 @@ impl PresenceStore {
     ) -> Result<PresenceRow, StoreError> {
         let mut inner = self.inner.lock().expect("agent presence mutex poisoned");
         Self::budget(&mut inner, actor, now_ms)?;
+        let limits = inner.limits;
         let prune = now_ms.saturating_sub(inner.last_prune_ms) >= PRUNE_EVERY_MS;
         let tx = inner
             .conn
@@ -180,11 +217,26 @@ impl PresenceStore {
         row.reporter = previous
             .as_ref()
             .map_or_else(|| actor.to_string(), |existing| existing.reporter.clone());
-        if previous.is_none() {
-            // Only sessions a reader still sees count against the caps: a reporter
-            // that starts many short sessions a day is not refused for ones that
-            // ended long ago. Churn stays bounded, because a new session stays
-            // listed for at least its TTL plus LINGER_MS and the write budget caps beats.
+        row.received_ms = now_ms;
+        row.expires_ms = now_ms.saturating_add(row.ttl_seconds.saturating_mul(1000));
+        row.ended_ms = match row.state {
+            PresenceState::Ended => Some(
+                previous
+                    .as_ref()
+                    .and_then(|stored| stored.ended_ms)
+                    .unwrap_or(now_ms),
+            ),
+            _ => None,
+        };
+        // Only sessions a reader sees count against the listed caps, so a reporter
+        // that starts many short sessions a day is not refused for ones that ended
+        // long ago. Every write that makes a row listed is checked: a new session,
+        // and a beat that brings an unlisted row back. A row already listed is
+        // already counted.
+        let was_listed = previous
+            .as_ref()
+            .is_some_and(|stored| listed(stored, now_ms));
+        if !was_listed && listed(&row, now_ms) {
             let cutoff = now_ms.saturating_sub(LINGER_MS);
             let total: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM agent_presence
@@ -198,21 +250,25 @@ impl PresenceStore {
                 params![row.reporter, cutoff],
                 |row| row.get(0),
             )?;
-            if total >= MAX_ROWS || owned >= MAX_REPORTER_ROWS {
+            if total >= limits.listed || owned >= limits.reporter_listed {
                 return Err(StoreError::Limit);
             }
-            evict_hidden(&tx, &row.reporter, cutoff)?;
         }
-        row.received_ms = now_ms;
-        row.expires_ms = now_ms.saturating_add(row.ttl_seconds.saturating_mul(1000));
-        row.ended_ms = match row.state {
-            PresenceState::Ended => Some(
-                previous
-                    .and_then(|stored| stored.ended_ms)
-                    .unwrap_or(now_ms),
-            ),
-            _ => None,
-        };
+        if previous.is_none() {
+            // Storage: a reporter past its bound loses its own oldest unlisted rows;
+            // nobody else's row is ever deleted to make room. A full forge refuses.
+            evict_own_unlisted(
+                &tx,
+                &row.reporter,
+                limits.reporter_retained,
+                now_ms.saturating_sub(LINGER_MS),
+            )?;
+            let stored: i64 =
+                tx.query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))?;
+            if stored >= limits.retained {
+                return Err(StoreError::Full);
+            }
+        }
         tx.execute(
             "INSERT INTO agent_presence (session_id, reporter, agent, model, host, operator,
                    lane, branch, title, state, repos_json, families_json, started_ms,
@@ -339,16 +395,21 @@ impl PresenceStore {
     }
 }
 
-/// Make room for one more row of `reporter` under the retention bounds by
-/// deleting the oldest rows no reader sees any more (listed until `cutoff`),
-/// first the reporter's own, then forge-wide.
-fn evict_hidden(conn: &Connection, reporter: &str, cutoff: i64) -> rusqlite::Result<()> {
+/// Make room for one more row of `reporter` under its retention bound by
+/// deleting its own oldest rows no reader sees any more (listed until `cutoff`).
+/// Their session ids are released. Other reporters' rows are never touched.
+fn evict_own_unlisted(
+    conn: &Connection,
+    reporter: &str,
+    bound: i64,
+    cutoff: i64,
+) -> rusqlite::Result<()> {
     let owned: i64 = conn.query_row(
         "SELECT COUNT(*) FROM agent_presence WHERE reporter = ?1",
         params![reporter],
         |row| row.get(0),
     )?;
-    let excess = owned.saturating_sub(MAX_REPORTER_RETAINED - 1);
+    let excess = owned.saturating_sub(bound - 1);
     if excess > 0 {
         conn.execute(
             "DELETE FROM agent_presence WHERE session_id IN (
@@ -356,17 +417,6 @@ fn evict_hidden(conn: &Connection, reporter: &str, cutoff: i64) -> rusqlite::Res
                  WHERE reporter = ?1 AND COALESCE(ended_ms, expires_ms) < ?2
                  ORDER BY received_ms ASC LIMIT ?3)",
             params![reporter, cutoff, excess],
-        )?;
-    }
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM agent_presence", [], |row| row.get(0))?;
-    let excess = total.saturating_sub(MAX_RETAINED - 1);
-    if excess > 0 {
-        conn.execute(
-            "DELETE FROM agent_presence WHERE session_id IN (
-                 SELECT session_id FROM agent_presence
-                 WHERE COALESCE(ended_ms, expires_ms) < ?1
-                 ORDER BY received_ms ASC LIMIT ?2)",
-            params![cutoff, excess],
         )?;
     }
     Ok(())

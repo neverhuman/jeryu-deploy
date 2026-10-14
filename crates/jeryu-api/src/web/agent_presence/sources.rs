@@ -307,17 +307,28 @@ pub(crate) fn repo_items(
     mark_collisions(
         &mut items,
         |item| (item.via == Some(Via::Repo)).then(|| vec![repo.full_name.clone()]),
-        |_| Some(repo.default_branch.clone()),
+        |_| merge_only_branch(state, repo),
     );
     sort(&mut items);
     items
 }
 
+/// The repository's default branch when a protection rule guards it, so it
+/// moves only by merge; `None` when anyone with write access may push to it.
+pub(crate) fn merge_only_branch(state: &WebState, repo: &Repository) -> Option<String> {
+    state
+        .core
+        .get_branch_protection(&repo.owner, &repo.name, &repo.default_branch)
+        .ok()
+        .map(|_| repo.default_branch.clone())
+}
+
 /// For every live item, the other live items that share a repository (as
 /// `repos_of` names them) and the same branch. An item without a branch
-/// collides with nothing. Nothing collides on a repository's default branch
-/// (`default_branch_of`): it moves only by merge, so sessions there are
-/// reading or reviewing, not writing the same commits. Two queue workers never
+/// collides with nothing. Nothing collides on a protected default branch
+/// (`default_branch_of`, see `merge_only_branch`): it moves only by merge, so
+/// sessions there are reading or reviewing, not writing the same commits; an
+/// unprotected default branch collides like any other. Two queue workers never
 /// collide with each other: a queue lands its slots on one shared branch by design.
 pub(crate) fn mark_collisions(
     items: &mut [PresenceItem],

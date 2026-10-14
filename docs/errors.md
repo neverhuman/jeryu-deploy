@@ -168,7 +168,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `permission_denied` | 403 | the account lacks the permission this request needs |
 | `pins_collect_failed` | 500 | the deploy pins could not be collected |
 | `policy_denied` | 403 | a repository policy blocks this request |
-| `presence_limit` | 429 | listed sessions (live, stale or ended under 10 min ago) exceed 64 per reporter or 1024 forge-wide; reuse an existing id |
+| `presence_limit` | 429 | listed sessions (live, stale or ended under 10 min ago) exceed 64 per reporter or 1024 forge-wide, or the forge stores 16384 sessions; reuse an existing id or end sessions you no longer run |
 | `presence_write_budget` | 429 | presence writes exceed 120 per login per minute; reduce beat frequency |
 | `presence_invalid_request` | 422 | the agent presence beat failed validation |
 | `presence_repo_unknown` | 422 | the beat names a repository this forge does not host, or one the caller cannot see |
