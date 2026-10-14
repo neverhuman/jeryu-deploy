@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const TAG: &str = "v1.6.11-deadlang-precision-split.6";
-const REV: &str = "2ec7eb2af47e16d2e0dce0bed31c521be4322920";
-const TREE: &str = "d3c63d138583404a57dc3177f0972952b1b399c7";
-const ARCHIVE_SHA256: &str = "66849f13399e5a8b5d461c48a27322fe3b29a83e86cc5ce41d8c5d89e5d045ea";
-const BINARY_SHA256: &str = "9aa101c10cdc40c8a15e3f5c1341be3bce78e86f61754d849bbe8229e485a783";
-const MANIFEST_COMMIT: &str = "4b6c49e32d273eb4846c9320108bafc9045dc686";
-const MANIFEST_TREE: &str = "80f6a86698bbef3b67b72dbdcba5acf9c041b698";
-const MANIFEST_SHA256: &str = "d5c8e3adcdd1f9f32499d9f36e6d7055aef7186ce7bcca4d0fb56c5962b71901";
+const TAG: &str = "v1.7.5";
+const REV: &str = "bb5a1ccaeda629ab2c36d99d20f9b89855ab6fcb";
+const TREE: &str = "9cd7195f548500505e7c7aa8b8260836448046ae";
+const ARCHIVE_SHA256: &str = "792c16465c274a266f64541152eb5c796fdf22113120133789d28bf99bcf915c";
+const BINARY_SHA256: &str = "d2414884a3dbe1cc2d02b4240588869f6afac26ff0f167829e907b1617501121";
+const MANIFEST_COMMIT: &str = "bac2c82da63a4fecbb90a5be21af60c1be7a4a3a";
+const MANIFEST_TREE: &str = "5be09d77b7f968fb4aec989baede9c5605dcaa34";
+const MANIFEST_SHA256: &str = "ccf32db1d58a9f331dd1b4e1eecc5269780a1bd2cebb7e03e2e6cfee89e4543b";
 const IMAGE_RECEIPT_SHA256: &str =
-    "521df0817f22e3786b7d71c00884a4ede8abe8b57b0b4cd644ef6d88970718d2";
+    "cdfb59320d2ff9e1cfa731d25de4b6bee44fe94854eb217e415159df1826b461";
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")

@@ -1,6 +1,6 @@
 schema_version = 1
 worker_count = 40
-jankurai_version = "jankurai 1.6.11"
+jankurai_version = "jankurai 1.7.5"
 
 # Setup commands may appear in hosted workflows because they only prepare the
 # same local scripts that developers run. Every substantive test command belongs
