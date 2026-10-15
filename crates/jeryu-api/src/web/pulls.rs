@@ -1390,10 +1390,9 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
 }
 
 pub(in crate::web) mod diff;
-pub(in crate::web) mod landed;
-
-pub(in crate::web) mod owner_paths;
 mod expected;
+pub(in crate::web) mod landed;
+pub(in crate::web) mod owner_paths;
 mod posture;
 
 #[cfg(test)]

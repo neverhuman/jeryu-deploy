@@ -91,6 +91,7 @@ pub(super) const FORGE_KINDS: &[ForgeKind] = &[
     ),
     kind("shift.pr_opened", "web/shift.rs", "\"shift.pr_opened\""),
     kind("todo.action", "web/shift.rs", "\"todo.action\""),
+    kind("todo.commented", "web/shift.rs", "\"todo.commented\""),
     kind("todo.filed", "web/shift.rs", "\"todo.filed\""),
     kind(
         "worker.stage",

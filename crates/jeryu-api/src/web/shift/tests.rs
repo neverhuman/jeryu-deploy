@@ -2042,6 +2042,8 @@ async fn rework_edits_reject_self_missing_duplicate_and_cyclic_targets_without_m
         .find(|todo| todo["id"] == ids[0])
         .unwrap();
     assert_eq!(original["reworks"], json!([]));
+}
+
 /// One bad line in a thread hides itself, not the comments around it, and an
 /// append keeps the file one comment per line.
 #[test]
