@@ -192,7 +192,6 @@ pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), Stri
             && left_forward(conn, &lot.id, Station::Gate)?
             && open_visit(conn, &lot.id, Station::Merge)?.is_none()
             && !left_forward(conn, &lot.id, Station::Merge)?
-            && !conn.query_row("SELECT EXISTS(SELECT 1 FROM flow_ledger WHERE lot_id=?1 AND repo IS ?2 AND pr IS ?3 AND station='stage')", params![lot.id, event.repo, event.pr], |r| r.get::<_, bool>(0)).map_err(|e| e.to_string())?
         {
             enter(conn, event, &lot, Station::Merge)?;
         }
@@ -712,18 +711,6 @@ pub(crate) fn deliver(
         let inserted=conn.execute("INSERT OR IGNORE INTO flow_delivery_receipts(event_seq,lot_id,repo,revision,release,kind,ts_ms) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![event.seq,lot.id,shipper,revision,release,event.kind,event.ts_ms]).map_err(|e|e.to_string())?;
         if inserted == 0 {
             continue;
-        }
-        // Release membership also resolves old upstream visits left open by
-        // out-of-order gate/review notifications after the authoritative merge.
-        for station in [
-            Station::Queue,
-            Station::Work,
-            Station::Shift,
-            Station::Review,
-            Station::Gate,
-            Station::Merge,
-        ] {
-            close(conn, event, &lot, station, "forward", None)?;
         }
         // A successful deployment proves release membership even if the staging
         // event has expired. It does not invent a staging timestamp.

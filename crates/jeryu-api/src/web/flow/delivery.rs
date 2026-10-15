@@ -103,6 +103,23 @@ fn shipped(state: &WebState, event: &Delivery) -> Option<Vec<(String, String)>> 
     }
     // The web bundle is built from this lock at the exact deployed revision.
     // Other lock entries are not assumed to be release artifacts.
+    // An existing revision with no lock predates split packaging. It still
+    // carries its own deploy changes; an inaccessible revision remains unknown.
+    let paths = git(
+        state,
+        &event.repo,
+        &[
+            "ls-tree",
+            "--name-only",
+            "--end-of-options",
+            &event.sha,
+            "--",
+            "jeryu-split.lock.toml",
+        ],
+    )?;
+    if paths.trim().is_empty() {
+        return Some(tips);
+    }
     let document = git(
         state,
         &event.repo,
@@ -114,11 +131,16 @@ fn shipped(state: &WebState, event: &Delivery) -> Option<Vec<(String, String)>> 
     )?;
     // Value::from_str parses one TOML value, not a complete document in toml 1.
     let lock: toml::Value = toml::from_str(&document).ok()?;
-    let web = lock
-        .get("repo")?
-        .as_array()?
-        .iter()
-        .find(|row| row.get("name").and_then(toml::Value::as_str) == Some("jeryu-web"))?;
+    let Some(web) = lock
+        .get("repo")
+        .and_then(toml::Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("name").and_then(toml::Value::as_str) == Some("jeryu-web"))
+        })
+    else {
+        return Some(tips);
+    };
     let sha = web.get("commit")?.as_str().filter(|s| valid_sha(s))?;
     let (owner, _) = event.repo.split_once('/')?;
     tips.push((format!("{owner}/jeryu-web"), sha.to_string()));
@@ -259,7 +281,7 @@ mod tests {
     #[test]
     fn real_split_lock_reconciles_pinned_web_and_defers_an_invalid_document() {
         use crate::web::pipeline::NewEvent;
-        for valid in [true, false] {
+        for case in ["valid", "invalid", "no_pin", "absent"] {
             let root = tempfile::tempdir().unwrap();
             let owner = root.path().join("acme");
             std::fs::create_dir_all(&owner).unwrap();
@@ -284,23 +306,26 @@ mod tests {
                 sha
             };
             let web_sha = make_repo("jeryu-web", "shipped", "README");
-            // Use the actual family lock structure, including its other repos.
-            let mut lock: toml::Value =
-                toml::from_str(include_str!("../../../../../jeryu-split.lock.toml")).unwrap();
-            for row in lock.get_mut("repo").unwrap().as_array_mut().unwrap() {
-                if row.get("name").and_then(toml::Value::as_str) == Some("jeryu-web") {
-                    row["commit"] = toml::Value::String(web_sha.clone());
-                }
-            }
-            let document = if valid {
-                format!(
-                    "# Full split lock document\n{}",
-                    toml::to_string(&lock).unwrap()
-                )
+            let lock = format!(
+                "schema = 1\n[[repo]]\nname = 'jeryu-web'\ncommit = '{web_sha}'\n[[repo]]\nname = 'other'\ncommit = '{}'\n",
+                "b".repeat(40)
+            );
+            let document = if case == "valid" {
+                format!("# Full split lock document\n{}", lock)
+            } else if case == "no_pin" {
+                "schema = 1".into()
             } else {
                 "not a TOML document".into()
             };
-            let deploy_sha = make_repo("jeryu-deploy", &document, "jeryu-split.lock.toml");
+            let deploy_sha = make_repo(
+                "jeryu-deploy",
+                &document,
+                if case == "absent" {
+                    "README"
+                } else {
+                    "jeryu-split.lock.toml"
+                },
+            );
             let state = WebState::new_with_git_storage(
                 jeryu_core::ForgeCore::new(),
                 root.path().to_path_buf(),
@@ -330,31 +355,6 @@ mod tests {
                 "pr.merged",
                 None,
                 -50_000,
-            );
-            // A terminal gate notification may arrive after the merge itself.
-            post(
-                "acme/jeryu-web",
-                Some(1),
-                &web_sha,
-                "gate.finished",
-                Some("success"),
-                -45_000,
-            );
-            let visits = state.events.flow_visits(Some("acme"), 0).unwrap();
-            assert!(
-                !visits
-                    .iter()
-                    .any(|v| v.station == super::super::Station::Merge && v.left_ms.is_none())
-            );
-            // Model an upstream visit already left open by older projection
-            // code; verified release evidence must repair it during replay.
-            post(
-                "acme/jeryu-web",
-                Some(1),
-                &web_sha,
-                "queue.enqueued",
-                None,
-                -44_000,
             );
             post(
                 "acme/jeryu-deploy",
@@ -396,7 +396,7 @@ mod tests {
                 ..Default::default()
             };
             let history = state.events.flow_history(&query, now).unwrap();
-            if valid {
+            if case == "valid" {
                 assert_eq!(history.deliveries.len(), 3);
                 assert!(
                     history
@@ -410,8 +410,35 @@ mod tests {
                         .flow_visits(Some("acme"), 0)
                         .unwrap()
                         .iter()
+                        .filter(|v| matches!(
+                            v.station,
+                            super::super::Station::Stage | super::super::Station::Deploy
+                        ))
                         .all(|v| v.left_ms.is_some())
                 );
+                assert!(
+                    state
+                        .events
+                        .flow_delivery_inputs(now + 360_000)
+                        .unwrap()
+                        .0
+                        .is_empty()
+                );
+            } else if case != "invalid" {
+                assert!(history.deliveries.is_empty());
+                let direct = state
+                    .events
+                    .flow_history(
+                        &super::super::history::Query {
+                            lot: Some("acme/jeryu-deploy#2".into()),
+                            family: Some("acme".into()),
+                            days: Some(7),
+                            ..Default::default()
+                        },
+                        now,
+                    )
+                    .unwrap();
+                assert_eq!(direct.deliveries.len(), 3);
                 assert!(
                     state
                         .events

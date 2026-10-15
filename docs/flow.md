@@ -294,6 +294,6 @@ coverage (docs/scorecard.md), rather than inventing execution or returning zero.
 Migration 0021 invalidates cached reads of retained Jeryu deploy events after
 correcting full-document TOML lock parsing. Events and existing per-lot receipts
 are preserved. Reconciliation replays in bounded batches, restores missing web
-membership, and resolves upstream visits left open by late notifications after
-merge. An unreadable/invalid web pin defers the entire release correlation; a
+membership. A valid lock without a web entry correlates the direct deploy tip.
+An unreadable lock or invalid declared web pin defers correlation; a
 partial direct-deploy match cannot be cached as complete.
