@@ -25,7 +25,8 @@ cargo run --locked -q -p jeryu-split-tool -- verify-lock --lock jeryu-split.lock
 echo "web gate: jeryu-web pin in jeryu-split.lock.toml is well formed"
 # A pin is reviewed, gated code only if it is on jeryu-web main.
 bash "${ROOT}/ops/ci/test-web-pin-on-main.sh"
-bash "${ROOT}/ops/ci/web-pin-on-main.sh"
+bash "${ROOT}/ops/ci/test-web-pin-proof.sh"
+bash "${ROOT}/ops/ci/web-pin-proof.sh"
 # Select packages exactly as pr-ci.sh's workspace test run does: `-p jeryu-api`
 # resolves a different feature set than `--workspace` (jeryu-cli enables web), so
 # it recompiled jeryu-api twice here to run tests that were already built. With

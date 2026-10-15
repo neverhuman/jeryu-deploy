@@ -10,6 +10,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 dest="$HOME/.local/share/jeryu-auto-pin"
 units="$HOME/.config/systemd/user"
 mkdir -p "$dest" "$units"
+install -m 644 "$here/latest-statuses.jq" "$dest/latest-statuses.jq"
 install -m 755 "$here/auto-pin.sh" "$dest/auto-pin.sh"
 install -m 644 "$here/systemd/jeryu-auto-pin.service" "$here/systemd/jeryu-auto-pin.timer" "$units/"
 systemctl --user daemon-reload

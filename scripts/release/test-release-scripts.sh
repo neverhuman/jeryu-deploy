@@ -496,7 +496,10 @@ case "\$method \$url" in
     [ -e "$P/refuse-close" ] && exit 22
     body="\$(cat)"; echo "\${url##*/} \$body" >>"$P/closed.log"
     printf '%s' "\$body" | jq -c --arg url "\$url" '. + {url: \$url}' >>"$P/closes.jsonl"; echo '{}' ;;
-  "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-web/commits/"*"/status") echo "{\"state\":\"\$(cat "$P/gate")\"}" ;;
+  "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-web/commits/"*"/status")
+    jq -n --arg state "\$(cat "$P/gate")" '{state: \$state, statuses: [
+      {context: "jeryu-web/required", state: \$state, updated_at: "2026-10-15T16:49:48.808799285Z"},
+      {context: "jeryu-web/required", state: "pending", updated_at: "2026-10-15T16:40:22Z"}]}' ;;
   *) echo "unexpected curl: \$method \$url" >&2; exit 22 ;;
 esac
 EOF
@@ -573,6 +576,10 @@ jq -es --arg h "$h1" '.[0].body | contains("**Evidence for review.**") and conta
   and (contains("REVIEW_DATA_DO_NOT_COPY") | not) and (contains("web change 3") | not)
   and contains("pointer, not a gate receipt")' "$P/prs.jsonl" >/dev/null \
   || fail "the pull request body does not carry the review evidence and each shipped commit"
+jq -es '.[0].body | contains("combined: success; latest contexts: jeryu-web/required: success")
+  and (contains("jeryu-web/required: pending") | not)
+  and contains("does not perform this real bundle rebuild")' "$P/prs.jsonl" >/dev/null \
+  || fail "the pin summary mixes historical states or overclaims the required proof"
 jq -es --arg to "$h1" --arg from "$w1" --arg hash "$dist_b" '.[0] | .kind == "pin.bump_opened" and .source == "auto-pin" and .pr == 7 and .repo == "jeryu/jeryu-deploy" and .needs_human == false and .detail.to == $to and .detail.from == $from and .detail.web_dist_sha256 == $hash and .detail.dependency == "jeryu/jeryu-web"' "$P/events.jsonl" >/dev/null || fail "no pin.bump_opened event"
 beat_is '.last == {repo: "jeryu/jeryu-deploy", pr: 7, sha: $sha, recipe: "auto-pin", conclusion: "opened", seconds: 0, finishedAt: $at}' \
   --arg sha "$h1" --arg at "$(tail -n 1 "$P/state/opened.tsv" | cut -f3)" || fail "after opening a bump the heartbeat does not name its pull request"

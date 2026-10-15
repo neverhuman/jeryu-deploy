@@ -43,9 +43,16 @@ Primary lanes:
   the API serving integration. Web source, Playwright, and rendered UX gates run
   in the standalone `jeryu-web` repository.
   The ancestry regression runs inside this lane, including a cached side-branch
-  object, an absent object and an invalid local cache. An older main commit also
-  passes: reviewed rollback remains possible; this lane proves membership on
-  main rather than pin monotonicity. Release-script fixtures cover large commit
+  object, an absent object and an invalid local cache. `web-pin-proof.sh` also
+  rejects backward pins relative to the Deploy merge base (or parent on main),
+  and reads the exact commit status from the canonical forge with the Git read
+  credential or a mode-0600 `JERYU_WEB_PIN_TOKEN_FILE`. It requires combined success
+  and the `jeryu-web/required` result with the newest timestamp to be success; missing data, conflicting
+  timestamps, transport failure and a later pending/failure all fail closed.
+  `test-web-pin-proof.sh` exercises these refusals without network access.
+  Rollback uses the existing release rollback procedure. The required lane tests
+  the bundle hash guard; staging performs the actual pinned bundle rebuild and
+  hash comparison. Release-script fixtures cover large commit
   messages/file lists and evidence failures reaching the retry backstop. Bump
   descriptions link exact commits without copying their prose and must be
   checked against the native required result.

@@ -64,6 +64,7 @@
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
 web_remote="${JERYU_WEB_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-web.git}"
 base="${JERYU_BASE:-https://git.neverhuman.org}"; base="${base%/}"
@@ -542,18 +543,19 @@ else
 fi
 
 contexts="$(api GET "/api/v3/repos/$web_path/commits/$head/status" 2>/dev/null \
-  | jq -r '[.statuses[]? | "\(.context): \(.state)"] | unique | join(", ")' 2>/dev/null)" || contexts=""
+  | jq -r -L "$here" 'include "latest-statuses";
+      "combined: \(.state); latest contexts: " + (latest_statuses | map("\(.context): \(.state)") | join(", "))' 2>/dev/null)" || contexts=""
 body="Pins jeryu-web main \`${head:0:7}\` so the next staged release ships it. Only \`$lock_file\` changes (\`commit\`, \`web_dist_sha256\`).
 
 Ships (${pin:0:7}..${head:0:7}):
 $shipped_detail
 
 **Evidence for review.**
-- Verify \`$head\` against jeryu-web main and its native checks/review. The ancestry lane is \`ops/ci/web-pin-on-main.sh\`, called by \`ops/ci/web.sh\`; check the exact deploy required result and any changes to those scripts or their environment. This template is a pointer, not a gate receipt.
+- Verify \`$head\` against jeryu-web main and its native checks/review. The required proof is \`ops/ci/web-pin-proof.sh\` (including \`ops/ci/web-pin-on-main.sh\`), called by \`ops/ci/web.sh\`; check the exact deploy required result and any changes to those scripts or their environment. This template is a pointer, not a gate receipt.
 - jeryu-web status snapshot at that exact commit: ${contexts:-not reported}.
-- \`web_dist_sha256\` is not trusted from this diff: \`crates/jeryu-api/build.rs\` and \`scripts/release/stage-release.sh\` rebuild the bundle from the pinned commit and refuse a mismatch.
+- \`web_dist_sha256\` is not trusted from this diff: staging rebuilds the pinned commit with \`scripts/release/build-web-dist.sh\` and refuses a mismatch; \`crates/jeryu-api/build.rs\` validates the supplied bundle. The required web lane tests the hash guard; it does not perform this real bundle rebuild.
 
-The links above cover at most 30 shipped commits. Full messages and changed files remain on the forge; commit prose is not copied into this review body. Ancestry permits a reviewed rollback to an older main commit; it does not enforce monotonic pins.
+The links above cover at most 30 shipped commits. Full messages and changed files remain on the forge; commit prose is not copied into this review body. The required proof checks forward ancestry from the Deploy base pin and the exact web commit's latest required status. Rollback uses the release rollback procedure.
 Opened by \`scripts/release/auto-pin.sh\` because jeryu-web main is green and ahead of the pin. It never merges: review and the merge queue land this, auto-stage then stages main, and a person deploys."
 # Building and pushing may take time: check every open bump again before creating.
 list_pulls fresh || give_up "could not re-read open pull requests"
