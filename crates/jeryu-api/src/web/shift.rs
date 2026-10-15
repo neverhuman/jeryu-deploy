@@ -912,6 +912,13 @@ pub(crate) async fn todo_action(
             // The inbox keeps its answer for a few seconds; an action a person
             // just took must show in the next read, not after that runs out.
             state.attention.invalidate();
+            // A todo that redoes another one is a defect in the changes that
+            // one landed: they passed review and came back anyway.
+            if request.action == "edit" && !todo.reworks.is_empty() {
+                crate::web::review_catch::link_defect(&state, "rework", &todo.id, &todo.reworks);
+            }
+            // Triage is a person's time on this change (`web/human_time.rs`).
+            crate::web::human_time::todo_mark(&state, &queue.family.name, &todo.id, &account.login);
             pipeline::emit(
                 &state,
                 NewEvent {

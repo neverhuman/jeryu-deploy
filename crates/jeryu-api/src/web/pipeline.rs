@@ -13,6 +13,7 @@ pub(crate) mod attention;
 pub(crate) mod emit;
 pub(crate) mod estimate;
 pub(crate) mod histogram;
+pub(crate) mod main_health;
 pub(crate) mod pins;
 mod store;
 pub(crate) mod trace;
@@ -30,6 +31,8 @@ mod kinds;
 mod kinds_tests;
 #[cfg(test)]
 mod ledger_tests;
+#[cfg(test)]
+mod main_health_tests;
 #[cfg(test)]
 mod pins_tests;
 #[cfg(test)]
@@ -160,6 +163,11 @@ fn may_report(account: &AccountSummary, reporters: &[String]) -> bool {
     account.role == UserRole::Admin || reporters.iter().any(|login| login == &account.login)
 }
 
+/// Whether `account` may post events: a global admin or a named reporter.
+pub(crate) fn may_post(account: &AccountSummary) -> bool {
+    may_report(account, reporters())
+}
+
 /// Store one event and fan it out on the `pipeline` scope. A repeat of an
 /// `event_id` the reporter already stored writes and publishes nothing.
 pub(crate) fn record(
@@ -174,6 +182,8 @@ pub(crate) fn record(
     if !inserted.duplicate {
         publish(state, &inserted.event);
         record_usage(state, &inserted.event, now_ms);
+        // An incident blames changes: each is a defect past review.
+        crate::web::review_catch::link_incident(state, &inserted.event);
     }
     Ok(inserted)
 }

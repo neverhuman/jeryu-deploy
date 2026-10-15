@@ -222,6 +222,41 @@ impl Fixture {
         sha
     }
 
+    fn publish_two_commit_contribution(&self, number: u64) -> String {
+        git(
+            &["checkout", "--quiet", "-B", "contribution", "main"],
+            &self.work,
+        );
+        std::fs::write(self.work.join("CONTRIBUTION.txt"), "first change\n")
+            .expect("write first contribution");
+        git(&["add", "CONTRIBUTION.txt"], &self.work);
+        git(
+            &["commit", "--quiet", "-m", "add first contribution"],
+            &self.work,
+        );
+        let second = self.work.join("src/second.rs");
+        std::fs::create_dir_all(second.parent().expect("second parent"))
+            .expect("create second parent");
+        std::fs::write(second, "pub fn second() -> u8 { 2 }\n").expect("write second contribution");
+        git(&["add", "src/second.rs"], &self.work);
+        git(
+            &["commit", "--quiet", "-m", "add second contribution"],
+            &self.work,
+        );
+        let sha = git(&["rev-parse", "HEAD"], &self.work);
+        git(
+            &[
+                "push",
+                "--quiet",
+                "--force",
+                self.mirror.to_str().expect("mirror utf8"),
+                &format!("HEAD:refs/pull/{number}/head"),
+            ],
+            &self.work,
+        );
+        sha
+    }
+
     fn state(&self, github: Arc<FakeGithub>) -> Arc<WebState> {
         let import = PullImport::with_targets(BTreeMap::from([(
             "acme/widget".to_string(),
@@ -345,6 +380,77 @@ async fn a_mirror_pull_request_is_imported_as_a_contributed_forge_pull_request()
     assert_eq!(imported(&again, 7).action, ImportAction::Unchanged);
     assert_eq!(github.statuses().len(), 1);
     assert_eq!(github.comments().len(), 1);
+}
+
+/// A mirror PR carries only branch names from GitHub. The imported forge PR
+/// stores the resolved base commit so diff and commit reads stay on the pull
+/// request range instead of expanding to the head branch's whole history.
+#[tokio::test]
+async fn an_imported_pull_request_records_a_real_base_for_diff_and_commits() {
+    let storage = tempdir().expect("git storage dir");
+    let fixture = fixture(storage.path());
+    let base = bare_ref(storage.path(), "acme", "widget", "refs/heads/main");
+    let head = fixture.publish_two_commit_contribution(7);
+    let github = Arc::new(FakeGithub::with_pull(open_pull(
+        7,
+        &head,
+        "octo-dev",
+        "add two contribution commits",
+    )));
+    let state = fixture.state(github);
+
+    let outcomes = crate::web::pull_import::import_once(&state);
+    let number = imported(&outcomes, 7)
+        .forge_number
+        .expect("a forge pull request number");
+    let pr = fixture
+        .core
+        .get_pull_request("acme", "widget", number)
+        .expect("the imported pull request");
+    assert_eq!(pr.base.ref_name, "main");
+    assert_eq!(pr.base.sha, base);
+    assert!(
+        crate::github::pulls::is_hex40(&pr.base.sha),
+        "base sha must be a 40-hex oid, got {}",
+        pr.base.sha
+    );
+
+    let bare = storage.path().join("acme").join("widget.git");
+    let expected_files: Vec<String> =
+        git(&["diff", "--name-only", &format!("{base}...{head}")], &bare)
+            .lines()
+            .map(str::to_string)
+            .collect();
+    assert_eq!(pr.changed_files, expected_files);
+
+    let diff = response_json(
+        crate::web::pulls::diff(
+            State(state.clone()),
+            authenticated_account("bob"),
+            AxumPath((fixture.repo.id.to_string(), number)),
+        )
+        .await,
+    )
+    .await;
+    let diff_files: Vec<String> = diff["files"]
+        .as_array()
+        .expect("diff files")
+        .iter()
+        .map(|file| file["path"].as_str().expect("diff path").to_string())
+        .collect();
+    assert_eq!(diff["base_sha"], base);
+    assert_eq!(diff_files, expected_files);
+
+    let expected_count = git(&["rev-list", "--count", &format!("{base}..{head}")], &bare)
+        .parse::<u64>()
+        .expect("git count");
+    let pulled = state
+        .github
+        .get(&format!("/repos/acme/widget/pulls/{number}"));
+    assert_eq!(pulled.status, 200, "pull read: {}", pulled.body);
+    let pulled: serde_json::Value = serde_json::from_str(&pulled.body).expect("pull read body");
+    assert_eq!(pulled["base"]["sha"], base);
+    assert_eq!(pulled["commits"], expected_count);
 }
 
 /// A contributor who force-pushes on GitHub moves the forge pull request's

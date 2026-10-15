@@ -94,6 +94,7 @@ Implemented HTTP/WebSocket routes:
 - `GET /api/v1/site-settings` (the internal wiki, shown only to callers who can read it)
 - `GET /api/v1/admin/site-settings`, `PUT /api/v1/admin/site-settings` (admin only)
 - `GET /api/v1/flow`, `GET /api/v1/flow/layout` (admin only; durable projection and live layout)
+- `GET /api/v1/human-minutes` (admin only; human minutes per change, aggregated by family, repository or work kind)
 - `GET /api/v1/events/histogram`, `GET /api/v1/usage` (admin only; event histogram and reported worker token/cost aggregates)
 - `GET|POST /api/v1/release-actions` (deployer only; bounded, expiring queue)
 - `POST /api/v1/release-actions/poller` (deployer-only repository check-in)

@@ -122,11 +122,15 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `git_error` | 500 | a git operation failed |
 | `git_source_failed` | 500 | reading repository source from git failed |
 | `host_launch_denied` | 403 | managed agent or terminal execution on the host is denied |
+| `human_minutes_read_failed` | 500 | the change outcome ledger behind the human minutes report could not be read |
 | `idempotency_conflict` | 409 | the Idempotency-Key was used with a different request |
 | `idempotency_key_in_flight` | 409 | a request with this Idempotency-Key is still running |
 | `idempotency_key_reused` | 422 | the Idempotency-Key was already used for a different request |
 | `idempotency_store_failed` | 500 | the Idempotency-Key store could not be read |
 | `idempotent_secret_withheld` | 409 | this request already ran; its once-shown secret is not kept |
+| `incident_report_invalid` | 422 | the reported incident is missing a field the ledger needs |
+| `incident_webhook_invalid` | 422 | the alert body is not an incident event the ledger can fold |
+| `incidents_read_failed` | 500 | the incident ledger could not be read |
 | `insufficient_scope` | 403 | the bot grant does not allow this request |
 | `internal_error` | 500 | the server failed while handling the request |
 | `invalid_bot_kind` | 422 | the bot kind does not match ^[a-z][a-z0-9-]{0,31}$ |

@@ -252,11 +252,14 @@ fn query_params(path: &str) -> &'static [&'static str] {
     match path {
         "/api/v1/attention" => keys::<super::pipeline::attention::AttentionQuery>(),
         "/api/v1/events" => keys::<super::pipeline::EventsQuery>(),
+        "/api/v1/main-health" => keys::<super::pipeline::main_health::MainHealthQuery>(),
         "/api/v1/release-actions" => keys::<super::release_actions::ListQuery>(),
         "/api/v1/yield" => keys::<super::yields::YieldQuery>(),
         "/api/v1/scorecard" => keys::<super::scorecard::ScorecardQuery>(),
+        "/api/v1/human-minutes" => keys::<super::human_time::HumanMinutesQuery>(),
         "/api/v1/flow" => keys::<super::flow::FlowQuery>(),
         "/api/v1/flow/history" => keys::<super::flow::history::Query>(),
+        "/api/v1/incidents" => keys::<super::incidents::IncidentsQuery>(),
         "/api/v1/events/histogram" => keys::<super::pipeline::histogram::HistogramQuery>(),
         "/api/v1/outcomes" => keys::<super::outcomes::OutcomesQuery>(),
         "/api/v1/merge-queue" => keys::<super::merge_queue::QueueListQuery>(),
@@ -394,8 +397,10 @@ mod tests {
             "/api/v1/agent-runs",
             "/api/v1/yield",
             "/api/v1/scorecard",
+            "/api/v1/human-minutes",
             "/api/v1/flow",
             "/api/v1/outcomes",
+            "/api/v1/incidents",
         ] {
             assert!(
                 !query_params(path).is_empty(),

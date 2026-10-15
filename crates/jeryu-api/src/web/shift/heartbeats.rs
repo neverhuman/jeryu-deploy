@@ -125,6 +125,16 @@ pub(super) const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0022_agent_locations",
         include_str!("../../../../../db/migrations/0022_agent_locations.sql"),
     ),
+    (
+        23,
+        "0022_change_outcomes",
+        include_str!("../../../../../db/migrations/0022_change_outcomes.sql"),
+    ),
+    (
+        24,
+        "0023_incident_ledger",
+        include_str!("../../../../../db/migrations/0023_incident_ledger.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;

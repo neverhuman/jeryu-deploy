@@ -915,6 +915,35 @@ fn a_failing_gate_row_says_what_the_runner_published() {
     );
 }
 
+/// The gate that runs on every push to main reports through `main.status`
+/// events, so the attention row's facts come from the open red interval of
+/// the main-health projection: who turned it red, and what failed.
+#[test]
+fn a_red_main_from_the_push_gate_names_the_change_and_the_failing_tests() {
+    let open = crate::web::pipeline::main_health::RedInterval {
+        sha: "bbb2222".to_string(),
+        since: "2026-09-19T11:00:00Z".to_string(),
+        until: None,
+        seconds: 600,
+        fixed_by: None,
+        culprit_pr: Some(7),
+        flake: false,
+        tests: vec!["suite::slow_case".to_string()],
+    };
+    let facts = super::attention::gate_failure("acme/widget", &open);
+    assert_eq!(facts.first_red, open.since);
+    assert!(facts.first_step.contains("acme/widget#7"), "{facts:?}");
+    assert!(facts.first_step.contains("suite::slow_case"), "{facts:?}");
+
+    let quiet = crate::web::pipeline::main_health::RedInterval {
+        culprit_pr: None,
+        tests: Vec::new(),
+        ..open
+    };
+    let facts = super::attention::gate_failure("acme/widget", &quiet);
+    assert_eq!(facts.first_step, "the required gate failed on main");
+}
+
 #[test]
 fn main_red_is_its_own_attention_row_and_annotates_pr_failures() {
     let main = MainRedFacts {

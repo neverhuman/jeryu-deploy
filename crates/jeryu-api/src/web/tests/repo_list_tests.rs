@@ -876,3 +876,52 @@ async fn repo_list_reports_pushed_at_and_sorts_activity_by_it() {
     // never-pushed was created last, so its updated_at is the newest key.
     assert_eq!(order, vec!["never-pushed", "pushed-new", "pushed-old"]);
 }
+
+/// A red main is the repository's own breakage: the summary the repository
+/// page and the listing read says `failing` even though no check run on the
+/// head does, and the next green head clears it.
+#[test]
+fn a_red_main_makes_the_repository_summary_failing() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "acme",
+        CreateRepositoryRequest {
+            name: "widget".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let state = WebState::new(core);
+    assert_eq!(repo_list_response(&state).repositories[0].health, "healthy");
+
+    let verdict = |sha: &str, outcome: &str| {
+        crate::web::pipeline::record(
+            &state,
+            "forge",
+            crate::web::pipeline::NewEvent {
+                repo: Some("acme/widget".to_string()),
+                sha: Some(sha.to_string()),
+                outcome: Some(outcome.to_string()),
+                ..crate::web::pipeline::NewEvent::forge("main.status", "gate verdict on main")
+            },
+        )
+        .unwrap();
+    };
+
+    verdict("bbb2222", "red");
+    let listed = &repo_list_response(&state).repositories[0];
+    assert_eq!(listed.health, "failing");
+    assert_eq!(
+        listed.failing_checks, 0,
+        "the gate reports through events, not a check run on the head"
+    );
+
+    verdict("ccc3333", "green");
+    assert_eq!(
+        repo_list_response(&state).repositories[0].health,
+        "healthy",
+        "the next green head ends the red interval"
+    );
+}

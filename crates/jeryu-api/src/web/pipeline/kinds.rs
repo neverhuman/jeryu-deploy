@@ -27,6 +27,7 @@ const fn kind(kind: &'static str, source: &'static str, needle: &'static str) ->
 
 /// Every kind with `source = "forge"`, sorted by kind.
 pub(super) const FORGE_KINDS: &[ForgeKind] = &[
+    kind("defect.linked", "web/review_catch.rs", "DEFECT_KIND"),
     kind(
         "deploy.created",
         "web/pipeline/emit.rs",
@@ -45,6 +46,8 @@ pub(super) const FORGE_KINDS: &[ForgeKind] = &[
         "web/pipeline/emit.rs",
         "fn runner_heartbeat",
     ),
+    kind("main.escaped", "web/pipeline/emit.rs", "\"main.escaped\""),
+    kind("main.status", "web/pipeline/emit.rs", "\"main.status\""),
     kind("pr.approved", "web/pipeline/emit.rs", "\"pr.approved\""),
     kind("pr.draft", "web/pipeline/emit.rs", "\"pr.draft\""),
     kind("pr.merged", "web/pipeline/emit.rs", "\"pr.merged\""),
@@ -74,11 +77,13 @@ pub(super) const FORGE_KINDS: &[ForgeKind] = &[
         "web/pipeline/emit.rs",
         "\"repo.unarchived\"",
     ),
+    kind("review.finding", "web/review_catch.rs", "FINDING_KIND"),
     kind(
         "review.finished",
         "web/pipeline/emit.rs",
         "fn runner_heartbeat",
     ),
+    kind("review.resolved", "web/review_catch.rs", "RESOLVED_KIND"),
     kind(
         "review.started",
         "web/pipeline/emit.rs",

@@ -114,12 +114,19 @@ impl GithubRouter {
 
         // With a git backend wired, persist the REAL commit oids of the head and
         // base branch refs (never the literal "base"/"head-<n>" placeholders).
-        // A request that already carries explicit shas is honored as-is; an
-        // unresolvable branch falls through to the core default, preserving the
-        // git-less in-memory path used by unit tests.
+        // Explicit shas keep their existing validation. An unresolved base
+        // remains unset and is refused below; it must never borrow the head.
+        // The git-less in-memory path keeps its existing core behavior.
         #[cfg(feature = "web")]
         if let Some(rm) = &self.repo_manager {
             self.resolve_create_oids(rm, owner, repo, &mut req);
+            if let Some(base_sha) = req.base_sha.as_deref()
+                && !is_hex40(base_sha)
+            {
+                return error_response(ForgeError::Validation(
+                    "base_sha must be a 40-hex commit oid".to_string(),
+                ));
+            }
         }
 
         // Flagship overlap routing: before opening a fresh PR, see whether the
@@ -130,6 +137,13 @@ impl GithubRouter {
             && let Some(response) = self.maybe_route_overlap(owner, repo, &author, &req)
         {
             return response;
+        }
+        #[cfg(feature = "web")]
+        if self.repo_manager.is_some() && req.base_sha.is_none() {
+            return error_response(ForgeError::Validation(format!(
+                "base_sha must resolve to a 40-hex commit for {owner}/{repo}:{}",
+                req.base
+            )));
         }
 
         match self.core.create_pull_request(owner, repo, &author, req) {
@@ -161,9 +175,9 @@ impl GithubRouter {
 
     /// Fill in a create request's `head_sha`/`base_sha` from the real commit
     /// oids of the corresponding branch refs in the bare repo, but only for a
-    /// field the caller left unset and a ref that actually resolves. A git error
-    /// is non-fatal here: create then falls back to the core default rather than
-    /// failing the whole request on a transient resolve hiccup.
+    /// field the caller left unset and a ref that actually resolves. A failed
+    /// lookup leaves the field unset; create refuses an unresolved base when
+    /// the git backend is wired, including an unborn default branch.
     #[cfg(feature = "web")]
     fn resolve_create_oids(
         &self,
@@ -193,10 +207,9 @@ impl GithubRouter {
             req.head_sha = Some(oid);
         }
         if req.base_sha.is_none()
-            && let Ok(Some(oid)) =
-                refs.resolve_commit(&resolved, &format!("refs/heads/{}", req.base))
+            && let Ok(oid) = refs.resolve_commit(&resolved, &format!("refs/heads/{}", req.base))
         {
-            req.base_sha = Some(oid);
+            req.base_sha = oid;
         }
     }
 
@@ -1447,6 +1460,11 @@ fn fork_source(
         return None;
     }
     Some((source_owner.to_string(), source_repo.to_string()))
+}
+
+#[cfg(feature = "web")]
+pub(crate) fn is_hex40(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Whether a pull request's head lives in another repository than the one it

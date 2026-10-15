@@ -42,10 +42,12 @@ use super::repositories::{effective_family, find_repo};
 use super::strict_query::StrictQuery;
 use super::workcells_support::{TypedError, typed_error};
 use sources::{external_item, mark_collisions, repo_items, sort};
+#[cfg(test)]
+pub(crate) use store::LINGER_MS;
+pub(crate) use store::PresenceRow;
 pub(crate) use store::PresenceStore;
 #[cfg(test)]
-pub(crate) use store::{LINGER_MS, PresenceRow};
-#[cfg(test)]
+pub(crate) use types::Links as PresenceLinks;
 pub(crate) use types::PresenceState;
 use types::{
     BeatAccepted, BeatError, CheckedBeat, OverviewQuery, PresenceBeat, PresenceList, RepoQuery,
@@ -347,12 +349,17 @@ pub(crate) async fn beat(
         links: beat.links,
     };
     match store.upsert_as(&row, &account.login, admin, Utc::now().timestamp_millis()) {
-        Ok(stored) => Json(BeatAccepted {
-            ok: true,
-            session_id: stored.session_id,
-            expires_at: stored.expires_ms,
-        })
-        .into_response(),
+        Ok(stored) => {
+            // A session a person is driving is that person's time on the
+            // change it names (`web/human_time.rs`).
+            crate::web::human_time::session_mark(&state, &stored);
+            Json(BeatAccepted {
+                ok: true,
+                session_id: stored.session_id,
+                expires_at: stored.expires_ms,
+            })
+            .into_response()
+        }
         Err(err) => write_failed(err, &row.session_id),
     }
 }

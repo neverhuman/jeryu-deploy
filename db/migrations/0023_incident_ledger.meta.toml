@@ -1,0 +1,24 @@
+# Structured metadata for 0023_incident_ledger.sql. The SQL file is
+# checksum-bound once applied, so its lock and timeout posture lives here.
+
+migration = "0023_incident_ledger"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/incidents.rs"
+apply = "EventStore::open -> migrate_shift_store(), one transaction per migration"
+
+[lock_timeout]
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+
+[statement_timeout]
+# Two empty CREATE TABLEs and two indexes over no rows.
+mechanism = "table creation over no rows"
+value = "milliseconds"
+
+[rollback]
+plan = "stop the server, DROP TABLE incident_causes and incident_ledger, delete version 21 from shift_schema_migrations; roll back together with the binary"
+backup = "sqlite3 shift.sqlite '.backup incident-ledger.sqlite' before rollback; incidents older than the event log's retention exist only in these tables"
+
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::incidents"

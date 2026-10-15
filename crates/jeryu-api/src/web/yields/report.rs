@@ -202,6 +202,9 @@ pub(crate) struct YieldReport {
     /// Spend of agent sessions run by hand, outside the todo economics:
     /// never part of `totals`, `groups`, `weekly` or `experiments`.
     pub adhoc: Adhoc,
+    /// What review caught against what escaped it, by reviewer kind; the
+    /// handler fills it from the event log (`review_catch`).
+    pub review_catch: crate::web::review_catch::ReviewCatch,
 }
 
 /// Where a todo ended up.
@@ -695,5 +698,6 @@ pub(crate) fn build(
         costliest: top(&all),
         scrap: top(&scrapped),
         adhoc: adhoc::summarise(request.window, request.family.as_deref(), sessions),
+        review_catch: Default::default(),
     }
 }

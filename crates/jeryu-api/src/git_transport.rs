@@ -565,6 +565,9 @@ pub(crate) async fn git_receive_pack(
         // a hint -- whether the ref is a pull request head is the runner's
         // question, not this one's.
         crate::web::gate_wanted::record_push(&post_push, &owner, &repo, &updates);
+        // Commits a person authored are that person's time on the change
+        // (`web/human_time.rs`).
+        crate::web::human_time::record_push(&post_push, &owner, &repo, &updates);
         crate::ci_bridge::on_push(&core, &manager, &owner, &repo, &updates, &origin_base_url);
         // A pushed tag is mirrored to GitHub the same way a merge mirrors main:
         // new tags only, and an existing GitHub tag is reported, never moved.

@@ -20,7 +20,9 @@ mod error_envelope;
 pub(crate) mod family;
 pub(crate) mod flow;
 pub(crate) mod gate_wanted;
+pub(crate) mod human_time;
 mod idempotency;
+pub(crate) mod incidents;
 mod jankurai;
 mod mail;
 mod managed_launch;
@@ -53,6 +55,7 @@ mod repositories;
 mod repository_create;
 mod request_id;
 mod request_rules;
+mod review_catch;
 mod route_index;
 mod scorecard;
 mod search;
@@ -1247,6 +1250,12 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/repos/:id/pulls/:number/merge-attempt",
             get(merge_attempts::show),
         ),
+        // Which of a blocked passport's blockers the viewer can clear, and
+        // how. The blockers are never fewer than the passport's.
+        (
+            "/api/v1/repos/:id/pulls/:number/owner-paths",
+            get(pulls::owner_paths::show),
+        ),
         // Where this pull request came from. The importer marks a contribution
         // brought in from a mirror; the marking is never the author's.
         (
@@ -1391,6 +1400,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/events/histogram",
             get(pipeline::histogram::histogram),
         ),
+        ("/api/v1/main-health", get(pipeline::main_health::list)),
         ("/api/v1/attention", get(pipeline::attention::attention)),
         (
             "/api/v1/attention/acks",
@@ -1400,9 +1410,15 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/trace", get(pipeline::trace::trace)),
         ("/api/v1/yield", get(yields::yield_report)),
         ("/api/v1/scorecard", get(scorecard::scorecard)),
+        ("/api/v1/human-minutes", get(human_time::human_minutes)),
         ("/api/v1/flow", get(flow::flow)),
         ("/api/v1/flow/layout", get(flow::layout)),
         ("/api/v1/flow/history", get(flow::history::history)),
+        (
+            "/api/v1/incidents",
+            get(incidents::list).post(incidents::report_incident),
+        ),
+        ("/api/v1/incidents/webhook", post(incidents::webhook)),
         ("/api/v1/usage", get(usage::usage)),
         ("/api/v1/outcomes", get(outcomes::outcomes)),
         ("/api/v1/release-board", get(release_board::list_boards)),

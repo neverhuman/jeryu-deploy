@@ -318,11 +318,14 @@ pub(super) async fn detail(
 
 pub(super) async fn diff(
     State(state): State<Arc<WebState>>,
+    Extension(_account): Extension<AccountSummary>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
 ) -> AxumResponse {
     let Some((_, pr)) = resolve_pr(&state, &id, number) else {
         return not_found("load pull request diff", "pull request not found");
     };
+    // A read may be a background refresh. Only explicit review actions mark
+    // attention; GET must not inflate the permanent time ledger.
     Json(diff::pull_request_diff(&state, &pr)).into_response()
 }
 
@@ -378,7 +381,7 @@ pub(super) async fn review(
     if request.expected_head_sha != pr.head.sha {
         return stale_sha(&request.expected_head_sha, &pr.head.sha);
     }
-    let comments = request
+    let comments: Vec<_> = request
         .thread_comments
         .into_iter()
         .filter_map(comment_input)
@@ -390,6 +393,14 @@ pub(super) async fn review(
         _ => "comment",
     };
     let review_body = request.body_markdown.clone();
+    let finding_comments: Vec<_> = comments
+        .iter()
+        .map(|c| super::review_catch::HumanFinding {
+            path: Some(c.path.clone()),
+            line: c.line,
+            body: Some(c.body.clone()),
+        })
+        .collect();
     if event == ReviewState::Approved
         && let Some(response) = self_approval_forbidden(&pr, &account.login)
     {
@@ -421,6 +432,14 @@ pub(super) async fn review(
                     verdict_name,
                     review_body.as_deref(),
                 );
+                super::review_catch::human_findings(
+                    &state,
+                    &updated,
+                    &account.login,
+                    verdict_name,
+                    finding_comments,
+                );
+                super::human_time::pull_mark(&state, &updated, &account.login);
                 Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
             }
             Err(error) => core_error(error, "reload pull request after review"),
@@ -469,7 +488,15 @@ pub(super) async fn comment(
     let Some((repo, pr)) = resolve_pr(&state, &id, number) else {
         return not_found("submit pull request comment", "pull request not found");
     };
-    let comments = comment_input(request).into_iter().collect();
+    let comments: Vec<_> = comment_input(request).into_iter().collect();
+    let finding_comments: Vec<_> = comments
+        .iter()
+        .map(|c| super::review_catch::HumanFinding {
+            path: Some(c.path.clone()),
+            line: c.line,
+            body: Some(c.body.clone()),
+        })
+        .collect();
     match state.github.core().create_review(
         &repo.owner,
         &repo.name,
@@ -482,10 +509,20 @@ pub(super) async fn comment(
             expected_head_sha: Some(pr.head.sha.clone()),
         },
     ) {
-        Ok(_) => Json(PullRequestThreadList {
-            threads: threads_for_pr(&state, &pr),
-        })
-        .into_response(),
+        Ok(_) => {
+            super::review_catch::human_findings(
+                &state,
+                &pr,
+                &account.login,
+                "comment",
+                finding_comments,
+            );
+            super::human_time::pull_mark(&state, &pr, &account.login);
+            Json(PullRequestThreadList {
+                threads: threads_for_pr(&state, &pr),
+            })
+            .into_response()
+        }
         Err(error) => core_error(error, "submit pull request comment"),
     }
 }
@@ -548,6 +585,7 @@ pub(super) async fn approve(
         {
             Ok(updated) => {
                 super::pipeline::emit::pull_approved(&state, &updated, &account.login);
+                super::human_time::pull_mark(&state, &updated, &account.login);
                 Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
             }
             Err(error) => core_error(error, "reload pull request after approval"),
@@ -1334,6 +1372,7 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
 
 pub(in crate::web) mod diff;
 pub(in crate::web) mod landed;
+pub(in crate::web) mod owner_paths;
 mod posture;
 
 pub(crate) use posture::audit_gate_enforced_for;

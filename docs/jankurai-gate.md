@@ -44,6 +44,36 @@ on every pull request, which means:
   and publishes a failing proof whose title is the reason, and that reason is
   what blocks.
 
+## A blocker that is red on purpose, and who can clear it
+
+A change that lowers a floor fails the very context the floor protects. That is
+the gate working, and it leaves the pull request blocked with nothing an owner
+can press: root/jankurai-deploy#8 (2026-10-14) showed an administrator
+"Blocked: 3 things need doing" and no Merge button, with the only known routes
+being to turn branch protection off and back on, or to push an empty commit so
+a held review ran again.
+
+`GET /api/v1/repos/:id/pulls/:number/owner-paths` answers the other half of
+that page: for the account asking, which of the passport's blockers a
+repository administrator can clear, and the step that clears each one. Three
+things hold it honest:
+
+- every blocker of the passport appears, in the passport's own order, whether
+  or not the reader can clear it. The route explains the gate; it never
+  shortens it;
+- `viewer_may_clear_as_owner` is true only where the base branch's protection
+  leaves administrators out (`enforce_admins: false`) **and** the caller
+  administers this repository. Both are read per request;
+- every step is one the forge serves today — a review to post, a thread to
+  resolve, a required context an administrator owns in repository settings.
+  Turning protection off is not a step and is not offered.
+
+For the hold that pull request actually tripped on, the step is a recorded
+decision: approve the exact head with a comment that states it ("Owner
+decision: …"). pr-redteam re-reads the approvals immediately before it
+publishes, so a decision that lands while a review is running still answers the
+findings that asked for one — and those findings stay in the published review.
+
 ## A repository that does not use the audit
 
 Decision, 2026-10-07: a repository that holds no code — a private markdown

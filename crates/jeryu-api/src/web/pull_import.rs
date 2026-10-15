@@ -337,6 +337,17 @@ fn import_pull(
         }
         None => {
             let base_sha = base_head(state, owner, name, &target.branch);
+            let Some(base_sha) = base_sha.filter(|sha| crate::github::pulls::is_hex40(sha)) else {
+                return ImportOutcome::failed(
+                    &repo,
+                    &target.github_slug,
+                    pull.number,
+                    format!(
+                        "could not resolve {repo}:{} to a 40-hex base commit",
+                        target.branch
+                    ),
+                );
+            };
             let created = core.create_pull_request(
                 owner,
                 name,
@@ -347,7 +358,7 @@ fn import_pull(
                     head: branch.clone(),
                     base: target.branch.clone(),
                     head_sha: Some(head_sha.clone()),
-                    base_sha,
+                    base_sha: Some(base_sha),
                     changed_files: changed_files(
                         &git_bin,
                         &resolved.path,

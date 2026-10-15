@@ -381,6 +381,7 @@ async fn pulls_routes_return_live_pr_detail_diff_checks_and_threads() {
     let diff = response_json(
         crate::web::pulls::diff(
             State(state.clone()),
+            authenticated_account("alice"),
             AxumPath((repo.id.to_string(), pr.number)),
         )
         .await,
@@ -2650,4 +2651,171 @@ async fn closing_a_landed_pull_request_names_the_commit_it_landed_as() {
     .await;
     assert_eq!(again.status(), StatusCode::CONFLICT);
     assert_eq!(response_json(again).await["code"], "pull_close_not_open");
+}
+
+/// root/jankurai-deploy#8: the owner had recorded a decision on the exact head,
+/// and the PR page said "Blocked: 3 things need doing" with no Merge button and
+/// no route to one. The owner-paths route answers the other half of the
+/// question — which of those blockers an owner can clear, and how — without
+/// dropping a single blocker from the list.
+async fn owner_paths_for_deploy_eight(
+    enforce_admins: bool,
+    viewer: Extension<AccountSummary>,
+) -> serde_json::Value {
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "root",
+            CreateRepositoryRequest {
+                name: "jankurai-deploy".to_string(),
+                default_branch: Some("main".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    core.set_branch_protection(
+        "root",
+        "jankurai-deploy",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["jankurai/proof".to_string()],
+            required_approving_review_count: 1,
+            enforce_admins,
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "root",
+            "jankurai-deploy",
+            "author",
+            CreatePullRequestRequest {
+                title: "drop the jankurai ratchet floor 94 -> 92".to_string(),
+                head: "ratchet".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("deploy-eight-head".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    // The required context is red by design: the floor this change lowers.
+    core.create_check_run(
+        "root",
+        "jankurai-deploy",
+        CreateCheckRunRequest {
+            name: "jankurai/proof".to_string(),
+            head_sha: "deploy-eight-head".to_string(),
+            status: Some(jeryu_core::CheckRunStatus::Completed),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+    // The reviewer's hold, posted nine seconds before the owner approved.
+    core.create_review(
+        "root",
+        "jankurai-deploy",
+        pr.number,
+        "pr-redteam",
+        CreateReviewRequest {
+            body: Some("no recorded owner decision".to_string()),
+            event: ReviewState::ChangesRequested,
+            comments: Vec::new(),
+            expected_head_sha: Some("deploy-eight-head".to_string()),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(WebState::new(core));
+    response_json(
+        crate::web::pulls::owner_paths::show(
+            State(state),
+            viewer,
+            AxumPath((repo.id.to_string(), pr.number)),
+        )
+        .await,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_admin_reads_which_blockers_are_theirs_to_clear_and_how() {
+    let page = owner_paths_for_deploy_eight(false, authenticated_admin_account("alton2")).await;
+    assert_eq!(page["blocked"], true, "{page}");
+    assert_eq!(page["enforce_admins"], false, "{page}");
+    assert_eq!(page["viewer_is_admin"], true, "{page}");
+    assert_eq!(page["viewer_may_clear_as_owner"], true, "{page}");
+
+    // Every blocker of the passport is here, in the passport's order: the
+    // route explains the gate, it never shortens it.
+    let codes: Vec<&str> = page["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            "passport_blocked_checks",
+            "passport_blocked_approvals",
+            "passport_blocked_changes_requested",
+        ],
+        "{page}"
+    );
+    for row in page["blockers"].as_array().unwrap() {
+        assert!(
+            !row["how"].as_str().unwrap().is_empty(),
+            "every blocker says who the question belongs to: {row}"
+        );
+        assert_eq!(
+            row["owner_can_clear"],
+            row["code"] == "passport_blocked_approvals",
+            "{row}"
+        );
+        assert!(
+            !row["how"].as_str().unwrap().contains("removes it"),
+            "{row}"
+        );
+    }
+    // A separate approval cannot clear the reviewer who withheld approval.
+    let held = page["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["code"] == "passport_blocked_changes_requested")
+        .unwrap();
+    assert!(held["how"].as_str().unwrap().contains("reviewer"), "{held}");
+    assert!(
+        page["headline"].as_str().unwrap().contains("you can clear"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn a_non_admin_sees_the_same_blockers_and_is_told_whose_they_are() {
+    let page = owner_paths_for_deploy_eight(false, authenticated_account("author")).await;
+    assert_eq!(page["viewer_is_admin"], false, "{page}");
+    assert!(page["enforce_admins"].is_null(), "{page}");
+    assert_eq!(page["viewer_may_clear_as_owner"], false, "{page}");
+    assert_eq!(page["blockers"].as_array().unwrap().len(), 3, "{page}");
+    assert!(
+        page["headline"]
+            .as_str()
+            .unwrap()
+            .contains("a repository admin can clear"),
+        "{page}"
+    );
+}
+
+/// Protection that includes administrators claims no bypass for one: the
+/// blockers and their steps still read, but nobody is told they are an owner
+/// of this gate.
+#[tokio::test]
+async fn protection_that_enforces_admins_offers_no_owner_standing() {
+    let page = owner_paths_for_deploy_eight(true, authenticated_admin_account("alton2")).await;
+    assert_eq!(page["enforce_admins"], true, "{page}");
+    assert_eq!(page["viewer_is_admin"], true, "{page}");
+    assert_eq!(page["viewer_may_clear_as_owner"], false, "{page}");
+    assert_eq!(page["blockers"].as_array().unwrap().len(), 3, "{page}");
 }

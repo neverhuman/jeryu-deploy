@@ -798,6 +798,34 @@ fn open_pr_persists_real_resolved_oids_not_placeholders() {
 }
 
 #[test]
+fn open_pr_refuses_a_non_hex_base_sha() {
+    if !git_available() {
+        return;
+    }
+    let fixture = seed_fixture("jeryu-open-refuses-base-placeholder");
+    let router = router_over(&fixture);
+
+    let opened = router.post(
+        "/repos/acme/demo/pulls",
+        &format!(
+            r#"{{"title":"feature","head":"feature","base":"main","head_sha":"{}","base_sha":"base","actor":"alice"}}"#,
+            fixture.head_oid
+        ),
+    );
+    assert_eq!(opened.status, 422, "open pr: {}", opened.body);
+    let body = body(&opened);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("base_sha must be a 40-hex commit oid"),
+        "refusal names the invalid base sha: {body}"
+    );
+
+    fixture.cleanup();
+}
+
+#[test]
 fn normal_pr_merges_via_live_resolve_and_advances_main() {
     if !git_available() {
         return;
@@ -998,12 +1026,19 @@ fn merge_into_missing_base_creates_base_at_head() {
     if !git_available() {
         return;
     }
-    // An approved PR into a repository with no `main` seeds `main` at the PR
-    // head (a fast-forward from nothing) instead of failing with
-    // "base ref refs/heads/main does not resolve to a commit".
-    let fixture = seed_empty_base_fixture("jeryu-missing-base");
+    // A PR opened against a real base can still recreate that branch if the
+    // branch disappears before merge. Its stored review base remains real.
+    // Opening a new PR on an unresolved base is refused in the separate test.
+    let fixture = seed_fixture("jeryu-missing-base");
     let router = router_over(&fixture);
     let number = open_pr_by_branch(&router, "feature", "main");
+    let id = RepoId::new("acme", "demo").unwrap();
+    let resolved = fixture.manager.resolve(&id).unwrap();
+    run_git(
+        &resolved.path,
+        &["update-ref", "-d", "refs/heads/main"],
+        "remove base after open",
+    );
     approve(&router, number);
 
     let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
@@ -1425,4 +1460,42 @@ fn linear_history_base_defers_a_direct_merge_while_the_queue_is_building() {
     assert_eq!(fixture.main_ref(), fixture.head_oid);
 
     fixture.cleanup();
+}
+
+#[test]
+fn open_pr_refuses_missing_and_unborn_bases_without_borrowing_the_head() {
+    if !git_available() {
+        return;
+    }
+    for unborn in [false, true] {
+        let fixture = if unborn {
+            seed_empty_base_fixture("jeryu-open-unborn-base")
+        } else {
+            seed_fixture("jeryu-open-missing-base")
+        };
+        let router = router_over(&fixture);
+        let base = if unborn { "main" } else { "missing" };
+        let opened = router.post(
+            "/repos/acme/demo/pulls",
+            &format!(r#"{{"title":"feature","head":"feature","base":"{base}","actor":"alice"}}"#),
+        );
+        assert_eq!(
+            opened.status, 422,
+            "unresolved base must not produce an empty review: {}",
+            opened.body
+        );
+        assert!(
+            body(&opened)["message"]
+                .as_str()
+                .unwrap()
+                .contains("base_sha must resolve")
+        );
+        let pulls = router.get("/repos/acme/demo/pulls");
+        assert_eq!(pulls.status, 200);
+        assert!(
+            body(&pulls).as_array().unwrap().is_empty(),
+            "refused create must persist no PR"
+        );
+        fixture.cleanup();
+    }
 }

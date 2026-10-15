@@ -42,6 +42,7 @@ authority. Durable detail is intentionally routed rather than duplicated:
   `docs/pipeline-events.md`.
 - Product-wide search (`GET /api/v1/search`), what it looks in and what it
   deliberately does not: `docs/search.md`.
+- Pull request create and review-base behavior: `docs/pull-request-bases.md`.
 - Paging every list route, on both the `/api/v1` and `/api/v3` edges:
   `docs/pagination.md`.
 - Flow, the delivery line as stations (where work sits, waits and loops back,

@@ -260,15 +260,15 @@ async fn node_fixture() -> Node {
     let server_ca = ca("jeryu gateway ca");
     let rng = ring::rand::SystemRandom::new();
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("key");
-    let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("pair");
-    let public: [u8; 32] = key.public_key().as_ref().try_into().expect("32");
+    let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("pair");
+    let public: [u8; 32] = pair.public_key().as_ref().try_into().expect("32");
     let cert = leaf(&node_ca, &["node-1"], ExtendedKeyUsagePurpose::ClientAuth);
     let fingerprint = CertificateFingerprint::of_der(&der_of(&cert.0));
     let addr = start(&server_ca, &node_ca, &[(fingerprint, public)]).await;
     Node {
         server_ca,
         cert,
-        key,
+        key: pair,
         addr,
     }
 }

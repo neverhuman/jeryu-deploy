@@ -54,6 +54,8 @@ projection and the Flow report), `db/migrations/0002_pipeline_events.sql`,
 | `GET /api/v1/yield` | global admins |
 | `GET /api/v1/flow` | global admins |
 | `GET /api/v1/flow/layout` | global admins |
+| `GET /api/v1/incidents` | global admins |
+| `POST /api/v1/incidents/webhook` | a global admin, or a login in `JERYU_EVENT_REPORTERS`, like `POST /api/v1/events` |
 | `GET /api/v1/usage` | global admins |
 | WebSocket scope `pipeline` | global admins |
 
@@ -130,13 +132,46 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 | `worker.stage` | a worker slot's state, stage or todo differs from its previous heartbeat; summary like `w1 jeryu: agent -> gate on <todo>`. An unchanged beat, or an idle slot appearing, emits nothing |
 | `shift.pr_opened` | the Shift page opened a shift's review PR |
 | `pr.opened`, `pr.review`, `pr.approved`, `pr.merged` | pull request steps on the v1 routes and the GitHub-compatible edge; `pr.review` has `outcome` `approve`, `request_changes` or `comment`, and `needs_human` for `request_changes`. Tagged with `family` and `shift` when the head is a shift branch. `pr.approved` is the one-click route (`POST /api/v1/repos/{id}/pulls/{number}/approve`) only: an approval sent as a review -- the v1 reviews route, the `gh`-compatible `POST /api/v3/repos/{owner}/{repo}/pulls/{number}/reviews`, pr-redteam -- is `pr.review` with `outcome = approve`, so a client that reviews rather than one-click-approves produces no `pr.approved` at all |
+| `review.finding`, `review.resolved`, `defect.linked` | review catch rate. `review.finding` is one finding a human left: a line comment (`outcome = comment`) or a request-changes verdict with no line comment (`outcome = blocking`); `detail` has `reviewer_kind = human`, `severity`, `path`, `line`. `review.resolved` is written when a pull request merges, for each finding no reviewer resolved: `outcome = caught` when a commit after the finding's `sha` touched its `detail.path` (or, for a finding with no path, moved the head), else `not_acted`; `detail.finding` names the finding (its `event_id`, or `seq-<seq>`), `detail.reason` is `file_changed`, `head_changed` or `unchanged_at_merge`. `defect.linked` is written for every change the forge can see a defect in: the change a revert pull request names (`#N` in its title or body, `detail.cause = revert`), the changes a todo that redoes another one landed (`cause = rework`, `detail.by` the redoing todo), and the changes an `incident.caused_by` blames (`cause = incident`, `detail.by` the incident). A change a cause names by lot key rather than number (a todo id) is resolved to its pull requests through the flow ledger, and the same defect reported twice links the change once |
 | `pr.ready_for_review`, `pr.draft` | the draft lifecycle: `POST /api/v1/repos/{id}/pulls/{number}/ready` or `/draft`, or the `gh`-compatible `PATCH /api/v3/repos/{owner}/{repo}/pulls/{number}` with `{"draft": …}`. The summary names the actor ("acme/app#7 marked ready by dana"); `outcome` is `ready` or `draft`. Only the author and admins may make either transition, and each one also appends a `pull_request.ready_for_review` / `pull_request.convert_to_draft` audit row |
 | `pr.skipped` | an automation looked at a pull request and did nothing, once per head: `detail.automation` is the tool (`merge-queue`, `pr-redteam`) and `detail.skipped` the reason (`draft`). Without it a draft sits with no signal at all |
 | `queue.enqueued`, `queue.building`, `queue.landed`, `queue.failed`, `queue.dequeued`, `queue.refused` | merge-queue transitions, and only those: a pull request merged without joining the queue has none of them, just `pr.merged` with `detail.via = "merge"`. `queue.building` is a rebuild (moved base, or a retry after a red gate). `queue.landed` is followed by `pr.merged` with `detail.via = "merge_queue"`. `queue.refused` means the PR could not be replayed onto the base and somebody has to rebase it; it is also persisted as a `dequeued` entry whose `refusal_code` is the forge code, which is what raises `queue_refused` in the attention inbox |
+| `main.status` | the required gate ran on the head of a repository's default branch (a runner heartbeat whose `current` or `last` names that head's sha). `outcome` is `started`, `green` or `red`; `detail` has `runner`, `recipe`, `conclusion`, `seconds` and, on a red run, `tests` when the runner reported failing test names. A rerun of the same sha is another event, which is how a flake shows. `GET /api/v1/main-health` folds them into red intervals and a flake rate. While the newest verdict of a repository is `red`, its `RepositorySummary.health` is `failing`, so the repository page and the Repositories listing show a red main even though no check run on the head does |
+| `main.escaped` | a head turned the default branch red where it had not been: `pr` is the merged pull request whose merge commit is the red head, the escaped-to-main defect charged to that change. A rerun of the same sha that goes green marks the interval a flake in the projection and takes it out of `escaped_defects` |
 | `gate.started`, `gate.finished`, `review.started`, `review.finished` | a runner heartbeat's `current` or `last` differs from that runner's previous beat (`review.*` for the `redteam` label; never for the `automation` label, see [Runner heartbeats](#runner-heartbeats)). A reviewer verdict of `hold`, `failed`, `publication_rejected` or `too_large` sets `needs_human`. `*.started` comes from `current` alone: a runner that beats only once a pass has finished, carrying `last` and no `current`, produces `*.finished` with no `*.started` before it |
 | `deploy.created`, `deploy.status` | a write to the Deployments API; `outcome` is the deployment status state, `needs_human` for `failure` and `error`; `reason` is the status description, which `deploy-release.sh` ends with the last meaningful line of switch.sh's output on failure. The status request may also carry `log_path` (the operator's kept switch log on the release host) and `log_tail`: the Deployments API stores neither, and the event's `detail` carries both (the tail cut to its last 20 lines and at most 6000 bytes of JSON, so the event fits the 8 KiB `detail` limit) |
 | `repo.archived`, `repo.unarchived` | a repository became read-only, or writable again. Archiving deletes nothing and is reversible, so both are a plain success and the kind is what says which way it went; `detail` carries `archived` |
 | `repo.renamed`, `repo.transferred` | the repository moved: a rename inside its owner, or a transfer to another one. The old slug keeps resolving until a repository is created there, so neither is a warning; `detail` carries `{from, to}` |
+
+
+### Review catch rate
+
+`GET /api/v1/yield` carries `review_catch`: `human`, `agent` and `total`
+rows, each with `findings`, `caught`, `not_acted`, `open`, `escaped`,
+`catch_rate`, `reviews_timed`, `review_seconds_mean` and
+`review_seconds_median`.
+
+Producers post three kinds the forge cannot see for itself:
+
+- `review.finding` from the agent reviewer (jeryu-ci-runner's `pr-redteam`):
+  `repo`, `pr`, `sha`, an `event_id`, and `detail` with `reviewer_kind =
+  agent`, `severity`, `title`, `path` and `line`.
+- `review.resolved` with `outcome = caught` and `detail.finding` set to the
+  finding's `event_id`, when the reviewer sees a later head no longer shows
+  it. The forge's merge-time resolution leaves a finding that already has one.
+- `defect.linked` (`repo`, `pr` of the defective change, `detail.cause` of
+  `revert`, `rework` or `incident`) for a defect no forge route sees. The
+  forge links all three causes it can see itself: a revert pull request, a
+  todo edited to rework another one, and an `incident.caused_by`.
+
+`catch_rate = caught / (caught + escaped)`. A change *escaped* a reviewer kind
+when that kind passed it (`pr.review` from a person, or `pr.reviewed`, with
+`outcome = approve`) and a `defect.linked` names it; each change counts once.
+Review time is from the earliest `pr.review_requested` or
+`pr.ready_for_review` of a pull request to the first review event of each
+kind that follows (`pr.review` by a person: `human`; `pr.reviewed` or
+`review.finished`: `agent`). Findings and times count inside the report's
+window.
 
 ### Flow ledger
 
@@ -825,6 +860,88 @@ repository in no family); spend with neither is `unattributed_usd`. A missing
 `detail.agent` or `detail.model` groups as `(unknown)`; a row without
 `detail.session` counts no session.
 
+## Human minutes per change
+
+`GET /api/v1/human-minutes` reports how much of people's time each change
+cost, and the engineering time behind each successful outcome: it is what the
+Scorecard divides by. Admin-only, like the yield report. Implementation:
+`crates/jeryu-api/src/web/human_time.rs`; store:
+`db/migrations/0022_change_outcomes.sql`.
+
+Query: `family` (either spelling; an unknown family is `422 family_unknown`),
+`since` and `until` (`YYYY-MM-DD`, UTC, both included; default `until` is
+today and `since` 28 days before it), `by` = `family`, `repo` or `work_kind`
+(default `family`). A bad value, `since` after `until`, or a key the route
+does not read is `422 invalid_query`.
+
+### What is counted
+
+Minutes are charged to a change lot -- a todo id, or `<owner>/<repo>#<N>` for
+a pull request no todo carries, as the [flow ledger](#flow-ledger) spells it
+-- and each charge is labelled with where it came from:
+
+| `source` | What it counts |
+|---|---|
+| `review` | a person submitting a review or approval, or leaving a comment; passive reads and background diff polling do not write marks |
+| `commit` | a commit a person authored, pushed to the branch of a lot's open pull request. The author is the account that proved that email address (`PUT /api/v1/auth/email` and its verification); a commit no account proved the address of counts for nobody |
+| `session` | an `active` agent presence beat whose `operator` is a person and whose `links` name a todo or a pull request |
+| `triage` | a todo action a person took through `POST /api/v1/shift/todos/:family/:id/action`: release, block, rework filing, any other |
+
+Each of those writes a *mark*: the moment a person did something. A mark
+charges the gap since that person's previous mark on the same lot from the
+same source when that gap is at most 15 minutes; a longer gap is not work, so
+the mark opens a new session and charges one minute for the action itself. A
+mark that does not move forward in time (a commit pushed again) charges
+nothing. Gaps are per person, so two reviewers on one pull request are two
+sessions. The initial minute is an explicit session-opening estimate; repeat
+marks charge only elapsed milliseconds, never another per-mark minimum. This
+is an attention estimate from explicit actions, not a billing clock or a
+measurement of passive reading. Diff GETs leave the ledger unchanged.
+
+Whether an account is a person is the account kind the instance resolves
+(`GET /api/v1/admin/users`, `crates/jeryu-api/src/web/people.rs`),
+so the agent reviewer going through the same review routes is not human time,
+and an anonymous read is nobody's.
+
+### What is not counted
+
+Agent time and model spend, which `GET /api/v1/yield` reports in dollars; time
+nobody recorded (work off the forge, reading a page that is not a pull
+request's files); and anything per person. `actor` is stored only so two
+people on one lot are two sets of gaps: there is no per-person read, by
+design. The answer repeats this in `not_counted`.
+
+### Change outcomes
+
+`change_outcomes` holds one row per lot, folded in the same transaction as the
+event that moves it: `pr.merged` lands a change, `defect.linked` and
+`incident.caused_by` fail one, `pin.bump_opened` makes the lot a `pin_bump`,
+and the todo a `defect.linked` with `cause = rework` names in `detail.by` is
+`rework`. A change is **successful** when it landed and no defect was linked
+to it and no incident named it; the rate divides by those only.
+
+```jsonc
+{
+  "schema_version": "jeryu.human_minutes/v1",
+  "generated_at": "2026-10-14T12:00:00Z",
+  "window": {"since": "2026-10-01", "until": "2026-10-14"},
+  "family": null,              // or the canonical family key asked for
+  "by": "family",
+  "sources": [{"source": "review", "label": "...", "minutes": 42.5}],  // all four, in order
+  "not_counted": ["..."],
+  "totals": Row,
+  "groups": [Row & {"group": "acme"}]   // by family key, repo slug or work kind
+}
+```
+
+`Row`: `minutes` (the window's, on this group's lots), `review_minutes`,
+`commit_minutes`, `session_minutes`, `triage_minutes`, `changes` (lots that
+landed inside the window), `successful_changes`, `failed_changes`, and
+`minutes_per_successful_change` (`minutes / successful_changes`, null while
+the group landed none). Minutes count by the UTC day they fell on; changes
+count by when they landed. A lot with no family groups as `(unknown)`, one
+with no repository as `(none)`.
+
 ## Flow
 
 `GET /api/v1/flow` reports the delivery-line stations. Admin-only, like the
@@ -1317,3 +1434,62 @@ queries. Conflicting windows are refused. Worker rows omit token and cost usage
 for non-admin readers. A non-admin event reporter may attribute a usage sample
 only to its own authenticated operator login; administrators retain fleet
 reporting.
+
+## Incidents
+
+Four kinds, posted by any reporter (an alert webhook, a person, an agent) through
+`POST /api/v1/events`. Each names its incident in `detail.incident_id`
+(at most 64 characters of `[A-Za-z0-9._:-]`); a malformed one is a `422`.
+
+| Kind | `detail` |
+|---|---|
+| `incident.opened` | `incident_id`, `detected_at` (RFC 3339, default: when posted), `severity`, `service`; the event `summary` is the incident's |
+| `incident.restored` | `incident_id`, `restored_at` (default: when posted), `restoring_change` (a change lot key) |
+| `incident.caused_by` | `incident_id`, `changes`: one or more change lot keys (or `change` for one). May arrive at any time, also after `incident.closed`; repeats are counted once |
+| `incident.closed` | `incident_id`, `closed_at` |
+
+They are folded, in the same transaction as the event, into `incident_ledger`
+and `incident_causes` (migration 0019), which are never pruned. The fold does
+not depend on order: a restore posted before the opening lands on the same
+incident.
+
+`GET /api/v1/incidents?family=` reads the ledger. Per incident:
+`time_to_restore_seconds` is `detected_at` to `restored_at`; each cause has
+`deployed_at` (the last time that lot left the Deploy station forward in the
+flow ledger) and `time_to_detect_seconds` from it to `detected_at`, both null
+when unknown. A change named by `incident.caused_by` has outcome `failed` and
+is listed in `failed_changes`. An incident with no cause has
+`cause_unknown: true` and `cause: "cause unknown"`; it still counts for time to
+restore. `summary` holds the counts and the mean and median times.
+
+`POST /api/v1/incidents` is what the authenticated "Report incident" form
+sends: `incident_id` (optional; the server generates `inc-<UTC stamp>-<hex>`
+when the reporter does not name one), `summary` (the only required field),
+`service`, `severity`, `family`, `repo`, `detected_at`, `changes`,
+`restored_at`, `restoring_change`, `closed`. A reporter sends what they know,
+so one submission may open, attribute, restore and close at once, and what they
+do not know yet arrives later as its own event on the same incident. It replies
+`201` with the `incident_id`; a missing `summary` is a `422`
+`incident_report_invalid`. Event ids are `report-<incident_id>-opened|caused-by|restored|closed`,
+so sending the form twice reports the incident once. Posting needs the same
+reporter identity as `POST /api/v1/events`.
+
+`POST /api/v1/incidents/webhook` takes a generic alert body (or an array):
+`incident_id`, `status` (`firing` or `resolved`), `service`, `severity`,
+`summary`, `family`, `detected_at`, `restored_at`, `restoring_change`,
+`changes`. It becomes the events above with source `alert-webhook` and event ids
+`alert-<incident_id>-opened|restored|caused-by`, so a redelivered alert is
+stored once. A vendor body is another `AlertAdapter` in `web/incidents.rs`.
+
+
+Review-catch accounting records the reviewer's human/service kind when a forge
+review or one-click approval is emitted. Automation route verdicts do not emit
+human findings: the agent's structured finding reporter owns those events.
+The route verdict and the agent's own report count at most one escape for the
+agent row on a change. Historical route events without a recorded reviewer
+kind remain unclassified rather than being assumed to be human reviews.
+
+Revert defect attribution accepts only dedicated `Reverts #N` body lines on a
+revert PR, resolves an existing merged target in the same repository, and emits
+at most 50 stable, deduplicated links after scanning at most 1,000 lines.
+Incidental issue references, absent/open targets and self references are ignored.

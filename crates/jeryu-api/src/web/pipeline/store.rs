@@ -554,6 +554,8 @@ impl EventStore {
         };
         project::apply(&tx, &view)?;
         outcomes::project::apply(&tx, &view)?;
+        crate::web::incidents::apply(&tx, reporter, event, now_ms, seq)?;
+        crate::web::human_time::apply(&tx, event, now_ms)?;
         tx.commit().map_err(|err| err.to_string())?;
         if now_ms - inner.last_prune_ms >= PRUNE_EVERY_MS {
             inner
@@ -594,6 +596,25 @@ impl EventStore {
             event,
             duplicate: false,
         })
+    }
+
+    /// Charge one mark of a person's time to its change lot, from a route
+    /// that is not storing an event (`web/human_time.rs`).
+    pub(crate) fn charge_human_minutes(
+        &self,
+        mark: &crate::web::human_time::Mark<'_>,
+    ) -> Result<(), String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        crate::web::human_time::charge(&inner.conn, mark)
+    }
+
+    /// Run a read against the store's connection.
+    pub(crate) fn with_conn<R>(
+        &self,
+        read: impl FnOnce(&Connection) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        read(&inner.conn)
     }
 
     /// Events matching `query`. With `after_seq` the page is a cursor tail,

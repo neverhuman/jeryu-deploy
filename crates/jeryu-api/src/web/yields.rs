@@ -170,20 +170,26 @@ pub(crate) async fn yield_report(
         let todos = super::shift::enriched_todos(&worker_state, read_family.as_deref())?;
         let reviews = worker_state.events.ledger(REVIEW_KIND)?;
         let sessions = session_spend(&worker_state, window)?;
-        Ok::<_, String>((todos, reviews, sessions))
+        let events = super::review_catch::read_events(&worker_state, read_family.as_deref())?;
+        Ok::<_, String>((todos, reviews, sessions, events))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((todos, reviews, sessions)) => {
+        Ok((todos, reviews, sessions, events)) => {
             let request = Request {
                 window,
                 family,
                 by,
                 now,
             };
-            Json(build(&request, &todos, &reviews, &sessions)).into_response()
+            let mut report = build(&request, &todos, &reviews, &sessions);
+            let (since_ms, until_ms) = window_ms(window);
+            let at = |ms| chrono::DateTime::from_timestamp_millis(ms);
+            report.review_catch =
+                super::review_catch::report(&events, at(since_ms).zip(at(until_ms)));
+            Json(report).into_response()
         }
         Err(reason) => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,

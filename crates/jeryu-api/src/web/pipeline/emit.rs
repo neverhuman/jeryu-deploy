@@ -128,7 +128,9 @@ pub(crate) fn pull_reviewed(
                 .filter(|b| !b.is_empty())
                 .map(str::to_string),
             sha: None,
-            detail: Some(json!({ "title": pr.title, "author": pr.author })),
+            detail: Some(
+                json!({ "title": pr.title, "author": pr.author, "reviewer_kind": super::super::review_catch::reviewer_kind(state, reviewer) }),
+            ),
         },
     );
 }
@@ -146,13 +148,18 @@ pub(crate) fn pull_approved(state: &WebState, pr: &PullRequest, reviewer: &str) 
             summary: format!("{reviewer} approved {}", pr_label(pr)),
             reason: None,
             sha: None,
-            detail: Some(json!({ "title": pr.title, "author": pr.author })),
+            detail: Some(
+                json!({ "title": pr.title, "author": pr.author, "reviewer_kind": super::super::review_catch::reviewer_kind(state, reviewer) }),
+            ),
         },
     );
 }
 
 /// `pr.merged`, from a direct merge (`via = "merge"`) or the merge queue.
 pub(crate) fn pull_merged(state: &WebState, pr: &PullRequest, actor: &str, via: &str) {
+    // Resolve findings first: the merge event is the last thing on the trace.
+    super::super::review_catch::resolve_at_merge(state, pr);
+    super::super::review_catch::link_revert(state, pr);
     pull(
         state,
         pr,
@@ -350,6 +357,16 @@ pub(crate) fn github_edge(
         }
         ["repos", owner, repo, "pulls", number, "reviews"] => {
             let request: Value = serde_json::from_str(request_body).unwrap_or(Value::Null);
+            let comments: Vec<_> = request["comments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| crate::web::review_catch::HumanFinding {
+                    path: c["path"].as_str().map(str::to_string),
+                    line: c["line"].as_u64().or_else(|| c["position"].as_u64()),
+                    body: c["body"].as_str().map(str::to_string),
+                })
+                .collect();
             let verdict = match request["event"].as_str().unwrap_or_default() {
                 "APPROVE" | "APPROVED" => "approve",
                 "REQUEST_CHANGES" | "CHANGES_REQUESTED" => "request_changes",
@@ -357,6 +374,7 @@ pub(crate) fn github_edge(
             };
             if let Some(pr) = pull_request(owner, repo, number) {
                 pull_reviewed(state, &pr, actor, verdict, request["body"].as_str());
+                crate::web::review_catch::human_findings(state, &pr, actor, verdict, comments);
             }
         }
         ["repos", owner, repo, "deployments"] => {
@@ -560,12 +578,21 @@ pub(crate) fn runner_heartbeat(
             },
         );
     }
+    if !reviewer
+        && let Some(task) = &current.current
+        && previous.and_then(|p| p.current.as_ref()) != Some(task)
+    {
+        main_gate_started(state, current, task);
+    }
     // A runner's first beat after a forge restart repeats an old `last`; only
     // a result that differs from the previous beat's is news.
     if let (Some(result), Some(previous)) = (&current.last, previous)
         && previous.last.as_ref() != Some(result)
     {
         let bad_gate = !reviewer && result.conclusion != "success";
+        if !reviewer {
+            main_gate_finished(state, current, result);
+        }
         // A reviewer that held the PR, or ended without a usable verdict,
         // leaves the PR waiting on a person. A red gate is the author's next
         // step and shows up as failing checks instead.
@@ -621,6 +648,203 @@ pub(crate) fn runner_heartbeat(
             },
         );
     }
+}
+
+/// Whether `sha` is the head of `repo`'s default branch, or a head a
+/// `main.status` event already announced as gated there (main may have moved
+/// on while the gate ran).
+fn is_main_head(state: &WebState, repo: &str, sha: &str) -> bool {
+    let Some((owner, name)) = repo.split_once('/') else {
+        return false;
+    };
+    if super::attention::main_head(state, owner, name).as_deref() == Some(sha) {
+        return true;
+    }
+    state
+        .events
+        .query(&super::EventsQuery {
+            repo: Some(repo.to_string()),
+            kind: Some("main.status".to_string()),
+            limit: Some(200),
+            ..super::EventsQuery::default()
+        })
+        .map(|events| events.iter().any(|e| e.sha.as_deref() == Some(sha)))
+        .unwrap_or(false)
+}
+
+/// `main.status` with outcome `started`: the required gate began on main's head.
+fn main_gate_started(
+    state: &WebState,
+    runner: &GateRunnerHeartbeat,
+    task: &super::super::control_plane::GateRunnerTask,
+) {
+    let Some((owner, name)) = task.repo.split_once('/') else {
+        return;
+    };
+    if super::attention::main_head(state, owner, name).as_deref() != Some(task.sha.as_str()) {
+        return;
+    }
+    let digest = Sha256::digest(
+        format!(
+            "{}\n{}\n{}\n{}",
+            runner.runner_id, task.repo, task.sha, task.started_at
+        )
+        .as_bytes(),
+    );
+    emit(
+        state,
+        NewEvent {
+            actor: Some(runner.runner_id.clone()),
+            repo: Some(task.repo.clone()),
+            sha: Some(task.sha.clone()),
+            outcome: Some("started".to_string()),
+            event_id: Some(format!("main.started:{}", &hex::encode(digest)[..32])),
+            detail: Some(json!({
+                "runner": runner.runner_id,
+                "recipe": task.recipe,
+                "started_at": task.started_at.to_rfc3339(),
+            })),
+            ..NewEvent::forge(
+                "main.status",
+                format!(
+                    "gate started on {} main at {}",
+                    task.repo,
+                    short_sha(&task.sha)
+                ),
+            )
+        },
+    );
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..12).unwrap_or(sha)
+}
+
+/// `main.status` with outcome `green` or `red`, from a gate result on main's
+/// head; a red head that turns main red also writes `main.escaped` against
+/// the merged change.
+fn main_gate_finished(
+    state: &WebState,
+    runner: &GateRunnerHeartbeat,
+    result: &super::super::control_plane::GateRunnerResult,
+) {
+    // A gate that stopped because its inputs moved says nothing about main.
+    let outcome = match result.conclusion.as_str() {
+        "success" => "green",
+        "inputs_changed" | "cancelled" | "skipped" => return,
+        _ => "red",
+    };
+    if !is_main_head(state, &result.repo, &result.sha) {
+        return;
+    }
+    // The previous verdict decides whether this red turns main red.
+    let was_red = state
+        .events
+        .query(&super::EventsQuery {
+            repo: Some(result.repo.clone()),
+            kind: Some("main.status".to_string()),
+            limit: Some(50),
+            ..super::EventsQuery::default()
+        })
+        .ok()
+        .and_then(|events| {
+            events
+                .into_iter()
+                .find(|e| matches!(e.outcome.as_deref(), Some("green" | "red")))
+        })
+        .map(|e| e.outcome.as_deref() == Some("red"));
+    let digest = Sha256::digest(
+        format!(
+            "{}\n{}\n{}\n{}",
+            runner.runner_id,
+            result.repo,
+            result.sha,
+            result.finished_at.to_rfc3339()
+        )
+        .as_bytes(),
+    );
+    emit(
+        state,
+        NewEvent {
+            actor: Some(runner.runner_id.clone()),
+            repo: Some(result.repo.clone()),
+            sha: Some(result.sha.clone()),
+            outcome: Some(outcome.to_string()),
+            needs_human: outcome == "red",
+            seconds: i64::try_from(result.seconds).ok(),
+            event_id: Some(format!("main.finished:{}", &hex::encode(digest)[..32])),
+            reason: (outcome == "red").then(|| {
+                format!(
+                    "the {} recipe ended {} on main: {}",
+                    result.recipe,
+                    result.conclusion,
+                    result_reason(result)
+                )
+            }),
+            detail: Some(json!({
+                "runner": runner.runner_id,
+                "recipe": result.recipe,
+                "conclusion": result.conclusion,
+                "seconds": result.seconds,
+                "finished_at": result.finished_at.to_rfc3339(),
+            })),
+            ..NewEvent::forge(
+                "main.status",
+                format!(
+                    "{} main at {} is {outcome}",
+                    result.repo,
+                    short_sha(&result.sha)
+                ),
+            )
+        },
+    );
+    if outcome == "red" && was_red != Some(true) {
+        main_escaped(state, &result.repo, &result.sha);
+    }
+}
+
+/// `main.escaped`: main went red at `sha`; `pr` names the merged change whose
+/// merge commit it is, when the forge recorded one.
+fn main_escaped(state: &WebState, repo: &str, sha: &str) {
+    let pr = state
+        .events
+        .query(&super::EventsQuery {
+            repo: Some(repo.to_string()),
+            kind: Some("pr.merged".to_string()),
+            limit: Some(500),
+            ..super::EventsQuery::default()
+        })
+        .ok()
+        .and_then(|events| {
+            events
+                .into_iter()
+                .find(|e| e.sha.as_deref() == Some(sha))
+                .and_then(|e| e.pr)
+        });
+    emit(
+        state,
+        NewEvent {
+            repo: Some(repo.to_string()),
+            sha: Some(sha.to_string()),
+            pr,
+            outcome: Some("escaped".to_string()),
+            needs_human: true,
+            // Two repositories can hold the same commit (an import of the
+            // same history), so the repository is part of the identity; the
+            // pair is digested because an `event_id` holds no `/`.
+            event_id: Some(format!(
+                "main.escaped:{}",
+                &hex::encode(Sha256::digest(format!("{repo}\n{sha}").as_bytes()))[..32]
+            )),
+            ..NewEvent::forge(
+                "main.escaped",
+                match pr {
+                    Some(pr) => format!("{repo}#{pr} turned main red at {}", short_sha(sha)),
+                    None => format!("{repo} main turned red at {}", short_sha(sha)),
+                },
+            )
+        },
+    );
 }
 
 /// Why a finished pass ended where it did: the runner's own words when it sent

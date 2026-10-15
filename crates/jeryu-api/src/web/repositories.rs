@@ -911,6 +911,13 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
         .iter()
         .filter(|check| check.status == CheckRunStatus::InProgress)
         .count() as u32;
+    // Is the default branch red under the gate that runs on every push to it
+    // (`main.status` events, see `pipeline::main_health`)?
+    let main_red = !repo.archived
+        && crate::web::pipeline::main_health::red_now(
+            state,
+            &format!("{}/{}", repo.owner, repo.name),
+        );
     RepositorySummary {
         id: repo_id(repo),
         entity: EntityHandle {
@@ -938,7 +945,15 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
         language: None,
         // An archived repository is read-only, so a stale failing check on it
         // is nothing anyone can fix: it never counts against health.
-        health: if failing_checks > 0 && !repo.archived {
+        health: if repo.archived {
+            "healthy".to_string()
+        } else if main_red {
+            // A red main is the repository's own breakage, and the gate that
+            // found it reports through events rather than a check run: say
+            // `failing` so the repository page and the listing show it even
+            // when no check run on the head does.
+            "failing".to_string()
+        } else if failing_checks > 0 {
             "warning".to_string()
         } else {
             "healthy".to_string()

@@ -665,6 +665,79 @@ pub(crate) fn main_health_at(
     })
 }
 
+/// A red main read from the `main.status` events of the gate that runs on
+/// every push to the default branch, for a repository that posts no
+/// `main-health` commit status.
+fn main_gate_failure(
+    state: &WebState,
+    owner: &str,
+    name: &str,
+    sha: &str,
+) -> Option<MainHealthFailure> {
+    let repo = format!("{owner}/{name}");
+    let health = super::main_health::for_repo(state, Some(&repo), Utc::now()).ok()?;
+    let open = health
+        .into_iter()
+        .next()?
+        .intervals
+        .into_iter()
+        .find(|interval| interval.until.is_none())?;
+    // Only a verdict about the head that is there now is news: a newer head
+    // the gate has not judged yet is unknown, not red.
+    if !state_head_red(state, &repo, sha) {
+        return None;
+    }
+    Some(gate_failure(&repo, &open))
+}
+
+/// The attention row's facts for an open red interval: since when, and the one
+/// sentence that says why -- the change that turned main red, and the tests
+/// that failed when the runner named them. The gate reports main through
+/// events rather than an attempt log, so there is no log id to name.
+pub(crate) fn gate_failure(
+    repo: &str,
+    open: &super::main_health::RedInterval,
+) -> MainHealthFailure {
+    let mut first_step = "the required gate failed on main".to_string();
+    if let Some(pr) = open.culprit_pr {
+        first_step.push_str(&format!("; turned red by {repo}#{pr}"));
+    }
+    if !open.tests.is_empty() {
+        first_step.push_str(&format!("; failing: {}", open.tests.join(", ")));
+    }
+    MainHealthFailure {
+        first_red: open.since.clone(),
+        first_step,
+        log_id: "unknown".to_string(),
+    }
+}
+
+/// Read the latest completed verdict for the actual head. A started event
+/// is not a verdict, and an event-store failure cannot establish red state.
+fn state_head_red(state: &WebState, repo: &str, sha: &str) -> bool {
+    state
+        .events
+        .query(&super::EventsQuery {
+            repo: Some(repo.to_string()),
+            kind: Some("main.status".to_string()),
+            limit: Some(500),
+            ..super::EventsQuery::default()
+        })
+        .map(|events| {
+            events
+                .iter()
+                .find(|event| {
+                    event.sha.as_deref() == Some(sha)
+                        && matches!(event.outcome.as_deref(), Some("red" | "green"))
+                })
+                .is_some_and(|event| event.outcome.as_deref() == Some("red"))
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod main_gate_tests;
+
 fn main_red_facts(state: &WebState) -> Vec<MainRedFacts> {
     let mut facts = Vec::new();
     for repo in state.core.list_repositories(None) {
@@ -674,7 +747,9 @@ fn main_red_facts(state: &WebState) -> Vec<MainRedFacts> {
         let Some(sha) = main_head(state, &repo.owner, &repo.name) else {
             continue;
         };
-        let Some(health) = main_health_at(state, &repo.owner, &repo.name, &sha) else {
+        let Some(health) = main_health_at(state, &repo.owner, &repo.name, &sha)
+            .or_else(|| main_gate_failure(state, &repo.owner, &repo.name, &sha))
+        else {
             continue;
         };
         facts.push(MainRedFacts {

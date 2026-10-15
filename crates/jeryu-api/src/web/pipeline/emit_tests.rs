@@ -271,7 +271,12 @@ fn github_edge_pull_writes_map_to_pull_events_and_review_verdicts() {
         ("CHANGES_REQUESTED", "no"),
         ("COMMENT", "hm"),
     ] {
-        let request = json!({"event": event, "body": body}).to_string();
+        let comments = if event == "COMMENT" {
+            json!([{"path": "src/lib.rs", "line": 4, "body": "rename"}])
+        } else {
+            json!([])
+        };
+        let request = json!({"event": event, "body": body, "comments": comments}).to_string();
         emit::github_edge(&state, true, &reviews, "review-bot", &request, 200, "{}");
     }
 
@@ -286,10 +291,17 @@ fn github_edge_pull_writes_map_to_pull_events_and_review_verdicts() {
             ("pr.opened", None, false),
             ("pr.review", Some("approve"), false),
             ("pr.review", Some("request_changes"), true),
+            // A request-changes with no line comment is one finding on the change.
+            ("review.finding", Some("blocking"), false),
             ("pr.review", Some("comment"), false),
+            ("review.finding", Some("comment"), false),
         ]
     );
     assert_eq!(all[2].reason.as_deref(), Some("no"));
+    let finding = all[5].detail.as_ref().unwrap();
+    assert_eq!(finding["reviewer_kind"], "human");
+    assert_eq!(finding["path"], "src/lib.rs");
+    assert_eq!(finding["line"], 4);
 }
 
 #[test]
@@ -533,4 +545,86 @@ fn the_gh_compatible_patch_lands_on_the_same_draft_events_as_the_named_routes() 
             ),
         ]
     );
+}
+
+/// A finished gate pass on a head of the default branch posts `main.status`
+/// with the verdict, and the first red head also charges the merged change
+/// that carried it with a `main.escaped` defect. A head the gate already
+/// judged stays a main head even after main moves on, which is what lets the
+/// rerun of a red commit be recognised.
+#[test]
+fn a_gate_verdict_on_a_main_head_posts_the_status_and_the_escaped_defect() {
+    let (state, mut pr) = forge();
+    let merge_sha = "0123456789abcdef0123456789abcdef01234567";
+    pr.merge_commit_sha = Some(merge_sha.to_string());
+    emit::pull_merged(&state, &pr, "mergebot", "merge_queue");
+    // The gate announced this head, which is how the test says "main is here"
+    // without a git fixture; a live pass posts it from main's resolved head.
+    crate::web::pipeline::record(
+        &state,
+        "forge",
+        super::types::NewEvent {
+            repo: Some("jeryu/jeryu-deploy".to_string()),
+            sha: Some(merge_sha.to_string()),
+            outcome: Some("started".to_string()),
+            ..super::types::NewEvent::forge("main.status", "gate started on main")
+        },
+    )
+    .unwrap();
+
+    let beat = |last: Value| -> crate::web::control_plane::GateRunnerHeartbeat {
+        serde_json::from_value(json!({
+            "runnerId": "build-1/slot0", "host": "build-1", "slot": 0, "last": last
+        }))
+        .expect("heartbeat")
+    };
+    let pass = |sha: &str, conclusion: &str, finished: &str| {
+        json!({
+            "repo": "jeryu/jeryu-deploy", "sha": sha, "recipe": "ops/ci/check.sh",
+            "conclusion": conclusion, "seconds": 61, "finishedAt": finished
+        })
+    };
+    let red = beat(pass(merge_sha, "failure", "2026-10-06T12:00:00Z"));
+    emit::runner_heartbeat(&state, Some(&beat(json!(null))), &red);
+
+    let kinds = |kind: &str| {
+        events(&state)
+            .into_iter()
+            .filter(|event| event.kind == kind)
+            .collect::<Vec<_>>()
+    };
+    let status = kinds("main.status");
+    assert_eq!(status.len(), 2, "{status:?}");
+    assert_eq!(status[1].outcome.as_deref(), Some("red"));
+    assert!(status[1].needs_human);
+    assert_eq!(status[1].sha.as_deref(), Some(merge_sha));
+    assert_eq!(
+        status[1].summary,
+        "jeryu/jeryu-deploy main at 0123456789ab is red"
+    );
+    let escaped = kinds("main.escaped");
+    assert_eq!(escaped.len(), 1, "{escaped:?}");
+    assert_eq!(escaped[0].pr, Some(pr.number as i64));
+    assert_eq!(escaped[0].sha.as_deref(), Some(merge_sha));
+    assert!(escaped[0].needs_human);
+
+    // A rerun of the same commit that goes green closes the interval; it is
+    // one more verdict and charges nothing new.
+    let green = beat(pass(merge_sha, "success", "2026-10-06T12:30:00Z"));
+    emit::runner_heartbeat(&state, Some(&red), &green);
+    let status = kinds("main.status");
+    assert_eq!(status.len(), 3, "{status:?}");
+    assert_eq!(status[2].outcome.as_deref(), Some("green"));
+    assert!(!status[2].needs_human);
+    assert_eq!(kinds("main.escaped").len(), 1, "no second defect");
+
+    let health =
+        super::main_health::for_repo(&state, Some("jeryu/jeryu-deploy"), chrono::Utc::now())
+            .unwrap();
+    assert_eq!(health.len(), 1, "{health:?}");
+    assert!(!health[0].red_now);
+    assert_eq!(health[0].gate_runs, 2);
+    assert_eq!(health[0].flaky_runs, 1, "the same commit later passed");
+    assert_eq!(health[0].escaped_defects, 0, "a flake is no defect");
+    assert_eq!(health[0].intervals[0].culprit_pr, Some(pr.number as i64));
 }

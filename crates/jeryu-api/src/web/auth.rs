@@ -1307,8 +1307,10 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || trace_path(path)
         || yield_path(path)
         || scorecard_path(path)
+        || human_minutes_path(path)
         || activity_reads_path(path)
         || flow_path(path)
+        || incidents_path(path, method)
         || usage_path(path)
         || outcomes_path(path)
         || audit_path(path)
@@ -1325,6 +1327,8 @@ fn activity_reads_path(path: &str) -> bool {
             | "/api/v1/events/histogram/"
             | "/api/v1/usage"
             | "/api/v1/usage/"
+            | "/api/v1/main-health"
+            | "/api/v1/main-health/"
     )
 }
 
@@ -1399,11 +1403,25 @@ fn scorecard_path(path: &str) -> bool {
     path == "/api/v1/scorecard" || path == "/api/v1/scorecard/"
 }
 
+/// Human minutes per change count the time people spent across every family,
+/// so like the yield report they are for global admins. The answer is
+/// aggregated by family, repository and work kind and never names a person.
+fn human_minutes_path(path: &str) -> bool {
+    path == "/api/v1/human-minutes" || path == "/api/v1/human-minutes/"
+}
+
 /// Flow lays out the whole delivery line: the todos, pull requests and lots
 /// of every family, and its layout names private runners and deployment tools,
 /// so like the yield report it is for global admins.
 fn flow_path(path: &str) -> bool {
     path == "/api/v1/flow" || path == "/api/v1/flow/" || path.starts_with("/api/v1/flow/")
+}
+
+/// Incidents name services, causes and restoring changes of every family, so
+/// reading them is for global admins. Posting an alert is decided in the
+/// handler (admin or a `JERYU_EVENT_REPORTERS` identity), like events.
+fn incidents_path(path: &str, method: &Method) -> bool {
+    (path == "/api/v1/incidents" || path == "/api/v1/incidents/") && !unsafe_method(method)
 }
 
 /// Token usage names the models, spend and todos of every family's workers,

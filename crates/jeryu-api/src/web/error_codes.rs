@@ -261,6 +261,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "managed agent or terminal execution on the host is denied",
     ),
     entry(
+        "human_minutes_read_failed",
+        500,
+        "the change outcome ledger behind the human minutes report could not be read",
+    ),
+    entry(
         "idempotency_conflict",
         409,
         "the Idempotency-Key was used with a different request",
@@ -284,6 +289,21 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "idempotent_secret_withheld",
         409,
         "this request already ran; its once-shown secret is not kept",
+    ),
+    entry(
+        "incident_report_invalid",
+        422,
+        "the reported incident is missing a field the ledger needs",
+    ),
+    entry(
+        "incident_webhook_invalid",
+        422,
+        "the alert body is not an incident event the ledger can fold",
+    ),
+    entry(
+        "incidents_read_failed",
+        500,
+        "the incident ledger could not be read",
     ),
     entry(
         "insufficient_scope",

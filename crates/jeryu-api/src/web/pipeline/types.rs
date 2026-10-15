@@ -339,6 +339,7 @@ pub(crate) fn normalize(event: NewEvent) -> Result<NewEvent, String> {
     // as usage (`crate::web::usage`), so a malformed object is refused rather
     // than stored as a number nobody can chart.
     let (detail, _usage) = detail_usage(&event.kind, detail)?;
+    crate::web::incidents::check(&event.kind, detail.as_ref())?;
     Ok(NewEvent {
         event_id,
         source: event.source,
