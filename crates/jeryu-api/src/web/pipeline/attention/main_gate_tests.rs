@@ -34,3 +34,35 @@ fn red_main_survives_a_second_red_head_but_not_an_unjudged_or_green_head() {
     status(&next, "green", 3);
     assert!(main_gate_failure(&state, "acme", "widget", &next).is_none());
 }
+
+#[test]
+fn red_repos_reads_every_repository_newest_verdict_in_one_query() {
+    use crate::web::pipeline::main_health::{red_now, red_repos};
+    let state = WebState::new(ForgeCore::new());
+    let started = Utc::now().timestamp_millis() - 100_000;
+    let status = |repo: &str, outcome: &str, offset: i64| {
+        let event = NewEvent {
+            repo: Some(repo.to_string()),
+            sha: Some("c".repeat(40)),
+            outcome: Some(outcome.to_string()),
+            ..NewEvent::forge("main.status", "test main verdict")
+        };
+        state
+            .events
+            .insert("forge", &event, started + offset)
+            .unwrap();
+    };
+    status("acme/widget", "red", 0);
+    status("acme/gadget", "red", 1);
+    status("acme/gadget", "green", 2);
+    // More `started` events than any fixed page cannot hide the verdict.
+    for offset in 0..60 {
+        status("acme/widget", "started", 10 + offset);
+    }
+    let red = red_repos(&state);
+    assert!(red.contains("acme/widget"), "{red:?}");
+    assert!(!red.contains("acme/gadget"), "{red:?}");
+    assert!(red_now(&state, "acme/widget"));
+    assert!(!red_now(&state, "acme/gadget"));
+    assert!(!red_now(&state, "acme/never-gated"));
+}

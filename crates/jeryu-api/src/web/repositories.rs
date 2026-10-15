@@ -785,6 +785,8 @@ pub(super) fn filtered_repo_list_response_for_user(
     // Filter on the core repos BEFORE summarizing: summaries resolve the
     // default-branch head per repo, so narrowing first keeps a filtered
     // request from paying for the whole registry.
+    // One query for every repository's red-main flag, not one per row.
+    let red = crate::web::pipeline::main_health::red_repos(state);
     let mut repositories: Vec<RepositorySummary> = all
         .into_iter()
         .filter(|repo| repo.archived == archived_only)
@@ -813,7 +815,7 @@ pub(super) fn filtered_repo_list_response_for_user(
                         .is_some_and(|description| description.to_lowercase().contains(needle))
             })
         })
-        .map(|repo| repo_summary(state, &repo))
+        .map(|repo| repo_summary_with_red(state, &repo, &red))
         .collect();
 
     match query.sort.as_deref() {
@@ -860,6 +862,8 @@ pub(super) fn repo_summaries_for_user(
     state: &WebState,
     account: Option<&AccountSummary>,
 ) -> Vec<RepositorySummary> {
+    // One query for every repository's red-main flag, not one per row.
+    let red = crate::web::pipeline::main_health::red_repos(state);
     state
         .github
         .core()
@@ -876,11 +880,31 @@ pub(super) fn repo_summaries_for_user(
                     )
             })
         })
-        .map(|repo| repo_summary(state, &repo))
+        .map(|repo| repo_summary_with_red(state, &repo, &red))
         .collect()
 }
 
 pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySummary {
+    let main_red =
+        crate::web::pipeline::main_health::red_now(state, &format!("{}/{}", repo.owner, repo.name));
+    summary(state, repo, main_red)
+}
+
+/// A summary for a listing: `red` is [`crate::web::pipeline::main_health::red_repos`],
+/// read once for the whole listing rather than once per repository.
+fn repo_summary_with_red(
+    state: &WebState,
+    repo: &Repository,
+    red: &std::collections::BTreeSet<String>,
+) -> RepositorySummary {
+    summary(
+        state,
+        repo,
+        red.contains(&format!("{}/{}", repo.owner, repo.name)),
+    )
+}
+
+fn summary(state: &WebState, repo: &Repository, main_red: bool) -> RepositorySummary {
     let split = state.split_catalog.classify(&repo.owner, &repo.name);
     let pulls = state
         .github
@@ -913,11 +937,7 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
         .count() as u32;
     // Is the default branch red under the gate that runs on every push to it
     // (`main.status` events, see `pipeline::main_health`)?
-    let main_red = !repo.archived
-        && crate::web::pipeline::main_health::red_now(
-            state,
-            &format!("{}/{}", repo.owner, repo.name),
-        );
+    let main_red = main_red && !repo.archived;
     RepositorySummary {
         id: repo_id(repo),
         entity: EntityHandle {

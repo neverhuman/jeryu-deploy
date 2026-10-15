@@ -809,7 +809,12 @@ pub(crate) struct HumanMinutesReport {
 /// What a read of the two tables answers, before it is grouped.
 fn read(conn: &Connection, family: Option<&str>, window: Window) -> Result<Ledgers, String> {
     let mut lots: BTreeMap<String, LotFacts> = BTreeMap::new();
+    let (since_ms, until_ms) = window_ms(window);
+    let (since_day, until_day) = (window.since.to_string(), window.until.to_string());
     {
+        // Only the lots the report can use: landed inside the window, or
+        // charged minutes inside it. The ledgers are never pruned, so an
+        // unwindowed read would grow with the life of the instance.
         let mut stmt = conn
             .prepare(
                 "SELECT o.lot_id, o.family, o.repo, o.work_kind, o.landed_ms,
@@ -818,22 +823,28 @@ fn read(conn: &Connection, family: Option<&str>, window: Window) -> Result<Ledge
                                       WHERE c.change_key = o.lot_id)
                    FROM change_outcomes o
                   WHERE (?1 IS NULL OR o.family = ?1)
+                    AND ((o.landed_ms >= ?2 AND o.landed_ms < ?3)
+                         OR o.lot_id IN (SELECT m.lot_id FROM change_human_minutes m
+                                          WHERE m.day >= ?4 AND m.day <= ?5))
                   ORDER BY o.lot_id",
             )
             .map_err(|err| err.to_string())?;
         let rows = stmt
-            .query_map(params![family], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    LotFacts {
-                        family: row.get(1)?,
-                        repo: row.get(2)?,
-                        work_kind: row.get(3)?,
-                        landed_ms: row.get(4)?,
-                        failed: row.get::<_, i64>(5)? != 0,
-                    },
-                ))
-            })
+            .query_map(
+                params![family, since_ms, until_ms, since_day, until_day],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        LotFacts {
+                            family: row.get(1)?,
+                            repo: row.get(2)?,
+                            work_kind: row.get(3)?,
+                            landed_ms: row.get(4)?,
+                            failed: row.get::<_, i64>(5)? != 0,
+                        },
+                    ))
+                },
+            )
             .map_err(|err| err.to_string())?;
         for row in rows {
             let (lot, facts) = row.map_err(|err| err.to_string())?;
@@ -997,10 +1008,18 @@ pub(crate) async fn human_minutes(
         .filter(|by| !by.is_empty())
         .and_then(By::parse)
         .unwrap_or(By::Family);
-    match state
-        .events
-        .with_conn(|conn| report(conn, family, window, by, now))
-    {
+    // The ledgers are SQLite reads under the event-store lock: off the async
+    // runtime, as every sibling report does.
+    let worker = state.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        worker
+            .events
+            .with_conn(|conn| report(conn, family, window, by, now))
+    })
+    .await
+    .map_err(|err| err.to_string())
+    .and_then(|read| read);
+    match read {
         Ok(report) => Json(report).into_response(),
         Err(reason) => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,

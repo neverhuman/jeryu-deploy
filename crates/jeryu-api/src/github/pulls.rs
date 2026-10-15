@@ -142,8 +142,10 @@ impl GithubRouter {
         }
         #[cfg(feature = "web")]
         // The one unresolved base a create accepts is the repository's own
-        // default branch before its first commit: the bootstrap pull request
-        // that creates `main` (an empty repository's main refuses pushes). It
+        // default branch while it is absent: the bootstrap pull request that
+        // creates `main` (an empty repository's main refuses pushes). Git
+        // cannot tell unborn from deleted, so a default branch a repository
+        // admin deleted takes the same path (docs/pull-request-bases.md). It
         // has no review base, so it is recorded without one and merging it
         // creates the branch at the reviewed head. Any other missing or
         // unreadable base is refused.

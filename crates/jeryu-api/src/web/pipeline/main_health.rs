@@ -307,23 +307,60 @@ pub(crate) async fn list(
 }
 
 /// Whether `repo`'s default branch is red right now: its newest `main.status`
-/// verdict is `red`. One query, so a repository listing can ask it per
-/// repository; the full projection is for the numbers.
+/// verdict is `red`. The verdict is chosen in SQL (a `started` event is no
+/// verdict), so any number of `started` events cannot hide it. One indexed
+/// query; a listing of many repositories asks [`red_repos`] once instead.
 pub(crate) fn red_now(state: &WebState, repo: &str) -> bool {
     state
         .events
-        .query(&EventsQuery {
-            repo: Some(repo.to_string()),
-            kind: Some(STATUS_KIND.to_string()),
-            limit: Some(50),
-            ..EventsQuery::default()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT outcome FROM pipeline_events \
+                 WHERE kind = ?1 AND repo = ?2 AND outcome IN (?3, ?4) \
+                 ORDER BY seq DESC LIMIT 1",
+                rusqlite::params![STATUS_KIND, repo, GREEN, RED],
+                |row| row.get::<_, String>(0),
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.to_string()),
+            })
         })
         .ok()
-        .and_then(|events| {
-            // The store answers newest first; a `started` event is no verdict.
-            events
-                .into_iter()
-                .find(|event| matches!(event.outcome.as_deref(), Some(GREEN | RED)))
+        .flatten()
+        .is_some_and(|outcome| outcome == RED)
+}
+
+/// Every repository whose default branch is red right now, by the same rule
+/// as [`red_now`], in one query: a repository listing asks this once rather
+/// than once per repository. A store that cannot be read answers "none red".
+pub(crate) fn red_repos(state: &WebState) -> BTreeSet<String> {
+    state
+        .events
+        .with_conn(|conn| {
+            // SQLite returns the bare `repo`/`outcome` of the row holding
+            // MAX(seq) in each group: each repository's newest verdict.
+            let mut statement = conn
+                .prepare(
+                    "SELECT repo, outcome, MAX(seq) FROM pipeline_events \
+                     WHERE kind = ?1 AND outcome IN (?2, ?3) AND repo IS NOT NULL \
+                     GROUP BY repo",
+                )
+                .map_err(|err| err.to_string())?;
+            let rows = statement
+                .query_map(rusqlite::params![STATUS_KIND, GREEN, RED], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|err| err.to_string())?;
+            let mut red = BTreeSet::new();
+            for row in rows {
+                let (repo, outcome) = row.map_err(|err| err.to_string())?;
+                if outcome == RED {
+                    red.insert(repo);
+                }
+            }
+            Ok(red)
         })
-        .is_some_and(|event| event.outcome.as_deref() == Some(RED))
+        .unwrap_or_default()
 }

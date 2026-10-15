@@ -301,6 +301,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the alert body is not an incident event the ledger can fold",
     ),
     entry(
+        "incident_webhook_too_many",
+        413,
+        "the alert batch is larger than one events request may carry",
+    ),
+    entry(
         "incidents_read_failed",
         500,
         "the incident ledger could not be read",

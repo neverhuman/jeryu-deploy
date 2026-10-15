@@ -675,6 +675,13 @@ fn main_gate_failure(
     sha: &str,
 ) -> Option<MainHealthFailure> {
     let repo = format!("{owner}/{name}");
+    // Only a verdict about the head that is there now is news: a newer head
+    // the gate has not judged yet is unknown, not red. That is one query, so
+    // it comes first; the full projection (three event reads) is built only
+    // for a head that is red.
+    if !state_head_red(state, &repo, sha) {
+        return None;
+    }
     let health = super::main_health::for_repo(state, Some(&repo), Utc::now()).ok()?;
     let open = health
         .into_iter()
@@ -682,11 +689,6 @@ fn main_gate_failure(
         .intervals
         .into_iter()
         .find(|interval| interval.until.is_none())?;
-    // Only a verdict about the head that is there now is news: a newer head
-    // the gate has not judged yet is unknown, not red.
-    if !state_head_red(state, &repo, sha) {
-        return None;
-    }
     Some(gate_failure(&repo, &open))
 }
 
@@ -715,24 +717,28 @@ pub(crate) fn gate_failure(
 /// Read the latest completed verdict for the actual head. A started event
 /// is not a verdict, and an event-store failure cannot establish red state.
 fn state_head_red(state: &WebState, repo: &str, sha: &str) -> bool {
+    // The newest verdict about this exact head, chosen in SQL: `started`
+    // events are no verdict and cannot push it out of a fixed page.
     state
         .events
-        .query(&super::EventsQuery {
-            repo: Some(repo.to_string()),
-            kind: Some("main.status".to_string()),
-            limit: Some(500),
-            ..super::EventsQuery::default()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT outcome FROM pipeline_events \
+                 WHERE kind = 'main.status' AND repo = ?1 AND sha = ?2 \
+                   AND outcome IN ('red', 'green') \
+                 ORDER BY seq DESC LIMIT 1",
+                rusqlite::params![repo, sha],
+                |row| row.get::<_, String>(0),
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.to_string()),
+            })
         })
-        .map(|events| {
-            events
-                .iter()
-                .find(|event| {
-                    event.sha.as_deref() == Some(sha)
-                        && matches!(event.outcome.as_deref(), Some("red" | "green"))
-                })
-                .is_some_and(|event| event.outcome.as_deref() == Some("red"))
-        })
-        .unwrap_or(false)
+        .ok()
+        .flatten()
+        .is_some_and(|outcome| outcome == "red")
 }
 
 #[cfg(test)]

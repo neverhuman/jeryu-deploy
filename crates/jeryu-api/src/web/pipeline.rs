@@ -55,6 +55,8 @@ use super::workcells_support::{TypedError, typed_error};
 use store::Inserted;
 pub(crate) use store::RETENTION_MS as EVENT_RETENTION_MS;
 pub(crate) use store::{EventStore, LedgerRow, SpendRow};
+/// The most events one `POST /api/v1/events` takes; other ingestion routes cap to it.
+pub(crate) use types::MAX_BATCH as MAX_EVENT_BATCH;
 use types::{EVENTS_SCHEMA, EventsResponse, MAX_BATCH, normalize};
 pub(crate) use types::{Event, EventsQuery, NewEvent};
 

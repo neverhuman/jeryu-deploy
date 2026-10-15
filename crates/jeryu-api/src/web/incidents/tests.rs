@@ -341,3 +341,56 @@ fn a_generated_incident_id_is_accepted_by_the_fold() {
     assert!(check(OPENED, Some(&json!({"incident_id": id}))).is_ok());
     assert_ne!(id, super::new_incident_id());
 }
+
+#[tokio::test]
+async fn the_alert_webhook_takes_no_more_alerts_than_an_events_request() {
+    use std::sync::Arc;
+
+    use axum::Extension;
+    use axum::body::Bytes;
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use jeryu_core::{AccountStatus, AccountSummary, ForgeCore, UserRole};
+
+    let state = Arc::new(crate::web::WebState::new(ForgeCore::new()));
+    let admin = || {
+        Extension(AccountSummary {
+            login: "ops-admin".to_string(),
+            display_name: "ops-admin".to_string(),
+            role: UserRole::Admin,
+            status: AccountStatus::Active,
+            auth_epoch: 0,
+            must_change_password: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    };
+    let alert = |n: usize| json!({"incident_id": format!("inc-{n}"), "status": "firing"});
+    let cap = crate::web::pipeline::MAX_EVENT_BATCH;
+
+    let too_many: Vec<Value> = (0..=cap).map(alert).collect();
+    let refused = super::webhook(
+        State(state.clone()),
+        admin(),
+        Bytes::from(serde_json::to_vec(&too_many).unwrap()),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        state
+            .events
+            .query(&crate::web::pipeline::EventsQuery::default())
+            .unwrap()
+            .is_empty(),
+        "a refused batch records nothing"
+    );
+
+    let at_cap: Vec<Value> = (0..cap).map(alert).collect();
+    let accepted = super::webhook(
+        State(state.clone()),
+        admin(),
+        Bytes::from(serde_json::to_vec(&at_cap).unwrap()),
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::CREATED);
+}

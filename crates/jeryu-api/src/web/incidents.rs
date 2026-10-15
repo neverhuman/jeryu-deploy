@@ -602,6 +602,19 @@ pub(crate) async fn webhook(
         Value::Array(items) => items,
         single => vec![single],
     };
+    // The same cap as `POST /api/v1/events`: the ledgers this feeds are never
+    // pruned, so a batch is bounded, not just the body size.
+    if bodies.len() > super::pipeline::MAX_EVENT_BATCH {
+        return refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "incident_webhook_too_many",
+            &format!(
+                "alerts: at most {} per request",
+                super::pipeline::MAX_EVENT_BATCH
+            ),
+            "split the alerts across requests",
+        );
+    }
     let mut events = Vec::new();
     for (index, item) in bodies.iter().enumerate() {
         match GenericAlert.events(item) {
@@ -616,25 +629,32 @@ pub(crate) async fn webhook(
             }
         }
     }
-    let mut seqs = Vec::new();
-    for event in events {
-        match super::pipeline::record(&state, &account.login, event) {
-            Ok(inserted) => seqs.push(inserted.event.seq),
-            Err(reason) => {
-                return refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "incident_webhook_invalid",
-                    &reason,
-                    "fix the field named in the message and retry",
-                );
-            }
+    // Each insert takes the event-store lock: off the async runtime.
+    let worker = state.clone();
+    let login = account.login.clone();
+    let recorded = tokio::task::spawn_blocking(move || {
+        let mut seqs = Vec::new();
+        for event in events {
+            seqs.push(super::pipeline::record(&worker, &login, event)?.event.seq);
         }
+        Ok::<_, String>(seqs)
+    })
+    .await
+    .map_err(|err| err.to_string())
+    .and_then(|recorded| recorded);
+    match recorded {
+        Ok(seqs) => (
+            StatusCode::CREATED,
+            Json(json!({"schema_version": INCIDENTS_SCHEMA, "ok": true, "seqs": seqs})),
+        )
+            .into_response(),
+        Err(reason) => refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "incident_webhook_invalid",
+            &reason,
+            "fix the field named in the message and retry",
+        ),
     }
-    (
-        StatusCode::CREATED,
-        Json(json!({"schema_version": INCIDENTS_SCHEMA, "ok": true, "seqs": seqs})),
-    )
-        .into_response()
 }
 
 /// `POST /api/v1/incidents`: one incident from the authenticated "Report
