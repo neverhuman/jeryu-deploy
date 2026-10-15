@@ -544,7 +544,7 @@ fi
 
 contexts="$(api GET "/api/v3/repos/$web_path/commits/$head/status" 2>/dev/null \
   | jq -r -L "$here" 'include "latest-statuses";
-      "combined: \(.state); latest contexts: " + (latest_statuses | map("\(.context): \(.state)") | join(", "))' 2>/dev/null)" || contexts=""
+      "combined: \(.state); latest contexts: " + (latest_statuses | map("\(.context): \(.state)") | join(", "))' 2>/dev/null)" || contexts="unavailable: native status could not be read or summarized"
 body="Pins jeryu-web main \`${head:0:7}\` so the next staged release ships it. Only \`$lock_file\` changes (\`commit\`, \`web_dist_sha256\`).
 
 Ships (${pin:0:7}..${head:0:7}):

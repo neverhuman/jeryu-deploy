@@ -45,10 +45,18 @@ Primary lanes:
   The ancestry regression runs inside this lane, including a cached side-branch
   object, an absent object and an invalid local cache. `web-pin-proof.sh` also
   rejects backward pins relative to the Deploy merge base (or parent on main),
-  and reads the exact commit status from the canonical forge with the Git read
-  credential or a mode-0600 `JERYU_WEB_PIN_TOKEN_FILE`. It requires combined success
+  fetching `origin/main` and the head history itself, including shallow detached
+  checkouts. It reads exact commit status from the canonical forge after sourcing
+  `ops/ci/hosted-git-env.sh`, which selects `.cargo/hosted-gitconfig` and its dedicated
+  host-installed helper. The gate-host administrator provisions that helper's
+  forge PAT with repository read access for both Git transport and authenticated
+  same-forge API reads. The verifier performs only reads. A separate API read PAT may
+  be supplied by mode-0600 `JERYU_WEB_PIN_TOKEN_FILE`; Git read credentials are
+  still required. Provision these host prerequisites before running any lane,
+  including mirrored workflows; no credential is embedded in workflow source.
+  It requires combined success
   and the `jeryu-web/required` result with the newest timestamp to be success; missing data, conflicting
-  timestamps, transport failure and a later pending/failure all fail closed.
+  timestamps (normalized from UTC or numeric RFC3339 offsets), transport failure and a later pending/failure all fail closed.
   `test-web-pin-proof.sh` exercises these refusals without network access.
   Rollback uses the existing release rollback procedure. The required lane tests
   the bundle hash guard; staging performs the actual pinned bundle rebuild and

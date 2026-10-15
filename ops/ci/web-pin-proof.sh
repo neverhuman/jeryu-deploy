@@ -6,6 +6,7 @@ set -euo pipefail
 set +x
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
+source "$root/ops/ci/hosted-git-env.sh"
 fail() { echo "web pin proof: $*" >&2; exit 1; }
 field() {
   awk -v key="$1" '
@@ -14,10 +15,19 @@ field() {
     inweb && $1 == key && $2 == "=" { n++; v = $3; gsub(/"/, "", v) }
     END { if (n == 1) print v; else exit 1 }'
 }
-# CI fetches origin/main before evaluating a head, also used by jankurai-gate.
-# A queue replay therefore compares to the queue base; a normal PR to its merge
-# base. Main itself compares to its parent so a landed bump is verified again.
-base="$(git merge-base HEAD refs/remotes/origin/main)" || fail "fetch origin/main first"
+# Standalone web checkouts may contain only a shallow, detached head. Fetch both
+# its history and protected main before choosing a base; never assume the caller
+# prepared tracking refs. The normal full-history host checkout needs only main.
+head="$(git rev-parse HEAD)"
+fetch_args=(--no-tags)
+if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
+  fetch_args+=(--unshallow)
+fi
+git fetch --quiet "${fetch_args[@]}" origin "$head" '+refs/heads/main:refs/remotes/origin/main' \
+  || fail "cannot fetch protected main and head history"
+# A queue replay compares to the queue base; a normal PR to its merge base.
+# Main itself compares to its parent so a landed bump is verified again.
+base="$(git merge-base HEAD refs/remotes/origin/main)" || fail "head has no common history with origin/main"
 if [[ "$base" == "$(git rev-parse HEAD)" ]]; then
   base="$(git rev-parse 'HEAD^')" || fail "cannot resolve previous Deploy commit"
 fi
@@ -26,14 +36,17 @@ pin="$(field commit < jeryu-split.lock.toml)" || fail "lock has no unique web pi
 required="$(field required_check < jeryu-split.lock.toml)" || fail "lock has no required check"
 [[ "$previous" =~ ^[0-9a-f]{40}$ && "$pin" =~ ^[0-9a-f]{40}$ ]] || fail "invalid commit"
 [[ "$required" == jeryu-web/required ]] || fail "unexpected required check"
-# Do not allow the ancestry helper to read a different lock or cache.
+# The required path fixes the lock, cache and canonical web remote. Git
+# transport policy belongs to the host, not a JERYU_WEB_REMOTE override.
+JERYU_WEB_REMOTE=https://git.neverhuman.org/git/jeryu/jeryu-web.git \
 JERYU_SPLIT_LOCK="$root/jeryu-split.lock.toml" JERYU_WEB_PIN_CACHE="$root/target/ci/jeryu-web.git" \
   bash "$root/ops/ci/web-pin-on-main.sh"
 git -C target/ci/jeryu-web.git merge-base --is-ancestor "$previous" "$pin" \
   || fail "$pin does not descend from base pin $previous; use the release rollback procedure"
 
-# Always use this canonical API origin, even when a test/local mirror supplies
-# git objects. Credentials never enter argv, artifacts, or redirected requests.
+# The host provisions a forge PAT for Git transport and API reads. The
+# explicit token-file option can select a separate API read PAT. Always use the
+# canonical API origin. Credentials never enter argv, artifacts, or redirects.
 token_file="${JERYU_WEB_PIN_TOKEN_FILE:-}"
 if [[ -n "$token_file" ]]; then
   [[ -f "$token_file" && ! -L "$token_file" && "$(stat -c '%a' "$token_file")" == 600 ]] \
