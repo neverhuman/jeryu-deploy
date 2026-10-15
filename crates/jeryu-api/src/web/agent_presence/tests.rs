@@ -585,3 +585,48 @@ fn rows_not_beaten_for_fourteen_days_are_pruned_on_write() {
     assert_eq!(store.count(), 1);
     assert!(store.get("old").unwrap().is_none());
 }
+
+#[test]
+fn location_migration_preserves_old_sessions_and_supports_old_readers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shift.sqlite");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    crate::web::shift::migrate_shift_store_through(&conn, 21).unwrap();
+    conn.execute_batch(
+        "INSERT INTO agent_presence
+        (session_id, reporter, agent, state, repos_json, families_json, started_ms,
+         last_active_ms, ttl_seconds, received_ms, expires_ms)
+        VALUES ('old', 'ada', 'codex', 'active', '[\"acme/widgets\"]', '[]', 0, 0, 300, 0, 300000)",
+    )
+    .unwrap();
+    let store = PresenceStore::open(&path).unwrap();
+    let mut session = store.get("old").unwrap().unwrap();
+    assert_eq!(session.agent, "codex");
+    assert_eq!(session.repos, vec!["acme/widgets"]);
+    assert_eq!(session.location, None);
+    assert_eq!(session.worker, None);
+    session.location = Some(super::location::Location {
+        session_path: Some("/home/ada/.codex/session.jsonl".to_string()),
+        ..Default::default()
+    });
+    store.upsert(&session, 1).unwrap();
+    // A previous binary checks only its known migration checksums and columns.
+    crate::web::shift::migrate_shift_store_through(&conn, 21).unwrap();
+    let old_view: (String, String) = conn
+        .query_row(
+            "SELECT agent, repos_json FROM agent_presence WHERE session_id = 'old'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(old_view, ("codex".into(), "[\"acme/widgets\"]".into()));
+    assert_eq!(
+        PresenceStore::open(&path)
+            .unwrap()
+            .get("old")
+            .unwrap()
+            .unwrap()
+            .location,
+        session.location
+    );
+}

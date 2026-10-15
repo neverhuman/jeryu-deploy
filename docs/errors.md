@@ -173,7 +173,8 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `presence_write_budget` | 429 | presence writes exceed 120 per login per minute; reduce beat frequency |
 | `presence_invalid_request` | 422 | the agent presence beat failed validation |
 | `presence_repo_unknown` | 422 | the beat names a repository this forge does not host, or one the caller cannot see |
-| `presence_scope_empty` | 422 | an agent presence beat must name at least one repository or family |
+| `presence_scope_empty` | 422 | legacy servers require at least one repository or family; current servers accept private unscoped sessions |
+| `presence_worker_forbidden` | 403 | worker association requires an admin or configured presence reporter |
 | `presence_scope_forbidden` | 403 | the login may not report a session on that repository or family |
 | `presence_session_not_found` | 404 | no agent presence session has that id |
 | `presence_session_owned` | 409 | another login registered this agent presence session |
