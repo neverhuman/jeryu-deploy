@@ -157,7 +157,7 @@ pub(crate) fn reconcile(state: &WebState) -> Result<(), String> {
                 }
             }
         }
-        if readable {
+        if readable && !matches.is_empty() {
             state.events.flow_apply_delivery(&event, &matches)?;
         } else {
             state.events.flow_defer_delivery(event.seq, now + 300_000)?;

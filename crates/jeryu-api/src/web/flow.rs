@@ -142,9 +142,14 @@ pub(crate) async fn flow(
     let now = Utc::now().timestamp_millis();
     let since_ms = report::window_start(now, days);
     let read_family = family.clone();
+    let reconcile_state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(error) = delivery::reconcile(&reconcile_state) {
+            eprintln!("jeryu-api Flow delivery reconciliation deferred: {error}");
+        }
+    });
     let worker_state = state.clone();
     let read = tokio::task::spawn_blocking(move || {
-        delivery::reconcile(&worker_state)?;
         let reached = worker_state.events.flow_reached(read_family.as_deref())?;
         let visits = worker_state.events.flow_visits_scoped(
             read_family.as_deref(),

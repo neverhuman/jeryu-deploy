@@ -96,6 +96,8 @@ pub(crate) struct StationReport {
     pub oldest_wait_s: Option<i64>,
     pub queue_s: Option<Pair>,
     pub process_s: Option<Pair>,
+    /// Measured arrival-to-exit dwell, independent of execution-start coverage.
+    pub total_s: Option<Pair>,
     pub throughput_per_hour: Option<f64>,
     pub first_pass_rate: Option<f64>,
     pub rework: Vec<Rework>,
@@ -204,14 +206,13 @@ fn rate(numerator: u32, denominator: u32) -> f64 {
     (f64::from(numerator) / f64::from(denominator) * 100.0).round() / 100.0
 }
 
-/// The p50 of a station's queue plus process time: what one visit costs a lot
-/// that still has to make it. `None` when either half has no estimate.
+/// Measured total dwell remains usable when its queue/process split is unknown.
 fn station_p50(station: &StationReport) -> Option<i64> {
-    Some(station.queue_s?.p50 + station.process_s?.p50)
+    Some(station.total_s?.p50)
 }
 
 fn station_p90(station: &StationReport) -> Option<i64> {
-    Some(station.queue_s?.p90 + station.process_s?.p90)
+    Some(station.total_s?.p90)
 }
 
 /// The first millisecond of a `days` window that ends at `now_ms`: the bound
@@ -280,6 +281,7 @@ fn station_report(
         oldest_wait_s: None,
         queue_s: None,
         process_s: None,
+        total_s: None,
         throughput_per_hour: None,
         first_pass_rate: None,
         rework: Vec::new(),
@@ -336,6 +338,15 @@ fn station_report(
         .copied()
         .filter(|visit| visit.left_ms.is_some_and(in_window))
         .collect();
+    report.total_s = pair(
+        left.iter()
+            .filter_map(|v| {
+                v.left_ms
+                    .filter(|end| *end >= v.entered_ms)
+                    .map(|end| seconds(end - v.entered_ms))
+            })
+            .collect(),
+    );
     let forward: Vec<&Visit> = left
         .iter()
         .copied()

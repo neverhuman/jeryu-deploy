@@ -541,14 +541,15 @@ fn apply_step(
             if open_visit(conn, &lot.id, station)?.is_none() {
                 enter(conn, event, lot, station)?;
             }
+            let was_held: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM flow_ledger WHERE lot_id=?1 AND station=?2 AND left_ms IS NULL AND direction='hold')",params![lot.id,station.id()],|r|r.get(0)).map_err(|e|e.to_string())?;
             let changed = conn
                 .execute(
                     "UPDATE flow_ledger SET direction = 'hold', outcome = ?3, source_seq_last = ?4
-                  WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL AND direction != 'hold'",
+                  WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL ",
                     params![lot.id, station.id(), event.outcome, event.seq],
                 )
                 .map_err(|err| err.to_string())?;
-            if changed > 0 {
+            if changed > 0 && !was_held {
                 super::history::record(conn, event, &lot.id, station, "held")?;
             }
             Ok(())
@@ -633,7 +634,7 @@ fn close(
         .execute(
             "UPDATE flow_ledger SET left_ms = ?3, direction = ?4, rework_to = ?5,
              outcome = COALESCE(?6, outcome), source_seq_last = ?7
-          WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL",
+          WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL AND entered_ms<=?3",
             params![
                 lot.id,
                 station.id(),

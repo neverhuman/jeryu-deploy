@@ -178,7 +178,7 @@ fn a_lot_that_flows_leaves_one_forward_visit_per_station() {
     assert_eq!(work.left_ms, Some(START + 13 * MINUTE));
     // Shift: landed at 13, the shift pull request opened at 15.
     // Shift's tool is the pull request opener, a timer with no start signal:
-    // the visit starts on arrival, so the whole wait is process time.
+    // arrival and exit measure dwell, but execution time remains unknown.
     let shift = at(&visits, Station::Shift)[0];
     assert_eq!(shift.entered_ms, START + 13 * MINUTE);
     assert_eq!(shift.started_ms, None, "timer wait is not execution");
@@ -795,13 +795,13 @@ fn percentiles_the_bottleneck_and_an_eta_come_from_the_samples() {
     assert_eq!(waiting["eta_partial"], true, "{waiting}");
     assert_eq!(
         waiting["eta_unknown_stations"],
-        serde_json::json!(["shift", "pin", "stage"]),
+        serde_json::json!(["pin"]),
         "Pin has no estimate, so the ETA names it instead of guessing"
     );
     // Queue's two minutes less the one already spent (60), plus every other
     // station with an estimate: Work 660, Shift 120, Review 300, Gate 480,
     // Merge 420, Stage 600, Deploy 300. Pin contributes nothing.
-    let sum = 60 + 660 + 300 + 480 + 420 + 300;
+    let sum = 60 + 660 + 120 + 300 + 480 + 420 + 600 + 300;
     assert_eq!(waiting["eta_s"]["p50"], sum, "{waiting}");
     assert_eq!(
         waiting["eta_s"]["p90"], sum,
@@ -902,12 +902,12 @@ fn an_eta_sums_the_stations_still_ahead() {
     // Work's own eleven minutes less the two already spent (540), plus the
     // p50 of every station still ahead: Shift 120, Review 300, Gate 480,
     // Merge 420, Pin 480, Stage 600, Deploy 300.
-    assert_eq!(eta, 540 + 300 + 480 + 420 + 480 + 300);
-    assert_eq!(lot["eta_partial"], true, "timer starts are not measured");
+    assert_eq!(eta, 540 + 120 + 300 + 480 + 420 + 480 + 600 + 300);
     assert_eq!(
-        lot["eta_unknown_stations"],
-        serde_json::json!(["shift", "stage"])
+        lot["eta_partial"], false,
+        "total dwell does not require a measured start"
     );
+    assert_eq!(lot["eta_unknown_stations"], serde_json::json!([]));
     // Work itself, at eleven minutes, is the slowest station the lot still
     // has to get through; Stage, at ten, is the slowest one after it.
     assert_eq!(lot["slowest_ahead"], "work");
@@ -1847,5 +1847,112 @@ fn repository_scope_keeps_early_work_after_a_todo_is_bound_to_its_pull() {
             .flow_visits_scoped(Some("acme"), START, Some("acme/other"))
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn real_event_journey_preserves_dwell_without_inventing_execution_efficiency() {
+    let (_dir, store) = store();
+    for n in 1..=3 {
+        forward_lot(
+            &store,
+            &format!("20261012-00000{n}-aaaaaa"),
+            n,
+            START,
+            false,
+        );
+    }
+    let now = START + 60 * MINUTE;
+    let raw = store.scorecard_raw(Some("acme"), now, 7).unwrap();
+    let ctx = crate::web::scorecard::compute::Ctx::new(&raw, &[], None, now, 7);
+    let metrics = crate::web::scorecard::compute::metrics(&ctx);
+    let efficiency = serde_json::to_value(
+        &metrics
+            .iter()
+            .find(|(name, _)| *name == "flow_efficiency")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert!(efficiency["value"].is_null());
+    assert_eq!(
+        efficiency["unknown"]["reason"],
+        "execution_starts_not_recorded"
+    );
+    assert_eq!(efficiency["detail"]["shipped_lots"], 3);
+    assert_eq!(efficiency["detail"]["unmeasured_execution_lots"], 3);
+    let report = report_of(&store, 60);
+    let stage = station(&report, "stage");
+    assert_eq!(stage["total_s"]["p50"], 600);
+    assert!(stage["process_s"].is_null());
+    assert!(stage["queue_s"].is_null());
+}
+
+#[test]
+fn late_stage_completion_does_not_close_a_newer_visit() {
+    let (_dir, store) = store();
+    for (kind, offset) in [("pr.merged", 10), ("release.staged", 5)] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome: None,
+                todo: None,
+                pr: Some(1),
+                shift: None,
+                at_ms: START + offset * MINUTE,
+            },
+        );
+    }
+    let visits = visits_of(&store);
+    let stage = at(&visits, Station::Stage)[0];
+    assert_eq!(stage.entered_ms, START + 10 * MINUTE);
+    assert!(stage.left_ms.is_none());
+    assert!(
+        visits
+            .iter()
+            .all(|v| v.left_ms.is_none_or(|left| left >= v.entered_ms))
+    );
+}
+
+#[test]
+fn repeated_hold_refreshes_reason_without_counting_another_transition() {
+    let (_dir, store) = store();
+    for (offset, outcome) in [(0, "blocked"), (1, "parked")] {
+        post(
+            &store,
+            &Post {
+                kind: "todo.action",
+                outcome: Some(outcome),
+                todo: Some("20261012-000001-aaaaaa"),
+                pr: None,
+                shift: None,
+                at_ms: START + offset * MINUTE,
+            },
+        );
+    }
+    let visits = visits_of(&store);
+    assert_eq!(at(&visits, Station::Work)[0].direction, "hold");
+    let conn = Connection::open(_dir.path().join("shift.sqlite")).unwrap();
+    let reason: String = conn
+        .query_row(
+            "SELECT outcome FROM flow_ledger WHERE station='work' AND left_ms IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "parked");
+    let query = super::history::Query {
+        family: Some("acme".into()),
+        state: Some("held".into()),
+        days: Some(7),
+        ..Default::default()
+    };
+    assert_eq!(
+        store
+            .flow_history(&query, START + 10 * MINUTE)
+            .unwrap()
+            .total,
+        1
     );
 }

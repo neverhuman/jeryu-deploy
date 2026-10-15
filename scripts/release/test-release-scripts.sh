@@ -226,7 +226,10 @@ rc=0; JERYU_HEALTH_URL="file://$T/no-such-health.json" JERYU_HEALTH_TRIES=2 \
   bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-unhealthy.log" 2>&1 || rc=$?
 [[ $rc != 0 ]] || fail "switch reported success though its health check never passed"
 grep -q "health check timed out" "$T/switch-unhealthy.log" || fail "an unhealthy switch did not say its health check timed out"
-bash "$JERYU_HOME/releases/$REL/rollback.sh" >/dev/null 2>&1 || fail "rollback after an unhealthy switch failed"
+mv "$JERYU_DATA/shift.sqlite" "$T/damaged-live-shift.sqlite"
+bash "$JERYU_HOME/releases/$REL/rollback.sh" >"$T/rollback-missing-live.log" 2>&1 || fail "rollback after an unhealthy switch failed"
+grep -q "live store shift.sqlite is missing" "$T/rollback-missing-live.log" || fail "rollback did not record missing live state"
+[[ "$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('select v from t').fetchone()[0])" "$JERYU_DATA/shift.sqlite")" == before ]] || fail "rollback did not restore missing live state"
 [[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "rollback after an unhealthy switch did not restore PREV"
 REL="$REL_OK"
 ok "switch fails when its health check never passes, and rollback recovers"

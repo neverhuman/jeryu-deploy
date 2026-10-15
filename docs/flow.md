@@ -273,7 +273,8 @@ listed per station in `unknown` as `{metric, reason}`, the reason being
 Reconciliation is serialized across cloned event-store handles, at most once
 per 30 seconds. Each batch reads at most 32 release events in sequence order;
 unavailable Git objects back off for five minutes without blocking later events.
-Concurrent reads use the last recorded projection. This is read-triggered upkeep,
+Concurrent reads use the last recorded projection. Work runs in the background and errors are logged; reads continue from the
+recorded projection. This is read-triggered upkeep,
 so release membership may lag until subsequent reads.
 
 Migration 0020 deliberately repairs the derived ledger instead of truncating it:
@@ -283,3 +284,9 @@ created by the previous projection (no producer measured those starts). A merge
 closes every lot carried by that pull request. Restore requires the pre-release
 shift.sqlite snapshot; the new evidence tables alone are additive. Process-time
 fields for Shift and Stage become unknown until producers emit measured starts.
+
+Compatibility: v1 already permits null metrics. Shift/Stage queue and process
+times become null because their execution was never measured. `total_s` is an
+additive measured-dwell percentile used by legacy ETA consumers, retaining
+Shift/Stage elapsed time. Scorecard efficiency explicitly reports missing-start
+coverage (docs/scorecard.md), rather than inventing execution or returning zero.

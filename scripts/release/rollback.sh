@@ -27,7 +27,6 @@ SNAP="$J/backups/pre-$REL"
 
 for n in forge.sqlite work.sqlite codegraph.sqlite shift.sqlite; do
   [[ -s "$SNAP/$n" && -r "$SNAP/$n" ]] || { echo "no readable snapshot $SNAP/$n; refusing" >&2; exit 1; }
-  [[ -s "$DATA/$n" && -r "$DATA/$n" ]] || { echo "no readable live store $DATA/$n; refusing" >&2; exit 1; }
 done
 [[ -e "$J/bin/jeryu-$PREV" ]] || { echo "previous binary jeryu-$PREV is gone; refusing" >&2; exit 1; }
 
@@ -35,7 +34,7 @@ $SYSTEMCTL --user stop jeryu.service
 KEEP="$J/backups/post-$REL-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$KEEP"; chmod 700 "$KEEP"
 for n in forge.sqlite work.sqlite codegraph.sqlite shift.sqlite; do
-  cp -a "$DATA/$n" "$KEEP/"
+  if [[ -e "$DATA/$n" ]]; then mv "$DATA/$n" "$KEEP/"; else echo "[rollback] live store $n is missing; restoring snapshot" >&2; fi
   for s in -wal -shm; do [[ -e "$DATA/$n$s" ]] && mv "$DATA/$n$s" "$KEEP/"; done
   cp -a "$SNAP/$n" "$DATA/$n"
 done

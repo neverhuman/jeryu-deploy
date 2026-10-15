@@ -58,7 +58,7 @@ fn journey(lot: &str, filed: i64, tail_h: i64) -> Vec<FlowRow> {
         visit(lot, Review, at(10), Some(at(11)), Some(at(12)), "forward"),
         visit(lot, Gate, at(10), Some(at(13)), Some(at(14)), "forward"),
         visit(lot, Merge, at(14), Some(at(14)), Some(at(15)), "forward"),
-        visit(lot, Stage, at(15), Some(at(15)), Some(at(16)), "forward"),
+        visit(lot, Stage, at(15), None, Some(at(16)), "forward"),
         visit(
             lot,
             Deploy,
@@ -122,14 +122,26 @@ fn station_breakdown_splits_queue_from_process_per_station() {
         r["station_breakdown"]["value"]["deploy"]["total_p50_s"],
         50_400
     );
-    // This fixture has an explicit Stage start at arrival.
-    assert_eq!(r["station_breakdown"]["value"]["stage"]["queue_p50_s"], 0);
+    // Arrival and exit measure dwell; they do not measure active execution.
+    assert_eq!(
+        r["station_breakdown"]["value"]["stage"]["queue_p50_s"],
+        Value::Null
+    );
+    assert_eq!(
+        r["station_breakdown"]["value"]["stage"]["total_p50_s"],
+        3_600
+    );
     assert_eq!(r["station_breakdown"]["sample_size"], 3);
 }
 
 #[test]
-fn flow_efficiency_is_active_time_over_lead_time() {
-    let r = report(&flow_fixture(), &[], 7);
+fn flow_efficiency_is_active_time_over_lead_time_when_every_start_is_measured() {
+    // Arithmetic-only fixture: current producers do not measure Stage starts.
+    let mut raw = flow_fixture();
+    for row in raw.flow.iter_mut().filter(|r| r.station == Station::Stage) {
+        row.started_ms = Some(row.entered_ms);
+    }
+    let r = report(&raw, &[], 7);
     // 17/20, 27/30, 37/40 hours: median 0.9.
     assert_eq!(value(&r, "flow_efficiency"), json!(0.9));
     assert_eq!(r["flow_efficiency"]["previous"], json!(0.85));
@@ -149,7 +161,7 @@ fn flow_efficiency_skips_a_lot_with_an_unclassified_visit() {
     assert_eq!(r["flow_efficiency"]["value"], Value::Null);
     assert_eq!(
         r["flow_efficiency"]["unknown"]["reason"],
-        "no_samples_in_window"
+        "execution_starts_not_recorded"
     );
 }
 

@@ -1265,6 +1265,25 @@ pub(crate) fn metrics(ctx: &Ctx) -> Vec<(&'static str, Metric)> {
             ),
         ),
     ];
+    if let Some((_, metric)) = all.iter_mut().find(|(name, _)| *name == "flow_efficiency") {
+        let shipped = ctx.shipped_lots(ctx.start(), ctx.now_ms).count();
+        let unmeasured = ctx
+            .shipped_lots(ctx.start(), ctx.now_ms)
+            .filter(|(lot, _, _)| {
+                lot.visits
+                    .iter()
+                    .any(|v| v.left_ms.is_some() && v.started_ms.is_none())
+            })
+            .count();
+        metric.detail = Some(
+            json!({"shipped_lots":shipped,"unmeasured_execution_lots":unmeasured,"fully_measured_samples":metric.sample_size}),
+        );
+        if metric.value.is_none() && unmeasured > 0 {
+            metric.unknown = Some(Unknown {
+                reason: "execution_starts_not_recorded",
+            });
+        }
+    }
     for (name, source, reason) in UNRECORDED {
         all.push((name, unrecorded(source, ctx.days, reason)));
     }

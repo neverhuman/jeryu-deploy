@@ -239,3 +239,19 @@ Still unknown, with the reason in `unknown.reason`: `surviving_net_lines_per_day
 `worker_slot_utilisation`, `runner_utilisation`, `hypotheses_checked_and_met`
 (their source todos have not landed) and `eta_error` (Flow computes ETAs at
 read time and stores no snapshot to compare with).
+
+### Execution coverage and Flow migration 0020
+
+`flow_efficiency` requires measured starts for every closed visit of a shipped
+lot. Shift and Stage currently lack producer start events. Their previous
+arrival-as-start values counted timer waiting as active execution; migration
+0020 removes those invented starts. Consequently real shipped lots with these
+unmeasured visits return `value: null` and
+`unknown.reason: execution_starts_not_recorded`, not zero efficiency. `detail`
+reports shipped lots, unmeasured lots, and fully measured samples. This is an
+intentional metric correction until producers measure execution starts.
+
+Station breakdown retains measured arrival-to-exit `total_p50_s`; only its
+queue/process split is unknown. Flow's additive `total_s` percentiles keep that
+measured dwell in legacy ETA calculations. The new parallel Flow map omits
+serial ETAs, whose routing assumptions remain limited.
