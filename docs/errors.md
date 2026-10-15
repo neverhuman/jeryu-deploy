@@ -130,6 +130,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `idempotent_secret_withheld` | 409 | this request already ran; its once-shown secret is not kept |
 | `incident_report_invalid` | 422 | the reported incident is missing a field the ledger needs |
 | `incident_webhook_invalid` | 422 | the alert body is not an incident event the ledger can fold |
+| `incident_webhook_too_many` | 413 | the alert batch is larger than one events request may carry |
 | `incidents_read_failed` | 500 | the incident ledger could not be read |
 | `insufficient_scope` | 403 | the bot grant does not allow this request |
 | `internal_error` | 500 | the server failed while handling the request |
