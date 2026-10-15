@@ -25,7 +25,7 @@ pub use ci::{CiCommands, CiKindArg};
 pub use control_plane::{
     ArtifactsCommands, RepoGraphCommands, RunnersCommands, ToolFinderCommands,
 };
-pub use forge::{ForgeCommands, IssueCommands, PrCommands, RepoCommands};
+pub use forge::{AuthCommands, ForgeCommands, IssueCommands, PrCommands, RepoCommands};
 pub use operator::{
     AutonomyCommands, AutonomyInitArgs, AutonomyProfile, BotSetupArgs, GhSetupArgs, OnboardArgs,
 };
@@ -56,6 +56,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub api_url: Option<String>,
 
+    /// File holding the Bearer token for live API calls. Defaults to
+    /// JERYU_TOKEN_FILE. The token is read from the file, never from argv.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub token_file: Option<PathBuf>,
+
     /// The command to run.
     #[command(subcommand)]
     pub command: Commands,
@@ -67,6 +72,10 @@ pub enum Commands {
     /// Forge surfaces: repositories, pull requests, and issues.
     #[command(subcommand)]
     Forge(ForgeCommands),
+
+    /// Credential checks against the forge.
+    #[command(subcommand)]
+    Auth(AuthCommands),
 
     /// Unavailable: CI commands have no server transport.
     #[command(subcommand)]

@@ -8,6 +8,7 @@ use crate::client::{
     IssueState, MergeOutcome, OpenPullRequestRequest, PullRequest, PullRequestState, Repository,
 };
 use crate::commands::api::ApiClient;
+use crate::commands::forge_pr;
 use crate::commands::render;
 use serde_json::{Value, json};
 
@@ -88,6 +89,9 @@ fn run_pr(
             "--trust-tier only supports trusted; the server enforces merge policy".to_string(),
         ));
     }
+    if forge_pr::is_remote_command(&cmd) {
+        return forge_pr::run(api_url, owner, json, cmd, out);
+    }
     if let Some(api_url) = api_url {
         return run_pr_live(api_url, owner, json, cmd, out);
     }
@@ -141,6 +145,9 @@ fn run_pr(
             let outcome = client.merge_pull_request(owner, &repo, pr)?;
             render(out, json, &outcome, &outcome.message)
         }
+        _ => Err(ClientError::NotWired(
+            "this pull request command needs a live forge".to_string(),
+        )),
     }
 }
 
@@ -246,7 +253,7 @@ fn run_pr_live(
             draft,
         } => {
             let value = api.post(
-                &format!("/repos/{owner}/{repo}/pulls"),
+                &format!("/api/v3/repos/{owner}/{repo}/pulls"),
                 json!({
                     "head": head,
                     "base": base,
@@ -293,6 +300,9 @@ fn run_pr_live(
             let merged = merge_outcome_from_value(pr, &value);
             render(out, json, &merged, &merged.message)
         }
+        _ => Err(ClientError::NotWired(
+            "this pull request command needs a live forge".to_string(),
+        )),
     }
 }
 

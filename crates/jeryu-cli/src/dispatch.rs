@@ -9,7 +9,7 @@
 
 use std::io::Write;
 
-use crate::cli::{AutonomyCommands, Cli, Commands};
+use crate::cli::{AuthCommands, AutonomyCommands, Cli, Commands};
 use crate::client::{ApiFailureKind, ClientError, ForgeClient};
 use crate::commands;
 
@@ -37,6 +37,8 @@ pub fn dispatch_with_api_url_env(
     err: &mut dyn Write,
     api_url_env: impl FnOnce() -> Option<String>,
 ) -> i32 {
+    let cli_token_file = cli.token_file;
+    commands::api::set_token_file(cli_token_file.clone());
     let owner = cli.owner;
     let json = cli.json;
     let api_url = match cli.api_url {
@@ -49,6 +51,9 @@ pub fn dispatch_with_api_url_env(
     let result = match cli.command {
         Commands::Forge(cmd) => {
             commands::forge::run(client, api_url.as_deref(), &owner, json, cmd, out)
+        }
+        Commands::Auth(AuthCommands::Doctor) => {
+            commands::forge_pr::run_auth_doctor(api_url.as_deref(), json, out)
         }
         Commands::Ci(cmd) => commands::ci::run(client, api_url.as_deref(), &owner, json, cmd, out),
         Commands::Runner(cmd) => commands::runner::run(client, json, cmd, out),
@@ -73,7 +78,14 @@ pub fn dispatch_with_api_url_env(
             commands::control_plane::run_runners(json, api_url.as_deref(), cmd, out)
         }
         Commands::Serve { .. } => Ok(()),
-        Commands::GhSetup(args) => commands::gh_setup::run(json, args, out),
+        Commands::GhSetup(mut args) => {
+            if args.token_file.is_none() {
+                args.token_file = cli_token_file
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned());
+            }
+            commands::gh_setup::run(json, args, out)
+        }
         Commands::Bot { args } => commands::bot::run(json, args, out),
         Commands::Autonomy(AutonomyCommands::Init(args)) => {
             commands::autonomy::run(json, args, out)

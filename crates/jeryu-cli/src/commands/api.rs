@@ -17,12 +17,27 @@ pub(crate) struct ApiClient {
     token: Option<String>,
 }
 
-/// The bearer token from `JERYU_TOKEN_FILE` (preferred) or `JERYU_TOKEN`.
+thread_local! {
+    /// The `--token-file` of the command being dispatched on this thread.
+    static TOKEN_FILE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Make `--token-file` the token source for this thread's API clients.
+pub(crate) fn set_token_file(path: Option<std::path::PathBuf>) {
+    TOKEN_FILE.with(|slot| *slot.borrow_mut() = path);
+}
+
+/// The bearer token from `--token-file`, `JERYU_TOKEN_FILE` or `JERYU_TOKEN`.
 pub(crate) fn api_token() -> ClientResult<Option<String>> {
-    Ok(match std::env::var_os("JERYU_TOKEN_FILE") {
+    let path = TOKEN_FILE
+        .with(|slot| slot.borrow().clone())
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("JERYU_TOKEN_FILE"));
+    Ok(match path {
         Some(path) => Some(
             std::fs::read_to_string(path)
-                .map_err(|_| ClientError::Invalid("cannot read JERYU_TOKEN_FILE".into()))?
+                .map_err(|_| ClientError::Invalid("cannot read the token file".into()))?
                 .trim()
                 .to_owned(),
         ),

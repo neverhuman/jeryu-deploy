@@ -51,8 +51,8 @@ pub struct GhSetupArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Path to an OAuth token file (defaults to ~/.jeryu/secrets/merge-token).
-    #[arg(long, value_name = "PATH")]
+    /// Set from the global `--token-file` (defaults to ~/.jeryu/secrets/merge-token).
+    #[arg(skip)]
     pub token_file: Option<String>,
 
     /// Print the resulting config to stdout instead of writing the hosts file.

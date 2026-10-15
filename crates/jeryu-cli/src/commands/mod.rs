@@ -14,6 +14,7 @@ pub mod cache;
 pub mod ci;
 pub mod control_plane;
 pub mod forge;
+pub mod forge_pr;
 pub mod gh_setup;
 pub mod onboard;
 pub mod proof;
