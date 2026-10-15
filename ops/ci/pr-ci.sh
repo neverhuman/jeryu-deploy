@@ -64,6 +64,18 @@ assert_cargo_lock_unchanged() {
   fi
 }
 
+# Ordinary compilation -- both clippy passes, the workspace test build and the web-bundle lane --
+# builds in the gate runner's retained per-slot cache when the gate host offers one
+# (JERYU_CI_BUILD_CACHE_DIR; jeryu-ci-runner ops/pr-gate/README.md, "Reusing ordinary compilation
+# without retaining proof"). This recipe measures nothing from a build directory: there is no coverage
+# or profile build, and every report it writes (.jankurai/, target/jankurai/) stays outside the cache.
+# The runner retains the cache only after a green gate and discards it when tools, recipe or Cargo.lock
+# change; cargo still checks every source file's freshness. Unset (a laptop, another host), cargo
+# builds into target/ as before.
+if [ -n "${JERYU_CI_BUILD_CACHE_DIR:-}" ]; then
+  export CARGO_TARGET_DIR="${JERYU_CI_BUILD_CACHE_DIR}"
+  echo "[pr-ci] ordinary compilation in ${CARGO_TARGET_DIR} (the gate runner's build cache)" >&2
+fi
 echo "[pr-ci] (jobs=$JOBS) cargo fmt --all --check" >&2
 cargo fmt --all --check
 
