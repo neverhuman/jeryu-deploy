@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use jeryu_core::{ForgeCore, ForgeError, RepoMaterializer, RepoRelocator, Result};
+use jeryu_core::{ForgeCore, ForgeError, RepoMaterializer, RepoPushHistory, RepoRelocator, Result};
 use jeryu_gitd::{RepoId, RepoManager, RepoRedirects};
 
 /// Creates bare git repositories on disk via a shared [`RepoManager`].
@@ -94,5 +94,77 @@ impl RepoRedirects for CoreRedirects {
             return None;
         }
         RepoId::new(&repo.owner, &repo.name).ok()
+    }
+}
+
+/// Push history read from the bare repositories, for the one-time
+/// `pushed_at` backfill of repositories imported before pushes were recorded.
+#[derive(Debug)]
+pub struct GitPushHistory {
+    manager: Arc<RepoManager>,
+}
+
+impl GitPushHistory {
+    /// Wrap a shared [`RepoManager`].
+    #[must_use]
+    pub fn new(manager: Arc<RepoManager>) -> Self {
+        Self { manager }
+    }
+}
+
+impl RepoPushHistory for GitPushHistory {
+    fn newest_commit_time(
+        &self,
+        owner: &str,
+        name: &str,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        self.manager
+            .newest_committer_time(owner, name)
+            .map(|time| time.map(chrono::DateTime::<chrono::Utc>::from))
+            .map_err(|err| {
+                ForgeError::Storage(format!("read push history of {owner}/{name}: {err}"))
+            })
+    }
+}
+
+#[cfg(test)]
+mod push_history_tests {
+    use super::*;
+    use jeryu_core::CreateRepositoryRequest;
+    use jeryu_gitd::GitdConfig;
+
+    #[test]
+    fn backfill_leaves_rows_without_git_history_empty_and_keeps_recorded_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(RepoManager::new(GitdConfig::new(root.path().to_path_buf())));
+        let core = ForgeCore::new();
+        for name in ["absent", "recorded"] {
+            core.create_repository(
+                "jeryu",
+                CreateRepositoryRequest {
+                    name: name.to_string(),
+                    private: true,
+                    description: None,
+                    default_branch: Some("main".to_string()),
+                },
+            )
+            .unwrap();
+        }
+        let at = chrono::Utc::now() - chrono::Duration::days(1);
+        core.record_repository_push("jeryu", "recorded", at)
+            .unwrap();
+        let history = GitPushHistory::new(manager);
+        assert_eq!(history.newest_commit_time("jeryu", "absent").unwrap(), None);
+        assert_eq!(core.backfill_repository_pushed_at(&history).unwrap(), 0);
+        assert_eq!(
+            core.get_repository("jeryu", "recorded").unwrap().pushed_at,
+            Some(at)
+        );
+        assert!(
+            core.get_repository("jeryu", "absent")
+                .unwrap()
+                .pushed_at
+                .is_none()
+        );
     }
 }

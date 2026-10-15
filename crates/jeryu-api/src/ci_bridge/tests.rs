@@ -484,10 +484,22 @@ fn assert_reviewed_main_preserved(explicit_version: bool) {
             },
         )
         .unwrap();
+    let before_merge = router
+        .core()
+        .get_repository("jeryu", "demo")
+        .unwrap()
+        .pushed_at;
     let merged = router.put(&merge_path, "{}");
     assert_eq!(merged.status, 200, "{}", merged.body);
     let response: serde_json::Value = serde_json::from_str(&merged.body).unwrap();
     assert_eq!(response["sha"], head);
+    let merged_push = router
+        .core()
+        .get_repository("jeryu", "demo")
+        .unwrap()
+        .pushed_at
+        .expect("a server-side merge moves a ref and records the push time");
+    assert!(before_merge.is_none_or(|earlier| merged_push > earlier));
     assert_eq!(
         git_out(&bare, &["rev-parse", "refs/heads/main"]),
         head,
@@ -520,6 +532,16 @@ fn assert_reviewed_main_preserved(explicit_version: bool) {
         "http://127.0.0.1:8787",
     );
     assert_eq!(git_out(&bare, &["show-ref"]), refs);
+    let repeated_push = router
+        .core()
+        .get_repository("jeryu", "demo")
+        .unwrap()
+        .pushed_at
+        .unwrap();
+    assert!(
+        repeated_push >= merged_push,
+        "a later ref move advances pushed_at and never moves it back"
+    );
     assert_eq!(
         git_out(&bare, &["rev-parse", "refs/tags/demo-v4.0.0-split.0"]),
         base
@@ -1618,4 +1640,66 @@ fn a_rebased_push_moves_the_pull_requests_base_to_its_merge_base() {
             .sha,
         rebased
     );
+}
+
+#[test]
+fn a_push_with_no_moved_branch_leaves_pushed_at_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = RepoManager::new(jeryu_gitd::GitdConfig::new(root.path().to_path_buf()));
+    let core = ForgeCore::new();
+    core.create_repository(
+        "jeryu",
+        CreateRepositoryRequest {
+            name: "quiet".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    on_push(
+        &core,
+        &manager,
+        "jeryu",
+        "quiet.git",
+        &[],
+        "http://127.0.0.1:8787",
+    );
+    assert!(
+        core.get_repository("jeryu", "quiet")
+            .unwrap()
+            .pushed_at
+            .is_none()
+    );
+    on_push(
+        &core,
+        &manager,
+        "jeryu",
+        "quiet.git",
+        &[ref_update("refs/heads/main", ZERO_OID, &"a".repeat(40))],
+        "http://127.0.0.1:8787",
+    );
+    let first = core
+        .get_repository("jeryu", "quiet")
+        .unwrap()
+        .pushed_at
+        .expect("a moved branch records the push time, even for a .git slug");
+    on_push(
+        &core,
+        &manager,
+        "jeryu",
+        "quiet",
+        &[ref_update(
+            "refs/heads/main",
+            &"a".repeat(40),
+            &"b".repeat(40),
+        )],
+        "http://127.0.0.1:8787",
+    );
+    let second = core
+        .get_repository("jeryu", "quiet")
+        .unwrap()
+        .pushed_at
+        .unwrap();
+    assert!(second >= first);
 }

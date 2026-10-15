@@ -115,7 +115,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::GithubRouter;
-use crate::git_materializer::{CoreRedirects, GitMaterializer};
+use crate::git_materializer::{CoreRedirects, GitMaterializer, GitPushHistory};
 use crate::github::{
     GH_AUTH_BOUNDARY, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE, MCP_GUIDANCE_TOOLS,
     MCP_RUN_TESTS_TOOL, gh_setup_command_with_origin, public_origin,
@@ -790,6 +790,13 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     let core = ForgeCore::open_sqlite(db_path)?
         .with_repo_materializer(materializer.clone())
         .with_repo_relocator(materializer);
+    // Rows that never recorded a push take their newest commit time once; rows
+    // that already carry one are left alone, so this is safe on every start.
+    match core.backfill_repository_pushed_at(&GitPushHistory::new(Arc::new(base_manager.clone()))) {
+        Ok(0) => {}
+        Ok(filled) => eprintln!("jeryu serve: backfilled pushed_at for {filled} repositories"),
+        Err(error) => eprintln!("jeryu serve: pushed_at backfill failed: {error}"),
+    }
     let repo_manager =
         Arc::new(base_manager.with_redirects(Arc::new(CoreRedirects::new(core.clone()))));
     let split_catalog = SplitCatalog::load(&config.split_manifests);
