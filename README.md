@@ -21,6 +21,9 @@ authority. Durable detail is intentionally routed rather than duplicated:
 - Decisions that outlive the work that produced them, with their context and
   consequences: `docs/adr/` (`docs/adr/README.md` explains the shape, and
   cross-cutting family decisions live here rather than in a single repository).
+- Proposed Shiftwork development and final review gates:
+  [ADR 0014](docs/adr/0014-separate-development-completion-from-final-review.md)
+  and the [implementation plan](docs/shiftwork-gates-plan.md).
 - Tests and required proof: `docs/testing.md`, `agent/test-map.json`, and
   `agent/proof-lanes.toml`.
 - Ownership and generated files: `agent/owner-map.json`,
