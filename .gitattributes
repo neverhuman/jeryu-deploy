@@ -1,0 +1,4 @@
+# Every migration PR adds one row to the table in this README, at the same
+# spot, so two open migration PRs always conflicted on it. Union keeps both
+# rows; the forge's merge-queue replay reads this file from the base tip.
+db/migrations/README.md merge=union

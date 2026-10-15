@@ -3,6 +3,7 @@
     ".cargo/": "workspace",
     ".config/": "workspace",
     ".dockerignore": "workspace",
+    ".gitattributes": "workspace",
     ".github/": "jeryu-deploy",
     ".gitignore": "workspace",
     ".jankurai/": "audit",

@@ -39,6 +39,15 @@ release-CI sibling path patches are not permitted.
 - Do not edit `CHANGELOG.md` in a change: release notes are generated at release
   time from commit subjects and `Todo:` trailers.
 
+## Files every PR touches
+
+- A file that many open PRs edit at the same spot conflicts on every merge
+  queue replay, and a refused replay costs a replacement PR. Append-only
+  tables carry `merge=union` in `.gitattributes` (the migration README does).
+- When a change adds tests to a large shared test file (for example
+  `crates/jeryu-api/src/web/tests/pulls_tests.rs`), put them in a new file by
+  topic instead, and move that topic's existing tests with them when it is cheap.
+
 ## Numbering a migration or an ADR
 
 - `db/migrations/` and `docs/adr/` are numbered sequences. Take the next
