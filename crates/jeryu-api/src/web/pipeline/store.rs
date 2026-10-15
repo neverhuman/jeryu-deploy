@@ -198,6 +198,41 @@ impl EventStore {
         Ok(serde_json::Value::Array(rows))
     }
 
+    /// Which repositories have recorded a delivery (staging or a production
+    /// deployment) and which have recorded a pin bump pull request. Evidence,
+    /// used only where configuration is silent about a route.
+    pub(crate) fn flow_route_evidence(
+        &self,
+        family: Option<&str>,
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner
+            .conn
+            .prepare(
+                "SELECT DISTINCT kind,repo FROM pipeline_events
+                 WHERE repo IS NOT NULL AND (?1 IS NULL OR family=?1)
+                 AND kind IN ('release.staged','deploy.status','deploy.created','pin.bump_opened')",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![family], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let mut releases = BTreeSet::new();
+        let mut pins = BTreeSet::new();
+        for (kind, repo) in rows {
+            if kind == "pin.bump_opened" {
+                pins.insert(repo);
+            } else {
+                releases.insert(repo);
+            }
+        }
+        Ok((releases, pins))
+    }
+
     /// Only one request reconciles, at most once per thirty seconds.
     pub(crate) fn flow_delivery_guard(&self) -> Option<MutexGuard<'_, Option<Instant>>> {
         let mut guard = self.delivery.try_lock().ok()?;

@@ -2169,3 +2169,139 @@ fn lock_replay_migration_only_invalidates_affected_reads_and_preserves_evidence(
         events
     );
 }
+
+/// The route's topology, end to end: two hosted repositories of one family,
+/// the pin chain read out of the integration repository's real lock on its
+/// default branch, each repository's route read out of its real branch
+/// protection, and a declared product read out of the manifest the server was
+/// given. Nothing here is derived from a repository's name.
+#[tokio::test]
+async fn flow_route_reports_the_configured_family_topology_and_its_pin_chain() {
+    use crate::web::shift::tests::run_git;
+    use jeryu_core::{CreateRepositoryRequest, SetBranchProtectionRequest};
+    let root = tempfile::tempdir().unwrap();
+    let owner = root.path().join("jeryu");
+    std::fs::create_dir_all(&owner).unwrap();
+    let make_repo = |name: &str, file: &str, contents: &str| {
+        let work = root.path().join(format!("work-{name}"));
+        std::fs::create_dir_all(&work).unwrap();
+        run_git(&work, &["init", "-q", "-b", "main"]);
+        std::fs::write(work.join(file), contents).unwrap();
+        run_git(&work, &["add", "."]);
+        run_git(&work, &["commit", "-qm", "fixture"]);
+        run_git(
+            &work,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                ".",
+                owner.join(format!("{name}.git")).to_str().unwrap(),
+            ],
+        );
+    };
+    make_repo("jeryu-web", "README", "web");
+    make_repo(
+        "jeryu-deploy",
+        "jeryu-split.lock.toml",
+        "schema_version = 'jeryu.split.lock/v1'\n\
+         [[repo]]\nname = 'jeryu-web'\ncommit = 'c'\n",
+    );
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let token = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    for name in ["jeryu-web", "jeryu-deploy"] {
+        core.create_repository(
+            "jeryu",
+            CreateRepositoryRequest {
+                name: name.into(),
+                private: false,
+                description: None,
+                default_branch: Some("main".into()),
+            },
+        )
+        .unwrap();
+    }
+    core.set_branch_protection(
+        "jeryu",
+        "jeryu-web",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["jeryu-web/required".into()],
+            required_approving_review_count: 1,
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    let manifest = root.path().join("jeryu-split.toml");
+    std::fs::write(
+        &manifest,
+        "repo_family = 'jeryu-split'\n\n\
+         [[product]]\nid = 'forge'\nlabel = 'Jeryu forge'\n\
+         repos = ['jeryu/jeryu-web', 'jeryu/jeryu-deploy']\n",
+    )
+    .unwrap();
+    let state = WebState::new_with_git_storage(core, root.path().to_path_buf())
+        .with_auth(true, false, false)
+        .with_split_manifests(vec![manifest]);
+    let now = chrono::Utc::now().timestamp_millis();
+    post_as(
+        &state.events,
+        "jeryu",
+        Some("jeryu/jeryu-web"),
+        &Post {
+            kind: "todo.filed",
+            outcome: None,
+            todo: Some("web-work"),
+            pr: None,
+            shift: None,
+            at_ms: now - MINUTE,
+        },
+    );
+    let router = app(state, root.path());
+    let response = router
+        .oneshot(get("/api/v1/flow?family=jeryu&days=7", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    let topology = &body["topology"];
+    assert_eq!(topology["products"][0]["id"], "forge");
+    assert_eq!(topology["products"][0]["label"], "Jeryu forge");
+    assert_eq!(topology["products"][0]["source"], "declared");
+    assert_eq!(
+        topology["products"][0]["integration"], "jeryu/jeryu-deploy",
+        "the lock on jeryu-deploy's default branch names the chain: {topology:#}"
+    );
+    assert_eq!(
+        topology["products"][0]["release"]["repo"],
+        "jeryu/jeryu-deploy"
+    );
+    assert_eq!(topology["products"][0]["release"]["stations"][0], "stage");
+    let repos = topology["products"][0]["repos"].as_array().unwrap();
+    let web = repos
+        .iter()
+        .find(|node| node["repo"] == "jeryu/jeryu-web")
+        .unwrap();
+    assert_eq!(web["pins_into"][0], "jeryu/jeryu-deploy");
+    assert_eq!(web["pin_source"], "pin_lock");
+    assert_eq!(web["route"]["kind"], "automated");
+    assert_eq!(web["route"]["approvals"], 1);
+    assert_eq!(web["route"]["required_checks"][0], "jeryu-web/required");
+    assert_eq!(web["active_lots"], 1);
+    let deploy = repos
+        .iter()
+        .find(|node| node["repo"] == "jeryu/jeryu-deploy")
+        .unwrap();
+    assert_eq!(deploy["role"], "integration");
+    assert_eq!(deploy["route"]["kind"], "no_gate");
+    assert_eq!(deploy["no_current_work"], true);
+    assert_eq!(topology["families"][0]["family"], "jeryu");
+    assert_eq!(topology["families"][0]["repos"], 2);
+    assert_eq!(topology["families"][0]["work"]["active_lots"], 1);
+    assert_eq!(topology["families"][0]["work"]["changes"], 1);
+}

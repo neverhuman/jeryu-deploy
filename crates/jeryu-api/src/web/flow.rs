@@ -16,9 +16,12 @@ pub(crate) mod layout;
 pub(crate) mod project;
 pub(crate) mod report;
 pub(crate) mod stations;
+pub(crate) mod topology;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod topology_tests;
 
 use std::sync::Arc;
 
@@ -161,13 +164,24 @@ pub(crate) async fn flow(
             .events
             .flow_open_lifecycle(read_family.as_deref())?;
         let lifecycle = closure::snapshot(&worker_state, &open, read_repo.as_deref());
-        Ok::<_, String>((visits, reached, lifecycle))
+        // Topology is configuration, so it covers the family scope whatever the
+        // repository filter is: a drilldown must not hide the other repositories
+        // a product delivers. Only current visits count as work in flight.
+        let active: Vec<closure::OpenVisit> = open
+            .into_iter()
+            .filter(|visit| lifecycle.is_current_open(visit))
+            .collect();
+        let shape = topology::plan(
+            &topology::inputs(&worker_state, read_family.as_deref()),
+            &active,
+        );
+        Ok::<_, String>((visits, reached, lifecycle, shape))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((visits, reached, lifecycle)) => {
+        Ok((visits, reached, lifecycle, shape)) => {
             let request = Request {
                 family,
                 days,
@@ -188,6 +202,7 @@ pub(crate) async fn flow(
                 serde_json::json!(lifecycle.total_records > lifecycle.items.len());
             body["closures"] = serde_json::json!(lifecycle.items);
             body["lifecycle_problems"] = serde_json::json!(lifecycle.problems);
+            body["topology"] = serde_json::json!(shape);
             body["repo"] = serde_json::json!(repo);
             Json(body).into_response()
         }

@@ -262,6 +262,8 @@ pub(crate) struct WebState {
     pub(crate) attention_acks: pipeline::attention::AckStore,
     /// What every deploy repo pins (`GET /api/v1/pins`), cached for a minute.
     pub(crate) pins: pipeline::pins::PinsCache,
+    /// Parsed product topology configuration, reused between Flow reads.
+    pub(crate) flow_topology: flow::topology::Cache,
     /// The repo graph's `depends_on` edges, read from every repository's Cargo
     /// manifests and cached for a minute so the graph never walks them twice.
     pub(crate) repo_depends: control_plane::DependsCache,
@@ -459,6 +461,7 @@ impl WebState {
             attention: pipeline::attention::AttentionCache::default(),
             attention_acks,
             pins: pipeline::pins::PinsCache::default(),
+            flow_topology: flow::topology::Cache::default(),
             repo_depends: control_plane::DependsCache::default(),
             codegraph_store,
             repo_manager,

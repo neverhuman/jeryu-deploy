@@ -347,6 +347,11 @@ pub(crate) fn snapshot(
     result
 }
 impl Snapshot {
+    /// Whether an open ledger visit is still current work, by the same rule
+    /// [`Snapshot::is_current`] applies to a report visit.
+    pub fn is_current_open(&self, v: &OpenVisit) -> bool {
+        !self.excluded.contains(&v.key())
+    }
     pub fn is_current(&self, v: &Visit) -> bool {
         !self
             .excluded

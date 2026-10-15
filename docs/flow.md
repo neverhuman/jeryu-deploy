@@ -1,8 +1,11 @@
 # Flow: decisions, station history, and verified delivery
 
-The live view is a repository-aware map. Review and required checks run in
-parallel and join before merge. A web pin opens a new deploy-repository PR;
-that PR passes its own review, checks, and merge. Staging produces a release
+The live view is the family's delivery journey, product by product: every
+configured repository of a product flows through its own configured
+review/gate route into the product's shared convergence point, its release and
+production ("Family, product, repository" below). Review and required checks
+run in parallel and join before merge. A pin opens a new pull request in the
+convergence repository; that PR passes its own review, checks, and merge. Staging produces a release
 that intentionally waits for activation authorization. ADR 0013 supersedes
 the original linear-map design below.
 
@@ -35,6 +38,142 @@ or destructive rebuild is required. Rollback uses the release's database backup.
 `repository_wip` supplements the existing report with recorded open visits by
 repository/station. Parallel station counts overlap. The headline no longer
 claims a proven bottleneck from incomplete historical estimates.
+
+## Family, product, repository
+
+Flow defaults to the whole family's delivery journey. The response carries a
+`topology` object the page draws from, derived from configuration and recorded
+evidence only -- never from a repository's name:
+
+```jsonc
+"topology": {
+  "families": [ { "family": "jeryu", "products": 1, "repos": 8,
+                  "work": { "active_lots": 5, "changes": 2, "pull_requests": 2,
+                            "pin_pull_requests": 1, "release_artifacts": 0 } } ],
+  "products": [
+    { "id": "jeryu", "label": "jeryu", "family": "jeryu",
+      "source": "family_default",          // or "declared"
+      "integration": "jeryu/jeryu-deploy", // where contributions converge
+      "release": { "repo": "jeryu/jeryu-deploy", "source": "integration_repo",
+                   "stations": ["stage", "deploy"] },
+      "repos": [
+        { "repo": "jeryu/jeryu-web", "role": "source", "shared": false,
+          "pins_into": ["jeryu/jeryu-deploy"], "pin_source": "pin_lock",
+          "route": { "kind": "automated", "source": "branch_protection",
+                     "approvals": 1, "required_checks": ["jeryu-web/required"] },
+          "active_lots": 1, "no_current_work": false }
+      ],
+      "work": { "active_lots": 2, "changes": 0, "pull_requests": 1,
+                "pin_pull_requests": 1, "release_artifacts": 0 } }
+  ],
+  "unscoped_active_lots": 0,
+  "unknown": [ { "scope": "studio", "field": "integration_repo",
+                 "reason": "no_pin_lock_or_declaration" } ],
+  "families_truncated": false
+}
+```
+
+Where each part comes from:
+
+- **Contributing repositories** are the hosted repositories of the family, by
+  the same rule the repository list's `?family=` filter uses. A configured
+  repository with no work in flight is listed with `no_current_work`, so the
+  journey is the configured one rather than only what is moving today.
+- **Products** are the `[[product]]` tables of the split manifests the server
+  was given (`--split-manifest`). **A family that declares none gets exactly
+  one product, holding every configured repository**: most families are one
+  product, and nothing has to be configured for them. `source` says which case
+  a reader is looking at.
+
+  ```toml
+  repo_family = "veox-ai-split"       # either spelling of the family key
+
+  [[product]]
+  id = "portal"
+  label = "Veox portal"
+  repos = ["veox-ai/veox-portal", "veox-ai/veox-portal-deploy"]
+  integration_repo = "veox-ai/veox-portal-deploy"  # optional; wins over the lock
+  release_repo = "veox-ai/veox-portal-deploy"      # optional; the integration repo by default
+  pin_lock = "jeryu-split.lock.toml"               # optional; this is the default
+
+  [[repo]]                            # a repository may name its own products
+  name = "veox-shared"
+  jeryu_slug = "veox-ai/veox-shared"
+  product = ["portal", "studio"]      # in two products: a shared dependency
+  ```
+
+  A repository listed by more than one product of the family is `shared`. It
+  appears in each product it serves, and the family summary counts it, and its
+  work, once. A declared repository the forge does not host, and a hosted
+  repository no product declares, are both reported in `unknown` instead of
+  being filed somewhere plausible.
+- **The convergence point** (`integration`) is the product's
+  `integration_repo` when it declares one, otherwise the member repository
+  whose default branch holds a pin lock naming other members. The real Jeryu
+  chain is therefore read out of `jeryu-split.lock.toml` on
+  `jeryu-deploy`'s default branch: whichever repositories that lock pins flow
+  into it, and each repository's `pins_into`/`pin_source` says so per
+  repository. A lock that cannot be read leaves `pin_source: "unknown"` and an
+  `unknown` note; it is never read as "pins nowhere".
+- **The route** of a repository is its default branch's protection rule:
+  `approvals` and `required_checks` as configured. No rule means nothing is
+  required, which is reported as `kind: "no_gate"` with
+  `source: "no_protection_rule"`, not as unknown. Approvals with no required
+  check is `human_only`. Unknown configuration is not a bypass, and a
+  pass-through route is shown as the configured fact it is.
+- **Work** is counted per distinct lot, once, in one bucket by its furthest
+  recorded evidence: `release_artifacts` (a lot at Stage or Deploy), then
+  `pin_pull_requests` (a lot at Pin, or one bound to a pull request of the
+  convergence repository), then `pull_requests`, then `changes`. A lot at
+  parallel stations, or recorded in several repositories, is still one lot in a
+  product total and one in the family total. A lot whose visits name no
+  repository belongs to no product and is counted in `unscoped_active_lots`.
+  Only current work counts: a visit the closure overlay excludes (a closed,
+  unmerged pull request, an already merged upstream visit) is not in flight, and
+  closed, replaced and abandoned work stays in `closures`.
+
+The page draws one lane per product: the contributing repositories with their
+configured routes, the focused repository's own pull request cycle, the shared
+convergence point, and the release and production stations of the product's
+release route. Clicking a station keeps the family, product and repository
+scope in the address, so the station's work, daily bars and item histories stay
+scoped to what was clicked. Picking a repository narrows to the products that
+deliver it and keeps the repository drilldown; the whole product is one click
+away again.
+
+### Extending the dimensions
+
+The topology is deliberately one dimension per configured fact, so a further
+dimension is a field, not a new shape:
+
+- A further **item kind** (a mechanical rebase or recheck, a pin bump, a
+  logical batch of pull requests) is one more bucket in `work`, assigned by the
+  same rule: one lot, one bucket, by its furthest recorded evidence. Adding one
+  needs an event the forge already stores to recognise it by; until that
+  evidence exists the lot stays in the bucket its recorded visits support.
+- A further **per-repository fact** (risk or dispatch class, merge-conflict
+  rework, batching policy) is one more field on a `repos[]` entry, read from
+  the same configuration sources, with an `unknown` note when the source is
+  silent.
+
+No dimension is derived from a repository's name, and none is back-filled over
+history the ledger does not hold: a metric with no recorded evidence is absent
+with a reason, never estimated.
+
+Configuration reads (the manifests, each repository's pin lock through one
+bounded `git show`, and its branch rule) are reused for at most 60 seconds per
+family scope, at most eight scopes at a time, so a Flow read does not re-run a
+git command per repository every refresh. A change to configuration therefore
+appears within that minute.
+
+Migration and compatibility: `topology` is additive. A server that does not
+report it leaves the page on recorded visits alone -- the repositories
+`repository_wip` names, each one's requirements read from its own branch rule,
+and no claimed chain between them. No manifest change is required for a
+one-product family; declaring `[[product]]` tables only becomes necessary for a
+family that hosts several products, such as veox-ai. Nothing here infers that
+work was delivered: a release artifact and a deployment receipt remain the only
+delivery evidence.
 
 ## Original design and compatibility fields
 
