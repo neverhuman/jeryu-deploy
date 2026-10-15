@@ -801,11 +801,16 @@ async fn locations_roundtrip_only_to_authenticated_owner_and_admin() {
 #[tokio::test]
 async fn unscoped_sessions_are_visible_only_to_owner_and_admin() {
     let fx = fixture();
+    for token in [&fx.ada, &fx.outsider] {
+        let (status, body) = fx.post(token, session("cli:untrusted", &[], &[])).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["code"], "presence_scope_forbidden");
+    }
     assert_eq!(
-        fx.post(&fx.ada, session("cli:home", &[], &[])).await.0,
+        fx.post(&fx.reporter, session("cli:home", &[], &[])).await.0,
         StatusCode::OK
     );
-    for token in [&fx.ada, &fx.admin] {
+    for token in [&fx.reporter, &fx.admin] {
         let (_, body) = fx.overview(token, "").await;
         assert_eq!(body["total"], 1);
         assert_eq!(body["items"][0]["repos"], json!([]));
@@ -813,8 +818,15 @@ async fn unscoped_sessions_are_visible_only_to_owner_and_admin() {
     for token in [&fx.grace, &fx.outsider] {
         assert_eq!(fx.overview(token, "").await.1["total"], 0);
     }
-    assert_eq!(fx.overview(&fx.ada, "?family=acme").await.1["total"], 0);
-    assert!(fx.repo_items(&fx.ada, "acme%2Fwidgets").await.is_empty());
+    assert_eq!(
+        fx.overview(&fx.reporter, "?family=acme").await.1["total"],
+        0
+    );
+    assert!(
+        fx.repo_items(&fx.reporter, "acme%2Fwidgets")
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -842,4 +854,25 @@ async fn global_filters_apply_before_pagination_and_validate_enums() {
     fx.delete(&fx.ada, "cli:one").await;
     assert_eq!(fx.overview(&fx.ada, "").await.1["total"], 1);
     assert_eq!(fx.overview(&fx.ada, "?state=all").await.1["total"], 2);
+}
+
+#[tokio::test]
+async fn global_filters_keep_collisions_with_other_visible_sessions() {
+    let fx = fixture();
+    fx.post(&fx.ada, session("cli:one", &["acme/widgets"], &[]))
+        .await;
+    let mut second = session("cli:two", &["acme/widgets"], &[]);
+    second["host"] = json!("node-b");
+    second["agent"] = json!("codex");
+    fx.post(&fx.ada, second).await;
+    for query in ["?host=node-a", "?agent=claude-code"] {
+        let (_, body) = fx.overview(&fx.ada, query).await;
+        assert_eq!(body["total"], 1);
+        assert_eq!(
+            body["items"][0]["collides_with"],
+            json!(["external:cli:two"])
+        );
+    }
+    let (_, body) = fx.overview(&fx.ada, "?family=bad%0Afamily").await;
+    assert_eq!(body["code"], "presence_invalid_request");
 }

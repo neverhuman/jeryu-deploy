@@ -307,6 +307,19 @@ pub(crate) async fn beat(
     {
         return invalid("worker.family must be included in families");
     }
+    if repos.is_empty()
+        && families.is_empty()
+        && !state
+            .agent_presence
+            .may_report_any(&account.login, is_admin(&account))
+    {
+        return presence_error(
+            StatusCode::FORBIDDEN,
+            "presence_scope_forbidden",
+            "unscoped presence requires an admin or configured presence reporter",
+            "name a repository you can write or use an authorized presence reporter",
+        );
+    }
     let store = &state.agent_presence.store;
     let row = store::PresenceRow {
         session_id: beat.session_id,
@@ -430,6 +443,9 @@ pub(crate) async fn overview(
         Ok(page) => page,
         Err(rejection) => return rejection.into_response(),
     };
+    if let Err(reason) = query.check() {
+        return invalid(&reason);
+    }
     let family = match query
         .family
         .as_deref()
@@ -439,9 +455,6 @@ pub(crate) async fn overview(
         Ok(family) => family,
         Err(response) => return *response,
     };
-    if let Err(reason) = query.check() {
-        return invalid(&reason);
-    }
     let now = Utc::now();
     let now_ms = now.timestamp_millis();
     let rows = match state.agent_presence.store.visible(now_ms) {
@@ -549,7 +562,6 @@ pub(crate) async fn overview(
         }
     }
     items.extend(native.into_values());
-    items.retain(|item| query.matches(item));
     // One protection lookup per repository named, not per item.
     let merge_only: BTreeMap<String, String> = items
         .iter()
@@ -566,6 +578,7 @@ pub(crate) async fn overview(
         |item| item.repos.clone(),
         |name| merge_only.get(name).cloned(),
     );
+    items.retain(|item| query.matches(item));
     sort(&mut items);
     let (items, info) = page.apply(items);
     Json(PresenceList {

@@ -29,7 +29,7 @@ Reporting scope:
 
 - A global admin, or a login named in `JERYU_PRESENCE_REPORTERS`
   (comma-separated site setting, e.g. `agents-bot,pool-bot`), reports any
-  scope.
+  scope. Only these trusted reporters may register a session without any repository or family scope.
 - Any other login reports only repositories it can write, and a family only
   when it can write every hosted repository of that family (a family with no
   hosted repository cannot be claimed). Otherwise `403
@@ -238,5 +238,5 @@ Overview filters `host`, `operator`, `agent`, `source`, and `repo` are exact;
 agent/model/operator/visible host/branch/title/repository text. `state` accepts
 `live`, `all`, `active`, `idle`, `stale`, `ended`. Without it, global lists default
 to live and family lists retain their previous all-states behavior. Filtering
-uses permission-filtered fields and runs before pagination; a hidden host
+uses permission-filtered fields and runs after collision detection but before pagination; a hidden host
 cannot be inferred by a filter. All lists use the same source aggregation.

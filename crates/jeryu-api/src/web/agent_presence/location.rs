@@ -29,7 +29,7 @@ impl Location {
             ("cwd", &mut self.cwd),
             ("checkout_path", &mut self.checkout_path),
         ] {
-            *path = optional(name, path.take(), 4096)?;
+            *path = optional(&format!("location.{name}"), path.take(), 4096)?;
             if path.as_ref().is_some_and(|p| !p.starts_with('/')) {
                 return Err(format!("location.{name} must be an absolute path"));
             }
