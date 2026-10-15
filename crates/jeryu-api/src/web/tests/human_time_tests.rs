@@ -170,6 +170,8 @@ fn beat(
         agent: "claude".to_string(),
         model: None,
         host: None,
+        location: None,
+        worker: None,
         operator: operator.map(str::to_string),
         lane: None,
         branch: None,
