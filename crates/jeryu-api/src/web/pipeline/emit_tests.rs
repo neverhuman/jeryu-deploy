@@ -137,7 +137,8 @@ fn pull_events_name_the_pr_its_head_and_who_acted() {
     assert_eq!(all[3].reason, None, "a blank body is no reason");
     assert_eq!(
         all[3].detail,
-        Some(json!({"title": "Fix the header", "author": "rel-bot"}))
+        // review-bot is the configured review identity, so its verdict is an agent's.
+        Some(json!({"title": "Fix the header", "author": "rel-bot", "reviewer_kind": "agent"}))
     );
 }
 
@@ -277,7 +278,9 @@ fn github_edge_pull_writes_map_to_pull_events_and_review_verdicts() {
             json!([])
         };
         let request = json!({"event": event, "body": body, "comments": comments}).to_string();
-        emit::github_edge(&state, true, &reviews, "review-bot", &request, 200, "{}");
+        // A person reviews here: only a human reviewer's verdicts become
+        // review.finding events (automation posts its own findings).
+        emit::github_edge(&state, true, &reviews, "reviewer-ann", &request, 200, "{}");
     }
 
     let all = events(&state);
