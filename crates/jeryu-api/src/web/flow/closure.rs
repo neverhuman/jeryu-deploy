@@ -4,6 +4,8 @@ use crate::web::{WebState, shift};
 use jeryu_core::{PullRequest, PullRequestState};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub(crate) struct OpenVisit {
@@ -45,6 +47,67 @@ pub(crate) struct Snapshot {
     pub items: Vec<Closure>,
     pub repositories: serde_json::Value,
     pub problems: Vec<String>,
+    pub total_records: usize,
+}
+const MAX_CLOSURES: usize = 1000;
+#[derive(Default)]
+struct TodoFacts {
+    todos: BTreeMap<(String, String), shift::ShiftTodo>,
+    problems: Vec<String>,
+}
+struct CachedTodos {
+    read: Instant,
+    families: BTreeSet<String>,
+    facts: Arc<TodoFacts>,
+}
+/// Shared by cloned event stores. Only filesystem queue reads are cached;
+/// current pull states and current ledger rows are read on every request.
+#[derive(Default)]
+pub(crate) struct Cache(Mutex<Vec<CachedTodos>>);
+impl Cache {
+    fn get(&self, state: &WebState, families: &BTreeSet<String>) -> Arc<TodoFacts> {
+        if families.is_empty() {
+            return Arc::new(TodoFacts::default());
+        }
+        let mut cache = self.0.lock().expect("flow lifecycle cache poisoned");
+        if let Some(cached) = cache
+            .iter()
+            .find(|c| c.families == *families && c.read.elapsed() < Duration::from_secs(30))
+        {
+            return cached.facts.clone();
+        }
+        let mut facts = TodoFacts::default();
+        for queue in shift::queue::discover(&state.repo_manager) {
+            if !families.contains(&queue.family.name) {
+                continue;
+            }
+            match shift::queue_todos(state, &queue) {
+                Ok(rows) => {
+                    for row in rows {
+                        let todo = row.todo.to_api(chrono::Utc::now());
+                        facts
+                            .todos
+                            .insert((todo.family.clone(), todo.id.clone()), todo);
+                    }
+                }
+                Err(_) => facts.problems.push(format!(
+                    "Todo lifecycle unavailable for {}",
+                    queue.family.name
+                )),
+            }
+        }
+        let facts = Arc::new(facts);
+        cache.retain(|c| c.read.elapsed() < Duration::from_secs(30));
+        if cache.len() >= 8 {
+            cache.remove(0);
+        }
+        cache.push(CachedTodos {
+            read: Instant::now(),
+            families: families.clone(),
+            facts: facts.clone(),
+        });
+        facts
+    }
 }
 fn field<'a>(body: &'a str, key: &str) -> Option<&'a str> {
     let mut value = None;
@@ -83,6 +146,7 @@ fn target(body: &str, repo: &str) -> Option<(String, u64)> {
     if name.split('/').count() != 2
         || name.split('/').any(|s| {
             s.is_empty()
+                || matches!(s, "." | "..")
                 || !s
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
@@ -101,7 +165,7 @@ fn replacement(
     let (repo, number) = target(body, repo)?;
     let pr = pulls.get(&(repo.clone(), number));
     Some(Replacement {
-        href: format!("/{repo}/pull/{number}"),
+        href: format!("/repos/jeryu/{repo}/pulls/{number}"),
         label: format!("{repo}#{number}"),
         state: match pr {
             Some(p) if p.merged => "merged",
@@ -130,51 +194,46 @@ pub(crate) fn snapshot(
     open: &[OpenVisit],
     repo_filter: Option<&str>,
 ) -> Snapshot {
-    let mut problems = Vec::new();
+    let keys: BTreeSet<_> = open
+        .iter()
+        .filter_map(|v| v.repo.clone().zip(v.pr))
+        .collect();
     let mut pulls = BTreeMap::new();
-    // Local forge reads, once per repository; no per-row network or Git ancestry work.
-    let repos: BTreeSet<_> = open.iter().filter_map(|v| v.repo.as_deref()).collect();
-    for repo in repos {
-        let Some((owner, name)) = repo.split_once('/') else {
+    for (repo, number) in keys {
+        if let Some((owner, name)) = repo.split_once('/')
+            && let Ok(pr) = state.core.get_pull_request(owner, name, number)
+        {
+            pulls.insert((repo, number), pr);
+        }
+    }
+    let replacements: BTreeSet<_> = pulls
+        .iter()
+        .filter_map(|((repo, _), pr)| target(pr.body.as_deref().unwrap_or(""), repo))
+        .collect();
+    for (repo, number) in replacements {
+        if pulls.contains_key(&(repo.clone(), number)) {
             continue;
-        };
-        match state.core.list_pull_requests(owner, name, None) {
-            Ok(rows) => {
-                for pr in rows {
-                    pulls.insert((repo.to_string(), pr.number), pr);
-                }
-            }
-            Err(_) => problems.push(format!("PR lifecycle unavailable for {repo}")),
+        }
+        if let Some((owner, name)) = repo.split_once('/')
+            && let Ok(pr) = state.core.get_pull_request(owner, name, number)
+        {
+            pulls.insert((repo, number), pr);
         }
     }
     let families: BTreeSet<_> = open
         .iter()
         .filter(|v| v.pr.is_none())
-        .filter_map(|v| v.family.as_deref())
+        .filter_map(|v| v.family.clone())
         .collect();
-    let mut todos = BTreeMap::new();
-    for queue in shift::queue::discover(&state.repo_manager) {
-        if !families.contains(queue.family.name.as_str()) {
-            continue;
-        }
-        match shift::queue_todos(state, &queue) {
-            Ok(rows) => {
-                for row in rows {
-                    let todo = row.todo.to_api(chrono::Utc::now());
-                    todos.insert((todo.family.clone(), todo.id.clone()), todo);
-                }
-            }
-            Err(_) => problems.push(format!(
-                "Todo lifecycle unavailable for {}",
-                queue.family.name
-            )),
-        }
-    }
+    let facts = state.events.flow_lifecycle_cache().get(state, &families);
+    let todos = &facts.todos;
+    let problems = facts.problems.clone();
     let mut result = Snapshot {
         excluded: BTreeSet::new(),
         items: Vec::new(),
         repositories: serde_json::json!([]),
         problems,
+        total_records: 0,
     };
     let mut counts: BTreeMap<(String, String), [u64; 3]> = BTreeMap::new();
     let mut missing = BTreeSet::new();
@@ -209,7 +268,7 @@ pub(crate) fn snapshot(
                     "pull_request",
                     pr.title.clone(),
                     pr.body.clone().unwrap_or_default(),
-                    format!("/{}/{}/pull/{}", pr.owner, pr.repo, pr.number),
+                    format!("/repos/jeryu/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number),
                 ))
             } else if v.pr.is_none() {
                 v.family
@@ -221,7 +280,7 @@ pub(crate) fn snapshot(
                             "todo",
                             t.title.clone(),
                             format!("{}\n{}", t.note, t.body),
-                            format!("/work/{}", t.id),
+                            format!("/work/{}?family={}", t.id, t.family),
                         )
                     })
             } else {
@@ -230,6 +289,10 @@ pub(crate) fn snapshot(
         if let Some((kind, title, body, href)) = closed {
             result.excluded.insert(v.key());
             if repo_filter.is_none_or(|r| v.repo.as_deref() == Some(r)) {
+                result.total_records += 1;
+                if result.items.len() == MAX_CLOSURES {
+                    continue;
+                }
                 let replacement = replacement(&body, v.repo.as_deref().unwrap_or(""), &pulls);
                 let (disposition, needs_attention) = disposition(&body, replacement.as_ref());
                 result.items.push(Closure {
@@ -261,6 +324,9 @@ pub(crate) fn snapshot(
             "{} recorded items have no readable current lifecycle record",
             missing.len()
         ));
+    }
+    if result.total_records > result.items.len() {
+        result.problems.push(format!("Showing the first {} of {} closed station records. Narrow the repository filter; additional records remain available in repository pull requests and work history.", result.items.len(), result.total_records));
     }
     result.repositories = serde_json::json!(counts.into_iter().map(|((repo,station),[waiting,active,held])| serde_json::json!({"repo":repo,"station":station,"waiting":waiting,"active":active,"held":held})).collect::<Vec<_>>());
     result
@@ -301,6 +367,7 @@ mod tests {
         );
         assert!(target("Superseded-by: https://bad/#12", "a/b").is_none());
         assert!(target("not superseded by #12", "a/b").is_none());
+        assert!(target("Superseded-by: ../..#1", "a/b").is_none());
         assert!(target("```text\nSuperseded-by: #12\n```", "a/b").is_none());
         assert!(target("Superseded-by: #12\nSuperseded-by: #13", "a/b").is_none());
 
@@ -377,11 +444,30 @@ mod tests {
         let closed = snapshot(&state, &open, None);
         assert_eq!(closed.items.len(), open.len());
         assert!(closed.items.iter().all(|i| i.needs_attention));
+        assert!(
+            closed
+                .items
+                .iter()
+                .all(|i| i.href == format!("/repos/jeryu/acme/widget/pulls/{}", pr.number))
+        );
         let mut visible = original.clone();
         closed.filter(&mut visible);
         assert!(visible.iter().all(|v| v.left_ms.is_some()));
         assert_eq!(state.events.flow_visits(Some("acme"), 0).unwrap(), original);
         assert!(closed.repositories.as_array().unwrap().is_empty());
+        let many: Vec<_> = (0..1001)
+            .map(|i| {
+                let mut v = open[0].clone();
+                v.entered += i;
+                v
+            })
+            .collect();
+        let bounded = snapshot(&state, &many, None);
+        assert_eq!(bounded.total_records, 1001);
+        assert_eq!(bounded.items.len(), 1000);
+        assert_eq!(bounded.excluded.len(), 1001);
+        assert!(bounded.problems.iter().any(|p| p.contains("1000 of 1001")));
+
         core.update_pull_request(
             "acme",
             "widget",
@@ -440,5 +526,27 @@ mod tests {
             !mixed.excluded.contains(&followup.key()),
             "merging an older pull cannot hide a later hold sharing its todo"
         );
+    }
+    #[test]
+    fn queue_reads_share_a_short_cache_and_closure_output_has_a_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let state =
+            WebState::new_with_git_storage(jeryu_core::ForgeCore::new(), root.path().to_path_buf());
+        let families = BTreeSet::from(["acme".into()]);
+        let one = state.events.flow_lifecycle_cache().get(&state, &families);
+        let cloned = state.events.clone();
+        let two = cloned.flow_lifecycle_cache().get(&state, &families);
+        assert!(Arc::ptr_eq(&one, &two));
+        state
+            .events
+            .flow_lifecycle_cache()
+            .0
+            .lock()
+            .unwrap()
+            .first_mut()
+            .unwrap()
+            .read = Instant::now() - Duration::from_secs(31);
+        let three = cloned.flow_lifecycle_cache().get(&state, &families);
+        assert!(!Arc::ptr_eq(&one, &three));
     }
 }

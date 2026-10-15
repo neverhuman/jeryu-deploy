@@ -146,6 +146,7 @@ pub(crate) struct Inserted {
 pub(crate) struct EventStore {
     inner: Arc<Mutex<Inner>>,
     delivery: Arc<Mutex<Option<Instant>>>,
+    lifecycle: Arc<crate::web::flow::closure::Cache>,
 }
 
 struct Inner {
@@ -161,6 +162,9 @@ fn page_limit(query: &EventsQuery) -> i64 {
 }
 
 impl EventStore {
+    pub(crate) fn flow_lifecycle_cache(&self) -> &crate::web::flow::closure::Cache {
+        &self.lifecycle
+    }
     pub(crate) fn flow_open_lifecycle(
         &self,
         family: Option<&str>,
@@ -270,6 +274,7 @@ impl EventStore {
         }
         Ok(Self {
             delivery: Arc::new(Mutex::new(None)),
+            lifecycle: Arc::default(),
             inner: Arc::new(Mutex::new(Inner {
                 conn,
                 last_prune_ms: 0,

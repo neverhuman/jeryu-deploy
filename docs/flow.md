@@ -329,3 +329,13 @@ never silently resolve work. Existing prose remains visible for manual triage.
 An intentional abandonment requires both `Flow-disposition: abandoned` and a
 nonempty `Flow-reason: ...` line. Otherwise the disposition is unknown and needs
 attention. No PRs, todos, branches or commits are automatically closed or deleted.
+
+The response caps closure records at 1,000, separately returning
+`closure_record_count`, `closures_truncated` and a visible coverage warning when
+more exist. Narrow the repository filter for additional records; source pull requests
+and todo history remain available. Current pull states are fetched only for
+referenced visits and explicit replacement targets, not all repository pulls.
+Filesystem todo reads share a serialized, 30-second cache keyed by family set, retaining at most eight scopes;
+no queue scan runs for pull-only inventory. Todo closure reflects the recorded
+queue status, not an inferred landing proof. Canonical app routes are used for
+source and replacement links; dot-segment references are rejected.

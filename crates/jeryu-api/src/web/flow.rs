@@ -177,6 +177,9 @@ pub(crate) async fn flow(
             let mut body = serde_json::to_value(report::build(&request, &visits, &reached))
                 .expect("flow serializes");
             body["repository_wip"] = lifecycle.repositories;
+            body["closure_record_count"] = serde_json::json!(lifecycle.total_records);
+            body["closures_truncated"] =
+                serde_json::json!(lifecycle.total_records > lifecycle.items.len());
             body["closures"] = serde_json::json!(lifecycle.items);
             body["lifecycle_problems"] = serde_json::json!(lifecycle.problems);
             body["repo"] = serde_json::json!(repo);
