@@ -127,13 +127,13 @@ pub(super) const MIGRATIONS: &[(i64, &str, &str)] = &[
     ),
     (
         23,
-        "0022_change_outcomes",
-        include_str!("../../../../../db/migrations/0022_change_outcomes.sql"),
+        "0023_change_outcomes",
+        include_str!("../../../../../db/migrations/0023_change_outcomes.sql"),
     ),
     (
         24,
-        "0023_incident_ledger",
-        include_str!("../../../../../db/migrations/0023_incident_ledger.sql"),
+        "0024_incident_ledger",
+        include_str!("../../../../../db/migrations/0024_incident_ledger.sql"),
     ),
 ];
 

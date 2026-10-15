@@ -5,7 +5,7 @@
 //! Minutes are charged to a *change lot* -- a todo id, or `<owner>/<repo>#<N>`
 //! for a pull request no todo carries, exactly as `flow_ledger` spells a lot
 //! -- and stored in `change_human_minutes` next to what the lot ended as in
-//! `change_outcomes` (migration `0022_change_outcomes.sql`). Neither table is
+//! `change_outcomes` (migration `0023_change_outcomes.sql`). Neither table is
 //! ever pruned: the event log is telemetry, time people spent is a record.
 //!
 //! Four sources are counted, and each is labelled in the answer so a page can

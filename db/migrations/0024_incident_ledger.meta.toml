@@ -1,7 +1,7 @@
-# Structured metadata for 0023_incident_ledger.sql. The SQL file is
+# Structured metadata for 0024_incident_ledger.sql. The SQL file is
 # checksum-bound once applied, so its lock and timeout posture lives here.
 
-migration = "0023_incident_ledger"
+migration = "0024_incident_ledger"
 engine = "sqlite"
 store = "<data_dir>/shift.sqlite"
 owner = "crates/jeryu-api/src/web/incidents.rs"
@@ -17,7 +17,7 @@ mechanism = "table creation over no rows"
 value = "milliseconds"
 
 [rollback]
-plan = "stop the server, DROP TABLE incident_causes and incident_ledger, delete version 23 from shift_schema_migrations; roll back together with the binary"
+plan = "stop the server, DROP TABLE incident_causes and incident_ledger, delete version 24 from shift_schema_migrations; roll back together with the binary"
 backup = "sqlite3 shift.sqlite '.backup incident-ledger.sqlite' before rollback; incidents older than the event log's retention exist only in these tables"
 
 [verify]

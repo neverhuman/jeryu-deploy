@@ -1,7 +1,7 @@
-# Structured metadata for 0022_change_outcomes.sql. The SQL file is
+# Structured metadata for 0023_change_outcomes.sql. The SQL file is
 # checksum-bound once applied, so its lock and timeout posture lives here.
 
-migration = "0022_change_outcomes"
+migration = "0023_change_outcomes"
 engine = "sqlite"
 store = "<data_dir>/shift.sqlite"
 owner = "crates/jeryu-api/src/web/human_time.rs"
@@ -17,7 +17,7 @@ mechanism = "table creation over no rows"
 value = "milliseconds"
 
 [rollback]
-plan = "stop the server, DROP TABLE change_human_minutes and change_outcomes, delete version 22 from shift_schema_migrations; roll back together with the binary"
+plan = "stop the server, DROP TABLE change_human_minutes and change_outcomes, delete version 23 from shift_schema_migrations; roll back together with the binary"
 backup = "sqlite3 shift.sqlite '.backup change-outcomes.sqlite' before rollback; minutes people spent cannot be rebuilt from the pruned event log"
 
 [verify]

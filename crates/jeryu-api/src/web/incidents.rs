@@ -1,5 +1,5 @@
 //! Incidents: `incident.*` pipeline events folded into `incident_ledger` and
-//! `incident_causes` (`db/migrations/0023_incident_ledger.sql`), and the
+//! `incident_causes` (`db/migrations/0024_incident_ledger.sql`), and the
 //! reads, the report form and the alert-webhook route built on them. Contract:
 //! `docs/pipeline-events.md`, "Incidents".
 //!

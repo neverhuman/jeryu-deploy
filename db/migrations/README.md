@@ -41,8 +41,8 @@ working (an older binary checks only the migrations it knows).
 | `0020_flow_evidence.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/flow` |
 | `0021_flow_lock_replay.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/flow` |
 | `0022_agent_locations.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/agent_presence` |
-| `0022_change_outcomes.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/human_time.rs` |
-| `0023_incident_ledger.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/incidents.rs` |
+| `0023_change_outcomes.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/human_time.rs` |
+| `0024_incident_ledger.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/incidents.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. A migration that alters an existing table also has a

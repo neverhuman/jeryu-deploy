@@ -866,7 +866,7 @@ repository in no family); spend with neither is `unattributed_usd`. A missing
 cost, and the engineering time behind each successful outcome: it is what the
 Scorecard divides by. Admin-only, like the yield report. Implementation:
 `crates/jeryu-api/src/web/human_time.rs`; store:
-`db/migrations/0022_change_outcomes.sql`.
+`db/migrations/0023_change_outcomes.sql`.
 
 Query: `family` (either spelling; an unknown family is `422 family_unknown`),
 `since` and `until` (`YYYY-MM-DD`, UTC, both included; default `until` is
@@ -1449,7 +1449,7 @@ Four kinds, posted by any reporter (an alert webhook, a person, an agent) throug
 | `incident.closed` | `incident_id`, `closed_at` |
 
 They are folded, in the same transaction as the event, into `incident_ledger`
-and `incident_causes` (migration 0023), which are never pruned. The fold does
+and `incident_causes` (migration 0024), which are never pruned. The fold does
 not depend on order: a restore posted before the opening lands on the same
 incident.
 

@@ -1,4 +1,4 @@
--- 0023_incident_ledger: incidents and the changes blamed for them, kept for good.
+-- 0024_incident_ledger: incidents and the changes blamed for them, kept for good.
 --
 -- Change failure rate, escaped-to-prod defects and recovery time are read from
 -- here (docs/pipeline-events.md, "Incidents"). The log of pipeline events is
@@ -14,7 +14,7 @@
 --
 -- Store: <data_dir>/shift.sqlite, written by web/incidents.rs through
 -- web/pipeline/store.rs. Rollback: stop the server, DROP TABLE incident_causes,
--- DROP TABLE incident_ledger and delete version 23 from
+-- DROP TABLE incident_ledger and delete version 24 from
 -- shift_schema_migrations. Two new tables over no rows; no existing row is
 -- touched; an older binary never reads them.
 
