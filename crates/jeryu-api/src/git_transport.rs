@@ -569,6 +569,16 @@ pub(crate) async fn git_receive_pack(
         // (`web/human_time.rs`).
         crate::web::human_time::record_push(&post_push, &owner, &repo, &updates);
         crate::ci_bridge::on_push(&core, &manager, &owner, &repo, &updates, &origin_base_url);
+        // A default-branch push changes what the code tools should answer, so
+        // the repository's codegraph index is rebuilt from the new head. It
+        // runs after the refs are durable and reports its own failures: an
+        // index that cannot be built must not fail the push.
+        crate::web::codegraph_schedule::refresh_pushed_branches(
+            &post_push,
+            &owner,
+            repo.trim_end_matches(".git"),
+            &updates,
+        );
         // A pushed tag is mirrored to GitHub the same way a merge mirrors main:
         // new tags only, and an existing GitHub tag is reported, never moved.
         let tags = crate::ci_bridge::tag_updates(&before, &after);

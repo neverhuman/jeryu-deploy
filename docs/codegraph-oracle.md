@@ -17,6 +17,35 @@ changed and affected Rust crates, affected public symbols, must-read files,
 should-read files, proof lanes, suggested commands, excluded heuristic matches,
 graph stats, residual risk, provenance, and an index receipt.
 
+## Where the index lives, and what fills it
+
+Each repository has its own index inside its bare repo, at
+`<git storage>/<owner>/<name>.git/jeryu/codegraph.sqlite`. The symbol,
+reference and crate-dependency tables carry no repository column, so one
+database per repository is what makes the `repo` argument of the `code.*` MCP
+tools scope results to the repository the caller named. The server's
+`codegraph.sqlite` under its data directory stays the cross-repo store the
+tool-build cluster reads use.
+
+Three things fill a repository's index, each writing the whole snapshot in one
+transaction (an interrupted refresh leaves the previous index in place):
+
+- a push that moves a repository's default branch, refreshed after the refs are
+  durable so indexing never holds the push acknowledgement;
+- the refresh timer, which every ten minutes refreshes any repository whose
+  index is empty or older than `JERYU_CODEGRAPH_REFRESH_INTERVAL_HOURS`
+  (default 6; `0` disables the timer, not the push refresh);
+- a `code.*` read for a repository with no symbols yet, which indexes its
+  default branch once and answers from the result.
+
+A repository with no Cargo workspace, or with no commit on its default branch,
+is reported on the server log and skipped; v1 indexes Rust/Cargo only.
+
+What an index holds is what the v1 analyzer produces: public symbols per crate,
+crate dependency edges, and file rows with governance metadata. It records no
+symbol reference rows, so `code.references` answers from an indexed repository
+with an empty list until the analyzer collects them.
+
 ## V1 Scope
 
 Rust/Cargo graph reachability is the authoritative analyzer in v1. Governance

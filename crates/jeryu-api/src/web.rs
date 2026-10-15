@@ -9,6 +9,7 @@ pub(crate) mod bot_token;
 pub(crate) mod bots;
 mod ci_evidence;
 mod codegraph;
+pub(crate) mod codegraph_schedule;
 mod conditional;
 mod control_plane;
 pub mod dev_data;
@@ -836,6 +837,7 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     shift::exempt_queues_from_default_branch_protection(&state, BOOTSTRAP_ADMIN_LOGIN);
     let state = shared_state(state, &config.spa_dir);
     tool_finder_schedule::spawn(state.clone());
+    codegraph_schedule::spawn(state.clone());
     merge_queue::spawn_worker(state.clone(), std::time::Duration::from_secs(10));
     mirror_reconcile::spawn(state.clone());
     pull_import::spawn(state.clone());

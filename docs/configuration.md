@@ -117,7 +117,8 @@ After restarting:
 - `JERYU_BAD_TOKEN_RATE_LIMIT=0` does not disable that cap: it refuses every
   request carrying a credential. Leave it empty for the default.
 - An unparsable interval (`JERYU_GITHUB_MIRROR_RECONCILE_MINUTES`,
-  `JERYU_GITHUB_PULL_IMPORT_MINUTES`, `JERYU_TOOL_FINDER_SCAN_INTERVAL_HOURS`)
+  `JERYU_GITHUB_PULL_IMPORT_MINUTES`, `JERYU_TOOL_FINDER_SCAN_INTERVAL_HOURS`,
+  `JERYU_CODEGRAPH_REFRESH_INTERVAL_HOURS`)
   turns that loop off rather than using the default.
 - `JERYU_BASE` in the forge's file is `host:port` with no scheme. The
   release-board collector's own `JERYU_BASE` (`docs/release-board.md`) is a

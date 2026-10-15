@@ -134,19 +134,13 @@ pub(super) fn query_pack_for_repo(
 ) -> std::result::Result<CodeGraphImpactPack, CodeGraphRouteError> {
     let repo =
         find_repo(state, id).ok_or(CodeGraphRouteError::RepoNotFound { id: id.to_string() })?;
-    let managed = state
-        .repo_manager
-        .open_parts(&repo.owner, &repo.name)
-        .map_err(|err| CodeGraphRouteError::RepoNotFound {
-            id: format!("{} ({err})", repo.full_name),
-        })?;
+    let bare = bare_repo_path(state, &repo)?;
     let git_bin = state.repo_manager.config().git_bin.clone();
-    let commit = resolve_ref(&git_bin, &managed.path, &query.ref_name)?;
+    let commit = resolve_ref(&git_bin, &bare, &query.ref_name)?;
     let checkout = TempCheckout::new(&repo.full_name);
-    materialize_checkout(&git_bin, &managed.path, &checkout.path, &commit)?;
+    materialize_checkout(&git_bin, &bare, &checkout.path, &commit)?;
 
-    let store = CodeGraphStore::open(managed.path.join("jeryu").join("codegraph.sqlite"))
-        .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))?;
+    let store = open_repo_store(&bare)?;
     let service = CodeGraphService::new(checkout.path.clone(), store);
     service
         .query(
@@ -159,6 +153,111 @@ pub(super) fn query_pack_for_repo(
             query,
         )
         .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))
+}
+
+/// The bare repository Jeryu git storage holds for `repo`.
+fn bare_repo_path(
+    state: &WebState,
+    repo: &jeryu_core::Repository,
+) -> std::result::Result<PathBuf, CodeGraphRouteError> {
+    state
+        .repo_manager
+        .open_parts(&repo.owner, &repo.name)
+        .map(|managed| managed.path)
+        .map_err(|err| CodeGraphRouteError::RepoNotFound {
+            id: format!("{} ({err})", repo.full_name),
+        })
+}
+
+/// Where one repository's own codegraph index lives.
+///
+/// The symbol, reference and crate-dependency tables carry no repository
+/// column, so one database per repository is what scopes a symbol read to the
+/// repository the caller named. `WebState::codegraph_store` stays the
+/// cross-repo store the tool-build cluster reads use.
+pub(super) fn repo_store_path(bare: &Path) -> PathBuf {
+    bare.join("jeryu").join("codegraph.sqlite")
+}
+
+/// Open (creating the file and schema when absent) one repository's index.
+pub(super) fn open_repo_store(
+    bare: &Path,
+) -> std::result::Result<CodeGraphStore, CodeGraphRouteError> {
+    CodeGraphStore::open(repo_store_path(bare))
+        .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))
+}
+
+/// Build or refresh `id`'s index from `ref_name`, returning the symbol count
+/// the refresh persisted.
+///
+/// The refresh writes the whole snapshot in one transaction, so an interrupted
+/// run leaves the previous index in place rather than a half-written one.
+pub(super) fn refresh_repo_index(
+    state: &WebState,
+    id: &str,
+    ref_name: &str,
+) -> std::result::Result<usize, CodeGraphRouteError> {
+    let pack = query_pack_for_repo(
+        state,
+        id,
+        CodeGraphQuery {
+            ref_name: ref_name.to_string(),
+            ..CodeGraphQuery::default()
+        },
+    )?;
+    Ok(pack.graph_stats.symbol_count)
+}
+
+/// The graph a code tool reads for the repository it was given.
+///
+/// Reads that repository's own index. When it holds no symbols yet -- a
+/// repository whose first push predates indexing, or a forge that has not run
+/// a refresh -- it indexes `ref_name` (the repository's default branch when
+/// the caller named none) once and reads the result back, so a symbol search
+/// answers instead of returning nothing. A caller that names a ref the index
+/// was not built from gets a refresh from that ref, and so does a caller that
+/// names none after a read of another ref left the index on it.
+pub(super) fn repo_graph(
+    state: &WebState,
+    id: &str,
+    ref_name: Option<&str>,
+) -> std::result::Result<jeryu_codegraph::CodeGraph, CodeGraphRouteError> {
+    let repo =
+        find_repo(state, id).ok_or(CodeGraphRouteError::RepoNotFound { id: id.to_string() })?;
+    let bare = bare_repo_path(state, &repo)?;
+    let store = open_repo_store(&bare)?;
+    let snapshot = store
+        .load_snapshot()
+        .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))?;
+    // An index built from another ref than this read is about answers for the
+    // wrong code, so it is rebuilt. The ref the last refresh recorded is the
+    // receipt of what the rows hold, and a caller that named no ref is asking
+    // about the default branch.
+    let wanted_ref = ref_name.unwrap_or(repo.default_branch.as_str());
+    let indexed_ref = snapshot
+        .index_runs
+        .last()
+        .map(|run| run.ref_name.as_str())
+        .unwrap_or_default();
+    if !snapshot.symbols.is_empty() && indexed_ref == wanted_ref {
+        return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
+    }
+    let ref_name = wanted_ref;
+    refresh_repo_index(state, id, ref_name)?;
+    let snapshot = store
+        .load_snapshot()
+        .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))?;
+    Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot))
+}
+
+/// Whether `bare`'s index holds any symbol at all. Cheaper than loading the
+/// snapshot: the scheduler asks it once per repository per tick.
+pub(super) fn repo_index_is_empty(bare: &Path) -> std::result::Result<bool, String> {
+    let store = CodeGraphStore::open(repo_store_path(bare)).map_err(|err| err.to_string())?;
+    store
+        .search_symbols("", 1)
+        .map(|rows| rows.is_empty())
+        .map_err(|err| err.to_string())
 }
 
 #[derive(Debug)]
@@ -240,6 +339,14 @@ fn resolve_ref(
     bare_repo: &Path,
     ref_name: &str,
 ) -> std::result::Result<String, CodeGraphRouteError> {
+    // The ref is caller-supplied and becomes a git argument, so a name git
+    // could read as an option is refused before it gets there.
+    if let Some(reason) = ref_name_refusal(ref_name) {
+        return Err(CodeGraphRouteError::InvalidRef {
+            ref_name: ref_name.to_string(),
+            reason: reason.to_string(),
+        });
+    }
     let git_dir = format!("--git-dir={}", bare_repo.display());
     let rev = format!("{ref_name}^{{commit}}");
     run_git(git_bin, &[&git_dir, "rev-parse", "--verify", &rev], None).map_err(|reason| {
@@ -248,6 +355,23 @@ fn resolve_ref(
             reason,
         }
     })
+}
+
+/// Why a requested ref name cannot be passed to git, or `None` when it can.
+fn ref_name_refusal(ref_name: &str) -> Option<&'static str> {
+    if ref_name.is_empty() {
+        return Some("a ref name is required");
+    }
+    if ref_name.starts_with('-') {
+        return Some("a ref name must not start with '-'");
+    }
+    if ref_name
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Some("a ref name must not contain whitespace or control characters");
+    }
+    None
 }
 
 fn materialize_checkout(
@@ -460,6 +584,19 @@ mod tests {
         .await;
         assert_eq!(body["code"], "codegraph_query_failed");
         assert_eq!(body["common_fixes"], json!(["rerun index"]));
+    }
+
+    #[test]
+    fn a_ref_name_git_could_read_as_an_option_is_refused_before_git_runs() {
+        assert!(super::ref_name_refusal("main").is_none());
+        assert!(super::ref_name_refusal("release/v5.0.0").is_none());
+        assert!(super::ref_name_refusal("").is_some());
+        assert!(super::ref_name_refusal("--upload-pack=touch /tmp/x").is_some());
+        assert!(super::ref_name_refusal("main head").is_some());
+        assert!(super::ref_name_refusal("main\nhead").is_some());
+        let refused = super::resolve_ref("git", std::path::Path::new("."), "--version")
+            .expect_err("an option-shaped ref is refused");
+        assert!(refused.to_string().contains("--version"), "{refused}");
     }
 
     #[test]

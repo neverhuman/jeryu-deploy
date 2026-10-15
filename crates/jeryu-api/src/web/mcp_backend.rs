@@ -260,6 +260,21 @@ impl WebMcpBackend {
         }))
     }
 
+    /// The code graph for the repository a `code.*` tool named.
+    ///
+    /// Each repository keeps its own index, so a symbol read answers for that
+    /// repository alone; the optional `ref` argument picks the ref an index
+    /// built on demand is taken from.
+    fn repo_code_graph(
+        &self,
+        repo: &str,
+        args: &Value,
+    ) -> std::result::Result<jeryu_codegraph::CodeGraph, jeryu_mcp::ToolResponse> {
+        let ref_name = args.get("ref").and_then(Value::as_str);
+        codegraph::repo_graph(&self.state, repo, ref_name)
+            .map_err(|error| jeryu_mcp::ToolResponse::error(error.to_string()))
+    }
+
     fn call_live_codegraph(
         &self,
         tool: &str,
@@ -281,11 +296,14 @@ impl WebMcpBackend {
                 }
             }
             "code.symbols.search" => {
-                let graph = live_graph(&self.state)?;
                 let Some(query) = args.get("query").and_then(Value::as_str) else {
                     return Ok(jeryu_mcp::ToolResponse::error(
                         "code.symbols.search requires query",
                     ));
+                };
+                let graph = match self.repo_code_graph(repo, &args) {
+                    Ok(graph) => graph,
+                    Err(response) => return Ok(response),
                 };
                 let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
                 Ok(jeryu_mcp::ToolResponse::ok(
@@ -297,11 +315,14 @@ impl WebMcpBackend {
                 ))
             }
             "code.definition" => {
-                let graph = live_graph(&self.state)?;
                 let Some(symbol) = args.get("symbol").and_then(Value::as_str) else {
                     return Ok(jeryu_mcp::ToolResponse::error(
                         "code.definition requires symbol",
                     ));
+                };
+                let graph = match self.repo_code_graph(repo, &args) {
+                    Ok(graph) => graph,
+                    Err(response) => return Ok(response),
                 };
                 Ok(jeryu_mcp::ToolResponse::ok(
                     "code definition",
@@ -327,11 +348,14 @@ impl WebMcpBackend {
                 }
             }
             "code.crate.reverse_deps" => {
-                let graph = live_graph(&self.state)?;
                 let Some(crate_name) = args.get("crate_name").and_then(Value::as_str) else {
                     return Ok(jeryu_mcp::ToolResponse::error(
                         "code.crate.reverse_deps requires crate_name",
                     ));
+                };
+                let graph = match self.repo_code_graph(repo, &args) {
+                    Ok(graph) => graph,
+                    Err(response) => return Ok(response),
                 };
                 Ok(jeryu_mcp::ToolResponse::ok(
                     "crate reverse dependencies",
@@ -343,11 +367,14 @@ impl WebMcpBackend {
                 ))
             }
             "code.references" => {
-                let graph = live_graph(&self.state)?;
                 let Some(symbol) = args.get("symbol").and_then(Value::as_str) else {
                     return Ok(jeryu_mcp::ToolResponse::error(
                         "code.references requires symbol",
                     ));
+                };
+                let graph = match self.repo_code_graph(repo, &args) {
+                    Ok(graph) => graph,
+                    Err(response) => return Ok(response),
                 };
                 Ok(jeryu_mcp::ToolResponse::ok(
                     "code references",
@@ -579,12 +606,6 @@ impl WebMcpBackend {
     }
 }
 
-fn live_graph(state: &Arc<WebState>) -> anyhow::Result<jeryu_codegraph::CodeGraph> {
-    Ok(jeryu_codegraph::CodeGraph::from_snapshot(
-        state.codegraph_store.load_snapshot()?,
-    ))
-}
-
 fn codegraph_query_from_mcp_args(args: &Value) -> jeryu_codegraph::CodeGraphQuery {
     jeryu_codegraph::CodeGraphQuery {
         ref_name: args
@@ -675,10 +696,7 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use jeryu_codegraph::{
-        CrateDepRow, GraphSnapshot, SymbolRefRow, SymbolRow, ToolBuildScanConfig,
-        scan_tool_build_clusters,
-    };
+    use jeryu_codegraph::{ToolBuildScanConfig, scan_tool_build_clusters};
     use jeryu_core::{AccountStatus, AccountSummary, CreateRepositoryRequest, ForgeCore, UserRole};
     use jeryu_mcp::ToolBackend;
     use jeryu_mcp::backend::McpCallContext;
@@ -1036,8 +1054,400 @@ mod tests {
         assert!(!denied.success, "unknown run is denied: {denied:?}");
     }
 
+    /// Run git in `cwd` with a fixed identity, as the other git fixtures do.
+    fn git(args: &[&str], cwd: &Path) -> String {
+        let output = crate::test_git::git_command()
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "jeryu-test")
+            .env("GIT_AUTHOR_EMAIL", "jeryu-test@example.com")
+            .env("GIT_COMMITTER_NAME", "jeryu-test")
+            .env("GIT_COMMITTER_EMAIL", "jeryu-test@example.com")
+            .output()
+            .unwrap_or_else(|err| panic!("git {args:?} failed to spawn: {err}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// Register a repository and give it a bare repo on disk holding a real
+    /// two-crate Cargo workspace: `crate_name` exports `symbol`, and
+    /// `{crate_name}-user` depends on it. That is what the indexer reads.
+    fn seed_workspace_repo(
+        core: &ForgeCore,
+        storage_root: &Path,
+        owner: &str,
+        name: &str,
+        crate_name: &str,
+        symbol: &str,
+    ) {
+        core.create_repository(
+            owner,
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .expect("create repository");
+        let work = storage_root.join(format!("{owner}-{name}-work"));
+        std::fs::create_dir_all(&work).expect("create work dir");
+        write_file(
+            &work,
+            "Cargo.toml",
+            &format!(
+                "[workspace]\nresolver = \"2\"\nmembers = [\"crates/{crate_name}\", \"crates/{crate_name}-user\"]\n"
+            ),
+        );
+        write_file(
+            &work,
+            &format!("crates/{crate_name}/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+            ),
+        );
+        write_file(
+            &work,
+            &format!("crates/{crate_name}/src/lib.rs"),
+            &format!("pub fn {symbol}() -> bool {{\n    true\n}}\n"),
+        );
+        write_file(
+            &work,
+            &format!("crates/{crate_name}-user/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{crate_name}-user\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{crate_name} = {{ path = \"../{crate_name}\" }}\n"
+            ),
+        );
+        write_file(
+            &work,
+            &format!("crates/{crate_name}-user/src/lib.rs"),
+            &format!(
+                "pub fn calls_{symbol}() -> bool {{\n    {}::{symbol}()\n}}\n",
+                crate_name.replace('-', "_")
+            ),
+        );
+        git(&["init", "--quiet", "-b", "main"], &work);
+        git(&["add", "."], &work);
+        git(&["commit", "--quiet", "-m", "seed workspace"], &work);
+        let bare = storage_root.join(owner).join(format!("{name}.git"));
+        std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
+        git(
+            &[
+                "clone",
+                "--quiet",
+                "--bare",
+                ".",
+                bare.to_str().expect("bare utf8"),
+            ],
+            &work,
+        );
+    }
+
+    /// A symbol search answers from the named repository's own index, builds
+    /// that index on demand when the forge has never built one, and never
+    /// answers with another repository's symbols.
     #[test]
-    fn live_codegraph_tools_use_store_when_repo_is_supplied() {
+    fn a_symbol_search_indexes_the_named_repository_and_scopes_results_to_it() {
+        let storage = tempdir().expect("git storage");
+        let core = ForgeCore::new();
+        core.create_account("local", "local-password", UserRole::User)
+            .expect("create account");
+        seed_workspace_repo(
+            &core,
+            storage.path(),
+            "local",
+            "deploy",
+            "jeryu-api",
+            "required_access",
+        );
+        seed_workspace_repo(
+            &core,
+            storage.path(),
+            "local",
+            "intelligence",
+            "jeryu-codegraph",
+            "index_workspace",
+        );
+        let state = Arc::new(WebState::new_with_git_storage(
+            core,
+            storage.path().to_path_buf(),
+        ));
+        let backend = WebMcpBackend::new(state.clone());
+
+        // No index exists yet: this is the prod symptom. The search builds one
+        // from the repository's default branch and answers from it.
+        let hits = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/deploy", "query": "required_access", "limit": 10 }),
+        );
+        assert!(hits.success, "{hits:?}");
+        let symbols = hits.data.as_ref().expect("data")["symbols"]
+            .as_array()
+            .expect("symbols")
+            .clone();
+        // The definition and the caller crate's wrapper both match the query.
+        assert_eq!(symbols.len(), 2, "{symbols:?}");
+        assert_eq!(symbols[0]["symbol"], "required_access");
+        assert_eq!(symbols[0]["crate_name"], "jeryu-api");
+        assert_eq!(symbols[0]["file"], "crates/jeryu-api/src/lib.rs");
+
+        // The refresh persisted the index inside that repository's bare repo,
+        // so the next read needs no indexing run.
+        let bare = state
+            .repo_manager
+            .open_parts("local", "deploy")
+            .expect("open bare repo")
+            .path;
+        assert!(
+            super::codegraph::repo_store_path(&bare).is_file(),
+            "the refresh persists the repository's index"
+        );
+        assert!(
+            !super::codegraph::repo_index_is_empty(&bare).expect("read index"),
+            "the persisted index holds symbols"
+        );
+
+        // The `repo` argument filters: the other repository's index answers
+        // for its own symbols and not for this one's.
+        let other = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/intelligence", "query": "required_access", "limit": 10 }),
+        );
+        assert!(other.success, "{other:?}");
+        assert_eq!(
+            other.data.as_ref().expect("data")["symbols"],
+            json!([]),
+            "a symbol of local/deploy must not answer for local/intelligence"
+        );
+        let own = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/intelligence", "query": "index_workspace", "limit": 10 }),
+        );
+        assert!(own.success, "{own:?}");
+        assert_eq!(
+            own.data.as_ref().expect("data")["symbols"][0]["crate_name"],
+            "jeryu-codegraph"
+        );
+        let crossed = call(
+            &backend,
+            "code.definition",
+            json!({ "repo": "local/deploy", "symbol": "index_workspace" }),
+        );
+        assert!(crossed.success, "{crossed:?}");
+        assert_eq!(
+            crossed.data.as_ref().expect("data")["definition"],
+            Value::Null,
+            "local/deploy does not define local/intelligence's symbol"
+        );
+
+        // The rest of the live reads answer from the same per-repo index.
+        let definition = call(
+            &backend,
+            "code.definition",
+            json!({ "repo": "local/deploy", "symbol": "required_access" }),
+        );
+        assert!(definition.success, "{definition:?}");
+        assert_eq!(
+            definition.data.as_ref().expect("data")["definition"]["file"],
+            "crates/jeryu-api/src/lib.rs"
+        );
+        let reverse_deps = call(
+            &backend,
+            "code.crate.reverse_deps",
+            json!({ "repo": "local/deploy", "crate_name": "jeryu-api" }),
+        );
+        assert!(reverse_deps.success, "{reverse_deps:?}");
+        assert_eq!(
+            reverse_deps.data.as_ref().expect("data")["reverse_deps"],
+            json!(["jeryu-api-user"])
+        );
+
+        // A named ref the index was not built from is indexed for that ref,
+        // and the next read with no ref goes back to the default branch.
+        let work = storage.path().join("local-deploy-work");
+        write_file(
+            &work,
+            "crates/jeryu-api/src/lib.rs",
+            "pub fn alternate_access() -> bool {\n    false\n}\n",
+        );
+        git(&["add", "."], &work);
+        git(&["commit", "--quiet", "-m", "alternate head"], &work);
+        git(
+            &[
+                "push",
+                "--quiet",
+                bare.to_str().expect("bare utf8"),
+                "main:alternate",
+            ],
+            &work,
+        );
+        let alternate = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/deploy", "query": "alternate_access", "ref": "alternate" }),
+        );
+        assert!(alternate.success, "{alternate:?}");
+        assert_eq!(
+            alternate.data.as_ref().expect("data")["symbols"][0]["symbol"],
+            "alternate_access"
+        );
+        let back_to_default = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/deploy", "query": "required_access" }),
+        );
+        assert!(back_to_default.success, "{back_to_default:?}");
+        assert_eq!(
+            back_to_default.data.as_ref().expect("data")["symbols"][0]["symbol"],
+            "required_access",
+            "a read with no ref answers for the default branch"
+        );
+
+        // A repository nobody registered is refused, not indexed.
+        let missing = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/absent", "query": "required_access" }),
+        );
+        assert!(!missing.success, "{missing:?}");
+    }
+
+    /// A push to the default branch refreshes that repository's index; a push
+    /// to any other branch leaves it alone.
+    #[test]
+    fn a_default_branch_push_refreshes_the_repository_index() {
+        let storage = tempdir().expect("git storage");
+        let core = ForgeCore::new();
+        core.create_account("local", "local-password", UserRole::User)
+            .expect("create account");
+        seed_workspace_repo(
+            &core,
+            storage.path(),
+            "local",
+            "deploy",
+            "jeryu-api",
+            "required_access",
+        );
+        let state = Arc::new(WebState::new_with_git_storage(
+            core,
+            storage.path().to_path_buf(),
+        ));
+        let bare = state
+            .repo_manager
+            .open_parts("local", "deploy")
+            .expect("open bare repo")
+            .path;
+        let head = git(
+            &[
+                "--git-dir",
+                bare.to_str().expect("bare utf8"),
+                "rev-parse",
+                "main",
+            ],
+            storage.path(),
+        );
+
+        let topic = [crate::ci_bridge::RefUpdate {
+            ref_name: "refs/heads/topic".to_string(),
+            old_oid: crate::ci_bridge::ZERO_OID.to_string(),
+            new_oid: head.clone(),
+        }];
+        super::super::codegraph_schedule::refresh_pushed_branches(
+            &state, "local", "deploy", &topic,
+        );
+        assert!(
+            !super::codegraph::repo_store_path(&bare).is_file(),
+            "a push to another branch indexes nothing"
+        );
+
+        let main = [crate::ci_bridge::RefUpdate {
+            ref_name: "refs/heads/main".to_string(),
+            old_oid: crate::ci_bridge::ZERO_OID.to_string(),
+            new_oid: head,
+        }];
+        super::super::codegraph_schedule::refresh_pushed_branches(&state, "local", "deploy", &main);
+        assert!(
+            !super::codegraph::repo_index_is_empty(&bare).expect("read index"),
+            "a default-branch push leaves a populated index"
+        );
+    }
+
+    /// The scheduled refresh fills an index without anyone calling a tool, and
+    /// a repository it already indexed is not reindexed until it goes stale.
+    #[test]
+    fn the_scheduled_refresh_fills_every_repository_index() {
+        let storage = tempdir().expect("git storage");
+        let core = ForgeCore::new();
+        core.create_account("local", "local-password", UserRole::User)
+            .expect("create account");
+        seed_workspace_repo(
+            &core,
+            storage.path(),
+            "local",
+            "deploy",
+            "jeryu-api",
+            "required_access",
+        );
+        let state = Arc::new(WebState::new_with_git_storage(
+            core,
+            storage.path().to_path_buf(),
+        ));
+        let hour = std::time::Duration::from_secs(60 * 60);
+        let mut attempts = super::super::codegraph_schedule::RefreshAttempts::new();
+        assert_eq!(
+            super::super::codegraph_schedule::refresh_due(&state, hour, &mut attempts),
+            1,
+            "an unindexed repository is refreshed"
+        );
+        let bare = state
+            .repo_manager
+            .open_parts("local", "deploy")
+            .expect("open bare repo")
+            .path;
+        assert!(!super::codegraph::repo_index_is_empty(&bare).expect("read index"));
+        assert_eq!(
+            super::super::codegraph_schedule::refresh_due(&state, hour, &mut attempts),
+            0,
+            "an index this pass just refreshed is not refreshed again"
+        );
+        assert_eq!(
+            attempts.len(),
+            1,
+            "the attempt ledger holds one entry per hosted repository"
+        );
+        assert_eq!(
+            super::super::codegraph_schedule::refresh_due(
+                &state,
+                hour,
+                &mut super::super::codegraph_schedule::RefreshAttempts::new()
+            ),
+            0,
+            "a populated index newer than the interval is left alone"
+        );
+
+        // A symbol search then answers with no indexing run of its own.
+        let backend = WebMcpBackend::new(state);
+        let hits = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/deploy", "query": "required_access" }),
+        );
+        assert!(hits.success, "{hits:?}");
+        assert_eq!(
+            hits.data.as_ref().expect("data")["symbols"][0]["symbol"],
+            "required_access"
+        );
+    }
+
+    #[test]
+    fn tool_build_reads_the_cross_repo_store_and_code_tools_check_their_arguments() {
         let core = ForgeCore::new();
         core.create_account("local", "local-password", UserRole::User)
             .expect("create account");
@@ -1052,42 +1462,6 @@ mod tests {
         )
         .expect("create repository");
         let state = Arc::new(WebState::new(core));
-        state
-            .codegraph_store
-            .persist(&GraphSnapshot {
-                symbols: vec![
-                    SymbolRow {
-                        crate_name: "jeryu-codegraph".to_string(),
-                        file: "crates/jeryu-codegraph/src/lib.rs".to_string(),
-                        symbol: "CodeGraph".to_string(),
-                        kind: "public".to_string(),
-                        is_public: true,
-                        line: 7,
-                    },
-                    SymbolRow {
-                        crate_name: "jeryu-mcp".to_string(),
-                        file: "crates/jeryu-mcp/src/backend/memory.rs".to_string(),
-                        symbol: "MemoryBackend".to_string(),
-                        kind: "public".to_string(),
-                        is_public: true,
-                        line: 11,
-                    },
-                ],
-                crate_deps: vec![CrateDepRow {
-                    crate_name: "jeryu-mcp".to_string(),
-                    depends_on: "jeryu-codegraph".to_string(),
-                }],
-                symbol_refs: vec![SymbolRefRow {
-                    crate_name: "jeryu-codegraph".to_string(),
-                    file: "crates/jeryu-codegraph/src/lib.rs".to_string(),
-                    symbol: "CodeGraph".to_string(),
-                    ref_file: "crates/jeryu-mcp/src/backend/memory.rs".to_string(),
-                    ref_line: 12,
-                    ref_kind: "type".to_string(),
-                }],
-                ..Default::default()
-            })
-            .expect("persist codegraph snapshot");
         let tool_root = tempdir().expect("tool-build fixture");
         let repeated = r#"
 pub fn alpha(input: &str) -> Result<String, String> {
@@ -1131,18 +1505,8 @@ pub fn alpha(input: &str) -> Result<String, String> {
             .expect("persist tool-build report");
         let backend = WebMcpBackend::new(state);
 
-        let symbols = call(
-            &backend,
-            "code.symbols.search",
-            json!({ "repo": "local/repo", "query": "Code", "limit": 5 }),
-        );
-        assert!(symbols.success, "{symbols:?}");
-        assert_eq!(symbols.data.as_ref().unwrap()["repo"], "local/repo");
-        assert_eq!(
-            symbols.data.as_ref().unwrap()["symbols"][0]["symbol"],
-            "CodeGraph"
-        );
-
+        // Arguments are checked before any indexing work, so a malformed call
+        // is refused for what it is.
         let missing_query = call(
             &backend,
             "code.symbols.search",
@@ -1151,38 +1515,13 @@ pub fn alpha(input: &str) -> Result<String, String> {
         assert!(!missing_query.success, "{missing_query:?}");
         assert_eq!(missing_query.message, "code.symbols.search requires query");
 
-        let definition = call(
+        let missing_repo = call(
             &backend,
             "code.definition",
-            json!({ "repo": "local/repo", "symbol": "CodeGraph" }),
+            json!({ "symbol": "CodeGraph" }),
         );
-        assert!(definition.success, "{definition:?}");
-        assert_eq!(
-            definition.data.as_ref().unwrap()["definition"]["file"],
-            "crates/jeryu-codegraph/src/lib.rs"
-        );
-
-        let reverse_deps = call(
-            &backend,
-            "code.crate.reverse_deps",
-            json!({ "repo": "local/repo", "crate_name": "jeryu-codegraph" }),
-        );
-        assert!(reverse_deps.success, "{reverse_deps:?}");
-        assert_eq!(
-            reverse_deps.data.as_ref().unwrap()["reverse_deps"],
-            json!(["jeryu-mcp"])
-        );
-
-        let references = call(
-            &backend,
-            "code.references",
-            json!({ "repo": "local/repo", "symbol": "CodeGraph" }),
-        );
-        assert!(references.success, "{references:?}");
-        assert_eq!(
-            references.data.as_ref().unwrap()["references"][0]["ref_file"],
-            "crates/jeryu-mcp/src/backend/memory.rs"
-        );
+        assert!(!missing_repo.success, "{missing_repo:?}");
+        assert_eq!(missing_repo.message, "code.definition requires repo");
 
         let query = call(
             &backend,
@@ -1194,14 +1533,6 @@ pub fn alpha(input: &str) -> Result<String, String> {
             }),
         );
         assert!(!query.success);
-
-        let missing_repo = call(
-            &backend,
-            "code.definition",
-            json!({ "symbol": "CodeGraph" }),
-        );
-        assert!(!missing_repo.success, "{missing_repo:?}");
-        assert_eq!(missing_repo.message, "code.definition requires repo");
 
         let tool_status = call(
             &backend,
