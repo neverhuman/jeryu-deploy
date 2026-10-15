@@ -28,13 +28,13 @@ pub(crate) struct Revision {
     pub family: Option<String>,
 }
 
-pub(crate) fn pending(conn: &Connection) -> Result<Vec<Delivery>, String> {
+pub(crate) fn pending(conn: &Connection, now: i64) -> Result<Vec<Delivery>, String> {
     let mut stmt=conn.prepare("SELECT seq,ts_ms,kind,outcome,family,repo,sha,detail_json FROM pipeline_events
         WHERE (kind IN ('release.staged','deploy.created') OR (kind='deploy.status' AND outcome IN ('success','failure','error')))
         AND (kind='release.staged' OR json_extract(detail_json,'$.environment')='production')
-        AND repo IS NOT NULL AND length(sha)=40 AND seq NOT IN (SELECT event_seq FROM flow_delivery_reads)
-        ORDER BY seq LIMIT 128").map_err(|e|e.to_string())?;
-    stmt.query_map([], |r| {
+        AND repo IS NOT NULL AND length(sha)=40 AND seq NOT IN (SELECT event_seq FROM flow_delivery_reads WHERE retry_after_ms=0 OR retry_after_ms>?1)
+        ORDER BY seq LIMIT 32").map_err(|e|e.to_string())?;
+    stmt.query_map(params![now], |r| {
         let detail: Option<String> = r.get(7)?;
         Ok(Delivery {
             seq: r.get(0)?,
@@ -94,6 +94,9 @@ fn contains(state: &WebState, repo: &str, sha: &str) -> Option<BTreeSet<String>>
     .map(|s| s.lines().map(str::to_string).collect())
 }
 fn shipped(state: &WebState, event: &Delivery) -> Vec<(String, String)> {
+    if !valid_sha(&event.sha) {
+        return Vec::new();
+    }
     let mut tips = vec![(event.repo.clone(), event.sha.clone())];
     if !event.repo.ends_with("/jeryu-deploy") {
         return tips;
@@ -103,7 +106,11 @@ fn shipped(state: &WebState, event: &Delivery) -> Vec<(String, String)> {
     if let Some(lock) = git(
         state,
         &event.repo,
-        &["show", &format!("{}:jeryu-split.lock.toml", event.sha)],
+        &[
+            "show",
+            "--end-of-options",
+            &format!("{}:jeryu-split.lock.toml", event.sha),
+        ],
     )
     .and_then(|s| s.parse::<toml::Value>().ok())
     {
@@ -128,7 +135,11 @@ fn shipped(state: &WebState, event: &Delivery) -> Vec<(String, String)> {
 }
 /// Runs outside the event writer mutex. Successful reads are cached durably.
 pub(crate) fn reconcile(state: &WebState) -> Result<(), String> {
-    let (events, revisions) = state.events.flow_delivery_inputs()?;
+    let Some(_guard) = state.events.flow_delivery_guard() else {
+        return Ok(());
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    let (events, revisions) = state.events.flow_delivery_inputs(now)?;
     for event in events {
         let mut matches = Vec::new();
         let mut readable = true;
@@ -148,6 +159,8 @@ pub(crate) fn reconcile(state: &WebState) -> Result<(), String> {
         }
         if readable {
             state.events.flow_apply_delivery(&event, &matches)?;
+        } else {
+            state.events.flow_defer_delivery(event.seq, now + 300_000)?;
         }
     }
     Ok(())
@@ -178,7 +191,7 @@ pub(crate) fn apply(
         super::project::deliver(conn, &view, &event.repo, &event.sha)?;
     }
     conn.execute(
-        "INSERT OR IGNORE INTO flow_delivery_reads VALUES (?1)",
+        "INSERT OR REPLACE INTO flow_delivery_reads(event_seq,retry_after_ms) VALUES (?1,0)",
         params![event.seq],
     )
     .map_err(|e| e.to_string())?;
@@ -189,6 +202,26 @@ pub(crate) fn apply(
 mod tests {
     use super::*;
     use crate::web::shift::tests::run_git;
+    #[test]
+    fn lock_lookup_rejects_option_shaped_and_non_hex_revisions() {
+        let root = tempfile::tempdir().unwrap();
+        let state =
+            WebState::new_with_git_storage(jeryu_core::ForgeCore::new(), root.path().to_path_buf());
+        for sha in [format!("--output={:0<31}", "owned"), "z".repeat(40)] {
+            assert_eq!(sha.len(), 40);
+            let event = Delivery {
+                seq: 1,
+                ts: 1,
+                kind: "release.staged".into(),
+                outcome: None,
+                family: None,
+                repo: "acme/jeryu-deploy".into(),
+                sha,
+                detail: None,
+            };
+            assert!(shipped(&state, &event).is_empty());
+        }
+    }
     #[test]
     fn immutable_tip_excludes_a_later_merge_and_a_divergent_branch() {
         let root = tempfile::tempdir().unwrap();

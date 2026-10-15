@@ -112,6 +112,16 @@ ok "install-forge-unit accepts the same drop-in once an environment file defines
 
 stage
 "$JERYU_SYSTEMCTL" --user start jeryu.service
+for n in forge work codegraph shift; do
+  pid_before="$(cat "$T/pid")"
+  mv "$JERYU_DATA/$n.sqlite" "$T/$n.aside"
+  if bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/missing-store.log" 2>&1; then fail "switch accepted missing $n"; fi
+  grep -q "$n.sqlite" "$T/missing-store.log" || fail "switch did not name missing $n"
+  [[ "$(cat "$T/pid")" == "$pid_before" ]] && kill -0 "$pid_before" || fail "missing store stopped production"
+  mv "$T/$n.aside" "$JERYU_DATA/$n.sqlite"
+done
+ok "switch validates every store before stopping production"
+
 bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch.log" 2>&1 || { cat "$T/switch.log" >&2; fail "switch failed"; }
 [[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$REL" ]] || fail "bin symlink not moved to REL"
 [[ "$(readlink "$JERYU_HOME/share/web-dist")" == "web-dist-$REL" ]] || fail "web-dist symlink not moved to REL"
@@ -181,6 +191,16 @@ if grep -q "stopping jeryu.service" "$T/switch-again.log"; then fail "a redeploy
 [[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$REL" ]] || fail "a redeploy of the live release moved the live symlink"
 [[ "$(stat -c %Y "$JERYU_HOME/bin/jeryu-$REL")" == "$stamp" ]] || fail "a redeploy of the live release reinstalled the binary"
 ok "switch is a no-op for the release that is already live"
+
+for n in forge work codegraph shift; do
+  pid_before="$(cat "$T/pid")"
+  mv "$JERYU_HOME/backups/pre-$REL/$n.sqlite" "$T/$n.snapshot"
+  if bash "$JERYU_HOME/releases/$REL/rollback.sh" >"$T/missing-snapshot.log" 2>&1; then fail "rollback accepted missing $n snapshot"; fi
+  grep -q "$n.sqlite" "$T/missing-snapshot.log" || fail "rollback did not name missing $n snapshot"
+  [[ "$(cat "$T/pid")" == "$pid_before" ]] && kill -0 "$pid_before" || fail "missing snapshot stopped production"
+  mv "$T/$n.snapshot" "$JERYU_HOME/backups/pre-$REL/$n.sqlite"
+done
+ok "rollback validates every snapshot before stopping production"
 
 python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"update t set v='after'\"); c.commit()" "$JERYU_DATA/forge.sqlite"
 python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"update t set v='after'\"); c.commit()" "$JERYU_DATA/shift.sqlite"

@@ -1,5 +1,5 @@
 -- Durable station transitions and immutable delivery membership.
--- Additive SQLite tables, one short migration transaction; busy_timeout=5s.
+-- Evidence tables plus repairs to derived ledger rows; busy_timeout=5s.
 -- No foreign keys: evidence outlives the 30-day pipeline log. Admin-only reads.
 -- Backfill copies measured arrival/start/exit times; historical hold transitions
 -- cannot be reconstructed and are explicitly excluded from historical coverage.
@@ -45,6 +45,6 @@ CREATE TABLE flow_delivery_receipts (
     revision TEXT NOT NULL, release TEXT, kind TEXT NOT NULL, ts_ms INTEGER NOT NULL,
     PRIMARY KEY(event_seq, lot_id)
 );
-CREATE TABLE flow_delivery_reads (event_seq INTEGER PRIMARY KEY);
+CREATE TABLE flow_delivery_reads (event_seq INTEGER PRIMARY KEY, retry_after_ms INTEGER NOT NULL DEFAULT 0);
 -- Shift and Stage had synthetic starts on arrival. No producer measured them.
 UPDATE flow_ledger SET started_ms=NULL WHERE station IN ('shift','stage') AND started_ms=entered_ms;

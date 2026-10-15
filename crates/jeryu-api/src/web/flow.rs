@@ -7,7 +7,7 @@
 //! never-pruned projection [`project`] writes in the same transaction as each
 //! event, so a 90-day window outlives the log's 30-day retention. The
 //! arithmetic is in [`report`]; the station list in [`stations`] is shared
-//! with `GET /api/v1/flow/layout`. Contract: `docs/flow.md`, ADR 0004.
+//! with `GET /api/v1/flow/layout`. Contract: `docs/flow.md`, ADR 0013.
 
 pub(crate) mod delivery;
 pub(crate) mod history;

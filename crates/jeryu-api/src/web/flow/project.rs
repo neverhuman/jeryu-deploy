@@ -431,6 +431,20 @@ fn adopt(conn: &Connection, todo_id: &str, repo: &str, pr: i64) -> Result<(), St
     .map_err(|e| e.to_string())?;
     let pr_lot = format!("{repo}#{pr}");
     if pr_lot != todo_id {
+        // Rows left by OR IGNORE already exist under the canonical todo key.
+        // Remove only the duplicate alias, so daily totals count it once.
+        conn.execute("DELETE FROM flow_activity WHERE lot_id=?1", params![pr_lot])
+            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE OR IGNORE flow_delivery_receipts SET lot_id=?1 WHERE lot_id=?2",
+            params![todo_id, pr_lot],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM flow_delivery_receipts WHERE lot_id=?1",
+            params![pr_lot],
+        )
+        .map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE flow_ledger SET lot_id = ?1, todo_id = ?1 WHERE lot_id = ?2",
             params![todo_id, pr_lot],
@@ -444,6 +458,10 @@ fn adopt(conn: &Connection, todo_id: &str, repo: &str, pr: i64) -> Result<(), St
 /// that already names another repository keeps it: a pull request never
 /// relabels work recorded against a different repository.
 fn bind_pr(conn: &Connection, lot_id: &str, repo: &str, pr: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE flow_activity SET repo=?2,pr=?3 WHERE lot_id=?1 AND pr IS NULL AND (repo IS NULL OR repo=?2)",
+        params![lot_id,repo,pr],
+    ).map_err(|err|err.to_string())?;
     conn.execute(
         "UPDATE flow_ledger SET repo = ?2, pr = ?3
           WHERE lot_id = ?1 AND pr IS NULL AND (repo IS NULL OR repo = ?2)",

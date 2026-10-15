@@ -24,7 +24,7 @@ Shift/Stage have no measured start until a producer records one, so their
 wait is no longer called active processing.
 
 On Flow reads, retained staging and production deployment events are reconciled
-in batches of at most 128. Each immutable Git ancestry walk is capped at 100,000
+in batches of at most 32. Each immutable Git ancestry walk is capped at 100,000
 commits. Missing objects and revisions outside that bound stay unresolved.
 Only known merged PR revisions in the shipped ancestry close pending visits;
 not every PR merged before the deployment. The exact deploy lock supplies the
@@ -269,3 +269,17 @@ listed per station in `unknown` as `{metric, reason}`, the reason being
 5. **Close the gaps**: `gate.queued` from the gate runners; intake and docs
    stations when their objects exist; X-factor and queue-time trends; cost per
    station joined from the cost ledger.
+
+Reconciliation is serialized across cloned event-store handles, at most once
+per 30 seconds. Each batch reads at most 32 release events in sequence order;
+unavailable Git objects back off for five minutes without blocking later events.
+Concurrent reads use the last recorded projection. This is read-triggered upkeep,
+so release membership may lag until subsequent reads.
+
+Migration 0020 deliberately repairs the derived ledger instead of truncating it:
+the retained pipeline log cannot rebuild older visits. Its two in-place repairs
+use authoritative merge evidence and remove the synthetic Shift/Stage starts
+created by the previous projection (no producer measured those starts). A merge
+closes every lot carried by that pull request. Restore requires the pre-release
+shift.sqlite snapshot; the new evidence tables alone are additive. Process-time
+fields for Shift and Stage become unknown until producers emit measured starts.

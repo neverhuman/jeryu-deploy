@@ -141,7 +141,7 @@ pub(crate) fn record(
          SELECT ?1,?2,?3,?4,?5,COALESCE(?6,family),repo,pr,?7,?8,
            (SELECT COALESCE(json_extract(detail_json,'$.runner_id'),json_extract(detail_json,'$.runner')) FROM pipeline_events WHERE seq=?1),
            (SELECT log_url FROM pipeline_events WHERE seq=?1)
-         FROM flow_ledger WHERE lot_id=?2 ORDER BY seq DESC LIMIT 1",
+         FROM flow_ledger WHERE lot_id=?2 AND station=?3 ORDER BY seq DESC LIMIT 1",
         params![event.seq,lot,station.id(),state,event.ts_ms,event.family,event.sha,event.summary],
     ).map_err(|e|e.to_string())?;
     Ok(())

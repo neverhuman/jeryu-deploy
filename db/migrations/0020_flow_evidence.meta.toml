@@ -2,7 +2,7 @@ migration = "0020_flow_evidence"
 engine = "sqlite"
 store = "<data_dir>/shift.sqlite"
 owner = "crates/jeryu-api/src/web/flow"
-apply = "migrate_shift_store, one transaction"
+apply = "migrate_shift_store, one transaction; adds evidence tables and repairs existing derived ledger exits and synthetic starts"
 [lock_timeout]
 mechanism = "rusqlite Connection::busy_timeout"
 value = "5s"

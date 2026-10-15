@@ -13,7 +13,8 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use chrono::DateTime;
 use rusqlite::types::Value as SqlValue;
@@ -144,6 +145,7 @@ pub(crate) struct Inserted {
 #[derive(Clone)]
 pub(crate) struct EventStore {
     inner: Arc<Mutex<Inner>>,
+    delivery: Arc<Mutex<Option<Instant>>>,
 }
 
 struct Inner {
@@ -169,8 +171,25 @@ impl EventStore {
         Ok(serde_json::Value::Array(rows))
     }
 
+    /// Only one request reconciles, at most once per thirty seconds.
+    pub(crate) fn flow_delivery_guard(&self) -> Option<MutexGuard<'_, Option<Instant>>> {
+        let mut guard = self.delivery.try_lock().ok()?;
+        if guard.is_some_and(|last| last.elapsed() < Duration::from_secs(30)) {
+            return None;
+        }
+        *guard = Some(Instant::now());
+        Some(guard)
+    }
+
+    pub(crate) fn flow_defer_delivery(&self, seq: i64, retry: i64) -> Result<(), String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        inner.conn.execute("INSERT INTO flow_delivery_reads(event_seq,retry_after_ms) VALUES (?1,?2) ON CONFLICT(event_seq) DO UPDATE SET retry_after_ms=excluded.retry_after_ms WHERE retry_after_ms!=0", params![seq,retry]).map_err(|e|e.to_string())?;
+        Ok(())
+    }
+
     pub(crate) fn flow_delivery_inputs(
         &self,
+        now: i64,
     ) -> Result<
         (
             Vec<crate::web::flow::delivery::Delivery>,
@@ -179,10 +198,13 @@ impl EventStore {
         String,
     > {
         let inner = self.inner.lock().expect("pipeline event mutex poisoned");
-        Ok((
-            crate::web::flow::delivery::pending(&inner.conn)?,
-            crate::web::flow::delivery::revisions(&inner.conn)?,
-        ))
+        let pending = crate::web::flow::delivery::pending(&inner.conn, now)?;
+        let revisions = if pending.is_empty() {
+            Vec::new()
+        } else {
+            crate::web::flow::delivery::revisions(&inner.conn)?
+        };
+        Ok((pending, revisions))
     }
     pub(crate) fn flow_apply_delivery(
         &self,
@@ -224,6 +246,7 @@ impl EventStore {
             );
         }
         Ok(Self {
+            delivery: Arc::new(Mutex::new(None)),
             inner: Arc::new(Mutex::new(Inner {
                 conn,
                 last_prune_ms: 0,

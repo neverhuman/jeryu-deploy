@@ -25,7 +25,10 @@ HEALTH="${JERYU_HEALTH_URL:-}"
 [ -n "$HEALTH" ] || { echo "JERYU_HEALTH_URL is unset: set it to the forge's health endpoint, for example http://127.0.0.1:8787/health" >&2; exit 1; }
 SNAP="$J/backups/pre-$REL"
 
-[[ -s "$SNAP/forge.sqlite" ]] || { echo "no snapshot at $SNAP; refusing" >&2; exit 1; }
+for n in forge.sqlite work.sqlite codegraph.sqlite shift.sqlite; do
+  [[ -s "$SNAP/$n" && -r "$SNAP/$n" ]] || { echo "no readable snapshot $SNAP/$n; refusing" >&2; exit 1; }
+  [[ -s "$DATA/$n" && -r "$DATA/$n" ]] || { echo "no readable live store $DATA/$n; refusing" >&2; exit 1; }
+done
 [[ -e "$J/bin/jeryu-$PREV" ]] || { echo "previous binary jeryu-$PREV is gone; refusing" >&2; exit 1; }
 
 $SYSTEMCTL --user stop jeryu.service

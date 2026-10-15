@@ -460,7 +460,7 @@ fn a_refused_replay_and_a_killed_attempt_both_loop_back() {
 /// adopts it, so the same work is never counted twice.
 #[test]
 fn a_pull_request_lot_is_adopted_by_the_todo_that_carries_it() {
-    let (_dir, store) = store();
+    let (dir, store) = store();
     for (kind, outcome, minute) in [
         ("pr.opened", None, 0),
         ("review.finished", Some("approve"), 5),
@@ -484,6 +484,9 @@ fn a_pull_request_lot_is_adopted_by_the_todo_that_carries_it() {
         "{lots:?} is the pull request's own lot"
     );
 
+    let conn = Connection::open(dir.path().join("shift.sqlite")).unwrap();
+    conn.execute("INSERT INTO flow_activity SELECT event_seq,'20261012-000007-777777',station,state,ts_ms,family,repo,pr,sha,summary,runner,log_url FROM flow_activity WHERE lot_id='acme/widget#21'",[]).unwrap();
+
     post(
         &store,
         &Post {
@@ -503,6 +506,17 @@ fn a_pull_request_lot_is_adopted_by_the_todo_that_carries_it() {
     let after = visits_of(&store);
     let stage = at(&after, Station::Stage);
     assert_eq!(stage.len(), 1, "the merge put it on one Stage visit");
+    let aliases: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM flow_activity WHERE lot_id='acme/widget#21'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        aliases, 0,
+        "adoption merges duplicate evidence keys instead of retaining alias counts"
+    );
 }
 
 /// A shift pull request names no todo, so the branch is the join: it moves
@@ -1717,6 +1731,121 @@ fn verified_delivery_closes_only_member_lots_and_replay_is_idempotent() {
             .flow_history(&other, START + 10 * MINUTE)
             .unwrap()
             .deliveries
+            .is_empty()
+    );
+}
+
+#[test]
+fn delivery_reconciliation_is_serialized_and_unreadable_events_back_off() {
+    let (_dir, store) = store();
+    let clone = store.clone();
+    let guard = store.flow_delivery_guard().unwrap();
+    assert!(clone.flow_delivery_guard().is_none());
+    drop(guard);
+    assert!(
+        clone.flow_delivery_guard().is_none(),
+        "completed reconciliation is throttled too"
+    );
+    for n in 1..=2 {
+        store
+            .insert(
+                "operator",
+                &NewEvent {
+                    source: "release".into(),
+                    kind: "release.staged".into(),
+                    summary: "staged".into(),
+                    repo: Some("acme/widget".into()),
+                    sha: Some(format!("{n:040x}")),
+                    ..Default::default()
+                },
+                START + n,
+            )
+            .unwrap();
+    }
+    let (first, _) = store.flow_delivery_inputs(START + 3).unwrap();
+    assert_eq!(first.len(), 2);
+    store
+        .flow_defer_delivery(first[0].seq, START + 300_000)
+        .unwrap();
+    let (ready, _) = store.flow_delivery_inputs(START + 4).unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(
+        ready[0].seq, first[1].seq,
+        "missing objects must not starve newer events"
+    );
+    assert_eq!(
+        store.flow_delivery_inputs(START + 300_001).unwrap().0.len(),
+        2
+    );
+}
+
+#[test]
+fn repository_scope_keeps_early_work_after_a_todo_is_bound_to_its_pull() {
+    let (_dir, store) = store();
+    let todo = "20261012-000007-777777";
+    for (kind, minute) in [("todo.filed", 0), ("todo.claimed", 1)] {
+        post_as(
+            &store,
+            "acme",
+            None,
+            &Post {
+                kind,
+                outcome: None,
+                todo: Some(todo),
+                pr: None,
+                shift: None,
+                at_ms: START + minute * MINUTE,
+            },
+        );
+    }
+    post(
+        &store,
+        &Post {
+            kind: "pr.opened",
+            outcome: None,
+            todo: Some(todo),
+            pr: Some(21),
+            shift: None,
+            at_ms: START + 2 * MINUTE,
+        },
+    );
+    let all = store.flow_visits(Some("acme"), START).unwrap();
+    let scoped = store
+        .flow_visits_scoped(Some("acme"), START, Some("acme/widget"))
+        .unwrap();
+    assert_eq!(scoped.len(), all.len());
+    assert!(
+        scoped
+            .iter()
+            .any(|v| v.station == Station::Queue && v.entered_ms == START)
+    );
+    let history = store
+        .flow_history(
+            &super::history::Query {
+                repo: Some("acme/widget".into()),
+                days: Some(7),
+                ..Default::default()
+            },
+            START + 3 * MINUTE,
+        )
+        .unwrap();
+    assert!(
+        history
+            .items
+            .iter()
+            .any(|i| i.station == "queue" && i.lot_id == todo)
+    );
+    let wip = store.flow_repositories(Some("acme")).unwrap();
+    assert!(
+        wip.as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["repo"] == "acme/widget" && r["station"] == "review" && r["waiting"] == 1)
+    );
+    assert!(
+        store
+            .flow_visits_scoped(Some("acme"), START, Some("acme/other"))
+            .unwrap()
             .is_empty()
     );
 }

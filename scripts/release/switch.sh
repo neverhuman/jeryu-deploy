@@ -63,6 +63,10 @@ LIVE="${live#jeryu-}"
 (cd "$IN" && sha256sum --quiet -c SHA256SUMS) || { echo "staged checksums fail; refusing" >&2; exit 1; }
 [[ ! -e "$SNAP" ]] || { echo "snapshot $SNAP already exists; refusing" >&2; exit 1; }
 
+for n in forge.sqlite work.sqlite codegraph.sqlite shift.sqlite; do
+  [[ -s "$DATA/$n" && -r "$DATA/$n" ]] || { echo "no readable live store $DATA/$n; refusing" >&2; exit 1; }
+done
+
 # The unit, and with it the host's limits, before anything is stopped: an
 # unconfigured site is refused while production is still up and untouched.
 bash "$here/install-forge-unit.sh" || { echo "installing jeryu.service failed; refusing" >&2; exit 1; }

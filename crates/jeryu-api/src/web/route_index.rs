@@ -256,6 +256,7 @@ fn query_params(path: &str) -> &'static [&'static str] {
         "/api/v1/yield" => keys::<super::yields::YieldQuery>(),
         "/api/v1/scorecard" => keys::<super::scorecard::ScorecardQuery>(),
         "/api/v1/flow" => keys::<super::flow::FlowQuery>(),
+        "/api/v1/flow/history" => keys::<super::flow::history::Query>(),
         "/api/v1/events/histogram" => keys::<super::pipeline::histogram::HistogramQuery>(),
         "/api/v1/outcomes" => keys::<super::outcomes::OutcomesQuery>(),
         "/api/v1/merge-queue" => keys::<super::merge_queue::QueueListQuery>(),
