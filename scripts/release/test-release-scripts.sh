@@ -439,9 +439,16 @@ case "\$method \$url" in
     page="\${url##*page=}"; page="\${page%%&*}"
     if [ -e "$P/pulls.json.\$page" ]; then cat "$P/pulls.json.\$page"; elif [ "\$page" = 1 ]; then cat "$P/pulls.json"; else echo '[]'; fi ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/merge-queue?"*) cat "$P/queue.json" ;;
-  "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*"/checks")
+  "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls?"*)
+    if [ -e "$P/posture-page-two" ] && [[ "\$url" == *page=1 ]]; then
+      echo '{"items":[],"page":{"has_more":true}}'; exit 0
+    fi
+    jq -n --slurpfile d "$P/detail.json" --slurpfile c "$P/checks.json" '
+      {items: [\$d[0].summary + {number: 60, required_contexts: [\$c[0].checks[] | select(.required == true)
+        | {name: "required", state: (if .status == "success" then "passing"
+          elif .status == "failure" then "failing" else .status end)}]}], page: {has_more: false}}' || exit 22
     [ ! -e "$P/after-checks-detail.json" ] || cp "$P/after-checks-detail.json" "$P/detail.json"
-    cat "$P/checks.json" ;;
+    ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*) cat "$P/detail.json" ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*)
     [ -e "$P/refuse-close-detail" ] && exit 22
@@ -605,7 +612,7 @@ approved_stale_pr() {
   jq --argjson approval "$approval" '.[0] | $approval + {summary: {
     state: .state, base_ref: "main", head_ref: .head.ref, head_sha: .head.sha}}' "$P/pulls.json" >"$P/detail.json"
 }
-for required_state in success pending running cancelled skipped unknown; do
+for required_state in success pending missing running cancelled skipped unknown; do
   approved_stale_pr
   jq -n --arg status "$required_state" '{checks: [
     {required: true, status: $status}, {required: false, status: "failure"}]}' >"$P/checks.json"
@@ -615,6 +622,7 @@ for required_state in success pending running cancelled skipped unknown; do
 done
 for required_results in '{"checks":[]}' 'unreadable' \
   '{"checks":[{"required":false,"status":"failure"}]}' \
+  '{"checks":[{"required":true,"status":"failure"},{"required":true,"status":"missing"}]}' \
   '{"checks":[{"required":true,"status":"failure"},{"required":true,"status":"pending"}]}'; do
   approved_stale_pr; echo "$required_results" >"$P/checks.json"
   auto_pin >"$P/run.log" 2>&1 || fail "a tick with incomplete required evidence failed"
@@ -622,13 +630,13 @@ for required_results in '{"checks":[]}' 'unreadable' \
   undo_bump
 done
 failed_required='{"checks":[{"required":true,"status":"failure"},{"required":true,"status":"success"}]}'
-approved_stale_pr; echo "$failed_required" >"$P/checks.json"
+approved_stale_pr; echo "$failed_required" >"$P/checks.json"; touch "$P/posture-page-two"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "approved failed bump blocked replacement"; }
 [[ "$(posted "$P/prs.jsonl")" == 1 ]] && grep -q '^60 {"state":"closed"}$' "$P/closed.log" \
   || fail "approved failed bump was not replaced and closed"
 grep -q 'requires its own review and checks' "$P/comments.log" || fail "replacement does not explain fresh review"
 jq -es 'any(.[]; .kind == "pin.bump_superseded")' "$P/events.jsonl" >/dev/null || fail "replacement has no supersede event"
-undo_bump
+mv "$P/posture-page-two" "$P/posture-page-two.saved"; undo_bump
 
 approved_stale_pr; echo "$failed_required" >"$P/checks.json"
 jq '.summary.head_sha = "0000000000000000000000000000000000000000"' "$P/detail.json" >"$P/after-checks-detail.json"

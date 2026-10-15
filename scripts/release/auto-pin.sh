@@ -413,20 +413,26 @@ supersede_stale() {
   return 0
 }
 # required_failed N LIST_ROW DETAIL: check only the old bump's required results, bound to its
-# listed head. The checks endpoint follows the PR head, so bracket it with exact-head reads.
+# listed head. Use native required-context posture: a raw checks list omits required contexts
+# that have never reported. Page the native list and bracket it with exact-head reads.
 # Missing, unreadable, running or advisory-only failures never discard an approval. This runs
 # again immediately before close, after the replacement build and creation have completed.
 required_failed() {
-  local n="$1" row="$2" detail="$3" sha checks current
+  local n="$1" row="$2" detail="$3" sha batch posture current page
   sha="$(jq -r '.head.sha // empty' <<<"$row")" || return 1
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
   jq -e --arg sha "$sha" --arg ref "$(jq -r '.head.ref' <<<"$row")" '
     .summary.state == "open" and .summary.base_ref == "main"
     and .summary.head_ref == $ref and .summary.head_sha == $sha' <<<"$detail" >/dev/null || return 1
-  checks="$(api GET "/api/v1/repos/$repo_path/pulls/$n/checks" 2>/dev/null)" || return 1
-  jq -e '[.checks[] | select(.required == true)] as $required
-    | any($required[]; .status == "failure")
-      and all($required[]; .status | IN("success", "failure"))' <<<"$checks" >/dev/null 2>&1 || return 1
+  posture=""
+  for page in $(seq 1 50); do
+    batch="$(api GET "/api/v1/repos/$repo_path/pulls?state=open&per_page=100&page=$page" 2>/dev/null)" || return 1
+    posture="$(jq -ce --argjson n "$n" '.items[] | select(.number == $n)' <<<"$batch" 2>/dev/null)" && break
+    jq -e '.page.has_more == true' <<<"$batch" >/dev/null 2>&1 || return 1
+  done
+  jq -e --arg sha "$sha" '.head_sha == $sha and (.required_contexts | type == "array")
+    and any(.required_contexts[]; .state == "failing")
+    and all(.required_contexts[]; .state | IN("passing", "failing"))' <<<"$posture" >/dev/null 2>&1 || return 1
   current="$(api GET "/api/v1/repos/$repo_path/pulls/$n" 2>/dev/null)" || return 1
   jq -e --arg sha "$sha" '.summary.state == "open" and .summary.base_ref == "main"
     and .summary.head_sha == $sha' <<<"$current" >/dev/null || return 1
