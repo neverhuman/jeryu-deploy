@@ -1,5 +1,6 @@
 //! Current lifecycle overlay. Never rewrite event history or infer delivery from closure.
 use super::report::Visit;
+use crate::web::family::canonical;
 use crate::web::{WebState, shift};
 use jeryu_core::{PullRequest, PullRequestState};
 use serde::Serialize;
@@ -48,6 +49,7 @@ pub(crate) struct Snapshot {
     pub repositories: serde_json::Value,
     pub problems: Vec<String>,
     pub total_records: usize,
+    pub merged_upstream_records: usize,
 }
 const MAX_CLOSURES: usize = 1000;
 #[derive(Default)]
@@ -69,7 +71,12 @@ impl Cache {
         if families.is_empty() {
             return Arc::new(TodoFacts::default());
         }
-        let mut cache = self.0.lock().expect("flow lifecycle cache poisoned");
+        let mut cache = self.0.lock().unwrap_or_else(|poisoned| {
+            let mut cache = poisoned.into_inner();
+            cache.clear();
+            self.0.clear_poison();
+            cache
+        });
         if let Some(cached) = cache
             .iter()
             .find(|c| c.families == *families && c.read.elapsed() < Duration::from_secs(30))
@@ -78,7 +85,7 @@ impl Cache {
         }
         let mut facts = TodoFacts::default();
         for queue in shift::queue::discover(&state.repo_manager) {
-            if !families.contains(&queue.family.name) {
+            if !families.contains(&canonical(&queue.family.name)) {
                 continue;
             }
             match shift::queue_todos(state, &queue) {
@@ -223,7 +230,7 @@ pub(crate) fn snapshot(
     let families: BTreeSet<_> = open
         .iter()
         .filter(|v| v.pr.is_none())
-        .filter_map(|v| v.family.clone())
+        .filter_map(|v| v.family.as_deref().map(canonical))
         .collect();
     let facts = state.events.flow_lifecycle_cache().get(state, &families);
     let todos = &facts.todos;
@@ -234,6 +241,7 @@ pub(crate) fn snapshot(
         repositories: serde_json::json!([]),
         problems,
         total_records: 0,
+        merged_upstream_records: 0,
     };
     let mut counts: BTreeMap<(String, String), [u64; 3]> = BTreeMap::new();
     let mut missing = BTreeSet::new();
@@ -247,7 +255,7 @@ pub(crate) fn snapshot(
             || (v.pr.is_none()
                 && v.family
                     .as_ref()
-                    .is_none_or(|f| !todos.contains_key(&(f.clone(), v.lot.clone()))))
+                    .is_none_or(|f| !todos.contains_key(&(canonical(f), v.lot.clone()))))
         {
             missing.insert(v.lot.clone());
         }
@@ -260,6 +268,9 @@ pub(crate) fn snapshot(
             )
         {
             result.excluded.insert(v.key());
+            if repo_filter.is_none_or(|r| v.repo.as_deref() == Some(r)) {
+                result.merged_upstream_records += 1;
+            }
             continue;
         }
         let closed =
@@ -273,14 +284,18 @@ pub(crate) fn snapshot(
             } else if v.pr.is_none() {
                 v.family
                     .as_ref()
-                    .and_then(|f| todos.get(&(f.clone(), v.lot.clone())))
+                    .and_then(|f| todos.get(&(canonical(f), v.lot.clone())))
                     .filter(|t| t.status == shift::TodoStatus::Closed && !t.merged)
                     .map(|t| {
                         (
                             "todo",
                             t.title.clone(),
                             format!("{}\n{}", t.note, t.body),
-                            format!("/work/{}?family={}", t.id, t.family),
+                            format!(
+                                "/work/{}?family={}",
+                                super::report::path_segment(&t.id),
+                                super::report::path_segment(&t.family)
+                            ),
                         )
                     })
             } else {
@@ -321,7 +336,7 @@ pub(crate) fn snapshot(
     }
     if !missing.is_empty() {
         result.problems.push(format!(
-            "{} recorded items have no readable current lifecycle record",
+            "{} recorded items have a missing or unreadable current lifecycle record; they remain in recorded work",
             missing.len()
         ));
     }
@@ -332,18 +347,98 @@ pub(crate) fn snapshot(
     result
 }
 impl Snapshot {
-    pub fn filter(&self, visits: &mut Vec<Visit>) {
-        visits.retain(|v| {
-            v.left_ms.is_some()
-                || !self
-                    .excluded
-                    .contains(&(v.lot_id.clone(), v.station.id().into(), v.entered_ms))
-        });
+    pub fn is_current(&self, v: &Visit) -> bool {
+        !self
+            .excluded
+            .contains(&(v.lot_id.clone(), v.station.id().into(), v.entered_ms))
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_queue_closures_use_canonical_families_and_reopen_after_cache_expiry() {
+        use crate::web::shift::{tests::run_git, todo_file::TodoFile};
+        let root = tempfile::tempdir().unwrap();
+        let queue = root.path().join("acme/acme-todo.git");
+        std::fs::create_dir_all(queue.join("todos")).unwrap();
+        run_git(&queue, &["init", "-q"]);
+        run_git(&queue, &["checkout", "-q", "-b", "queue"]);
+        std::fs::write(queue.join("family.toml"), "[family]\nname = 'Acme-split'\n").unwrap();
+        let mut todo = TodoFile::new(
+            "closed/?#%".into(),
+            "Acme-split".into(),
+            "unfinished work".into(),
+        );
+        todo.status = shift::TodoStatus::Closed;
+        std::fs::write(queue.join("todos/closed.md"), todo.dump()).unwrap();
+        let mut merged = todo.clone();
+        merged.id = "merged".into();
+        merged.merged = true;
+        std::fs::write(queue.join("todos/merged.md"), merged.dump()).unwrap();
+        run_git(&queue, &["add", "."]);
+        run_git(&queue, &["commit", "-q", "-m", "queue fixture"]);
+        let state =
+            WebState::new_with_git_storage(jeryu_core::ForgeCore::new(), root.path().to_path_buf());
+        let mut open = OpenVisit {
+            lot: todo.id.clone(),
+            station: "work".into(),
+            entered: 1000,
+            repo: Some("acme/widget".into()),
+            pr: None,
+            family: Some("acme".into()),
+            started: true,
+            held: false,
+        };
+        for family in ["acme", "Acme-split"] {
+            open.family = Some(family.into());
+            let closed = snapshot(&state, &[open.clone()], None);
+            assert_eq!(closed.items.len(), 1, "{family}");
+            assert!(closed.problems.is_empty(), "{:?}", closed.problems);
+            assert_eq!(closed.items[0].href, "/work/closed%2F%3F%23%25?family=acme");
+            assert_eq!(closed.items[0].kind, "todo");
+            assert_eq!(closed.items[0].disposition, "needs_disposition");
+        }
+        let mut merged_visit = open.clone();
+        merged_visit.lot = "merged".into();
+        assert!(
+            snapshot(&state, &[merged_visit], None).excluded.is_empty(),
+            "raw merged flag is not proof to suppress remaining work"
+        );
+        let mut bound = open.clone();
+        bound.pr = Some(123);
+        let bound_snapshot = snapshot(&state, &[bound], None);
+        assert!(
+            bound_snapshot.excluded.is_empty(),
+            "todo closure must not erase PR-bound work"
+        );
+        assert_eq!(bound_snapshot.problems.len(), 1);
+
+        todo.status = shift::TodoStatus::Open;
+        std::fs::write(queue.join("todos/closed.md"), todo.dump()).unwrap();
+        run_git(&queue, &["commit", "-q", "-am", "reopen"]);
+        assert_eq!(
+            snapshot(&state, &[open.clone()], None).items.len(),
+            1,
+            "cache is bounded-stale"
+        );
+        for cached in state
+            .events
+            .flow_lifecycle_cache()
+            .0
+            .lock()
+            .unwrap()
+            .iter_mut()
+        {
+            cached.read = Instant::now() - Duration::from_secs(31);
+        }
+        let reopened = snapshot(&state, &[open], None);
+        assert!(reopened.excluded.is_empty());
+        assert!(reopened.problems.is_empty());
+        assert_eq!(reopened.repositories[0]["active"], 1);
+    }
+
     #[test]
     fn disposition_needs_explicit_evidence_and_valid_links() {
         assert_eq!(
@@ -451,7 +546,7 @@ mod tests {
                 .all(|i| i.href == format!("/repos/jeryu/acme/widget/pulls/{}", pr.number))
         );
         let mut visible = original.clone();
-        closed.filter(&mut visible);
+        visible.retain(|v| v.left_ms.is_some() || closed.is_current(v));
         assert!(visible.iter().all(|v| v.left_ms.is_some()));
         assert_eq!(state.events.flow_visits(Some("acme"), 0).unwrap(), original);
         assert!(closed.repositories.as_array().unwrap().is_empty());
@@ -481,7 +576,7 @@ mod tests {
         let reopened = snapshot(&state, &open, None);
         assert!(reopened.items.is_empty());
         let mut visible = original.clone();
-        reopened.filter(&mut visible);
+        visible.retain(|v| v.left_ms.is_some() || reopened.is_current(v));
         assert_eq!(visible, original);
         core.update_pull_request(
             "acme",
@@ -500,6 +595,7 @@ mod tests {
         let merged = snapshot(&state, &merged_visits, None);
         assert!(merged.items.is_empty(), "merged is not unresolved closure");
         assert_eq!(merged.excluded.len(), open.len());
+        assert_eq!(merged.merged_upstream_records, open.len());
         assert_eq!(merged.repositories[0]["station"], "stage");
         assert_eq!(merged.repositories[0]["waiting"], 1);
         let later = core

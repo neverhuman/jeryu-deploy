@@ -152,7 +152,7 @@ pub(crate) async fn flow(
     let worker_state = state.clone();
     let read = tokio::task::spawn_blocking(move || {
         let reached = worker_state.events.flow_reached(read_family.as_deref())?;
-        let mut visits = worker_state.events.flow_visits_scoped(
+        let visits = worker_state.events.flow_visits_scoped(
             read_family.as_deref(),
             since_ms,
             read_repo.as_deref(),
@@ -161,7 +161,6 @@ pub(crate) async fn flow(
             .events
             .flow_open_lifecycle(read_family.as_deref())?;
         let lifecycle = closure::snapshot(&worker_state, &open, read_repo.as_deref());
-        lifecycle.filter(&mut visits);
         Ok::<_, String>((visits, reached, lifecycle))
     })
     .await
@@ -174,10 +173,17 @@ pub(crate) async fn flow(
                 days,
                 now_ms: now,
             };
-            let mut body = serde_json::to_value(report::build(&request, &visits, &reached))
-                .expect("flow serializes");
+            let mut body = serde_json::to_value(report::build_reconciled(
+                &request,
+                &visits,
+                &reached,
+                &|v| lifecycle.is_current(v),
+            ))
+            .expect("flow serializes");
             body["repository_wip"] = lifecycle.repositories;
             body["closure_record_count"] = serde_json::json!(lifecycle.total_records);
+            body["merged_upstream_record_count"] =
+                serde_json::json!(lifecycle.merged_upstream_records);
             body["closures_truncated"] =
                 serde_json::json!(lifecycle.total_records > lifecycle.items.len());
             body["closures"] = serde_json::json!(lifecycle.items);

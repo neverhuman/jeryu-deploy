@@ -303,7 +303,7 @@ partial direct-deploy match cannot be cached as complete.
 
 The Flow response reconciles open ledger visits against current hosted PR and
 family todo records. A closed, unmerged PR is excluded from current station WIP,
-repository WIP, oldest-wait and bottleneck selection. A closed, unmerged todo is
+repository WIP and oldest-wait. A closed, unmerged todo is
 excluded only for visits with no PR binding: closing a task cannot erase a live
 PR or its remaining delivery steps. Merged PRs continue through Pin/Stage/Deploy.
 Reopening restores the recorded visits. Current upstream visits bound to an
@@ -311,14 +311,20 @@ already merged PR are excluded too, while Pin/Stage/Deploy remain. The check
 uses the exact repository/PR binding, never other PRs sharing a todo.
 No closure is a passed gate or delivery.
 This read overlay does not alter the durable ledger, history bars or Scorecard.
-Historical durations remain observations; closure time is not fabricated.
+Historical durations remain observations, including entered-to-started samples
+of currently closed visits. Bottleneck selection still uses these observed
+queue durations and throughput; closure time is not fabricated.
 
-`closures` retains each excluded station record, its original item link, title,
+`closures` retains each closed-unmerged station record, its original item link, title,
 current description/note excerpt (2,000 characters), disposition and replacement.
 The UI deduplicates item counts, pages station records, filters by disposition
 and selected station, and opens retained history. `lifecycle_problems` reports
 failed source reads; unreadable records remain in their recorded station state.
 An older server omitting these fields has unknown lifecycle coverage.
+`merged_upstream_record_count` separately accounts for suppressed open upstream
+visits whose exact PR already merged, scoped to the repository filter. These
+are not unresolved closures, and their original history remains available.
+Family aliases are canonicalized for queue discovery and todo lookup.
 
 Descriptions and todo notes can record an explicit relation on its own line:
 `Superseded-by: owner/repo#123` (or `#123` in the same repository). Replacement

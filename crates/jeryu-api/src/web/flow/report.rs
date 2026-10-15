@@ -233,6 +233,16 @@ pub(crate) fn build(
     visits: &[Visit],
     reached: &BTreeSet<Station>,
 ) -> FlowReport {
+    build_reconciled(request, visits, reached, &|_| true)
+}
+
+/// Current lifecycle affects inventory only; every recorded duration stays a sample.
+pub(crate) fn build_reconciled(
+    request: &Request,
+    visits: &[Visit],
+    reached: &BTreeSet<Station>,
+    is_current: &impl Fn(&Visit) -> bool,
+) -> FlowReport {
     let since_ms = window_start(request.now_ms, request.days);
     let in_window = |ms: i64| ms >= since_ms && ms <= request.now_ms;
     let hours = request.days as f64 * 24.0;
@@ -245,7 +255,15 @@ pub(crate) fn build(
                 .filter(|visit| visit.station == station)
                 .collect();
             let ever = !own.is_empty() || reached.contains(&station);
-            station_report(station, &own, ever, request.now_ms, &in_window, hours)
+            station_report(
+                station,
+                &own,
+                ever,
+                request.now_ms,
+                &in_window,
+                hours,
+                is_current,
+            )
         })
         .collect();
     mark_bottleneck(&mut stations);
@@ -259,8 +277,8 @@ pub(crate) fn build(
             since: rfc3339_ms(since_ms),
             until: rfc3339_ms(request.now_ms),
         },
-        line: line(visits, request.now_ms, &in_window),
-        lots: lots(visits, &stations, request.now_ms),
+        line: line(visits, request.now_ms, &in_window, is_current),
+        lots: lots(visits, &stations, request.now_ms, is_current),
         stations,
     }
 }
@@ -272,6 +290,7 @@ fn station_report(
     now_ms: i64,
     in_window: &impl Fn(i64) -> bool,
     hours: f64,
+    is_current: &impl Fn(&Visit) -> bool,
 ) -> StationReport {
     let mut report = StationReport {
         id: station.id(),
@@ -304,7 +323,10 @@ fn station_report(
         return report;
     }
 
-    for visit in own.iter().filter(|visit| visit.left_ms.is_none()) {
+    for visit in own
+        .iter()
+        .filter(|visit| visit.left_ms.is_none() && is_current(visit))
+    {
         if visit.held() {
             report.wip.held += 1;
         } else if visit.started_ms.is_some() {
@@ -432,7 +454,12 @@ fn mark_bottleneck(stations: &mut [StationReport]) {
 
 /// Cycle time and X-factor over the lots that finished in the window, plus
 /// what is on the line now.
-fn line(visits: &[Visit], now_ms: i64, in_window: &impl Fn(i64) -> bool) -> Line {
+fn line(
+    visits: &[Visit],
+    now_ms: i64,
+    in_window: &impl Fn(i64) -> bool,
+    is_current: &impl Fn(&Visit) -> bool,
+) -> Line {
     let mut by_lot: BTreeMap<&str, Vec<&Visit>> = BTreeMap::new();
     for visit in visits {
         by_lot.entry(visit.lot_id.as_str()).or_default().push(visit);
@@ -440,7 +467,10 @@ fn line(visits: &[Visit], now_ms: i64, in_window: &impl Fn(i64) -> bool) -> Line
     let open: u32 = u32::try_from(
         by_lot
             .values()
-            .filter(|lot| lot.iter().any(|visit| visit.left_ms.is_none()))
+            .filter(|lot| {
+                lot.iter()
+                    .any(|visit| visit.left_ms.is_none() && is_current(visit))
+            })
             .count(),
     )
     .unwrap_or(u32::MAX);
@@ -477,12 +507,19 @@ fn line(visits: &[Visit], now_ms: i64, in_window: &impl Fn(i64) -> bool) -> Line
 }
 
 /// The oldest [`LOTS_PER_STATION`] lots at each station, with their ETA.
-fn lots(visits: &[Visit], stations: &[StationReport], now_ms: i64) -> Vec<LotReport> {
+fn lots(
+    visits: &[Visit],
+    stations: &[StationReport],
+    now_ms: i64,
+    is_current: &impl Fn(&Visit) -> bool,
+) -> Vec<LotReport> {
     let mut lots = Vec::new();
     for station in Station::ALL {
         let mut open: Vec<&Visit> = visits
             .iter()
-            .filter(|visit| visit.station == station && visit.left_ms.is_none())
+            .filter(|visit| {
+                visit.station == station && visit.left_ms.is_none() && is_current(visit)
+            })
             .collect();
         open.sort_by_key(|visit| (visit.entered_ms, visit.lot_id.clone()));
         for visit in open.into_iter().take(LOTS_PER_STATION) {
@@ -533,7 +570,7 @@ pub(crate) fn lot_href(lot_id: &str) -> String {
 }
 
 /// One URL path segment: unreserved bytes kept, everything else escaped.
-fn path_segment(text: &str) -> String {
+pub(super) fn path_segment(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {

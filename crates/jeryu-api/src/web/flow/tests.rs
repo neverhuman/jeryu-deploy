@@ -1419,6 +1419,168 @@ async fn json_of(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
+#[test]
+fn closure_reconciliation_preserves_observed_metrics_and_changes_only_current_inventory() {
+    let visits: Vec<_> = (1..=3)
+        .map(|n| Visit {
+            lot_id: format!("lot-{n}"),
+            station: Station::Gate,
+            entered_ms: START,
+            started_ms: Some(START + n * MINUTE),
+            left_ms: (n < 3).then_some(START + 10 * MINUTE),
+            direction: if n < 3 { "forward" } else { "open" }.into(),
+            rework_to: None,
+        })
+        .collect();
+    let request = Request {
+        family: None,
+        days: 7,
+        now_ms: START + 20 * MINUTE,
+    };
+    let reached = BTreeSet::from([Station::Gate]);
+    let before = build(&request, &visits, &reached);
+    let after =
+        super::report::build_reconciled(&request, &visits, &reached, &|v| v.lot_id != "lot-3");
+    assert_eq!(before.line.wip, 1);
+    assert_eq!(after.line.wip, 0);
+    assert_eq!(before.lots.len(), 1);
+    assert!(after.lots.is_empty());
+    for (old, new) in before.stations.iter().zip(&after.stations) {
+        assert_eq!(old.queue_s, new.queue_s);
+        assert_eq!(old.process_s, new.process_s);
+        assert_eq!(old.total_s, new.total_s);
+        assert_eq!(old.first_pass_rate, new.first_pass_rate);
+        assert_eq!(old.throughput_per_hour, new.throughput_per_hour);
+        assert_eq!(old.bottleneck, new.bottleneck);
+        assert_eq!(old.unknown, new.unknown);
+        if old.id == "gate" {
+            assert_eq!(
+                old.queue_s.unwrap().p50,
+                120,
+                "three observed queue samples"
+            );
+            assert_eq!(old.wip.active, 1);
+            assert_eq!(new.wip.active, 0);
+            assert!(old.oldest_wait_s.is_some());
+            assert!(new.oldest_wait_s.is_none());
+        }
+    }
+    assert_eq!(before.line.finished, after.line.finished);
+    assert_eq!(before.line.cycle_s, after.line.cycle_s);
+    assert_eq!(before.line.x_factor, after.line.x_factor);
+}
+
+#[tokio::test]
+async fn flow_route_reports_real_closed_todos_and_merged_upstream_count() {
+    use crate::web::shift::{TodoStatus, tests::run_git, todo_file::TodoFile};
+    use jeryu_core::{
+        CreatePullRequestRequest, CreateRepositoryRequest, PullRequestState,
+        UpdatePullRequestRequest,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let queue = root.path().join("acme/acme-todo.git");
+    std::fs::create_dir_all(queue.join("todos")).unwrap();
+    run_git(&queue, &["init", "-q"]);
+    run_git(&queue, &["checkout", "-q", "-b", "queue"]);
+    std::fs::write(queue.join("family.toml"), "[family]\nname = 'Acme-split'\n").unwrap();
+    let mut todo = TodoFile::new(
+        "closed-todo".into(),
+        "acme-split".into(),
+        "unresolved task".into(),
+    );
+    todo.status = TodoStatus::Closed;
+    std::fs::write(queue.join("todos/closed.md"), todo.dump()).unwrap();
+    run_git(&queue, &["add", "."]);
+    run_git(&queue, &["commit", "-q", "-m", "closed todo"]);
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let token = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    core.create_repository(
+        "acme",
+        CreateRepositoryRequest {
+            name: "widget".into(),
+            private: false,
+            description: None,
+            default_branch: Some("main".into()),
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "acme",
+            "widget",
+            "alice",
+            CreatePullRequestRequest {
+                title: "already merged".into(),
+                head: "feature".into(),
+                base: "main".into(),
+                head_sha: Some("a".repeat(40)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    core.update_pull_request(
+        "acme",
+        "widget",
+        pr.number,
+        UpdatePullRequestRequest {
+            state: Some(PullRequestState::Merged),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let state = WebState::new_with_git_storage(core, root.path().to_path_buf())
+        .with_auth(true, false, false);
+    let now = chrono::Utc::now().timestamp_millis();
+    post(
+        &state.events,
+        &Post {
+            kind: "todo.filed",
+            outcome: None,
+            todo: Some("closed-todo"),
+            pr: None,
+            shift: None,
+            at_ms: now - MINUTE,
+        },
+    );
+    post(
+        &state.events,
+        &Post {
+            kind: "pr.opened",
+            outcome: None,
+            todo: None,
+            pr: Some(pr.number as i64),
+            shift: None,
+            at_ms: now - MINUTE,
+        },
+    );
+    let original = state.events.flow_visits(Some("acme"), 0).unwrap();
+    let events = state.events.clone();
+    let router = app(state, root.path());
+    let response = router
+        .oneshot(get("/api/v1/flow?family=acme-split&days=7", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["family"], "acme");
+    assert_eq!(body["closure_record_count"], 1);
+    assert_eq!(body["closures_truncated"], false);
+    assert_eq!(body["closures"][0]["lot_id"], "closed-todo");
+    assert_eq!(body["closures"][0]["kind"], "todo");
+    assert_eq!(body["closures"][0]["needs_attention"], true);
+    assert_eq!(body["closures"][0]["href"], "/work/closed-todo?family=acme");
+    assert_eq!(body["lifecycle_problems"], serde_json::json!([]));
+    assert!(body["merged_upstream_record_count"].as_u64().unwrap() > 0);
+    assert_eq!(body["line"]["wip"], 0);
+    assert_eq!(body["lots"], serde_json::json!([]));
+    assert_eq!(events.flow_visits(Some("acme"), 0).unwrap(), original);
+}
+
 /// The route: admin-only, strict about its window, and answering numbers that
 /// are not all zero while the ledger holds visits.
 #[tokio::test]
@@ -1528,6 +1690,14 @@ async fn flow_route_is_admin_only_refuses_bad_windows_and_answers_real_numbers()
     assert_eq!(body["schema_version"], FLOW_SCHEMA);
     assert_eq!(body["family"], "acme", "either spelling, canonical back");
     assert_eq!(body["days"], 7);
+    assert_eq!(body["closures"], serde_json::json!([]));
+    assert_eq!(body["closure_record_count"], 0);
+    assert_eq!(body["closures_truncated"], false);
+    assert_eq!(body["merged_upstream_record_count"], 0);
+    assert!(
+        !body["lifecycle_problems"].as_array().unwrap().is_empty(),
+        "fixture's missing todo source is explicit"
+    );
     assert_eq!(body["stations"].as_array().unwrap().len(), 9);
     assert_eq!(
         body["stations"]
