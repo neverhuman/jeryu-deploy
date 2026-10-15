@@ -495,6 +495,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the agent presence store could not be read or written",
     ),
     entry(
+        "presence_worker_forbidden",
+        403,
+        "worker association requires an admin or configured presence reporter",
+    ),
+    entry(
         "presence_write_budget",
         429,
         "the presence write budget is exhausted for this minute",
