@@ -118,8 +118,10 @@ impl GithubRouter {
         // remains unset and is refused below; it must never borrow the head.
         // The git-less in-memory path keeps its existing core behavior.
         #[cfg(feature = "web")]
+        let mut unborn_default = false;
+        #[cfg(feature = "web")]
         if let Some(rm) = &self.repo_manager {
-            self.resolve_create_oids(rm, owner, repo, &mut req);
+            unborn_default = self.resolve_create_oids(rm, owner, repo, &mut req);
             if let Some(base_sha) = req.base_sha.as_deref()
                 && !is_hex40(base_sha)
             {
@@ -139,7 +141,13 @@ impl GithubRouter {
             return response;
         }
         #[cfg(feature = "web")]
-        if self.repo_manager.is_some() && req.base_sha.is_none() {
+        // The one unresolved base a create accepts is the repository's own
+        // default branch before its first commit: the bootstrap pull request
+        // that creates `main` (an empty repository's main refuses pushes). It
+        // has no review base, so it is recorded without one and merging it
+        // creates the branch at the reviewed head. Any other missing or
+        // unreadable base is refused.
+        if self.repo_manager.is_some() && req.base_sha.is_none() && !unborn_default {
             return error_response(ForgeError::Validation(format!(
                 "base_sha must resolve to a 40-hex commit for {owner}/{repo}:{}",
                 req.base
@@ -185,11 +193,11 @@ impl GithubRouter {
         owner: &str,
         repo: &str,
         req: &mut CreatePullRequestRequest,
-    ) {
+    ) -> bool {
         use jeryu_gitd::refs::RefService;
 
         let Ok(resolved) = rm.resolve_parts(owner, repo) else {
-            return;
+            return false;
         };
         let refs = RefService::new((**rm).clone());
         // The head branch lives in the PR's SOURCE repository, which is this
@@ -206,10 +214,20 @@ impl GithubRouter {
         {
             req.head_sha = Some(oid);
         }
-        if req.base_sha.is_none()
-            && let Ok(oid) = refs.resolve_commit(&resolved, &format!("refs/heads/{}", req.base))
-        {
-            req.base_sha = oid;
+        if req.base_sha.is_some() {
+            return false;
+        }
+        match refs.resolve_commit(&resolved, &format!("refs/heads/{}", req.base)) {
+            Ok(Some(oid)) => {
+                req.base_sha = Some(oid);
+                false
+            }
+            // Read cleanly and absent: unborn only when it is the default branch.
+            Ok(None) => self
+                .core
+                .get_repository(owner, repo)
+                .is_ok_and(|repository| repository.default_branch == req.base),
+            Err(_) => false,
         }
     }
 

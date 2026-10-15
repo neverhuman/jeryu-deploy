@@ -2,10 +2,17 @@
 
 On the GitHub-compatible create edge with a Git backend, a request that omits
 `base_sha` must name a base branch that resolves to a real commit. A missing
-branch, an unborn default branch, or an unavailable base lookup returns 422
-with `base_sha must resolve to a 40-hex commit`. The forge creates no pull
-request in that case. Create the intended base branch and retry; the forge
-never substitutes the feature head as a review base.
+branch or an unavailable base lookup returns 422 with
+`base_sha must resolve to a 40-hex commit`. The forge creates no pull request
+in that case. Create the intended base branch and retry; the forge never
+substitutes the feature head as a review base.
+
+One exception: the repository's own default branch before its first commit.
+An empty repository's default branch refuses pushes, so its first content
+arrives as a bootstrap pull request (a root commit on another branch, opened
+against the unborn default). That create is accepted and recorded with no
+review base; merging it creates the default branch at the reviewed head. An
+unborn branch that is not the default is still refused.
 
 An explicit `base_sha` retains the existing 40-hex validation contract. The
 in-memory router without a Git backend retains its existing core behavior.

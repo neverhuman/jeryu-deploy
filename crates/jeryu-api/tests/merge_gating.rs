@@ -1063,6 +1063,42 @@ fn merge_into_missing_base_creates_base_at_head() {
     fixture.cleanup();
 }
 
+#[test]
+fn bootstrap_pr_into_the_unborn_default_branch_is_accepted_and_merge_creates_it() {
+    if !git_available() {
+        return;
+    }
+    // An empty repository's main refuses pushes, so its first content arrives
+    // as a pull request from a root commit on another branch into the unborn
+    // default branch. That create is the one unresolved base the forge
+    // accepts; it records no review base, and the merge creates main at the
+    // reviewed head.
+    let fixture = seed_empty_base_fixture("jeryu-bootstrap-unborn-main");
+    let router = router_over(&fixture);
+    let number = open_pr_by_branch(&router, "feature", "main");
+    let opened = body(&router.get(&format!("/repos/acme/demo/pulls/{number}")));
+    assert_eq!(
+        opened["head"]["sha"].as_str(),
+        Some(fixture.head_oid.as_str())
+    );
+    assert_ne!(
+        opened["base"]["sha"].as_str(),
+        Some(fixture.head_oid.as_str()),
+        "the bootstrap PR never borrows its head as a review base"
+    );
+    approve(&router, number);
+
+    let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(merged.status, 200, "bootstrap merge: {}", merged.body);
+    assert_eq!(
+        fixture.main_ref(),
+        fixture.head_oid,
+        "main must be created at the PR head"
+    );
+
+    fixture.cleanup();
+}
+
 // ---------------------------------------------------------------------------
 // Merge -> GitHub mirror push (jeryu_api::github_mirror)
 // ---------------------------------------------------------------------------
@@ -1463,7 +1499,7 @@ fn linear_history_base_defers_a_direct_merge_while_the_queue_is_building() {
 }
 
 #[test]
-fn open_pr_refuses_missing_and_unborn_bases_without_borrowing_the_head() {
+fn open_pr_refuses_missing_and_unborn_non_default_bases_without_borrowing_the_head() {
     if !git_available() {
         return;
     }
@@ -1474,7 +1510,9 @@ fn open_pr_refuses_missing_and_unborn_bases_without_borrowing_the_head() {
             seed_fixture("jeryu-open-missing-base")
         };
         let router = router_over(&fixture);
-        let base = if unborn { "main" } else { "missing" };
+        // Unborn but not the default branch: still refused (the default
+        // branch before its first commit is the bootstrap exception).
+        let base = if unborn { "develop" } else { "missing" };
         let opened = router.post(
             "/repos/acme/demo/pulls",
             &format!(r#"{{"title":"feature","head":"feature","base":"{base}","actor":"alice"}}"#),
