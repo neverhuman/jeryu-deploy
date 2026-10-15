@@ -290,3 +290,10 @@ times become null because their execution was never measured. `total_s` is an
 additive measured-dwell percentile used by legacy ETA consumers, retaining
 Shift/Stage elapsed time. Scorecard efficiency explicitly reports missing-start
 coverage (docs/scorecard.md), rather than inventing execution or returning zero.
+
+Migration 0021 invalidates cached reads of retained Jeryu deploy events after
+correcting full-document TOML lock parsing. Events and existing per-lot receipts
+are preserved. Reconciliation replays in bounded batches, restores missing web
+membership, and resolves upstream visits left open by late notifications after
+merge. An unreadable/invalid web pin defers the entire release correlation; a
+partial direct-deploy match cannot be cached as complete.

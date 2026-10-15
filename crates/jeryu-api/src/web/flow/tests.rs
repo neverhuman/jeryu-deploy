@@ -1956,3 +1956,46 @@ fn repeated_hold_refreshes_reason_without_counting_another_transition() {
         1
     );
 }
+
+#[test]
+fn lock_replay_migration_only_invalidates_affected_reads_and_preserves_evidence() {
+    let (dir, store) = store();
+    for repo in ["acme/jeryu-deploy", "acme/widget"] {
+        post_as(
+            &store,
+            "acme",
+            Some(repo),
+            &Post {
+                kind: "release.staged",
+                outcome: None,
+                todo: None,
+                pr: None,
+                shift: None,
+                at_ms: START,
+            },
+        );
+    }
+    let conn = Connection::open(dir.path().join("shift.sqlite")).unwrap();
+    conn.execute("INSERT INTO flow_delivery_reads(event_seq,retry_after_ms) SELECT seq,0 FROM pipeline_events", []).unwrap();
+    let events: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pipeline_events", [], |r| r.get(0))
+        .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../../../db/migrations/0021_flow_lock_replay.sql"
+    ))
+    .unwrap();
+    let cached: Vec<String> = conn
+        .prepare("SELECT repo FROM pipeline_events JOIN flow_delivery_reads ON event_seq=seq")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(cached, ["acme/widget"]);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM pipeline_events", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        events
+    );
+}

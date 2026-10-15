@@ -1,0 +1,16 @@
+migration = "0021_flow_lock_replay"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/flow"
+apply = "migrate_shift_store, one transaction; invalidate affected derived read-cache entries, preserving events and receipts"
+[lock_timeout]
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+[statement_timeout]
+mechanism = "single retained-event lookup and derived-cache delete"
+value = "bounded by retained event rows"
+[rollback]
+plan = "restore pre-release shift.sqlite backup and previous binary"
+backup = "release switch SQLite backup"
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::flow"

@@ -115,6 +115,11 @@ pub(super) const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0020_flow_evidence",
         include_str!("../../../../../db/migrations/0020_flow_evidence.sql"),
     ),
+    (
+        21,
+        "0021_flow_lock_replay",
+        include_str!("../../../../../db/migrations/0021_flow_lock_replay.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;

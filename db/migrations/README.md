@@ -39,6 +39,7 @@ working (an older binary checks only the migrations it knows).
 | `0018_signup_links.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/signup.rs`, `crates/jeryu-api/src/web/admin_reset.rs` |
 | `0019_outcome_ledger.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/pipeline/store.rs` |
 | `0020_flow_evidence.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/flow` |
+| `0021_flow_lock_replay.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/flow` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. A migration that alters an existing table also has a
