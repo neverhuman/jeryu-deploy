@@ -441,3 +441,27 @@ fn frequent_marks_charge_elapsed_time_after_one_session_estimate() {
     let expected = 11.0;
     assert!((report.totals.review_minutes - expected).abs() < 0.000_001);
 }
+
+#[test]
+fn a_window_at_the_end_of_the_calendar_is_refused_not_a_panic() {
+    // `until + 1 day` past chrono's last date used to panic inside the store
+    // lock and poison it for the process. Far-future windows are refused.
+    let today = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+    let query = |since: Option<&str>, until: Option<&str>| super::HumanMinutesQuery {
+        since: since.map(str::to_string),
+        until: until.map(str::to_string),
+        ..super::HumanMinutesQuery::default()
+    };
+    assert!(super::window(&query(None, Some("9999-12-31")), today).is_err());
+    assert!(super::window(&query(Some("2026-10-01"), Some("2026-10-17")), today).is_err());
+    let tomorrow = super::window(&query(Some("2026-10-01"), Some("2026-10-16")), today).unwrap();
+    let (since_ms, until_ms) = super::window_ms(tomorrow);
+    assert!(since_ms < until_ms);
+    // Even a window built directly at the last date stays total.
+    let last = NaiveDate::MAX;
+    let (_, end) = super::window_ms(Window {
+        since: last,
+        until: last,
+    });
+    assert!(end >= 0);
+}

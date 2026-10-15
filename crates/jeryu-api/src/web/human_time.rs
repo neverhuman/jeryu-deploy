@@ -340,10 +340,17 @@ fn parse_commits(out: &str) -> Vec<PushedCommit> {
         .filter_map(|line| {
             let (email, at) = line.trim().split_once('\u{1f}')?;
             let at: i64 = at.trim().parse().ok()?;
+            // The author date is whatever the committer wrote. A date past the
+            // server's clock (or one that overflows) is no mark: it would park
+            // the person's ledger in the future and drop every real mark after.
+            let at_ms = at.checked_mul(1000)?;
+            if at_ms > chrono::Utc::now().timestamp_millis() + 60_000 {
+                return None;
+            }
             let email = email.trim();
             (!email.is_empty()).then(|| PushedCommit {
                 email: email.to_lowercase(),
-                at_ms: at * 1000,
+                at_ms,
             })
         })
         .collect()
@@ -596,23 +603,9 @@ pub(crate) fn apply(
 /// The change lot keys an `incident.caused_by` names. The event route has
 /// already validated them; a malformed one never reaches the fold.
 fn incident_changes(detail: &serde_json::Value) -> Vec<String> {
-    let mut keys: Vec<String> = detail
-        .get("change")
-        .and_then(serde_json::Value::as_str)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-    if let Some(items) = detail.get("changes").and_then(serde_json::Value::as_array) {
-        keys.extend(
-            items
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .map(str::to_string),
-        );
-    }
-    keys
+    // The incident validator's own reading (trimmed, non-empty, bounded), so
+    // the never-pruned ledgers see exactly the keys the event was checked for.
+    super::incidents::changes(detail).unwrap_or_default()
 }
 
 fn fail(conn: &Connection, lot: &str, ts_ms: i64) -> Result<(), String> {
@@ -716,8 +709,20 @@ fn day(name: &str, value: Option<&str>) -> Result<Option<NaiveDate>, String> {
 /// The window a query names, with `today` filling what it leaves out.
 fn window(query: &HumanMinutesQuery, today: NaiveDate) -> Result<Window, String> {
     let until = day("until", query.until.as_deref())?.unwrap_or(today);
-    let since = day("since", query.since.as_deref())?
-        .unwrap_or_else(|| until - Duration::days(DEFAULT_DAYS));
+    // A window that ends in the future has nothing more to say than one that
+    // ends tomorrow, and bounding it keeps every date sum below in range.
+    if until > today + Duration::days(1) {
+        return Err(format!(
+            "until ({until}) is after tomorrow ({})",
+            today + Duration::days(1)
+        ));
+    }
+    let since = match day("since", query.since.as_deref())? {
+        Some(since) => since,
+        None => until
+            .checked_sub_signed(Duration::days(DEFAULT_DAYS))
+            .ok_or_else(|| format!("until ({until}) is too early for the default window"))?,
+    };
     if since > until {
         return Err(format!("since ({since}) is after until ({until})"));
     }
@@ -888,7 +893,10 @@ fn read(conn: &Connection, family: Option<&str>, window: Window) -> Result<Ledge
 /// midnight UTC of the day after `until`.
 fn window_ms(window: Window) -> (i64, i64) {
     let start = |day: NaiveDate| day.and_time(NaiveTime::MIN).and_utc().timestamp_millis();
-    (start(window.since), start(window.until + Duration::days(1)))
+    // `window` keeps `until` at most tomorrow, so the next day exists; the
+    // fallback keeps this total so it can never panic under the store lock.
+    let after = window.until.succ_opt().unwrap_or(window.until);
+    (start(window.since), start(after))
 }
 
 /// Build the report from the two ledgers.

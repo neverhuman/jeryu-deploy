@@ -13,7 +13,7 @@
 //! same row, so a late attribution only fills in what was missing.
 //!
 //! A change named by `incident.caused_by` is *failed* for the change outcome
-//! readers ([`failed_changes`]). An incident with no cause row is reported as
+//! readers (the report's `failed_changes`). An incident with no cause row is reported as
 //! `cause_unknown`, and still counts for time to restore.
 
 use std::sync::Arc;
@@ -72,7 +72,7 @@ fn time_ms(detail: &Value, key: &str) -> Result<Option<i64>, String> {
         })
 }
 
-fn changes(detail: &Value) -> Result<Vec<String>, String> {
+pub(super) fn changes(detail: &Value) -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
     if let Some(one) = text(detail, "change") {
         keys.push(one.to_string());
@@ -256,36 +256,6 @@ fn deployed_ms(conn: &Connection, change: &str) -> Result<Option<i64>, String> {
     .map_err(|err| err.to_string())
 }
 
-/// The change lot keys any incident names as a cause, each with the incidents
-/// that name it: these are the changes whose outcome is `failed`.
-pub(crate) fn failed_changes(
-    conn: &Connection,
-    family: Option<&str>,
-) -> Result<Vec<(String, Vec<String>)>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.change_key, c.incident_id
-               FROM incident_causes c JOIN incident_ledger i USING (incident_id)
-              WHERE (?1 IS NULL OR i.family = ?1)
-              ORDER BY c.change_key, c.incident_id",
-        )
-        .map_err(|err| err.to_string())?;
-    let rows = stmt
-        .query_map(params![family], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|err| err.to_string())?;
-    let mut out: Vec<(String, Vec<String>)> = Vec::new();
-    for row in rows {
-        let (change, incident) = row.map_err(|err| err.to_string())?;
-        match out.last_mut() {
-            Some((last, incidents)) if *last == change => incidents.push(incident),
-            _ => out.push((change, vec![incident])),
-        }
-    }
-    Ok(out)
-}
-
 fn mean(values: &[i64]) -> Option<i64> {
     (!values.is_empty()).then(|| values.iter().sum::<i64>() / values.len() as i64)
 }
@@ -296,7 +266,18 @@ fn median(values: &mut [i64]) -> Option<i64> {
 }
 
 /// The incident ledger as the report answers it.
-pub(crate) fn report(conn: &Connection, family: Option<&str>) -> Result<Value, String> {
+/// Days an incidents read covers when the query names none, and at most.
+const DEFAULT_DAYS: u32 = 90;
+const MAX_DAYS: u32 = 365;
+
+/// The incidents report. `since_ms` bounds it to incidents seen at or after
+/// that time (detected, else restored, else closed): the ledgers are never
+/// pruned, so the route always passes a window; `None` reads everything.
+pub(crate) fn report(
+    conn: &Connection,
+    family: Option<&str>,
+    since_ms: Option<i64>,
+) -> Result<Value, String> {
     type Row = (
         String,
         Option<String>,
@@ -315,11 +296,12 @@ pub(crate) fn report(conn: &Connection, family: Option<&str>) -> Result<Value, S
                         restored_ms, restoring_change, closed_ms
                    FROM incident_ledger
                   WHERE (?1 IS NULL OR family = ?1)
+                    AND (?2 IS NULL OR COALESCE(detected_ms, restored_ms, closed_ms) >= ?2)
                   ORDER BY COALESCE(detected_ms, restored_ms, closed_ms) DESC, incident_id",
             )
             .map_err(|err| err.to_string())?;
         let mapped = stmt
-            .query_map(params![family], |row| {
+            .query_map(params![family, since_ms], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -340,6 +322,10 @@ pub(crate) fn report(conn: &Connection, family: Option<&str>) -> Result<Value, S
     let mut incidents = Vec::with_capacity(rows.len());
     let (mut restore_times, mut detect_times) = (Vec::new(), Vec::new());
     let mut unknown = 0;
+    // Changes that caused an incident in this window, read off the causes
+    // already loaded rather than a second walk of the whole ledger.
+    let mut failed_by_change: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     for (id, family, service, severity, summary, detected, restored, restoring, closed) in rows {
         let causes: Vec<String> = {
             let mut stmt = conn
@@ -357,6 +343,10 @@ pub(crate) fn report(conn: &Connection, family: Option<&str>) -> Result<Value, S
         };
         let mut cause_rows = Vec::new();
         for change in &causes {
+            failed_by_change
+                .entry(change.clone())
+                .or_default()
+                .push(id.clone());
             let deployed = deployed_ms(conn, change)?;
             let detect = seconds(deployed, detected);
             detect_times.extend(detect);
@@ -395,13 +385,18 @@ pub(crate) fn report(conn: &Connection, family: Option<&str>) -> Result<Value, S
             "causes": cause_rows,
         }));
     }
-    let failed: Vec<Value> = failed_changes(conn, family)?
+    let failed: Vec<Value> = failed_by_change
         .into_iter()
+        .map(|(change, mut incidents)| {
+            incidents.sort();
+            (change, incidents)
+        })
         .map(|(change, incidents)| json!({"change": change, "outcome": "failed", "incidents": incidents}))
         .collect();
     Ok(json!({
         "schema_version": INCIDENTS_SCHEMA,
         "family": family,
+        "since": since_ms.map(rfc3339),
         "summary": {
             "incidents": incidents.len(),
             "cause_unknown": unknown,
@@ -709,30 +704,37 @@ pub(crate) async fn report_incident(
         }
     };
     let id = text(&value, "incident_id").unwrap_or_default().to_string();
-    let mut seqs = Vec::new();
-    for event in events {
-        match super::pipeline::record(&state, &account.login, event) {
-            Ok(inserted) => seqs.push(inserted.event.seq),
-            Err(reason) => {
-                return refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "incident_report_invalid",
-                    &reason,
-                    "fix the field named in the message and send the form again",
-                );
-            }
+    // Each insert takes the event-store lock: off the async runtime.
+    let worker = state.clone();
+    let login = account.login.clone();
+    let recorded = tokio::task::spawn_blocking(move || {
+        let mut seqs = Vec::new();
+        for event in events {
+            seqs.push(super::pipeline::record(&worker, &login, event)?.event.seq);
         }
+        Ok::<_, String>(seqs)
+    })
+    .await
+    .map_err(|err| err.to_string())
+    .and_then(|recorded| recorded);
+    match recorded {
+        Ok(seqs) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "schema_version": INCIDENTS_SCHEMA,
+                "ok": true,
+                "incident_id": id,
+                "seqs": seqs,
+            })),
+        )
+            .into_response(),
+        Err(reason) => refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "incident_report_invalid",
+            &reason,
+            "fix the field named in the message and send the form again",
+        ),
     }
-    (
-        StatusCode::CREATED,
-        Json(json!({
-            "schema_version": INCIDENTS_SCHEMA,
-            "ok": true,
-            "incident_id": id,
-            "seqs": seqs,
-        })),
-    )
-        .into_response()
 }
 
 /// `GET /api/v1/incidents` query.
@@ -740,11 +742,13 @@ pub(crate) async fn report_incident(
 pub(crate) struct IncidentsQuery {
     /// Either spelling of a family key; the server canonicalises it.
     pub family: Option<String>,
+    /// How many days back to read (default 90, at most 365).
+    pub days: Option<u32>,
 }
 
 impl StrictFields for IncidentsQuery {
-    const KEYS: &'static [&'static str] = &["family"];
-    const REPAIR_HINT: &'static str = "the only filter is family";
+    const KEYS: &'static [&'static str] = &["family", "days"];
+    const REPAIR_HINT: &'static str = "filter by family and days (1 to 365)";
 }
 
 /// `GET /api/v1/incidents` (global admins, like the flow report).
@@ -756,11 +760,21 @@ pub(crate) async fn list(
         Ok(family) => family,
         Err(response) => return *response,
     };
+    let days = query.days.unwrap_or(DEFAULT_DAYS);
+    if days == 0 || days > MAX_DAYS {
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            super::strict_query::CODE,
+            &format!("days must be 1 to {MAX_DAYS}"),
+            "send days between 1 and 365",
+        );
+    }
+    let since_ms = chrono::Utc::now().timestamp_millis() - i64::from(days) * 86_400_000;
     let worker = state.clone();
     let read = tokio::task::spawn_blocking(move || {
         worker
             .events
-            .with_conn(|conn| report(conn, family.as_deref()))
+            .with_conn(|conn| report(conn, family.as_deref(), Some(since_ms)))
     })
     .await
     .map_err(|err| err.to_string())

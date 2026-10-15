@@ -52,7 +52,9 @@ fn deploy(store: &EventStore, lot: &str, left_minutes: i64) {
 }
 
 fn read(store: &EventStore) -> Value {
-    store.with_conn(|conn| report(conn, Some("acme"))).unwrap()
+    store
+        .with_conn(|conn| report(conn, Some("acme"), None))
+        .unwrap()
 }
 
 fn incident<'a>(body: &'a Value, id: &str) -> &'a Value {

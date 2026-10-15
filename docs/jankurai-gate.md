@@ -73,6 +73,9 @@ decision: approve the exact head with a comment that states it ("Owner
 decision: …"). pr-redteam re-reads the approvals immediately before it
 publishes, so a decision that lands while a review is running still answers the
 findings that asked for one — and those findings stay in the published review.
+That behaviour lives in the reviewer, not in this repository: jeryu-ci-runner
+`ops/pr-redteam/pr-redteam` ("owner decisions") and its `test/owner-decision.sh`,
+described in `ops/pr-redteam/README.md`.
 
 ## A repository that does not use the audit
 
