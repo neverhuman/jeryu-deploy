@@ -94,6 +94,16 @@ pub(crate) fn attention_snapshot(state: &WebState, now: DateTime<Utc>) -> Vec<Fa
             let queued = queue_todos(state, &queue).unwrap_or_default();
             let mut todos: Vec<ShiftTodo> = queued.iter().map(|q| q.todo.to_api(now)).collect();
             state.shift.truth.enrich(state, &queue, &mut todos);
+            if let Ok(changes) = state.events.outcome_changes(Some(&queue.family.name), None) {
+                let deployments = super::hypothesis::deployments(&changes);
+                for todo in &mut todos {
+                    todo.outcome_check_due_at = deployments
+                        .get(&(todo.family.as_str(), todo.id.as_str()))
+                        .copied()
+                        .and_then(|at| super::hypothesis::due_at(todo, at))
+                        .map(super::iso);
+                }
+            }
             FamilySnapshot {
                 shifts: shifts::list(state, &queue, &queued),
                 name: queue.family.name,

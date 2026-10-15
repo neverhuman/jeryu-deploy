@@ -255,3 +255,28 @@ Station breakdown retains measured arrival-to-exit `total_p50_s`; only its
 queue/process split is unknown. Flow's additive `total_s` percentiles keep that
 measured dwell in legacy ETA calculations. The new parallel Flow map omits
 serial ETAs, whose routing assumptions remain limited.
+
+### Recording a hypothesis check
+
+Todo front matter accepts `hypothesis` (one sentence, up to 1000 bytes),
+`check_after` (a quoted `YYYY-MM-DD` date, or an integer from 0
+through 3650 for days after production deploy), `outcome` (`met`, `not_met`,
+`unclear`, or the default `not_checked`), and `outcome_note` (up to 16000 bytes).
+The work page displays these fields and lets the owner or an administrator edit
+all four. The API action is `outcome_check`, with a `value` object containing
+any of those fields; an omitted field stays unchanged, and `check_after: null`
+clears its schedule. Other people, bots, and people without write access to
+the work's repositories cannot record a check.
+
+The Outcomes tab reports the current UTC calendar month independently of the
+other tabs' rolling window. Shipping is the first confirmed production deploy
+of every merged repository leg, from the durable outcome ledger; a release
+staging event alone does not establish this date. Shipping counts include items
+without hypotheses. Check counts use the scheduled check month, include only
+dates already due, and treat `unclear` as checked. Checked share is checked /
+eligible; met share is met / checked. Empty denominators display no percentage.
+Missing check dates are counted separately. Rows show work shipped this month
+and checks due this month, with at most 500 rows displayed; counts use all rows.
+A due, unchecked hypothesis appears in attention as `todo_check_outcome`, with
+the todo assignee or, if absent, its requester as owner. Recorded checks clear
+that reminder. Queue files retain the fields when older workers rewrite them.

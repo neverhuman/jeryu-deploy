@@ -205,6 +205,7 @@ impl TodoFile {
             .into_iter()
             .filter(|(k, _)| !ORDER.contains(&k.as_str()))
             .collect();
+        super::hypothesis::Hypothesis::from_file(&todo)?;
         if !MODES.contains(&todo.mode.as_str()) {
             return Err(format!("unknown mode {:?}", todo.mode));
         }
@@ -324,6 +325,8 @@ impl TodoFile {
     pub(crate) fn to_api(&self, now: DateTime<Utc>) -> ShiftTodo {
         let family = crate::web::family::canonical(&self.family);
         ShiftTodo {
+            hypothesis: super::hypothesis::Hypothesis::from_file(self).unwrap_or_default(),
+            outcome_check_due_at: None,
             id: self.id.clone(),
             family_label: crate::web::family::label(&family),
             family,

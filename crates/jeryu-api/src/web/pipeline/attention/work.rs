@@ -114,6 +114,31 @@ pub(crate) fn todo_items(
             api: None,
             command: None,
         };
+        if !todo.hypothesis.hypothesis.trim().is_empty()
+            && todo.hypothesis.outcome == crate::web::shift::hypothesis::Outcome::NotChecked
+            && todo
+                .outcome_check_due_at
+                .as_deref()
+                .and_then(parse_time)
+                .is_some_and(|due| due <= now)
+        {
+            let mut item = draft(
+                "todo_check_outcome",
+                Severity::Action,
+                format!("Check outcome: {}", todo.title),
+                todo.hypothesis.hypothesis.clone(),
+                "Check outcome",
+            )
+            .build();
+            item.family = Some(family.to_string());
+            item.todo_id = Some(todo.id.clone());
+            item.assignee = todo
+                .assignee
+                .clone()
+                .or_else(|| (!todo.requested_by.is_empty()).then(|| todo.requested_by.clone()));
+            item.since = todo.outcome_check_due_at.clone();
+            items.push(item);
+        }
         let drafted = match todo.status {
             TodoStatus::Blocked => {
                 // What a worker cannot get past decides what is asked of a

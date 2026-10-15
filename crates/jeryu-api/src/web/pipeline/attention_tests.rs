@@ -210,6 +210,8 @@ fn superseded_pull_rows_follow_r_chains_and_ignore_newest_or_other_repositories(
 
 fn todo(id: &str, status: &str) -> ShiftTodo {
     ShiftTodo {
+        hypothesis: Default::default(),
+        outcome_check_due_at: None,
         id: id.to_string(),
         family: "jeryu".to_string(),
         family_label: "jeryu".to_string(),
@@ -3595,6 +3597,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("todo_blocked", "/work/:key"),
     ("todo_handoff", "/work/:key"),
     ("todo_parked", "/work/:key"),
+    ("todo_check_outcome", "/work/:key"),
     ("todo_stuck_claim", "/work/:key"),
     ("todo_untriaged", "/work/:key"),
     ("todo_waiting_on_blocker", "/work/:key"),
@@ -3763,6 +3766,15 @@ fn one_of_every_kind() -> Vec<Item> {
         },
     ]));
 
+    let mut due_check = crate::web::shift::todo_file::TodoFile::new(
+        "due-check".into(),
+        "acme".into(),
+        "Checkout".into(),
+    )
+    .to_api(now());
+    due_check.hypothesis.hypothesis = "Users finish checkout faster.".into();
+    due_check.outcome_check_due_at = Some(now().to_rfc3339());
+    items.extend(todo_items("acme", &[due_check], true, now()));
     let mut blocked = todo("t-blocked", "blocked");
     blocked.note = "The widget-shop tag does not exist; a person must cut it.".to_string();
     let mut parked = todo("t-parked", "parked");
@@ -4202,4 +4214,40 @@ fn every_kind_opens_a_route_of_the_web_app() {
         KIND_ROUTES.iter().copied().collect::<BTreeSet<_>>(),
         "the kinds the rules emit and the routes they open"
     );
+}
+
+#[test]
+fn hypothesis_reminder_is_due_only_after_deployment_and_clears_after_a_check() {
+    use crate::web::shift::hypothesis::{CheckAfter, Hypothesis, Outcome};
+    use crate::web::shift::todo_file::TodoFile;
+    let now = Utc::now();
+    let mut file = TodoFile::new("idea-1".into(), "acme".into(), "Checkout".into());
+    file.status = TodoStatus::Done;
+    file.requested_by = "owner".into();
+    let mut todo = file.to_api(now);
+    todo.hypothesis = Hypothesis {
+        hypothesis: "Users finish checkout faster.".into(),
+        check_after: Some(CheckAfter::Days(7)),
+        ..Default::default()
+    };
+    assert!(todo_items("acme", &[todo.clone()], true, now).is_empty());
+    todo.outcome_check_due_at = Some((now + chrono::Duration::days(1)).to_rfc3339());
+    assert!(todo_items("acme", &[todo.clone()], true, now).is_empty());
+    todo.outcome_check_due_at = Some(now.to_rfc3339());
+    let items = todo_items("acme", &[todo.clone()], true, now);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, "todo_check_outcome");
+    assert_eq!(items[0].assignee.as_deref(), Some("owner"));
+    assert_eq!(items[0].action.label, "Check outcome");
+    todo.assignee = Some("holder".into());
+    assert_eq!(
+        todo_items("acme", &[todo.clone()], true, now)[0]
+            .assignee
+            .as_deref(),
+        Some("holder")
+    );
+    for outcome in [Outcome::Met, Outcome::NotMet, Outcome::Unclear] {
+        todo.hypothesis.outcome = outcome;
+        assert!(todo_items("acme", &[todo.clone()], true, now).is_empty());
+    }
 }

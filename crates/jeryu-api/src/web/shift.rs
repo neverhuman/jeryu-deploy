@@ -14,6 +14,7 @@ mod access;
 mod assignment;
 pub(crate) mod comments;
 mod heartbeats;
+pub(crate) mod hypothesis;
 mod landing;
 mod migration_sequence;
 pub(crate) mod queue;
@@ -25,6 +26,8 @@ mod visibility;
 
 #[cfg(test)]
 mod assignment_tests;
+#[cfg(test)]
+mod hypothesis_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
@@ -638,6 +641,12 @@ pub(crate) fn apply_action(
             if let Some(note) = note {
                 todo.note = note.to_string();
             }
+        }
+        "outcome_check" => {
+            hypothesis::Hypothesis::edit(
+                todo,
+                request.value.as_ref().ok_or("outcome_check needs value")?,
+            )?;
         }
         "edit" => {
             if request.title.is_none()

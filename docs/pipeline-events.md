@@ -504,6 +504,7 @@ pushes leave from there).
 | Kind | Severity | Meaning |
 |---|---|---|
 | `todo_blocked` | action | status `blocked`; the reason opens with the note, and the step is the one the todo's `block_kind` names (see [Block kinds](#block-kinds)) |
+| `todo_check_outcome` | action | a confirmed production deployment has a hypothesis whose scheduled check is due and outcome is `not_checked`; assigned to the todo assignee, otherwise its requester; opens the work page |
 | `todo_parked` | watch or action | status `parked`. `watch` while `park_until` is in the future, and the label says there is nothing to do until then; `action` once it has passed, or when the park carries no date, because then only a person moves it |
 | `todo_handoff` | action | status `handoff` |
 | `todo_untriaged` | action | open and `triaged = false`; workers skip it |

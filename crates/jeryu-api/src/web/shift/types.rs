@@ -58,6 +58,9 @@ pub(crate) struct TodosResponse {
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub(crate) struct ShiftTodo {
+    #[serde(flatten)]
+    pub hypothesis: super::hypothesis::Hypothesis,
+    pub outcome_check_due_at: Option<String>,
     pub id: String,
     /// Canonical family key (see `crate::web::family`).
     pub family: String,

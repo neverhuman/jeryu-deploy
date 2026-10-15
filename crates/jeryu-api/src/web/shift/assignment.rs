@@ -14,6 +14,8 @@
 //!   on it, when nobody has it or they are the one who has it.
 //! - `unassign`: give back a todo they hold.
 //! - `done`: finish a todo they hold.
+//! - `outcome_check`: record a hypothesis or check on work they own; the
+//!   requester owns work with no active assignee, including shipped todos.
 //!
 //! A bot, or an account marked as automation (see `web::people`), never takes
 //! a todo on: the point of an assignee is that a person has it.
@@ -46,7 +48,7 @@ pub(crate) struct Caller<'a> {
 pub(crate) struct Denied(pub String);
 
 /// The actions anyone but an administrator may run, on the terms below.
-const PEOPLE_ACTIONS: &[&str] = &["claim", "assign", "unassign", "done"];
+const PEOPLE_ACTIONS: &[&str] = &["claim", "assign", "unassign", "done", "outcome_check"];
 
 /// Whether `caller` could run `action` on any todo. Checked before the todo
 /// is looked up, so a refusal says nothing about whether it exists.
@@ -135,6 +137,10 @@ pub(crate) fn authorize(
         )));
     }
     match action {
+        "outcome_check" if holds || (!held && todo.requested_by == caller.login) => Ok(()),
+        "outcome_check" => Err(Denied(
+            "only the owner or an administrator can record an outcome check".into(),
+        )),
         "claim" if free || holds => Ok(()),
         "claim" => Err(Denied(format!(
             "{} already has this todo; ask them or an administrator to hand it over",

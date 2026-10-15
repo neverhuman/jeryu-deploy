@@ -16,6 +16,7 @@ use super::strict_query::{StrictFields, StrictQuery};
 use super::workcells_support::{TypedError, typed_error};
 
 pub(crate) mod compute;
+mod hypotheses;
 pub(crate) mod read;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -65,12 +66,13 @@ pub(crate) async fn scorecard(
         let raw = worker
             .events
             .scorecard_raw(read_family.as_deref(), now_ms, days as i64)?;
-        Ok::<_, String>((changes, raw))
+        let todos = super::shift::enriched_todos(&worker, read_family.as_deref())?;
+        Ok::<_, String>((changes, raw, todos))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
-    let (changes, raw) = match read {
+    let (changes, raw, todos) = match read {
         Ok(read) => read,
         Err(reason) => {
             return typed_error(TypedError {
@@ -86,7 +88,7 @@ pub(crate) async fn scorecard(
         }
     };
     let ctx = compute::Ctx::new(&raw, &changes, repo.as_deref(), now_ms, days);
-    let metrics: serde_json::Map<String, serde_json::Value> = compute::metrics(&ctx)
+    let mut metrics: serde_json::Map<String, serde_json::Value> = compute::metrics(&ctx)
         .into_iter()
         .map(|(name, metric)| {
             (
@@ -95,6 +97,11 @@ pub(crate) async fn scorecard(
             )
         })
         .collect();
+    metrics.insert(
+        "hypotheses_checked_and_met".into(),
+        serde_json::to_value(hypotheses::metric(&todos, &changes, now_ms))
+            .expect("metric serializes"),
+    );
     Json(serde_json::json!({
         "schema_version": "jeryu.scorecard/v1",
         "generated_at": super::shift::rfc3339_ms(now_ms),

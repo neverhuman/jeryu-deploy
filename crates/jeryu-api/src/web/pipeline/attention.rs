@@ -180,6 +180,7 @@ pub(crate) const KINDS: &[&str] = &[
     "shift_without_pr",
     "stranded_branch",
     "todo_blocked",
+    "todo_check_outcome",
     "todo_handoff",
     "todo_parked",
     "todo_stuck_claim",
