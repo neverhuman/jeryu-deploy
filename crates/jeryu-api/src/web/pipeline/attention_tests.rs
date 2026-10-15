@@ -1125,6 +1125,8 @@ fn queue_entry(number: u64, state: QueueState, hours_old: i64) -> QueueEntry {
         reason: Some("the gate failed on abc and def".to_string()),
         refusal_code: None,
         landed_sha: None,
+        after: None,
+        landed_with: None,
     }
 }
 

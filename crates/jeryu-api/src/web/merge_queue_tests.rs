@@ -982,3 +982,247 @@ fn a_gate_start_counts_only_the_required_contexts_from_the_enqueue_on() {
     // A report from before `since` does not count.
     assert!(start(&required, chrono::Utc::now()).is_none());
 }
+
+impl Fixture {
+    /// Open a second approved, green PR from `branch` (off the first base
+    /// commit) that adds `file`. Returns its number and head.
+    fn add_pr(&self, branch: &str, file: &str, body: &str) -> (u64, String) {
+        let base = git(&self.work, &["rev-list", "--max-parents=0", "HEAD"]);
+        git(&self.work, &["checkout", "--quiet", "-b", branch, &base]);
+        std::fs::write(self.work.join(file), body).unwrap();
+        git(&self.work, &["add", "."]);
+        git(&self.work, &["commit", "--quiet", "-m", branch]);
+        let head = git(&self.work, &["rev-parse", "HEAD"]);
+        git(
+            &self.work,
+            &["push", "--quiet", self.bare.to_str().unwrap(), branch],
+        );
+        git(&self.work, &["checkout", "--quiet", "main"]);
+        let core = &self.state.core;
+        let pr = core
+            .create_pull_request(
+                "alice",
+                "jeryu",
+                "alice",
+                CreatePullRequestRequest {
+                    title: branch.to_string(),
+                    head: branch.to_string(),
+                    base: "main".to_string(),
+                    head_sha: Some(head.clone()),
+                    base_sha: Some(base),
+                    changed_files: vec![file.to_string()],
+                    ..CreatePullRequestRequest::default()
+                },
+            )
+            .unwrap();
+        core.create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: "ci/fast".to_string(),
+                head_sha: head.clone(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(CheckConclusion::Success),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+        core.create_review(
+            "alice",
+            "jeryu",
+            pr.number,
+            "review-bot",
+            CreateReviewRequest {
+                body: None,
+                event: ReviewState::Approved,
+                comments: Vec::new(),
+                expected_head_sha: Some(head.clone()),
+            },
+        )
+        .unwrap();
+        (pr.number, head)
+    }
+
+    async fn enqueue_number(&self, number: u64) -> (StatusCode, Value) {
+        let response = merge_queue::enqueue(
+            State(self.state.clone()),
+            account("rel-bot", UserRole::Admin),
+            AxumPath((self.repo_id.clone(), number)),
+        )
+        .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn entry_for(&self, number: u64) -> merge_queue::QueueEntry {
+        self.state
+            .merge_queue
+            .entries(&self.state, |entry| entry.number == number)
+            .pop()
+            .expect("an entry")
+    }
+
+    fn merged(&self, number: u64) -> bool {
+        self.state
+            .core
+            .get_pull_request("alice", "jeryu", number)
+            .unwrap()
+            .merged
+    }
+
+    /// Two PRs queued behind a moved main: the second is stacked on the first.
+    async fn two_stacked(&self) -> (u64, merge_queue::QueueEntry, merge_queue::QueueEntry) {
+        self.advance_main("other.txt", "other\n");
+        let (second, _) = self.add_pr("feature-two", "two.txt", "two\n");
+        let (status, body) = self.enqueue().await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = self.enqueue_number(second).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        (second, self.entry_for(self.number), self.entry_for(second))
+    }
+}
+
+#[tokio::test]
+async fn a_second_queued_pr_is_built_on_the_first_ones_queue_commit() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (second, first, top) = fx.two_stacked().await;
+    assert_eq!(first.base_sha, fx.main());
+    assert_eq!(first.after, None);
+    assert_eq!(
+        top.base_sha, first.queue_sha,
+        "stacked, not on the base tip"
+    );
+    assert_eq!(top.after, Some(fx.number));
+    assert_eq!(
+        git(&fx.bare, &["rev-parse", &format!("{}^", top.queue_sha)]),
+        first.queue_sha
+    );
+    assert_eq!(
+        git(
+            &fx.bare,
+            &["rev-parse", &format!("refs/queue/main/{second}")]
+        ),
+        top.queue_sha
+    );
+}
+
+#[tokio::test]
+async fn one_green_gate_on_the_top_lands_the_whole_stack() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (second, first, top) = fx.two_stacked().await;
+    // Only the top commit is gated: it holds both PRs' changes on the base.
+    fx.status(&top.queue_sha, CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 2);
+
+    assert_eq!(
+        fx.main(),
+        top.queue_sha,
+        "main moves once, to the gated top"
+    );
+    let bottom = fx.entry_for(fx.number);
+    assert_eq!(bottom.state, merge_queue::QueueState::Landed);
+    assert_eq!(bottom.landed_sha.as_deref(), Some(first.queue_sha.as_str()));
+    assert_eq!(bottom.landed_with, Some(second));
+    assert_eq!(
+        bottom.attempts.last().unwrap().conclusion.as_deref(),
+        Some(format!("covered by #{second}").as_str())
+    );
+    let landed_top = fx.entry_for(second);
+    assert_eq!(landed_top.state, merge_queue::QueueState::Landed);
+    assert_eq!(landed_top.landed_with, None);
+    assert!(fx.merged(fx.number) && fx.merged(second));
+    assert!(!fx.has_ref("refs/queue/main/1"));
+    assert!(!fx.has_ref(&format!("refs/queue/main/{second}")));
+}
+
+#[tokio::test]
+async fn the_bottom_landing_first_does_not_rebuild_or_regate_the_next_entry() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (second, first, top) = fx.two_stacked().await;
+    fx.status(&first.queue_sha, CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    assert_eq!(fx.main(), first.queue_sha);
+
+    // Main is now exactly the commit the second entry was built on, so its
+    // queue commit and its gate stand: no rebuild, no second gate.
+    let waiting = fx.entry_for(second);
+    assert_eq!(waiting.state, merge_queue::QueueState::Building);
+    assert_eq!(waiting.queue_sha, top.queue_sha);
+    assert_eq!(waiting.attempts.len(), 1);
+
+    fx.status(&top.queue_sha, CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    assert_eq!(fx.main(), top.queue_sha);
+    assert!(fx.merged(second));
+}
+
+#[tokio::test]
+async fn a_red_entry_leaves_and_the_entry_above_restacks_without_spending_its_retry() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (second, first, _) = fx.two_stacked().await;
+    let main_before = fx.main();
+
+    fx.status(&first.queue_sha, CommitStatusState::Failure);
+    merge_queue::tick(&fx.state);
+    let retried = fx.entry_for(fx.number);
+    assert_eq!(retried.state, merge_queue::QueueState::Building);
+    assert_eq!(
+        fx.entry_for(second).base_sha,
+        retried.queue_sha,
+        "the entry above follows the retry"
+    );
+
+    fx.status(&retried.queue_sha, CommitStatusState::Failure);
+    merge_queue::tick(&fx.state);
+    assert_eq!(
+        fx.entry_for(fx.number).state,
+        merge_queue::QueueState::Failed
+    );
+    let above = fx.entry_for(second);
+    assert_eq!(above.state, merge_queue::QueueState::Building);
+    assert_eq!(above.base_sha, main_before, "restacked onto the base tip");
+    assert_eq!(above.after, None);
+    assert!(
+        above
+            .attempts
+            .iter()
+            .all(|attempt| attempt.conclusion.as_deref() != Some("failure")),
+        "another entry's red gate is not this entry's failure: {:?}",
+        above.attempts
+    );
+
+    fx.status(&above.queue_sha, CommitStatusState::Success);
+    merge_queue::tick(&fx.state);
+    assert!(fx.merged(second));
+    assert!(!fx.merged(fx.number));
+    assert_eq!(fx.main(), above.queue_sha);
+    assert!(
+        crate::test_git::git_command()
+            .args(["cat-file", "-e", "refs/heads/main:feature.txt"])
+            .current_dir(&fx.bare)
+            .status()
+            .map(|status| !status.success())
+            .unwrap(),
+        "the failed PR's change never reached main"
+    );
+}
+
+#[tokio::test]
+async fn a_green_top_lands_an_entry_below_it_whose_own_gate_was_red() {
+    // The top commit contains the lower PR's change and passed the gate with
+    // it, so main may move there: the lower red gate did not reproduce on it.
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (second, first, top) = fx.two_stacked().await;
+    fx.status(&first.queue_sha, CommitStatusState::Failure);
+    fx.status(&top.queue_sha, CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 2);
+    assert_eq!(fx.main(), top.queue_sha);
+    assert!(fx.merged(fx.number) && fx.merged(second));
+    assert_eq!(fx.entry_for(fx.number).landed_with, Some(second));
+}

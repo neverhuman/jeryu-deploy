@@ -863,14 +863,9 @@ impl GithubRouter {
     /// Land a merge-queue commit (docs/merge-queue.md): fast-forward
     /// `refs/heads/<base>` from `expected_base` to `queue_sha`, the gated
     /// replay of the PR onto that base, and record the PR as merged at it.
-    ///
-    /// Nothing here is queue-specific policy. The PR must still pass the same
-    /// merge gate at its own head (`evaluate_merge_readiness`, re-checked by
-    /// `finalize_merge`); the ref moves only by compare-and-swap from
-    /// `expected_base` and only as a fast-forward; the push bridge and the
-    /// GitHub mirror run exactly as for a direct merge. Returns the new base
-    /// oid, or why it did not land (the queue decides whether to rebuild).
-    #[cfg(feature = "web")]
+    /// One-entry [`Self::land_queued_batch`]; the queue itself always lands
+    /// through the batch call.
+    #[cfg(all(feature = "web", test))]
     pub(crate) fn land_queued(
         &self,
         owner: &str,
@@ -880,28 +875,82 @@ impl GithubRouter {
         queue_sha: &str,
         expected_base: &str,
     ) -> std::result::Result<String, LandRefusal> {
+        let member = QueuedLanding {
+            number,
+            pr_head: pr_head.to_string(),
+            queue_sha: queue_sha.to_string(),
+        };
+        self.land_queued_batch(owner, repo, std::slice::from_ref(&member), expected_base)
+            .map_err(|refusal| match refusal {
+                LandRefusal::MemberBlocked(_, reason) => LandRefusal::Blocked(reason),
+                other => other,
+            })
+    }
+
+    /// Land a stack of merge-queue commits with one gate: fast-forward
+    /// `refs/heads/<base>` from `expected_base` to the queue commit of the
+    /// LAST member, whose green gate covers every member below it (each queue
+    /// commit is built on the one before it), and record every member's PR as
+    /// merged at its own queue commit.
+    ///
+    /// Nothing here is queue-specific policy. Every PR must still pass the same
+    /// merge gate at its own head (`evaluate_merge_readiness`, re-checked by
+    /// `finalize_merge`) before the ref moves; the ref moves once, only by
+    /// compare-and-swap from `expected_base` and only as a fast-forward, so
+    /// the base never rests on a commit that was not gated; the push bridge and
+    /// the GitHub mirror run once, exactly as for a direct merge. Returns the
+    /// new base oid, or why nothing landed (the queue decides what to rebuild).
+    #[cfg(feature = "web")]
+    pub(crate) fn land_queued_batch(
+        &self,
+        owner: &str,
+        repo: &str,
+        members: &[QueuedLanding],
+        expected_base: &str,
+    ) -> std::result::Result<String, LandRefusal> {
+        use jeryu_gitd::object_fsck::ObjectFsck;
         use jeryu_gitd::refs::RefService;
 
+        let top = members
+            .last()
+            .ok_or_else(|| LandRefusal::Blocked("nothing to land".to_string()))?;
         let rm = self
             .repo_manager
             .as_ref()
             .ok_or_else(|| LandRefusal::Blocked("no git backend is wired".to_string()))?;
-        let (base_ref, head_ref, head_sha, require_linear_history) = match self
-            .core
-            .evaluate_merge_readiness(owner, repo, number, Some(pr_head))
-        {
-            Ok(MergeReadiness::Ready {
-                base_ref,
-                head_ref,
-                head_sha,
-                require_linear_history,
-                ..
-            }) => (base_ref, head_ref, head_sha, require_linear_history),
-            Ok(MergeReadiness::AlreadyMerged { sha }) => {
-                return Err(LandRefusal::Blocked(format!("already merged at {sha}")));
+        let mut ready = Vec::with_capacity(members.len());
+        for member in members {
+            match self.core.evaluate_merge_readiness(
+                owner,
+                repo,
+                member.number,
+                Some(&member.pr_head),
+            ) {
+                Ok(MergeReadiness::Ready {
+                    base_ref,
+                    head_ref,
+                    head_sha,
+                    require_linear_history,
+                    ..
+                }) => ready.push((member, base_ref, head_ref, head_sha, require_linear_history)),
+                Ok(MergeReadiness::AlreadyMerged { sha }) => {
+                    return Err(LandRefusal::MemberBlocked(
+                        member.number,
+                        format!("already merged at {sha}"),
+                    ));
+                }
+                Err(err) => {
+                    return Err(LandRefusal::MemberBlocked(member.number, err.to_string()));
+                }
             }
-            Err(err) => return Err(LandRefusal::Blocked(err.to_string())),
-        };
+        }
+        let base_ref = ready[0].1.clone();
+        if let Some((member, ..)) = ready.iter().find(|(_, other, ..)| *other != base_ref) {
+            return Err(LandRefusal::MemberBlocked(
+                member.number,
+                format!("#{} does not target {base_ref}", member.number),
+            ));
+        }
         let resolved = rm
             .resolve_parts(owner, repo)
             .map_err(|err| LandRefusal::Blocked(err.to_string()))?;
@@ -914,19 +963,37 @@ impl GithubRouter {
         if base_oid != expected_base {
             return Err(LandRefusal::BaseMoved(base_oid));
         }
+        // Every member below the top must be in the history the top's gate
+        // proved, or its PR would be recorded merged at a commit main never
+        // reaches.
+        let fsck = ObjectFsck::new(rm.config().git_bin.clone());
+        for member in &members[..members.len() - 1] {
+            if !fsck
+                .is_ancestor(&resolved, &member.queue_sha, &top.queue_sha)
+                .unwrap_or(false)
+            {
+                return Err(LandRefusal::MemberBlocked(
+                    member.number,
+                    format!(
+                        "#{}'s queue commit {} is not below #{}'s {}",
+                        member.number, member.queue_sha, top.number, top.queue_sha
+                    ),
+                ));
+            }
+        }
         let req = MergePullRequestRequest {
-            sha: Some(pr_head.to_string()),
+            sha: Some(top.pr_head.clone()),
             ..MergePullRequestRequest::default()
         };
-        let message = merge_message(number, &req);
-        // Always a fast-forward: the queue commit was built on `expected_base`.
+        let message = merge_message(top.number, &req);
+        // Always a fast-forward: the stack was built on `expected_base`.
         let outcome = refs
             .merge_pull(
                 &resolved,
                 "system:merge-queue",
                 &base_name,
                 &base_oid,
-                queue_sha,
+                &top.queue_sha,
                 &message,
                 true,
             )
@@ -943,33 +1010,56 @@ impl GithubRouter {
             }],
             &crate::ci_bridge::default_origin_base_url(),
         );
-        self.core
-            .finalize_merge(
+        let mut unrecorded = Vec::new();
+        for (member, ..) in &ready {
+            let merged_at = if member.number == top.number {
+                outcome.merge_oid.clone()
+            } else {
+                member.queue_sha.clone()
+            };
+            if let Err(err) = self.core.finalize_merge(
                 owner,
                 repo,
-                number,
-                outcome.merge_oid.clone(),
-                Some(pr_head),
-            )
-            .map_err(|err| LandRefusal::Blocked(format!("ref moved but finalize failed: {err}")))?;
-        let ready = MergeReady {
-            owner,
-            repo,
-            number,
-            req: &req,
-            base_ref,
-            head_ref,
-            source_repository: self.pull_source_repository(owner, repo, number),
-            head_sha,
-            require_linear_history,
-        };
-        self.mirror_merged_main(rm, &resolved, &ready, &outcome.merge_oid);
-        // The queue reports a landing, not a response body, so a kept branch
-        // is only logged here.
-        if let super::head_cleanup::HeadBranch::Kept { name, reason } =
-            self.delete_merged_head(rm, &resolved, &ready.merged_head(pr_head))
-        {
-            eprintln!("merge queue: kept {owner}/{repo} branch {name} after #{number}: {reason}");
+                member.number,
+                merged_at,
+                Some(&member.pr_head),
+            ) {
+                unrecorded.push(format!("#{}: {err}", member.number));
+            }
+        }
+        if !unrecorded.is_empty() {
+            return Err(LandRefusal::Blocked(format!(
+                "ref moved but finalize failed: {}",
+                unrecorded.join("; ")
+            )));
+        }
+        let mut mirrored = false;
+        for (member, base_ref, head_ref, head_sha, require_linear_history) in ready {
+            let ready = MergeReady {
+                owner,
+                repo,
+                number: member.number,
+                req: &req,
+                base_ref,
+                head_ref,
+                source_repository: self.pull_source_repository(owner, repo, member.number),
+                head_sha,
+                require_linear_history,
+            };
+            if !mirrored {
+                self.mirror_merged_main(rm, &resolved, &ready, &outcome.merge_oid);
+                mirrored = true;
+            }
+            // The queue reports a landing, not a response body, so a kept
+            // branch is only logged here.
+            if let super::head_cleanup::HeadBranch::Kept { name, reason } =
+                self.delete_merged_head(rm, &resolved, &ready.merged_head(&member.pr_head))
+            {
+                eprintln!(
+                    "merge queue: kept {owner}/{repo} branch {name} after #{}: {reason}",
+                    member.number
+                );
+            }
         }
         Ok(outcome.merge_oid)
     }
@@ -1133,6 +1223,19 @@ pub(crate) enum LandRefusal {
     BaseMoved(String),
     /// The PR no longer passes the merge gate, or git refused the update.
     Blocked(String),
+    /// One member of a stacked landing cannot land (its number, and why);
+    /// nothing moved, and the rest of the stack can land without it.
+    MemberBlocked(u64, String),
+}
+
+/// One queue entry in a stacked landing: the PR, the head its approval is
+/// bound to, and the queue commit it is recorded merged at.
+#[cfg(feature = "web")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QueuedLanding {
+    pub(crate) number: u64,
+    pub(crate) pr_head: String,
+    pub(crate) queue_sha: String,
 }
 
 /// Parameters describing a PR that has already passed the merge gate.

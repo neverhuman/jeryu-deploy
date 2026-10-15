@@ -123,22 +123,54 @@ did not reproduce. An entry still `building` after 30 minutes raises
 `queue_stuck`, and while an entry is building no `pr_ready_to_merge` is raised
 for that pull request: the queue is what merges it.
 
-## Scope of the first cut
+## Stacks: one gate can land several PRs
 
-- One entry building per base at a time (no batching or speculation yet).
-  Throughput is then one gate per landed PR, which is what happens today minus
-  the human rebase round trips.
-- Entries persist in the forge database (append-only history, like deployments)
-  so a restart resumes the queue.
-- The Releases views can show "queued / building / landing" per PR.
+Entries queued on the same base form a stack, first queued at the bottom. The
+bottom entry is replayed onto the base tip; each entry above it is replayed
+onto the queue commit of the entry below (`after` names that entry). Every
+entry's queue commit therefore holds the base plus every PR up to and
+including its own, and its gate proves exactly that.
+
+```
+main ── q#1 ── q#2 ── q#3          q#n = refs/queue/main/<n>
+        (#1)   (#1+#2) (#1+#2+#3)
+```
+
+Each tick, per stack:
+
+- **Restack.** Entries whose parent is no longer the base tip or the queue
+  commit below them are rebuilt on it, bottom up. A rebuild for that reason
+  marks the replaced attempt `superseded`, which counts against nobody's retry.
+- **Land.** The highest entry whose gate is green lands together with every
+  entry below it: the base moves once, by compare-and-swap, straight to that
+  entry's queue commit, and each PR is recorded merged at its own queue
+  commit (an ancestor of the new tip). An entry landed this way carries
+  `landed_with` (the entry whose gate covered it) and an attempt conclusion
+  `covered by #N`. The base never rests on a commit without its own green gate.
+  A green top lands an entry below it even if that entry's own gate was red:
+  the top commit holds that change and passed with it.
+- **Fail.** With nothing green, the lowest red entry is retried or failed
+  (below); the entries above it are restacked onto what remains.
+
+When the bottom entry lands first, the entry above it already sits on the new
+tip, so its queue commit and its running gate stand: no rebuild, no second
+gate. Before stacks, every entry was built on the tip, and each landing made
+every other queued entry rebuild and gate again (19 of 186 entries,
+2026-09-19 to 10-15). The gate runner needs no change: it gates every building
+entry's `queue_sha`, as before.
+
+Entries persist in the forge database (append-only history, like deployments)
+so a restart resumes the queue, and the stack order (`enqueued_at`, then
+number) with it.
 
 ## Failure handling
 
-A failed queue gate is retried **once** on the same queue sha. That absorbs the
-environment flakes seen on 2026-09-18 (jeryu-deploy#18 failed two exact-head
-gates before passing). Both attempts' logs and conclusions are recorded on the
-entry, so a real failure is never hidden behind the retry. A second failure
-dequeues the PR with a comment that links both logs.
+A failed queue gate is retried **once** as a fresh commit on the same parent.
+That absorbs the environment flakes seen on 2026-09-18 (jeryu-deploy#18 failed
+two exact-head gates before passing). Both attempts' conclusions are recorded
+on the entry, so a real failure is never hidden behind the retry. A second red
+gate fails the entry; only the entry's own red gates count toward that, never
+a rebuild because the base or the queue below it moved.
 
 ## Review record
 

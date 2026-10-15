@@ -1436,6 +1436,8 @@ async fn web_pull_merge_of_a_queued_pull_request_says_it_is_queued() {
             reason: None,
             refusal_code: None,
             landed_sha: None,
+            after: None,
+            landed_with: None,
         }]);
     let main_before = fx.main_ref();
 
