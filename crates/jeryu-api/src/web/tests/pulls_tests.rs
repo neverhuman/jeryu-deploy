@@ -1400,6 +1400,70 @@ impl ApprovedMerge {
 }
 
 #[tokio::test]
+async fn web_pull_merge_of_a_queued_pull_request_says_it_is_queued() {
+    // jeryu-deploy#386 (2026-10-15): queued at 16:43, then Merge clicked at
+    // 16:47 while the queue's gate ran. The direct path built a fresh replay,
+    // found no gate on it, and told the owner to queue a pull request that was
+    // already queued. The queue entry must answer first, and main must not move.
+    let fx = ApprovedMerge::seed();
+    let (state, head_sha) = (fx.state.clone(), fx.head_sha.clone());
+    let detail = response_json(
+        crate::web::pulls::detail(
+            State(state.clone()),
+            authenticated_account("bob"),
+            fx.path(),
+        )
+        .await,
+    )
+    .await;
+    let passport_hash = detail["passport_hash"].as_str().unwrap().to_string();
+    let queue_sha = "ef9b9d46b424b30d5fa5ce2fadd892132e7c6d65".to_string();
+    state
+        .merge_queue
+        .seed(vec![crate::web::merge_queue::QueueEntry {
+            repo: "alice/jeryu".to_string(),
+            base: "main".to_string(),
+            number: fx.number,
+            pr_head_sha: head_sha.clone(),
+            base_sha: "0d29aadb806da353a00b6a52d174d3313bfb99b9".to_string(),
+            queue_ref: format!("refs/queue/main/{}", fx.number),
+            queue_sha: queue_sha.clone(),
+            state: crate::web::merge_queue::QueueState::Building,
+            enqueued_at: "2026-10-15T16:43:25Z".to_string(),
+            enqueued_by: "alice".to_string(),
+            approvers: Vec::new(),
+            attempts: Vec::new(),
+            reason: None,
+            refusal_code: None,
+            landed_sha: None,
+        }]);
+    let main_before = fx.main_ref();
+
+    let response = crate::web::pulls::merge(
+        State(state.clone()),
+        axum::Extension(crate::web::auth::trusted_local_account(&state)),
+        fx.path(),
+        axum::body::Bytes::from(
+            serde_json::json!({
+                "expected_head_sha": head_sha,
+                "expected_passport_hash": passport_hash,
+                "merge_method": "merge"
+            })
+            .to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "merge_queued", "{body}");
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("already in the merge queue"), "{message}");
+    assert!(message.contains("as ef9b9d4"), "{message}");
+    assert!(!message.contains("queue the pull request"), "{message}");
+    assert_eq!(fx.main_ref(), main_before, "a refused merge moves nothing");
+}
+
+#[tokio::test]
 async fn web_pull_merge_advances_real_bare_main_ref() {
     let fx = ApprovedMerge::seed();
     let (state, head_sha) = (fx.state.clone(), fx.head_sha.clone());

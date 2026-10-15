@@ -149,6 +149,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `merge_failed` | 500 | the merge failed |
 | `merge_gate_blocked` | 409 | the merge gate has not passed for the current head |
 | `merge_passport_stale` | 409 | the merge passport is for an older head |
+| `merge_queued` | 409 | the pull request is already in the merge queue |
 | `merge_sha_stale` | 409 | the expected head sha is no longer the pull request head |
 | `merge_unprocessable` | 422 | the merge request could not be processed |
 | `method_not_allowed` | 405 | the route exists but not for this HTTP method |

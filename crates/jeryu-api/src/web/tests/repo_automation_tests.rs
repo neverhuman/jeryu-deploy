@@ -212,6 +212,8 @@ fn a_deploy_timer_reports_what_it_shipped_and_where() {
             target: Some("edge-pages".to_string()),
             reason: None,
             seconds: 42,
+            kind: None,
+            exit_code: None,
             finished_at: chrono::Utc::now(),
         }),
         code: None,

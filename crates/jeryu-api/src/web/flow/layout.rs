@@ -405,6 +405,8 @@ mod tests {
                         target: None,
                         reason: Some("compiler failed".to_string()),
                         seconds: 42,
+                        kind: None,
+                        exit_code: None,
                         finished_at: now - Duration::seconds(30),
                     }),
                     code: Some(RunnerCode {

@@ -177,6 +177,7 @@ mod tests {
                 sha: "abcdef1".to_string(),
                 recipe: "just required".to_string(),
                 target: None,
+                kind: None,
                 started_at: at,
             }),
             last: last.map(|repo| GateRunnerResult {
@@ -188,6 +189,8 @@ mod tests {
                 target: None,
                 reason: None,
                 seconds: 600,
+                kind: None,
+                exit_code: None,
                 finished_at: at,
             }),
             code: None,

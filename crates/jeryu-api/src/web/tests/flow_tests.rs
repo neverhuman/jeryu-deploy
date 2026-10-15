@@ -74,6 +74,8 @@ async fn layout_is_admin_only_and_rejects_unknown_query_parameters() {
                     target: None,
                     reason: None,
                     seconds: 15,
+                    kind: None,
+                    exit_code: None,
                     finished_at: Utc::now(),
                 }),
                 code: Some(RunnerCode {

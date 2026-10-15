@@ -585,6 +585,9 @@ pub(super) async fn merge(
     if request.expected_head_sha != pr.head.sha {
         return stale_sha(&request.expected_head_sha, &pr.head.sha);
     }
+    if let Some(entry) = building_queue_entry(&state, &repo.owner, &repo.name, pr.number) {
+        return already_queued(&entry);
+    }
     let current = detail_for_pr(&state, &pr, None);
     if request.expected_passport_hash.as_deref() != current.passport_hash.as_deref() {
         return repair_error(
@@ -1462,6 +1465,64 @@ fn core_error(error: ForgeError, purpose: &'static str) -> AxumResponse {
             None,
         ),
     }
+}
+
+/// The pull request's merge-queue entry while the queue is still building it.
+fn building_queue_entry(
+    state: &WebState,
+    owner: &str,
+    name: &str,
+    number: u64,
+) -> Option<super::merge_queue::QueueEntry> {
+    let full = format!("{owner}/{name}");
+    state
+        .merge_queue
+        .entries(state, |entry| {
+            entry.repo == full
+                && entry.number == number
+                && entry.state == super::merge_queue::QueueState::Building
+        })
+        .into_iter()
+        .next()
+}
+
+/// A direct merge of a pull request the queue is already landing. On a
+/// linear-history base the direct path builds a fresh replay that no gate has
+/// seen and refuses it, telling the reader to queue the pull request -- which
+/// they already did (jeryu-deploy#386, 2026-10-15). Say where it is instead.
+fn already_queued(entry: &super::merge_queue::QueueEntry) -> AxumResponse {
+    let short = |sha: &str| sha.chars().take(7).collect::<String>();
+    let replay = if entry.queue_sha.is_empty() {
+        format!("onto {}", entry.base)
+    } else {
+        format!(
+            "onto {} at {} as {}",
+            entry.base,
+            short(&entry.base_sha),
+            short(&entry.queue_sha)
+        )
+    };
+    repair_error(
+        StatusCode::CONFLICT,
+        "merge_queued",
+        "merge pull request",
+        &format!(
+            "#{} is already in the merge queue (queued by {} at {}): the forge replayed it {replay} \
+             and lands that commit as soon as its gate passes. There is nothing to merge by hand.",
+            entry.number, entry.enqueued_by, entry.enqueued_at
+        ),
+        &[
+            "wait for the queue entry to land; the pull request page shows its gate",
+            "dequeue the pull request first if it must land another way",
+        ],
+        PROOF_LANE,
+        Some(json!({
+            "queue_sha": entry.queue_sha,
+            "base_sha": entry.base_sha,
+            "enqueued_at": entry.enqueued_at,
+            "enqueued_by": entry.enqueued_by,
+        })),
+    )
 }
 
 fn github_merge_error(response: crate::Response, pr: &PullRequest) -> AxumResponse {

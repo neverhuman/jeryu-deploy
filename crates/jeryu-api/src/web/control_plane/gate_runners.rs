@@ -161,6 +161,12 @@ pub(crate) struct GateRunnerTask {
     /// Where a deploy timer is putting this sha; absent for every other label.
     #[serde(default)]
     pub target: Option<String>,
+    /// What the gate runner is gating: `pr` for a pull request head or a merge
+    /// queue replay, `main-health` for protected main. Every gate runner beat
+    /// carries it since 2026-10-10, and the contract denies unknown fields, so
+    /// each beat a slot sent while gating was refused until the forge knew it.
+    #[serde(default)]
+    pub kind: Option<String>,
     /// `started_at` is accepted too: pr-redteam spells it that way, and the
     /// contract denies unknown fields, so every one of its beats was refused.
     #[serde(alias = "started_at")]
@@ -186,6 +192,13 @@ pub(crate) struct GateRunnerResult {
     #[serde(default)]
     pub reason: Option<String>,
     pub seconds: u64,
+    /// As on [`GateRunnerTask::kind`].
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The recipe's exit status. The gate runner records it with every result
+    /// (`exit_code`), which the contract refused as an unknown field.
+    #[serde(default, alias = "exit_code")]
+    pub exit_code: Option<i32>,
     #[serde(alias = "finished_at")]
     pub finished_at: DateTime<Utc>,
 }
@@ -241,10 +254,11 @@ impl GateRunnerStore {
 
     pub(crate) fn record(
         &self,
-        heartbeat: GateRunnerHeartbeat,
+        mut heartbeat: GateRunnerHeartbeat,
         reporter: &str,
         now: DateTime<Utc>,
     ) -> Result<HeartbeatAccepted, String> {
+        normalize_gate_conclusion(&mut heartbeat);
         validate(&heartbeat)?;
         let mut runners = self.runners.lock().expect("gate runner store lock");
         if !runners.contains_key(&heartbeat.runner_id) && runners.len() >= MAX_RUNNERS {
@@ -357,6 +371,26 @@ pub(crate) fn holds_gate_slot(heartbeat: &GateRunnerHeartbeat) -> bool {
     runner_kind(heartbeat) == "gate"
 }
 
+/// A gate runner ends an attempt in more ways than a gate's conclusion names:
+/// a recipe that ran out of time (`timed_out`) or whose inputs moved under it
+/// (`inputs_changed`). Both are an `error` on the runners page, with the
+/// runner's own word kept as the reason unless it sent one.
+fn normalize_gate_conclusion(heartbeat: &mut GateRunnerHeartbeat) {
+    if runner_kind(heartbeat) != "gate" {
+        return;
+    }
+    let Some(result) = heartbeat.last.as_mut() else {
+        return;
+    };
+    let reason = match result.conclusion.as_str() {
+        "timed_out" => "the gate timed out",
+        "inputs_changed" => "the gate's inputs changed while it ran",
+        _ => return,
+    };
+    result.conclusion = "error".to_string();
+    result.reason.get_or_insert_with(|| reason.to_string());
+}
+
 fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
     check_token("runnerId", &heartbeat.runner_id, 128, "._/-")?;
     check_token("host", &heartbeat.host, 64, ".-")?;
@@ -392,10 +426,12 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
     if let Some(task) = &heartbeat.current {
         check_gate("current", &task.repo, &task.sha, &task.recipe)?;
         check_target("current", task.target.as_deref(), is_deploy(heartbeat))?;
+        check_kind("current", task.kind.as_deref())?;
     }
     if let Some(result) = &heartbeat.last {
         check_gate("last", &result.repo, &result.sha, &result.recipe)?;
         check_target("last", result.target.as_deref(), is_deploy(heartbeat))?;
+        check_kind("last", result.kind.as_deref())?;
         let (allowed, expected) = if is_deploy(heartbeat) {
             (DEPLOY_CONCLUSIONS, DEPLOY_CONCLUSIONS.join(", "))
         } else if is_automation(heartbeat) {
@@ -513,6 +549,13 @@ fn check_target(field: &str, target: Option<&str>, deploy: bool) -> Result<(), S
     }
 }
 
+fn check_kind(field: &str, kind: Option<&str>) -> Result<(), String> {
+    match kind {
+        Some(kind) => check_token(&format!("{field}.kind"), kind, 32, "._-"),
+        None => Ok(()),
+    }
+}
+
 fn check_token(field: &str, value: &str, max: usize, extra: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > max {
         return Err(format!("{field}: expected 1-{max} characters"));
@@ -544,6 +587,7 @@ mod tests {
                 sha: "abc30d78ca5eadc15694dd1434d9f8f99c44a0d3".to_string(),
                 recipe: "just required".to_string(),
                 target: None,
+                kind: None,
                 started_at: Utc::now(),
             }),
             last: Some(GateRunnerResult {
@@ -555,6 +599,8 @@ mod tests {
                 target: None,
                 reason: None,
                 seconds: 46,
+                kind: None,
+                exit_code: None,
                 finished_at: Utc::now(),
             }),
             code: None,
@@ -704,6 +750,47 @@ mod tests {
             r#"{"repo":"veox/jain-web","pr":1,"sha":"abc30d78","recipe":"just required","conclusion":"success","seconds":9,"finishedAt":"2026-09-19T17:47:48Z"}"#,
         );
         assert!(camel.is_ok());
+    }
+
+    #[test]
+    fn the_beats_the_gate_runner_really_sends_are_accepted() {
+        // Verbatim shapes from jeryu-ci-runner ops/pr-gate/bin/pr-gate-runner.sh
+        // (2026-10-15): `kind` on both, `exit_code` on the result. Every one was
+        // refused with "the request body is not valid JSON for this route".
+        let store = GateRunnerStore::with_reporters(["ci-bot"]);
+        let running: GateRunnerHeartbeat = serde_json::from_str(
+            r#"{"runnerId":"node-2/slot2","host":"node-2","slot":2,"labels":["pr-gate"],
+                "current":{"repo":"jeryu/jeryu-deploy","pr":386,"sha":"ef9b9d46b424b30d5fa5ce2fadd892132e7c6d65","recipe":"just required","startedAt":"2026-10-15T16:47:54Z","kind":"pr"},
+                "last":{"repo":"jeryu/jeryu-deploy","pr":385,"sha":"3926cbd0","recipe":"just required","conclusion":"success","exit_code":0,"seconds":219,"finishedAt":"2026-10-15T16:40:00Z","kind":"pr"}}"#,
+        )
+        .expect("the running gate's beat parses");
+        assert_eq!(
+            running.current.as_ref().unwrap().kind.as_deref(),
+            Some("pr")
+        );
+        assert_eq!(running.last.as_ref().unwrap().exit_code, Some(0));
+        assert!(store.record(running, "ci-bot", Utc::now()).is_ok());
+
+        let timed_out: GateRunnerHeartbeat = serde_json::from_str(
+            r#"{"runnerId":"node-2/slot3","host":"node-2","slot":3,"labels":["pr-gate"],"current":null,
+                "last":{"repo":"jeryu/jeryu-web","pr":191,"sha":"1bd5bc15","recipe":"ops/ci/pr-ci.sh","conclusion":"timed_out","exit_code":124,"seconds":1800,"finishedAt":"2026-10-15T16:40:00Z","kind":"main-health"}}"#,
+        )
+        .expect("a timed-out result parses");
+        store
+            .record(timed_out, "ci-bot", Utc::now())
+            .expect("a timed-out gate is an error, not a refusal");
+        let stored = store.previous("node-2/slot3").unwrap().last.unwrap();
+        assert_eq!(stored.conclusion, "error");
+        assert_eq!(stored.reason.as_deref(), Some("the gate timed out"));
+
+        let mut bad_kind = beat("node-2/slot1");
+        bad_kind.current.as_mut().unwrap().kind = Some("pr; drop".to_string());
+        assert!(store.record(bad_kind, "ci-bot", Utc::now()).is_err());
+        // Only gate runners map their extra outcomes; a reviewer's verdicts stay strict.
+        let mut review = beat("node-0/redteam");
+        review.labels = vec![REVIEWER_LABEL.to_string()];
+        review.last.as_mut().unwrap().conclusion = "timed_out".to_string();
+        assert!(store.record(review, "ci-bot", Utc::now()).is_err());
     }
 
     fn timer(runner_id: &str) -> GateRunnerHeartbeat {

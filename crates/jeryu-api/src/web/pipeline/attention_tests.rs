@@ -1726,6 +1726,8 @@ fn runner(
                 target: None,
                 reason: None,
                 seconds: 12,
+                kind: None,
+                exit_code: None,
                 finished_at: now() - Duration::minutes(3),
             }),
             code: None,

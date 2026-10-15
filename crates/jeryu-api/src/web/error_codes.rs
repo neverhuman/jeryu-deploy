@@ -372,6 +372,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the merge passport is for an older head",
     ),
     entry(
+        "merge_queued",
+        409,
+        "the pull request is already in the merge queue",
+    ),
+    entry(
         "merge_sha_stale",
         409,
         "the expected head sha is no longer the pull request head",
