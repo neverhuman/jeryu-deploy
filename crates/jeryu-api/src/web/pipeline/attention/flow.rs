@@ -790,13 +790,25 @@ pub(crate) fn queue_items(
                     "{}#{} was refused by the merge queue",
                     entry.repo, entry.number
                 ),
-                format!(
-                    "{reason}. The merge queue could not build a commit for this approved \
-                     pull request on top of {} ({code}), so it never joined the queue and \
-                     queueing it again changes nothing.",
-                    entry.base
-                ),
+                if code == "queue_conflict_queued" {
+                    format!(
+                        "{reason}. The merge queue could not stack this approved pull request \
+                         on the one ahead of it on {} ({code}); its branch is fine.",
+                        entry.base
+                    )
+                } else {
+                    format!(
+                        "{reason}. The merge queue could not build a commit for this approved \
+                         pull request on top of {} ({code}), so it never joined the queue and \
+                         queueing it again changes nothing.",
+                        entry.base
+                    )
+                },
                 match code {
+                    "queue_conflict_queued" => {
+                        "Queue it again once the pull request ahead of it lands or leaves the queue"
+                            .to_string()
+                    }
                     "queue_conflict" | "queue_merge_commits" => format!(
                         "Open a replacement PR from {base} with this PR's commits \
                          cherry-picked ({base} requires linear history)",

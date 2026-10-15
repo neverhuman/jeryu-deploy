@@ -605,6 +605,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the queued change conflicts with the queue base",
     ),
     entry(
+        "queue_conflict_queued",
+        409,
+        "the queued change conflicts with a pull request queued ahead of it",
+    ),
+    entry(
         "queue_git_error",
         500,
         "a git operation on the merge queue failed",

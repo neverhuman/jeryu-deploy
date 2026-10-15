@@ -199,6 +199,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `pull_review_invalid_request` | 422 | the review body failed validation |
 | `pull_self_approval_forbidden` | 403 | an author may not approve their own pull request |
 | `queue_conflict` | 409 | the queued change conflicts with the queue base |
+| `queue_conflict_queued` | 409 | the queued change conflicts with a pull request queued ahead of it |
 | `queue_git_error` | 500 | a git operation on the merge queue failed |
 | `queue_merge_commits` | 409 | the queued branch contains merge commits |
 | `queue_mismatch` | 409 | the queue replay does not match the queued tree |

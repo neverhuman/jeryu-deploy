@@ -141,16 +141,30 @@ Each tick, per stack:
 - **Restack.** Entries whose parent is no longer the base tip or the queue
   commit below them are rebuilt on it, bottom up. A rebuild for that reason
   marks the replaced attempt `superseded`, which counts against nobody's retry.
-- **Land.** The highest entry whose gate is green lands together with every
-  entry below it: the base moves once, by compare-and-swap, straight to that
+- **Land.** The highest entry whose queue commit is green on the union of the
+  required contexts of itself and every entry below it lands together with
+  them (a pull request can require more than the base does, such as
+  `jankurai/proof`): the base moves once, by compare-and-swap, straight to that
   entry's queue commit, and each PR is recorded merged at its own queue
   commit (an ancestor of the new tip). An entry landed this way carries
   `landed_with` (the entry whose gate covered it) and an attempt conclusion
-  `covered by #N`. The base never rests on a commit without its own green gate.
+  `covered by #N`, or `failure, covered by #N` when its own gate was red. The base never rests on a commit without its own green gate.
   A green top lands an entry below it even if that entry's own gate was red:
   the top commit holds that change and passed with it.
-- **Fail.** With nothing green, the lowest red entry is retried or failed
-  (below); the entries above it are restacked onto what remains.
+- **Fail.** With nothing green, a red bottom entry is retried or failed
+  (below), and the entries above it are restacked onto what remains. A red
+  gate higher up is not charged to its entry: that commit carries every
+  change below it, so it waits until the entries below it have a verdict.
+- **Retry.** A landing that could not start for a reason no pull request
+  caused (a ref that did not resolve, a lost ref lock) is tried again on the
+  next tick; an entry still building after 30 minutes raises `queue_stuck`.
+  If the base moved but the forge could not record a member's merge, that
+  member fails with a reason naming the base commit its change is on.
+
+A pull request that conflicts with the queue commit of an entry ahead of it,
+but replays cleanly onto the base tip, is refused as `queue_conflict_queued`:
+its branch is fine, and it can be queued again once that entry lands or
+leaves.
 
 When the bottom entry lands first, the entry above it already sits on the new
 tip, so its queue commit and its running gate stand: no rebuild, no second

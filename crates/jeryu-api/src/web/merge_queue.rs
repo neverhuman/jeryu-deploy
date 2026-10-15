@@ -510,18 +510,37 @@ pub(super) async fn enqueue(
             .and_then(|tip| build_on(&state, &repo.owner, &repo.name, &mut entry, &tip, None)),
     };
     if let Err(failure) = built {
-        let code = match failure {
+        let mut code = match failure {
             ReplayFailure::Conflict(_) => "queue_conflict",
             ReplayFailure::Mismatch(_) => "queue_mismatch",
             ReplayFailure::MergeCommits => "queue_merge_commits",
             ReplayFailure::Git(_) => "queue_git_error",
         };
+        let mut reason = failure.to_string();
+        // A conflict with a pull request queued ahead of it, not with the
+        // base: it may land after that one leaves, so nobody has to rebase
+        // it yet. Checked by replaying onto the base tip without keeping it.
+        if let (ReplayFailure::Conflict(_), Some((ahead, _))) = (&failure, &tail)
+            && let Ok(resolved) = state.repo_manager.open_parts(&repo.owner, &repo.name)
+            && let Ok(tip) = base_tip(&state, &repo.owner, &repo.name, &entry.base)
+            && git_for(&state, &resolved.path)
+                .replay(&tip, &entry.pr_head_sha, None)
+                .is_ok()
+        {
+            code = "queue_conflict_queued";
+            reason = format!(
+                "{reason}, against #{ahead} queued ahead of it; it replays cleanly onto {}, \
+                 so queue it again once #{ahead} lands or leaves the queue",
+                entry.base
+            );
+        }
+        let failure = reason;
         // The PR cannot be replayed onto the base: somebody has to rebase it.
         // The refusal is persisted as a dequeued entry carrying the code, so
         // the attention inbox can name the one step that fixes it instead of
         // the refusal living only in this response and a `queue.refused` event.
         entry.state = QueueState::Dequeued;
-        entry.reason = Some(failure.to_string());
+        entry.reason = Some(failure.clone());
         entry.refusal_code = Some(code.to_string());
         persist(&state, &repo.owner, &repo.name, &entry);
         index.entries.insert(key, entry.clone());
@@ -536,7 +555,7 @@ pub(super) async fn enqueue(
                 entry.repo, number
             ),
         );
-        return api_error(StatusCode::CONFLICT, code, &failure.to_string());
+        return api_error(StatusCode::CONFLICT, code, &failure);
     }
     persist(&state, &repo.owner, &repo.name, &entry);
     index.entries.insert(key, entry.clone());
@@ -995,22 +1014,27 @@ fn advance_stack(
     };
     restack(state, owner, repo, base, &live(entries), entries);
     let stack = live(entries);
-    let verdicts: Vec<Option<bool>> = stack
+    // Each entry's own gate, on its own required contexts.
+    let own: Vec<Option<bool>> = stack
         .iter()
         .map(|key| gate_result(state, owner, repo, &entries[key].queue_sha, &required[key]))
         .collect();
-    if let Some(top) = verdicts.iter().rposition(|verdict| *verdict == Some(true)) {
-        land_stack(
-            state,
-            owner,
-            repo,
-            &stack[..=top],
-            &verdicts[..=top],
-            entries,
-        );
-    } else if let Some(red) = verdicts.iter().position(|verdict| *verdict == Some(false))
-        && let Some(entry) = entries.get_mut(&stack[red])
+    // What landing entry i would prove: its queue commit green on every
+    // context any entry up to it requires, since that commit lands them all.
+    let covering = covering_contexts(stack.iter().map(|key| required[key].as_slice()));
+    let covers: Vec<Option<bool>> = stack
+        .iter()
+        .zip(&covering)
+        .map(|(key, contexts)| gate_result(state, owner, repo, &entries[key].queue_sha, contexts))
+        .collect();
+    if let Some(top) = covers.iter().rposition(|cover| *cover == Some(true)) {
+        land_stack(state, owner, repo, &stack[..=top], &own[..=top], entries);
+    } else if own.first() == Some(&Some(false))
+        && let Some(entry) = entries.get_mut(&stack[0])
     {
+        // Only the bottom entry's red gate is its own: it sits on the base
+        // tip. A red gate higher up may come from a change below it whose
+        // gate has not reported, so it waits until it is the bottom.
         retry_or_fail(state, owner, repo, entry);
     } else {
         return;
@@ -1018,6 +1042,23 @@ fn advance_stack(
     // Whatever landed or failed, the entries above it now sit on a commit
     // that is no longer below them.
     restack(state, owner, repo, base, &live(entries), entries);
+}
+
+/// For each entry of a stack (bottom first), the contexts its queue commit
+/// must pass to land it and everything below it: the union of their required
+/// contexts, in first-seen order.
+fn covering_contexts<'a>(required: impl Iterator<Item = &'a [String]>) -> Vec<Vec<String>> {
+    let mut union: Vec<String> = Vec::new();
+    required
+        .map(|contexts| {
+            for context in contexts {
+                if !union.contains(context) {
+                    union.push(context.clone());
+                }
+            }
+            union.clone()
+        })
+        .collect()
 }
 
 /// Make the stack a chain again: the first entry built on the base tip, each
@@ -1044,6 +1085,11 @@ fn restack(
             continue;
         }
         if entry.base_sha != parent || !is_sha(&entry.queue_sha) {
+            // The replaced attempt decided nothing; earlier ones that were
+            // also replaced are dropped so the record keeps real gates only.
+            entry
+                .attempts
+                .retain(|attempt| attempt.conclusion.as_deref() != Some(SUPERSEDED));
             if let Some(last) = entry.attempts.last_mut()
                 && last.conclusion.is_none()
             {
@@ -1074,14 +1120,19 @@ fn restack(
                 false,
                 format!("{}#{} rebuilt because {why}", entry.repo, entry.number),
             );
+        } else if entry.after != after {
+            // The entry below landed and this one now sits on the base tip
+            // unchanged: no rebuild, but the record says what it is on.
+            entry.after = after;
+            persist(state, owner, repo, entry);
         }
         parent = entry.queue_sha.clone();
         after = Some(entry.number);
     }
 }
 
-/// The lowest red entry of a stack: rebuilt once as a fresh commit on the
-/// same parent, then failed. The entries above it are restacked by the caller.
+/// The bottom entry's red gate: rebuilt once as a fresh commit on the same
+/// parent, then failed. The entries above it are restacked by the caller.
 fn retry_or_fail(state: &WebState, owner: &str, repo: &str, entry: &mut QueueEntry) {
     if let Some(last) = entry.attempts.last_mut() {
         last.conclusion = Some("failure".to_string());
@@ -1137,16 +1188,19 @@ fn retry_or_fail(state: &WebState, owner: &str, repo: &str, entry: &mut QueueEnt
     finish(state, owner, repo, entry, QueueState::Failed, reason);
 }
 
-/// Land `stack` (bottom first) on one gate: the top entry's, green, which
-/// covers every entry below it. `verdicts` are the entries' own gates.
+/// Land `stack` (bottom first) on one gate: the top entry's, green on every
+/// context the stack requires, which covers every entry below it. `own` are
+/// the entries' own gate verdicts, kept on the record.
 fn land_stack(
     state: &WebState,
     owner: &str,
     repo: &str,
     stack: &[Key],
-    verdicts: &[Option<bool>],
+    own: &[Option<bool>],
     entries: &mut BTreeMap<Key, QueueEntry>,
 ) {
+    use crate::github::pulls::{LandRefusal, MemberProblem};
+
     let members: Vec<crate::github::pulls::QueuedLanding> = stack
         .iter()
         .map(|key| {
@@ -1164,45 +1218,71 @@ fn land_stack(
         .github
         .land_queued_batch(owner, repo, &members, &expected_base)
     {
-        Ok(tip) => {
-            for (key, verdict) in stack.iter().zip(verdicts) {
+        Ok(landing) => {
+            for (key, verdict) in stack.iter().zip(own) {
                 let Some(entry) = entries.get_mut(key) else {
                     continue;
                 };
-                landed(state, owner, repo, entry, &tip, top, *verdict == Some(true));
+                match landing
+                    .unrecorded
+                    .iter()
+                    .find(|(number, _)| *number == entry.number)
+                {
+                    // On the base, but the forge could not record the merge:
+                    // a person reconciles the pull request with the base.
+                    Some((_, why)) => finish(
+                        state,
+                        owner,
+                        repo,
+                        entry,
+                        QueueState::Failed,
+                        format!(
+                            "its change is on {} at {} but the forge could not record the merge: {why}",
+                            entry.base, landing.tip
+                        ),
+                    ),
+                    None => landed(state, owner, repo, entry, &landing.tip, top, *verdict),
+                }
             }
         }
         // Restacking onto the new tip rebuilds the whole stack.
-        Err(crate::github::pulls::LandRefusal::BaseMoved(_)) => {}
-        Err(crate::github::pulls::LandRefusal::MemberBlocked(number, reason)) => {
-            if let Some(entry) = stack
+        Err(LandRefusal::BaseMoved(_)) => {}
+        Err(LandRefusal::Member(number, problem)) => {
+            let Some(entry) = stack
                 .iter()
                 .find(|key| number_of(key) == number)
                 .and_then(|key| entries.get_mut(key))
-            {
-                finish(
+            else {
+                return;
+            };
+            match problem {
+                MemberProblem::Merged(sha) => finish(
+                    state,
+                    owner,
+                    repo,
+                    entry,
+                    QueueState::Dequeued,
+                    format!("the pull request is already merged at {sha}"),
+                ),
+                MemberProblem::NotReady(reason) => finish(
                     state,
                     owner,
                     repo,
                     entry,
                     QueueState::Failed,
                     format!("could not land: {reason}"),
-                );
+                ),
+                // A read that failed says nothing about the pull request:
+                // the next tick tries again.
+                MemberProblem::Unreadable(_) => {}
             }
         }
-        Err(crate::github::pulls::LandRefusal::Blocked(reason)) => {
-            for key in stack {
-                if let Some(entry) = entries.get_mut(key) {
-                    finish(
-                        state,
-                        owner,
-                        repo,
-                        entry,
-                        QueueState::Failed,
-                        format!("could not land: {reason}"),
-                    );
-                }
-            }
+        // Nothing moved and nothing about these pull requests is wrong (a
+        // repository or ref that did not resolve, a lost ref lock): the next
+        // tick tries again, and an entry building for 30 minutes raises
+        // `queue_stuck` in the attention inbox.
+        Err(LandRefusal::Blocked(reason)) => {
+            eprintln!("merge queue: {owner}/{repo} could not land #{top}'s stack yet: {reason}");
         }
     }
 }
@@ -1214,14 +1294,16 @@ fn landed(
     entry: &mut QueueEntry,
     tip: &str,
     top: u64,
-    own_gate_green: bool,
+    own_gate: Option<bool>,
 ) {
     let covered = entry.number != top;
     if let Some(last) = entry.attempts.last_mut() {
-        last.conclusion = Some(if own_gate_green || !covered {
-            "success".to_string()
-        } else {
-            format!("covered by #{top}")
+        last.conclusion = Some(match (covered, own_gate) {
+            (false, _) | (true, Some(true)) => "success".to_string(),
+            // The entry's own red gate stays on the record: it landed because
+            // the commit above it, which carries its change, passed.
+            (true, Some(false)) => format!("failure, covered by #{top}"),
+            (true, None) => format!("covered by #{top}"),
         });
     }
     let at = if covered {
@@ -1247,9 +1329,13 @@ fn landed(
     } else {
         approved_by.join(", ")
     };
+    let own = match own_gate {
+        Some(false) => "; its own gate was red",
+        _ => "",
+    };
     let reason = if covered {
         format!(
-            "landed at {at} with #{top}, whose green gate at {tip} covers it (replay of {}; approved by {approved_by})",
+            "landed at {at} with #{top}, whose green gate at {tip} covers it{own} (replay of {}; approved by {approved_by})",
             entry.pr_head_sha
         )
     } else {
@@ -1271,4 +1357,9 @@ pub(crate) fn spawn_worker(state: Arc<WebState>, every: std::time::Duration) {
             let _ = tokio::task::spawn_blocking(move || tick(&state)).await;
         }
     });
+}
+
+#[cfg(test)]
+pub(super) fn covering_contexts_for_test(required: &[&Vec<String>]) -> Vec<Vec<String>> {
+    covering_contexts(required.iter().map(|contexts| contexts.as_slice()))
 }

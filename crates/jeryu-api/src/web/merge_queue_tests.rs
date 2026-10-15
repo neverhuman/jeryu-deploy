@@ -1155,6 +1155,7 @@ async fn the_bottom_landing_first_does_not_rebuild_or_regate_the_next_entry() {
     assert_eq!(waiting.state, merge_queue::QueueState::Building);
     assert_eq!(waiting.queue_sha, top.queue_sha);
     assert_eq!(waiting.attempts.len(), 1);
+    assert_eq!(waiting.after, None, "it now sits on the base tip");
 
     fx.status(&top.queue_sha, CommitStatusState::Success);
     assert_eq!(merge_queue::tick(&fx.state), 1);
@@ -1224,5 +1225,61 @@ async fn a_green_top_lands_an_entry_below_it_whose_own_gate_was_red() {
     assert_eq!(merge_queue::tick(&fx.state), 2);
     assert_eq!(fx.main(), top.queue_sha);
     assert!(fx.merged(fx.number) && fx.merged(second));
-    assert_eq!(fx.entry_for(fx.number).landed_with, Some(second));
+    let covered = fx.entry_for(fx.number);
+    assert_eq!(covered.landed_with, Some(second));
+    assert_eq!(
+        covered.attempts.last().unwrap().conclusion.as_deref(),
+        Some(format!("failure, covered by #{second}").as_str()),
+        "its own red gate stays on the record"
+    );
+}
+
+#[tokio::test]
+async fn a_red_gate_above_a_pending_entry_waits_instead_of_spending_a_retry() {
+    // The top commit carries the bottom PR's change, so its red gate may be
+    // the bottom's fault: nothing is charged until the bottom has a verdict.
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (second, first, top) = fx.two_stacked().await;
+    fx.status(&top.queue_sha, CommitStatusState::Failure);
+    assert_eq!(merge_queue::tick(&fx.state), 0);
+    let waiting = fx.entry_for(second);
+    assert_eq!(waiting.queue_sha, top.queue_sha);
+    assert_eq!(waiting.attempts.len(), 1);
+    assert_eq!(waiting.attempts[0].conclusion, None);
+    assert_eq!(fx.entry_for(fx.number).queue_sha, first.queue_sha);
+}
+
+#[tokio::test]
+async fn a_conflict_with_a_queued_pr_ahead_is_refused_as_such_not_as_a_rebase() {
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let (status, _) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED);
+    // Same file as #1, other content: clean on main, conflicting on #1's commit.
+    let (second, _) = fx.add_pr("feature-two", "feature.txt", "two\n");
+    let (status, body) = fx.enqueue_number(second).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "queue_conflict_queued", "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&format!("#{} queued ahead of it", fx.number)),
+        "{message}"
+    );
+    assert_eq!(
+        fx.entry_for(second).refusal_code.as_deref(),
+        Some("queue_conflict_queued")
+    );
+}
+
+#[test]
+fn a_stack_lands_on_the_union_of_its_members_required_contexts() {
+    let bottom = vec!["ci/fast".to_string(), "jankurai/proof".to_string()];
+    let middle: Vec<String> = Vec::new();
+    let top = vec!["ci/fast".to_string(), "e2e".to_string()];
+    let covering = super::merge_queue::covering_contexts_for_test(&[&bottom, &middle, &top]);
+    assert_eq!(covering[0], bottom);
+    assert_eq!(
+        covering[1], bottom,
+        "an entry requiring nothing still carries the ones below"
+    );
+    assert_eq!(covering[2], ["ci/fast", "jankurai/proof", "e2e"]);
 }

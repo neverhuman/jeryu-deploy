@@ -880,11 +880,18 @@ impl GithubRouter {
             pr_head: pr_head.to_string(),
             queue_sha: queue_sha.to_string(),
         };
-        self.land_queued_batch(owner, repo, std::slice::from_ref(&member), expected_base)
+        let landing = self
+            .land_queued_batch(owner, repo, std::slice::from_ref(&member), expected_base)
             .map_err(|refusal| match refusal {
-                LandRefusal::MemberBlocked(_, reason) => LandRefusal::Blocked(reason),
+                LandRefusal::Member(_, problem) => LandRefusal::Blocked(problem.to_string()),
                 other => other,
-            })
+            })?;
+        match landing.unrecorded.first() {
+            None => Ok(landing.tip),
+            Some((_, why)) => Err(LandRefusal::Blocked(format!(
+                "ref moved but finalize failed: {why}"
+            ))),
+        }
     }
 
     /// Land a stack of merge-queue commits with one gate: fast-forward
@@ -899,7 +906,9 @@ impl GithubRouter {
     /// compare-and-swap from `expected_base` and only as a fast-forward, so
     /// the base never rests on a commit that was not gated; the push bridge and
     /// the GitHub mirror run once, exactly as for a direct merge. Returns the
-    /// new base oid, or why nothing landed (the queue decides what to rebuild).
+    /// new base oid with any member whose merge the forge could not record
+    /// after the ref moved, or why nothing moved (the queue decides what to
+    /// rebuild).
     #[cfg(feature = "web")]
     pub(crate) fn land_queued_batch(
         &self,
@@ -907,7 +916,7 @@ impl GithubRouter {
         repo: &str,
         members: &[QueuedLanding],
         expected_base: &str,
-    ) -> std::result::Result<String, LandRefusal> {
+    ) -> std::result::Result<BatchLanding, LandRefusal> {
         use jeryu_gitd::object_fsck::ObjectFsck;
         use jeryu_gitd::refs::RefService;
 
@@ -934,21 +943,30 @@ impl GithubRouter {
                     ..
                 }) => ready.push((member, base_ref, head_ref, head_sha, require_linear_history)),
                 Ok(MergeReadiness::AlreadyMerged { sha }) => {
-                    return Err(LandRefusal::MemberBlocked(
+                    return Err(LandRefusal::Member(
                         member.number,
-                        format!("already merged at {sha}"),
+                        MemberProblem::Merged(sha),
+                    ));
+                }
+                Err(ForgeError::Storage(err)) => {
+                    return Err(LandRefusal::Member(
+                        member.number,
+                        MemberProblem::Unreadable(err),
                     ));
                 }
                 Err(err) => {
-                    return Err(LandRefusal::MemberBlocked(member.number, err.to_string()));
+                    return Err(LandRefusal::Member(
+                        member.number,
+                        MemberProblem::NotReady(err.to_string()),
+                    ));
                 }
             }
         }
         let base_ref = ready[0].1.clone();
         if let Some((member, ..)) = ready.iter().find(|(_, other, ..)| *other != base_ref) {
-            return Err(LandRefusal::MemberBlocked(
+            return Err(LandRefusal::Member(
                 member.number,
-                format!("#{} does not target {base_ref}", member.number),
+                MemberProblem::NotReady(format!("#{} does not target {base_ref}", member.number)),
             ));
         }
         let resolved = rm
@@ -963,21 +981,31 @@ impl GithubRouter {
         if base_oid != expected_base {
             return Err(LandRefusal::BaseMoved(base_oid));
         }
-        // Every member below the top must be in the history the top's gate
-        // proved, or its PR would be recorded merged at a commit main never
-        // reaches.
+        // The base must be in the history the top's gate proved (so the move
+        // is a fast-forward by construction, not only by the ref update's
+        // flag), and so must every member below the top, or its PR would be
+        // recorded merged at a commit main never reaches.
         let fsck = ObjectFsck::new(rm.config().git_bin.clone());
+        if !fsck
+            .is_ancestor(&resolved, &base_oid, &top.queue_sha)
+            .unwrap_or(false)
+        {
+            return Err(LandRefusal::Blocked(format!(
+                "{base_name} at {base_oid} is not below #{}'s queue commit {}",
+                top.number, top.queue_sha
+            )));
+        }
         for member in &members[..members.len() - 1] {
             if !fsck
                 .is_ancestor(&resolved, &member.queue_sha, &top.queue_sha)
                 .unwrap_or(false)
             {
-                return Err(LandRefusal::MemberBlocked(
+                return Err(LandRefusal::Member(
                     member.number,
-                    format!(
+                    MemberProblem::NotReady(format!(
                         "#{}'s queue commit {} is not below #{}'s {}",
                         member.number, member.queue_sha, top.number, top.queue_sha
-                    ),
+                    )),
                 ));
             }
         }
@@ -1010,6 +1038,9 @@ impl GithubRouter {
             }],
             &crate::ci_bridge::default_origin_base_url(),
         );
+        // The ref has moved: from here every member's change is on the base,
+        // so the rest always runs and a member the forge cannot record is
+        // reported, not hidden behind a refusal.
         let mut unrecorded = Vec::new();
         for (member, ..) in &ready {
             let merged_at = if member.number == top.number {
@@ -1024,14 +1055,8 @@ impl GithubRouter {
                 merged_at,
                 Some(&member.pr_head),
             ) {
-                unrecorded.push(format!("#{}: {err}", member.number));
+                unrecorded.push((member.number, err.to_string()));
             }
-        }
-        if !unrecorded.is_empty() {
-            return Err(LandRefusal::Blocked(format!(
-                "ref moved but finalize failed: {}",
-                unrecorded.join("; ")
-            )));
         }
         let mut mirrored = false;
         for (member, base_ref, head_ref, head_sha, require_linear_history) in ready {
@@ -1061,7 +1086,10 @@ impl GithubRouter {
                 );
             }
         }
-        Ok(outcome.merge_oid)
+        Ok(BatchLanding {
+            tip: outcome.merge_oid,
+            unrecorded,
+        })
     }
 
     /// Push the merged default branch to its configured GitHub mirror and
@@ -1224,8 +1252,40 @@ pub(crate) enum LandRefusal {
     /// The PR no longer passes the merge gate, or git refused the update.
     Blocked(String),
     /// One member of a stacked landing cannot land (its number, and why);
-    /// nothing moved, and the rest of the stack can land without it.
-    MemberBlocked(u64, String),
+    /// nothing moved.
+    Member(u64, MemberProblem),
+}
+
+/// Why one member of a stacked landing cannot land.
+#[cfg(feature = "web")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MemberProblem {
+    /// Already merged, at this sha: it has left the queue, not failed in it.
+    Merged(String),
+    /// It no longer passes its merge gate, or its queue commit is not below
+    /// the top.
+    NotReady(String),
+    /// Its record could not be read; says nothing about the pull request.
+    Unreadable(String),
+}
+
+#[cfg(feature = "web")]
+impl std::fmt::Display for MemberProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Merged(sha) => write!(f, "already merged at {sha}"),
+            Self::NotReady(reason) | Self::Unreadable(reason) => f.write_str(reason),
+        }
+    }
+}
+
+/// A stacked landing that moved the base: the new tip, and any member whose
+/// merge the forge could not record afterwards (its number, and why).
+#[cfg(feature = "web")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BatchLanding {
+    pub(crate) tip: String,
+    pub(crate) unrecorded: Vec<(u64, String)>,
 }
 
 /// One queue entry in a stacked landing: the PR, the head its approval is
