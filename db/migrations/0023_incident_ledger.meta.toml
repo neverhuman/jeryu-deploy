@@ -17,7 +17,7 @@ mechanism = "table creation over no rows"
 value = "milliseconds"
 
 [rollback]
-plan = "stop the server, DROP TABLE incident_causes and incident_ledger, delete version 21 from shift_schema_migrations; roll back together with the binary"
+plan = "stop the server, DROP TABLE incident_causes and incident_ledger, delete version 23 from shift_schema_migrations; roll back together with the binary"
 backup = "sqlite3 shift.sqlite '.backup incident-ledger.sqlite' before rollback; incidents older than the event log's retention exist only in these tables"
 
 [verify]

@@ -14,7 +14,7 @@
 --
 -- Store: <data_dir>/shift.sqlite, written by web/incidents.rs through
 -- web/pipeline/store.rs. Rollback: stop the server, DROP TABLE incident_causes,
--- DROP TABLE incident_ledger and delete version 21 from
+-- DROP TABLE incident_ledger and delete version 23 from
 -- shift_schema_migrations. Two new tables over no rows; no existing row is
 -- touched; an older binary never reads them.
 

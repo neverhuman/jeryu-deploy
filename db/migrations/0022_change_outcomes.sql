@@ -13,7 +13,7 @@
 -- `landed_ms` is when the change reached main; `failed_ms` is when the first
 -- defect was linked to it. A change is *successful* when it landed and no
 -- defect was linked to it; a change named by `incident.caused_by` is failed
--- through incident_causes (migration 0019) as well.
+-- through incident_causes (migration 0023) as well.
 -- `work_kind` is what kind of work the lot was: `change` by default, `rework`
 -- when a todo was filed to redo another change, `pin_bump` for an auto-pin
 -- dependency bump.
@@ -37,7 +37,7 @@
 -- sequence.
 --
 -- Rollback: stop the server, then `DROP TABLE change_human_minutes`,
--- `DROP TABLE change_outcomes` and delete version 20 from
+-- `DROP TABLE change_outcomes` and delete version 22 from
 -- shift_schema_migrations; roll back together with the binary. Take a copy
 -- first (sqlite3 shift.sqlite '.backup change-outcomes.sqlite'): minutes are
 -- a record of time people spent and cannot be rebuilt from the pruned log.

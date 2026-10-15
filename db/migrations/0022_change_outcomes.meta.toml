@@ -17,7 +17,7 @@ mechanism = "table creation over no rows"
 value = "milliseconds"
 
 [rollback]
-plan = "stop the server, DROP TABLE change_human_minutes and change_outcomes, delete version 20 from shift_schema_migrations; roll back together with the binary"
+plan = "stop the server, DROP TABLE change_human_minutes and change_outcomes, delete version 22 from shift_schema_migrations; roll back together with the binary"
 backup = "sqlite3 shift.sqlite '.backup change-outcomes.sqlite' before rollback; minutes people spent cannot be rebuilt from the pruned event log"
 
 [verify]

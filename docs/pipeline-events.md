@@ -1449,7 +1449,7 @@ Four kinds, posted by any reporter (an alert webhook, a person, an agent) throug
 | `incident.closed` | `incident_id`, `closed_at` |
 
 They are folded, in the same transaction as the event, into `incident_ledger`
-and `incident_causes` (migration 0019), which are never pruned. The fold does
+and `incident_causes` (migration 0023), which are never pruned. The fold does
 not depend on order: a restore posted before the opening lands on the same
 incident.
 
