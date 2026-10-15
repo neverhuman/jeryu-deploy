@@ -1,0 +1,16 @@
+migration = "0022_agent_locations"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/agent_presence"
+apply = "migrate_shift_store; two nullable column additions in one transaction; no backfill"
+[lock_timeout]
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+[statement_timeout]
+mechanism = "constant-time nullable column additions; no table rewrite"
+value = "independent of retained row count"
+[rollback]
+plan = "previous binary ignores added columns; restore pre-release SQLite backup if needed"
+backup = "release switch SQLite backup"
+[verify]
+check = "cargo test -p jeryu-api --features web agent_presence"

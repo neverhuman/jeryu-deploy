@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use super::location::{Location, Worker};
 use super::types::{Links, PresenceState, Tokens};
 use crate::web::shift::migrate_shift_store;
 
@@ -75,6 +76,8 @@ pub(crate) struct PresenceRow {
     pub agent: String,
     pub model: Option<String>,
     pub host: Option<String>,
+    pub location: Option<Location>,
+    pub worker: Option<Worker>,
     pub operator: Option<String>,
     pub lane: Option<String>,
     pub branch: Option<String>,
@@ -292,9 +295,9 @@ impl PresenceStore {
             "INSERT INTO agent_presence (session_id, reporter, agent, model, host, operator,
                    lane, branch, title, state, repos_json, families_json, started_ms,
                    last_active_ms, ttl_seconds, received_ms, expires_ms, ended_ms, cost_usd,
-                   tokens_json, links_json)
+                   tokens_json, links_json, location_json, worker_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                   ?16, ?17, ?18, ?19, ?20, ?21)
+                   ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
                  ON CONFLICT(session_id) DO UPDATE SET
                    reporter = excluded.reporter, agent = excluded.agent,
                    model = excluded.model, host = excluded.host,
@@ -306,7 +309,8 @@ impl PresenceStore {
                    ttl_seconds = excluded.ttl_seconds, received_ms = excluded.received_ms,
                    expires_ms = excluded.expires_ms, ended_ms = excluded.ended_ms,
                    cost_usd = excluded.cost_usd, tokens_json = excluded.tokens_json,
-                   links_json = excluded.links_json",
+                   links_json = excluded.links_json,
+                   location_json = excluded.location_json, worker_json = excluded.worker_json",
             params![
                 row.session_id,
                 row.reporter,
@@ -329,6 +333,8 @@ impl PresenceStore {
                 row.cost_usd,
                 row.tokens.as_ref().map(to_json),
                 row.links.as_ref().map(to_json),
+                row.location.as_ref().map(to_json),
+                row.worker.as_ref().map(to_json),
             ],
         )?;
         tx.commit()?;
@@ -389,7 +395,7 @@ impl PresenceStore {
                 "SELECT session_id, reporter, agent, model, host, operator, lane, branch,
                         title, state, repos_json, families_json, started_ms, last_active_ms,
                         ttl_seconds, received_ms, expires_ms, ended_ms, cost_usd, tokens_json,
-                        links_json
+                        links_json, location_json, worker_json
                    FROM agent_presence
                   WHERE (ended_ms IS NOT NULL AND ended_ms >= ?1)
                      OR (ended_ms IS NULL AND expires_ms >= ?1)
@@ -472,7 +478,7 @@ fn get_row(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<Prese
     conn.query_row(
         "SELECT session_id, reporter, agent, model, host, operator, lane, branch,
         title, state, repos_json, families_json, started_ms, last_active_ms, ttl_seconds,
-        received_ms, expires_ms, ended_ms, cost_usd, tokens_json, links_json
+        received_ms, expires_ms, ended_ms, cost_usd, tokens_json, links_json, location_json, worker_json
         FROM agent_presence WHERE session_id = ?1",
         params![session_id],
         read_row,
@@ -513,5 +519,7 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PresenceRow> {
         cost_usd: row.get(18)?,
         tokens: from_json(row.get(19)?),
         links: from_json(row.get(20)?),
+        location: from_json(row.get(21)?),
+        worker: from_json(row.get(22)?),
     })
 }

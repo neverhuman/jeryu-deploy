@@ -207,7 +207,7 @@ fn find<'a>(items: &'a [Value], id: &str) -> &'a Value {
 }
 
 #[tokio::test]
-async fn register_then_heartbeat_upserts_one_session_and_host_is_admin_only() {
+async fn register_then_heartbeat_upserts_one_session_and_host_is_private() {
     let fx = fixture();
     let (status, body) = fx
         .post(&fx.grace, session("cli:one", &["acme/widgets"], &[]))
@@ -238,7 +238,12 @@ async fn register_then_heartbeat_upserts_one_session_and_host_is_admin_only() {
     assert_eq!(item["reporter"], "grace");
     assert_eq!(item["links"]["pr"], "acme/widgets#12");
     assert_eq!(item["cost_usd"], 1.25);
-    assert!(item.get("host").is_none(), "host leaked to a non-admin");
+    assert_eq!(item["host"], "node-a");
+    let other = fx.repo_items(&fx.ada, "acme%2Fwidgets").await;
+    assert!(
+        other[0].get("host").is_none(),
+        "host leaked to another reader"
+    );
 
     let items = fx.repo_items(&fx.admin, "acme%2Fwidgets").await;
     assert_eq!(items[0]["host"], "node-a");
@@ -492,7 +497,18 @@ async fn malformed_beats_are_422_with_a_typed_code() {
     let mut bad_state = session("cli:x", &["acme/widgets"], &[]);
     bad_state["state"] = json!("busy");
     cases.push((bad_state, "presence_invalid_request"));
-    cases.push((session("cli:x", &[], &[]), "presence_scope_empty"));
+    for location in [
+        json!({"session_path": "relative/file"}),
+        json!({"cwd": "/a\nb"}),
+        json!({"head": "abc"}),
+        json!({"pid": 0}),
+        json!({"unknown": "x"}),
+        json!({"checkout_kind": "directory"}),
+    ] {
+        let mut beat = session("cli:x", &[], &[]);
+        beat["location"] = location;
+        cases.push((beat, "presence_invalid_request"));
+    }
     cases.push((
         session("cli:x", &["acme/nope"], &[]),
         "presence_repo_unknown",
@@ -508,6 +524,8 @@ async fn malformed_beats_are_422_with_a_typed_code() {
 
 fn stored(id: &str, ttl_seconds: i64, state: PresenceState) -> PresenceRow {
     PresenceRow {
+        location: None,
+        worker: None,
         session_id: id.to_string(),
         reporter: "ada".to_string(),
         agent: "codex".to_string(),
@@ -669,6 +687,38 @@ async fn gate_runners_reviewers_and_queue_workers_show_on_the_repo() {
     let admin_items = fx.repo_items(&fx.admin, "acme%2Fwidgets").await;
     let gate = admin_items.iter().find(|i| i["source"] == "gate").unwrap();
     assert_eq!(gate["host"], "node-a");
+
+    let (_, global) = fx.overview(&fx.admin, "").await;
+    assert_eq!(
+        global["total"], 3,
+        "family worker must appear once: {global}"
+    );
+    let worker = global["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["source"] == "queue_worker")
+        .unwrap();
+    assert_eq!(worker["repos"], json!(["acme/gears", "acme/widgets"]));
+    let mut beat = session("cli:worker", &[], &["acme"]);
+    beat["worker"] = json!({"slot":"1", "family":"acme"});
+    beat["links"]["todo"] = json!("different-task");
+    assert_eq!(
+        fx.post(&fx.ada, beat.clone()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(fx.post(&fx.reporter, beat.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        fx.overview(&fx.admin, "?source=queue_worker").await.1["total"],
+        1
+    );
+    beat["links"]["todo"] = json!("20261012-120000-abc123");
+    assert_eq!(fx.post(&fx.reporter, beat).await.0, StatusCode::OK);
+    assert_eq!(
+        fx.overview(&fx.admin, "?source=queue_worker").await.1["total"],
+        0
+    );
+    assert_eq!(fx.repo_items(&fx.admin, "acme%2Fwidgets").await.len(), 3);
 }
 
 #[tokio::test]
@@ -722,4 +772,74 @@ async fn the_overview_hides_sessions_on_repos_a_user_cannot_read() {
     assert_eq!(body["code"], "family_unknown");
     let (status, body) = fx.overview(&fx.ada, "?colour=blue").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+#[tokio::test]
+async fn locations_roundtrip_only_to_authenticated_owner_and_admin() {
+    let fx = fixture();
+    let mut beat = session("cli:location", &["acme/widgets"], &[]);
+    let location = json!({"session_path":"/home/ada/.codex/session.jsonl", "cwd":"/src/lane/subdir", "checkout_path":"/src/lane", "checkout_kind":"worktree", "head":"0123456789abcdef0123456789abcdef01234567", "screen":"123.work", "pid":123});
+    beat["location"] = location.clone();
+    assert_eq!(fx.post(&fx.ada, beat).await.0, StatusCode::OK);
+    for token in [&fx.ada, &fx.admin] {
+        let items = fx.repo_items(token, "acme%2Fwidgets").await;
+        assert_eq!(items[0]["location"], location);
+        let (_, body) = fx.overview(token, "?host=node-a").await;
+        assert_eq!(body["items"][0]["location"], location);
+    }
+    // Operator is a self-reported label, not authorization.
+    for token in [&fx.grace, &fx.outsider] {
+        let items = fx.repo_items(token, "acme%2Fwidgets").await;
+        assert!(items[0].get("location").is_none());
+        let (_, body) = fx.overview(token, "?host=node-a").await;
+        assert_eq!(body["total"], 0);
+        let (_, body) = fx.overview(token, "?q=node-a").await;
+        assert_eq!(body["total"], 0);
+    }
+}
+
+#[tokio::test]
+async fn unscoped_sessions_are_visible_only_to_owner_and_admin() {
+    let fx = fixture();
+    assert_eq!(
+        fx.post(&fx.ada, session("cli:home", &[], &[])).await.0,
+        StatusCode::OK
+    );
+    for token in [&fx.ada, &fx.admin] {
+        let (_, body) = fx.overview(token, "").await;
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["items"][0]["repos"], json!([]));
+    }
+    for token in [&fx.grace, &fx.outsider] {
+        assert_eq!(fx.overview(token, "").await.1["total"], 0);
+    }
+    assert_eq!(fx.overview(&fx.ada, "?family=acme").await.1["total"], 0);
+    assert!(fx.repo_items(&fx.ada, "acme%2Fwidgets").await.is_empty());
+}
+
+#[tokio::test]
+async fn global_filters_apply_before_pagination_and_validate_enums() {
+    let fx = fixture();
+    for id in ["cli:one", "cli:two"] {
+        assert_eq!(
+            fx.post(&fx.ada, session(id, &["acme/widgets"], &[]))
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+    let (_, body) = fx.overview(&fx.ada, "?host=node-a&operator=ada&agent=claude-code&repo=acme/widgets&source=external&state=active&q=MODEL-X&limit=1&page=2").await;
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        fx.overview(&fx.ada, "?state=broken").await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        fx.overview(&fx.ada, "?source=broken").await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    fx.delete(&fx.ada, "cli:one").await;
+    assert_eq!(fx.overview(&fx.ada, "").await.1["total"], 1);
+    assert_eq!(fx.overview(&fx.ada, "?state=all").await.1["total"], 2);
 }

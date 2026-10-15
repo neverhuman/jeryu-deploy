@@ -413,6 +413,8 @@ fn with(field: &str, value: serde_json::Value) -> serde_json::Value {
 
 fn row(session_id: &str, ttl_seconds: i64, state: PresenceState) -> PresenceRow {
     PresenceRow {
+        location: None,
+        worker: None,
         session_id: session_id.to_string(),
         reporter: "ada".to_string(),
         agent: "codex".to_string(),
@@ -486,10 +488,10 @@ fn malformed_beats_are_refused_with_the_field_named() {
 }
 
 #[test]
-fn a_beat_without_repos_or_families_is_scope_empty() {
+fn a_beat_without_repos_or_families_is_private_to_its_reporter() {
     let mut body = base();
     body["repos"] = serde_json::json!([" ", ""]);
-    assert!(matches!(beat(body), Err(BeatError::ScopeEmpty)));
+    assert!(beat(body).is_ok());
 }
 
 #[test]

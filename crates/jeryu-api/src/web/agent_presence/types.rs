@@ -2,6 +2,7 @@
 //! before anything is looked up. Limits are the contract's
 //! (`docs/agent-presence.md`).
 
+use super::location::{Location, Worker};
 use serde::{Deserialize, Serialize};
 
 use crate::web::paging::{PageInfo, PageParams};
@@ -87,6 +88,10 @@ pub(crate) struct PresenceBeat {
     #[serde(default)]
     pub host: Option<String>,
     #[serde(default)]
+    pub location: Option<Location>,
+    #[serde(default)]
+    pub worker: Option<Worker>,
+    #[serde(default)]
     pub operator: Option<String>,
     #[serde(default)]
     pub lane: Option<String>,
@@ -129,6 +134,8 @@ pub(crate) struct CheckedBeat {
     pub agent: String,
     pub model: Option<String>,
     pub host: Option<String>,
+    pub location: Option<Location>,
+    pub worker: Option<Worker>,
     pub operator: Option<String>,
     pub lane: Option<String>,
     pub branch: Option<String>,
@@ -144,11 +151,10 @@ pub(crate) struct CheckedBeat {
     pub links: Option<Links>,
 }
 
-/// Why a beat is malformed; `ScopeEmpty` has its own error code.
+/// Why a beat is malformed.
 #[derive(Debug, PartialEq)]
 pub(crate) enum BeatError {
     Invalid(String),
-    ScopeEmpty,
 }
 
 /// `[A-Za-z0-9._:-]{1,64}`.
@@ -171,7 +177,11 @@ fn text(name: &str, value: &str, max: usize) -> Result<(), String> {
 }
 
 /// A blank optional field is the same as an absent one.
-fn optional(name: &str, value: Option<String>, max: usize) -> Result<Option<String>, String> {
+pub(super) fn optional(
+    name: &str,
+    value: Option<String>,
+    max: usize,
+) -> Result<Option<String>, String> {
     let Some(value) = value
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -262,9 +272,6 @@ impl PresenceBeat {
                 "families lists more than {FAMILIES_MAX} entries"
             )));
         }
-        if repos.is_empty() && families.is_empty() {
-            return Err(BeatError::ScopeEmpty);
-        }
         if self.started_at < 0 || self.last_active_at < 0 {
             return Err(invalid(
                 "started_at and last_active_at are milliseconds since the epoch".to_string(),
@@ -309,6 +316,16 @@ impl PresenceBeat {
             agent,
             model: optional("model", self.model, SHORT_MAX).map_err(invalid)?,
             host: optional("host", self.host, SHORT_MAX).map_err(invalid)?,
+            location: self
+                .location
+                .map(Location::check)
+                .transpose()
+                .map_err(invalid)?,
+            worker: self
+                .worker
+                .map(Worker::check)
+                .transpose()
+                .map_err(invalid)?,
             operator: optional("operator", self.operator, SHORT_MAX).map_err(invalid)?,
             lane,
             branch: optional("branch", self.branch, BRANCH_MAX).map_err(invalid)?,
@@ -400,6 +417,10 @@ pub(crate) struct PresenceItem {
     /// Reported only to global admins.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<Location>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker: Option<Worker>,
     pub collides_with: Vec<String>,
     /// The family/overview list only: the repositories the caller may read.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -443,12 +464,22 @@ pub(crate) struct BeatAccepted {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct OverviewQuery {
     pub family: Option<String>,
+    pub repo: Option<String>,
+    pub host: Option<String>,
+    pub operator: Option<String>,
+    pub agent: Option<String>,
+    pub source: Option<String>,
+    pub state: Option<String>,
+    pub q: Option<String>,
     #[serde(flatten)]
     pub paging: PageParams,
 }
 
 impl StrictFields for OverviewQuery {
-    const KEYS: &'static [&'static str] = &["family", "limit", "per_page", "page"];
+    const KEYS: &'static [&'static str] = &[
+        "family", "repo", "host", "operator", "agent", "source", "state", "q", "limit", "per_page",
+        "page",
+    ];
 }
 
 /// `GET /api/v1/repos/:id/agent-presence` query.
@@ -460,4 +491,86 @@ pub(crate) struct RepoQuery {
 
 impl StrictFields for RepoQuery {
     const KEYS: &'static [&'static str] = &["limit", "per_page", "page"];
+}
+
+impl OverviewQuery {
+    pub(crate) fn check(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("family", &self.family),
+            ("repo", &self.repo),
+            ("host", &self.host),
+            ("operator", &self.operator),
+            ("agent", &self.agent),
+            ("source", &self.source),
+            ("state", &self.state),
+            ("q", &self.q),
+        ] {
+            if let Some(value) = value {
+                text(name, value, 200)?;
+            }
+        }
+        if self
+            .state
+            .as_deref()
+            .is_some_and(|v| !matches!(v, "live" | "all" | "active" | "idle" | "stale" | "ended"))
+        {
+            return Err("state must be live, all, active, idle, stale or ended".into());
+        }
+        if self.source.as_deref().is_some_and(|v| {
+            !matches!(
+                v,
+                "external" | "agent_run" | "queue_worker" | "reviewer" | "gate"
+            )
+        }) {
+            return Err(
+                "source must be external, agent_run, queue_worker, reviewer or gate".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn matches(&self, item: &PresenceItem) -> bool {
+        let state =
+            self.state
+                .as_deref()
+                .unwrap_or(if self.family.is_some() { "all" } else { "live" });
+        if !(state == "all" || (state == "live" && item.live()) || state == item.state) {
+            return false;
+        }
+        for (wanted, actual) in [
+            (&self.host, item.host.as_deref()),
+            (&self.operator, item.operator.as_deref()),
+            (&self.agent, Some(item.agent.as_str())),
+            (&self.source, Some(item.source.prefix())),
+        ] {
+            if wanted.as_deref().is_some_and(|value| Some(value) != actual) {
+                return false;
+            }
+        }
+        if self.repo.as_ref().is_some_and(|repo| {
+            !item
+                .repos
+                .as_ref()
+                .is_some_and(|repos| repos.contains(repo))
+        }) {
+            return false;
+        }
+        if let Some(q) = &self.q {
+            let values = [
+                Some(item.agent.as_str()),
+                item.model.as_deref(),
+                item.operator.as_deref(),
+                item.host.as_deref(),
+                item.branch.as_deref(),
+                item.title.as_deref(),
+            ];
+            let q = q.to_lowercase();
+            return values
+                .into_iter()
+                .flatten()
+                .chain(item.repos.iter().flatten().map(String::as_str))
+                .any(|value| value.to_lowercase().contains(&q));
+        }
+        true
+    }
 }

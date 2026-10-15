@@ -11,7 +11,7 @@ repository at once.
 Decision: `docs/adr/0006-agent-presence-on-the-repo-agents-tab.md`.
 Code: `crates/jeryu-api/src/web/agent_presence.rs` and `agent_presence/`.
 Store: `<data_dir>/shift.sqlite`, table `agent_presence`
-(`db/migrations/0012_agent_presence.sql`).
+(`db/migrations/0012_agent_presence.sql`, optional locations added by `0022_agent_locations.sql`).
 
 The name is *agent presence*: "sessions" and `/api/v1/agent-runs` already
 name other things, and `/api/v1/agent-runs*` is admin-only by path.
@@ -72,7 +72,7 @@ JSON, snake_case; an unknown field is refused.
 |---|---|
 | `session_id` | required, `[A-Za-z0-9._:-]{1,64}` |
 | `agent` | required, 1–32 characters |
-| `model`, `host`, `operator` | optional, ≤ 64 characters; `host` is returned to admins only |
+| `model`, `host`, `operator` | optional, ≤ 64 characters; `host` is returned to the authenticated reporter and admins only |
 | `lane` | optional, ≤ 64 characters, a folder name: a `/` or `\` is refused |
 | `branch` | optional, ≤ 200 characters |
 | `title` | optional, ≤ 160 characters |
@@ -93,14 +93,13 @@ Answers:
 - `200 {"ok": true, "session_id": "…", "expires_at": <ms>}`.
 - `422 presence_invalid_request`: a field breaks the table above; the message
   names it.
-- `422 presence_scope_empty`: neither `repos` nor `families` names anything.
 - `422 presence_repo_unknown`: a repository the forge does not host. A
   private repository the caller cannot read is reported the same way, so the
   answer never confirms that it exists.
 - `422 family_unknown`: a family the forge does not know.
 - `403 presence_scope_forbidden`, `409 presence_session_owned`: see Access.
 
-Checks run in that order: shape, scope empty, repositories, families, scope
+Checks run in that order: shape, repositories, families, scope
 permission, ownership.
 
 ## End: `DELETE /api/v1/agent-presence/:session_id`
@@ -157,7 +156,7 @@ Paged like every list (`limit`/`per_page`, `page`; `docs/pagination.md`).
 - `via` is `repo` or `family`; `family` is the repository's family key when
   it has one.
 - `reporter` on external items is the authenticated login that registered the session. `operator`, `agent`, title and other external labels are self-reported and may be false.
-- `host` and a gate runner's reporting login (`operator`) are present for global admins only.
+- External `host`, `location`, and `worker` are present only for the authenticated reporter and global admins. The self-reported `operator` label never grants access. Forge-owned hosts and gate reporting logins remain admin-only.
 - Optional fields are left out when unknown: `started_at` and `expires_at`
   are absent for sources that do not know them (see below); `last_active_at`
   is always present.
@@ -190,8 +189,7 @@ of the runner or slot identity, because hosts are for admins only.
 
 ## Read: `GET /api/v1/agent-presence[?family=<key>]`
 
-Reported (`external`) sessions only, for a family page or an overview. The
-same item shape without `via`, plus `repos` and `families`:
+All five sources, for a family page or the System → Active agents page (`/agents`). The same item shape without `via`, plus readable `repos` and `families`. Shared family workers are listed once with all readable repositories; native sources never enumerate unreadable repositories:
 
 - With `family`: sessions whose `families` names it or whose `repos` include
   a repository of it, live, stale and recently ended. `family` on each item is
@@ -199,10 +197,46 @@ same item shape without `via`, plus `repos` and `families`:
 - Without it: every live (`active`, `idle`) session.
 - Admins see every row. Anyone else sees a row only when it names a
   repository they may read, or a family with at least one repository they may
-  read; `repos` and `families` then list only those.
+  read; `repos` and `families` then list only those. A session with neither scope is visible only to its reporter and admins, in the global list, never a repository or family list.
 - `collides_with` names other live items sharing a repository in `repos` and
   the branch, with the same default-branch and queue-worker exceptions.
 
 Unknown query keys answer `422 invalid_query`.
 
 `links.pr` must be `owner/name#positive-number`; `links.todo` is an identifier using letters, digits, dots, colons, underscores and hyphens. Clients must parse these references and construct their own same-origin paths; never use a reported link value directly as an `href`. Unknown-family responses reveal no family inventory.
+
+## Locations and worker discovery
+
+Optional `location` fields are `session_path` (native session data), `cwd`
+(process working directory), `checkout_path` (git checkout root),
+`checkout_kind` (`clone` or `worktree`), `head` (full 40/64 hexadecimal commit),
+`screen` (existing Screen socket name), and positive integer `pid`. Paths must
+be absolute and at most 4096 characters; Screen names are at most 200. Control
+characters and unknown fields are refused. Unknown observations are omitted.
+`branch` stays the existing branch name; detached HEAD uses `location.head`.
+These are metadata, never transcript contents, environment values or commands.
+Migration 0022 adds nullable JSON columns without a backfill; older reporters
+and older binaries remain compatible.
+
+Optional `worker: {"family":"acme", "slot":"w1"}` requires a global admin or
+configured presence reporter (`403 presence_worker_forbidden` otherwise).
+The family must be in the beat's declared families. A live session replaces a
+generic queue worker only when host, slot, canonical family, exact `links.todo`
+and repository/family scope match. Reusing a slot for another todo cannot hide
+that new worker. Idle native sessions are still running and count as live.
+
+The todoq collector's opt-in `agents.process_inventory` observes same-user
+processes and native session metadata for Claude, Codex, Cursor, Grok and AGY,
+including running Screen children and worker jobs. `locations` and `unscoped`
+are separate opt-ins. Discovery does not signal agents or attach to terminals.
+Worker presence is independent of cost collection; worker costs remain excluded
+from the ad-hoc cost stream. If process discovery fails, beats stop and existing
+records expire. New fields require this API version before enabling reporters.
+
+Overview filters `host`, `operator`, `agent`, `source`, and `repo` are exact;
+`repo` matches an explicitly listed repository. `q` matches case-insensitive
+agent/model/operator/visible host/branch/title/repository text. `state` accepts
+`live`, `all`, `active`, `idle`, `stale`, `ended`. Without it, global lists default
+to live and family lists retain their previous all-states behavior. Filtering
+uses permission-filtered fields and runs before pagination; a hidden host
+cannot be inferred by a filter. All lists use the same source aggregation.

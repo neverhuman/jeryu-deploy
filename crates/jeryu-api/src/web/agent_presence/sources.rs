@@ -14,6 +14,30 @@ use crate::web::WebState;
 use crate::web::control_plane::{holds_gate_slot, is_online, is_reviewer, offline_after_secs};
 use crate::web::shift::HEALTHY_MS;
 
+/// Request-local snapshots avoid rescanning all workers and queues per repository.
+pub(crate) struct NativeSources {
+    gates: Vec<crate::web::control_plane::GateRunnerRecord>,
+    slots: Vec<crate::web::shift::StoredHeartbeat>,
+    todos: BTreeMap<String, BTreeMap<String, crate::web::shift::todo_file::TodoFile>>,
+}
+
+impl NativeSources {
+    pub(crate) fn new(state: &WebState, now_ms: i64) -> Self {
+        Self {
+            gates: state.gate_runners.snapshot(),
+            slots: state
+                .shift
+                .heartbeats
+                .latest(now_ms - HEALTHY_MS)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|slot| slot.heartbeat.state == "working")
+                .collect(),
+            todos: BTreeMap::new(),
+        }
+    }
+}
+
 /// An opaque, stable id for a forge-side agent. Runner ids and worker slots
 /// name hosts, which only admins may see, so the id is a digest of them.
 fn opaque(parts: &[&str]) -> String {
@@ -50,6 +74,8 @@ pub(crate) fn external_item(
         tokens: row.tokens.clone(),
         links: row.links.clone().unwrap_or_default(),
         host: if admin { row.host.clone() } else { None },
+        location: if admin { row.location.clone() } else { None },
+        worker: if admin { row.worker.clone() } else { None },
         collides_with: Vec::new(),
         repos: None,
         families: None,
@@ -63,6 +89,7 @@ fn external(
     repo: &Repository,
     family: Option<&str>,
     admin: bool,
+    login: &str,
     now_ms: i64,
 ) -> Vec<PresenceItem> {
     rows.iter()
@@ -80,7 +107,7 @@ fn external(
                 row,
                 Some(via),
                 family.map(str::to_string),
-                admin,
+                admin || row.reporter == login,
                 now_ms,
             ))
         })
@@ -124,6 +151,8 @@ fn agent_runs(
                 ..Links::default()
             },
             host: None,
+            location: None,
+            worker: None,
             collides_with: Vec::new(),
             repos: None,
             families: None,
@@ -133,16 +162,14 @@ fn agent_runs(
 
 /// Online gate runners and reviewers whose current pass is on `repo`.
 fn gate_runners(
-    state: &WebState,
+    records: &[crate::web::control_plane::GateRunnerRecord],
     repo: &Repository,
     family: Option<&str>,
     admin: bool,
     now: DateTime<Utc>,
 ) -> Vec<PresenceItem> {
-    state
-        .gate_runners
-        .snapshot()
-        .into_iter()
+    records
+        .iter()
         .filter(|record| is_online(record, now))
         .filter(|record| holds_gate_slot(&record.heartbeat) || is_reviewer(&record.heartbeat))
         .filter_map(|record| {
@@ -185,6 +212,8 @@ fn gate_runners(
                     ..Links::default()
                 },
                 host: admin.then(|| record.heartbeat.host.clone()),
+                location: None,
+                worker: None,
                 collides_with: Vec::new(),
                 repos: None,
                 families: None,
@@ -204,6 +233,8 @@ fn short_sha(sha: &str) -> &str {
 /// of the family is working, and once per request.
 fn queue_workers(
     state: &WebState,
+    cache: &mut NativeSources,
+    rows: &[PresenceRow],
     repo: &Repository,
     family: Option<&str>,
     admin: bool,
@@ -212,24 +243,42 @@ fn queue_workers(
     let Some(family) = family else {
         return Vec::new();
     };
-    let Ok(slots) = state.shift.heartbeats.latest(now_ms - HEALTHY_MS) else {
-        return Vec::new();
-    };
-    let working: Vec<_> = slots
-        .into_iter()
-        .filter(|slot| {
-            slot.heartbeat.state == "working"
-                && crate::web::family::canonical(&slot.heartbeat.family) == family
-        })
+    let working: Vec<_> = cache
+        .slots
+        .iter()
+        .filter(|slot| crate::web::family::canonical(&slot.heartbeat.family) == family)
         .collect();
     if working.is_empty() {
         return Vec::new();
     }
-    let todos = family_todos(state, family);
+    let todos = cache
+        .todos
+        .entry(family.to_string())
+        .or_insert_with(|| family_todos(state, family));
     working
         .into_iter()
         .filter_map(|slot| {
             let beat = &slot.heartbeat;
+            let received_ms = slot.received_ms;
+            // Only trusted reporters may register worker associations. Match the
+            // task as well as the host/slot so a reused slot cannot hide new work.
+            if rows.iter().any(|row| {
+                matches!(effective_state(row, now_ms), "active" | "idle")
+                    && row.host.as_deref() == Some(beat.host.as_str())
+                    && row.worker.as_ref().is_some_and(|worker| {
+                        worker.slot == beat.slot
+                            && crate::web::family::canonical(&worker.family) == family
+                    })
+                    && row
+                        .links
+                        .as_ref()
+                        .and_then(|links| links.todo.as_ref())
+                        .is_some_and(|id| beat.todo_id.as_ref() == Some(id))
+                    && (row.repos.contains(&repo.full_name)
+                        || row.families.iter().any(|f| f == family))
+            }) {
+                return None;
+            }
             let todo = beat.todo_id.as_ref().and_then(|id| todos.get(id));
             let via = match todo {
                 Some(todo) if todo.repos.contains(&repo.name) => Via::Repo,
@@ -258,8 +307,8 @@ fn queue_workers(
                 via: Some(via),
                 family: Some(family.to_string()),
                 started_at: None,
-                last_active_at: slot.received_ms,
-                expires_at: Some(slot.received_ms + HEALTHY_MS),
+                last_active_at: received_ms,
+                expires_at: Some(received_ms + HEALTHY_MS),
                 cost_usd: None,
                 tokens: None,
                 links: Links {
@@ -267,6 +316,8 @@ fn queue_workers(
                     ..Links::default()
                 },
                 host: admin.then(|| beat.host.clone()),
+                location: None,
+                worker: None,
                 collides_with: Vec::new(),
                 repos: None,
                 families: None,
@@ -295,15 +346,15 @@ pub(crate) fn repo_items(
     rows: &[PresenceRow],
     repo: &Repository,
     admin: bool,
+    login: &str,
     now: DateTime<Utc>,
 ) -> Vec<PresenceItem> {
     let now_ms = now.timestamp_millis();
     let family = crate::web::repositories::effective_family(state, repo);
     let family = family.as_deref();
-    let mut items = external(rows, repo, family, admin, now_ms);
-    items.extend(agent_runs(state, repo, family, now_ms));
-    items.extend(gate_runners(state, repo, family, admin, now));
-    items.extend(queue_workers(state, repo, family, admin, now_ms));
+    let mut items = external(rows, repo, family, admin, login, now_ms);
+    let mut cache = NativeSources::new(state, now_ms);
+    items.extend(native_items(state, &mut cache, rows, repo, admin, now));
     // One protection lookup for the repository, not one per item.
     let merge_only = merge_only_branch(state, repo);
     mark_collisions(
@@ -312,6 +363,31 @@ pub(crate) fn repo_items(
         |_| merge_only.clone(),
     );
     sort(&mut items);
+    items
+}
+
+/// Forge-owned sources, used by both repository and global lists.
+pub(crate) fn native_items(
+    state: &WebState,
+    cache: &mut NativeSources,
+    rows: &[PresenceRow],
+    repo: &Repository,
+    admin: bool,
+    now: DateTime<Utc>,
+) -> Vec<PresenceItem> {
+    let family = crate::web::repositories::effective_family(state, repo);
+    let family = family.as_deref();
+    let mut items = agent_runs(state, repo, family, now.timestamp_millis());
+    items.extend(gate_runners(&cache.gates, repo, family, admin, now));
+    items.extend(queue_workers(
+        state,
+        cache,
+        rows,
+        repo,
+        family,
+        admin,
+        now.timestamp_millis(),
+    ));
     items
 }
 

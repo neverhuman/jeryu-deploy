@@ -17,8 +17,9 @@
 //! write every hosted repository of that family. A session belongs to the
 //! login that registered it: nobody else but an admin beats or ends it.
 //! Reads need a login, never anonymous; the repository read is gated on the
-//! repository like `/agent-runs`, and `host` is shown to admins only.
+//! repository like `/agent-runs`, and private locations are shown to their reporter and admins only.
 
+mod location;
 mod sources;
 mod store;
 mod types;
@@ -42,7 +43,6 @@ use super::strict_query::StrictQuery;
 use super::workcells_support::{TypedError, typed_error};
 use sources::{external_item, mark_collisions, repo_items, sort};
 pub(crate) use store::PresenceStore;
-use store::effective_state;
 #[cfg(test)]
 pub(crate) use store::{LINGER_MS, PresenceRow};
 #[cfg(test)]
@@ -269,14 +269,6 @@ pub(crate) async fn beat(
     let beat: CheckedBeat = match beat.check() {
         Ok(beat) => beat,
         Err(BeatError::Invalid(reason)) => return invalid(&reason),
-        Err(BeatError::ScopeEmpty) => {
-            return presence_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "presence_scope_empty",
-                "a session must name at least one repository or family",
-                "send the repositories the session works on in repos, or its family in families",
-            );
-        }
     };
     let repos = match resolve_repos(&state, &account, &beat.repos) {
         Ok(repos) => repos,
@@ -302,6 +294,19 @@ pub(crate) async fn beat(
             );
         }
     }
+    if beat.worker.is_some() && !state.agent_presence.may_report_any(&account.login, admin) {
+        return presence_error(
+            StatusCode::FORBIDDEN,
+            "presence_worker_forbidden",
+            "worker association requires an admin or presence reporter",
+            "omit worker or use an authorized presence reporter",
+        );
+    }
+    if let Some(worker) = &beat.worker
+        && !families.contains(&super::family::canonical(&worker.family))
+    {
+        return invalid("worker.family must be included in families");
+    }
     let store = &state.agent_presence.store;
     let row = store::PresenceRow {
         session_id: beat.session_id,
@@ -309,6 +314,8 @@ pub(crate) async fn beat(
         agent: beat.agent,
         model: beat.model,
         host: beat.host,
+        location: beat.location,
+        worker: beat.worker,
         operator: beat.operator,
         lane: beat.lane,
         branch: beat.branch,
@@ -394,7 +401,14 @@ pub(crate) async fn repo_list(
         Ok(rows) => rows,
         Err(err) => return store_failed(&err),
     };
-    let items = repo_items(&state, &rows, &repo, is_admin(&account), now);
+    let items = repo_items(
+        &state,
+        &rows,
+        &repo,
+        is_admin(&account),
+        &account.login,
+        now,
+    );
     let (items, info) = page.apply(items);
     Json(PresenceList {
         items,
@@ -425,7 +439,11 @@ pub(crate) async fn overview(
         Ok(family) => family,
         Err(response) => return *response,
     };
-    let now_ms = Utc::now().timestamp_millis();
+    if let Err(reason) = query.check() {
+        return invalid(&reason);
+    }
+    let now = Utc::now();
+    let now_ms = now.timestamp_millis();
     let rows = match state.agent_presence.store.visible(now_ms) {
         Ok(rows) => rows,
         Err(err) => return store_failed(&err),
@@ -453,7 +471,7 @@ pub(crate) async fn overview(
                         .iter()
                         .any(|name| family_of(name).as_ref() == Some(key))
             }
-            None => matches!(effective_state(row, now_ms), "active" | "idle"),
+            None => true,
         };
         if !matches {
             continue;
@@ -481,14 +499,57 @@ pub(crate) async fn overview(
             })
             .cloned()
             .collect();
-        if repos.is_empty() && families.is_empty() {
+        if repos.is_empty() && families.is_empty() && !(admin || row.reporter == account.login) {
             continue;
         }
-        let mut item = external_item(row, None, family.clone(), admin, now_ms);
+        let mut item = external_item(
+            row,
+            None,
+            family.clone(),
+            admin || row.reporter == account.login,
+            now_ms,
+        );
         item.repos = Some(repos);
         item.families = Some(families);
         items.push(item);
     }
+    // Aggregate only repositories the caller can read, then deduplicate shared
+    // family workers before filtering or applying pagination.
+    let mut native = BTreeMap::<String, types::PresenceItem>::new();
+    let mut cache = sources::NativeSources::new(&state, now_ms);
+    for repo in hosted
+        .values()
+        .filter(|repo| can_read(&state, &account, repo))
+    {
+        let repo_family = effective_family(&state, repo);
+        if family
+            .as_ref()
+            .is_some_and(|wanted| repo_family.as_ref() != Some(wanted))
+        {
+            continue;
+        }
+        for mut item in sources::native_items(&state, &mut cache, &rows, repo, admin, now) {
+            item.via = None;
+            item.repos = Some(vec![repo.full_name.clone()]);
+            item.families = Some(repo_family.clone().into_iter().collect());
+            if let Some(existing) = native.get_mut(&item.id) {
+                existing
+                    .repos
+                    .get_or_insert_default()
+                    .push(repo.full_name.clone());
+                if let Some(key) = &repo_family {
+                    let keys = existing.families.get_or_insert_default();
+                    if !keys.contains(key) {
+                        keys.push(key.clone());
+                    }
+                }
+            } else {
+                native.insert(item.id.clone(), item);
+            }
+        }
+    }
+    items.extend(native.into_values());
+    items.retain(|item| query.matches(item));
     // One protection lookup per repository named, not per item.
     let merge_only: BTreeMap<String, String> = items
         .iter()
