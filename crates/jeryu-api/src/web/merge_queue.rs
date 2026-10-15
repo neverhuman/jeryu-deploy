@@ -35,6 +35,20 @@ pub(crate) fn rebase_onto(
         .replay(base_tip, pr_head, None)
         .map_err(|err| err.to_string())
 }
+
+/// The pull requests the queue is building on `base` in the bare repository
+/// at `bare`, read from the persisted `refs/queue-meta/<base>/*` entries. A
+/// direct merge that moved `base` now would make each of them rebuild and gate
+/// again, so the direct path defers to the queue while this is not empty.
+pub(crate) fn building_on_base(git_bin: &str, bare: &std::path::Path, base: &str) -> Vec<u64> {
+    Git { bin: git_bin, bare }
+        .read_blob_refs(&format!("refs/queue-meta/{base}/"))
+        .into_iter()
+        .filter_map(|(_, body)| serde_json::from_str::<QueueEntry>(&body).ok())
+        .filter(|entry| entry.base == base && entry.state == QueueState::Building)
+        .map(|entry| entry.number)
+        .collect()
+}
 use replay::{Git, ReplayFailure, is_sha};
 
 /// Identities whose approvals count as automation, not a person

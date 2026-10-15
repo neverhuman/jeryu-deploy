@@ -602,6 +602,35 @@ impl GithubRouter {
             }
         }
 
+        // While the merge queue is building an entry on this base, its gate is
+        // running on a replay of the current tip. Moving the base under it,
+        // even by a clean fast-forward, makes that entry rebuild and gate again,
+        // so the direct path defers: the refusal says "linear history" because
+        // that is what tells pr-redteam to enqueue instead of retrying.
+        if ready.require_linear_history {
+            let building =
+                crate::web::building_on_base(&rm.config().git_bin, &resolved.path, &ready.base_ref);
+            if !building.is_empty() {
+                let numbers = building
+                    .iter()
+                    .map(|number| format!("#{number}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return json_response(
+                    409,
+                    &json!({
+                        "message": format!(
+                            "{} requires linear history, and the merge queue is landing {numbers} \
+                             on it; queue the pull request so it lands after them instead of \
+                             moving {} under a running gate",
+                            ready.base_ref, ready.base_ref
+                        ),
+                        "documentation_url": docs_url(),
+                    }),
+                );
+            }
+        }
+
         // A linear-history base only accepts fast-forwards. Replay the PR onto
         // the live base tip first (as the merge queue does) so a clean PR that
         // readiness reports as mergeable actually lands; a replay that cannot

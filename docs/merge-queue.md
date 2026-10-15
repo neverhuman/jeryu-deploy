@@ -92,6 +92,12 @@ A setting per protected branch decides who may enqueue:
   queue, paged the same way (`limit`/`per_page`, `page`).
 - Merging a PR that already fast-forwards still merges directly. The queue is
   only needed when the base has moved.
+- While the queue is building an entry on a linear-history base, a direct
+  merge onto that base is refused with `409` ("requires linear history, and the
+  merge queue is landing #N"), even a clean fast-forward. Moving the base under
+  a running queue gate would make that entry rebuild and gate again (19 of 186
+  entries did, 2026-09-19 to 10-15). pr-redteam reads the "linear history"
+  refusal and enqueues, so the PR lands after the entries ahead of it.
 - `GET /api/v1/repos/:id/pulls/:number/merge-attempt` answers the last merge or
   enqueue attempt on the PR (`result`, HTTP `status`, forge `code` and
   `message`, `actor`, `at`), a `blockedReason` line when it was refused, who

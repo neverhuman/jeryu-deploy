@@ -1351,3 +1351,78 @@ fn linear_history_base_refuses_an_ungated_replay_and_main_is_unchanged() {
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&work);
 }
+
+/// Persist a merge-queue entry for `number` on `main` in `state`, as the
+/// forge's queue worker writes it to `refs/queue-meta/main/<number>`.
+fn write_queue_meta(fixture: &GitFixture, number: u64, state: &str) {
+    let id = RepoId::new("acme", "demo").unwrap();
+    let bare = fixture.manager.resolve(&id).unwrap().path;
+    let entry = serde_json::json!({
+        "repo": "acme/demo", "base": "main", "number": number,
+        "pr_head_sha": fixture.head_oid, "base_sha": fixture.base_oid,
+        "queue_ref": format!("refs/queue/main/{number}"), "queue_sha": fixture.head_oid,
+        "state": state, "enqueued_at": "2026-10-15T18:00:00Z", "enqueued_by": "pr-redteam",
+        "approvers": [], "attempts": [], "reason": null, "landed_sha": null,
+    });
+    let blob_path = fixture.work.join("queue-meta.json");
+    std::fs::write(&blob_path, entry.to_string()).expect("write entry");
+    let out = common::git_command()
+        .args(["hash-object", "-w"])
+        .arg(&blob_path)
+        .current_dir(&bare)
+        .output()
+        .expect("hash-object");
+    assert!(out.status.success(), "hash-object failed");
+    let blob = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    run_git(
+        &bare,
+        &[
+            "update-ref",
+            &format!("refs/queue-meta/main/{number}"),
+            &blob,
+        ],
+        "write queue meta ref",
+    );
+}
+
+#[test]
+fn linear_history_base_defers_a_direct_merge_while_the_queue_is_building() {
+    if !git_available() {
+        return;
+    }
+    // 19 of 186 queue entries (2026-09-19..10-15) were rebuilt and gated again
+    // because a fast-forward PR merged directly while their gate ran. While the
+    // queue is building on main, a direct merge is refused with "linear
+    // history" (pr-redteam's cue to enqueue), and main does not move.
+    let fixture = seed_fixture("jeryu-defer-to-queue");
+    let router = router_over(&fixture);
+    let number = open_pr_by_branch(&router, "feature", "main");
+    let protect = router.put(
+        "/repos/acme/demo/branches/main/protection",
+        r#"{"required_linear_history":true,"required_status_checks":[],"required_approving_review_count":0,"enforce_admins":false}"#,
+    );
+    assert_eq!(protect.status, 200, "set protection: {}", protect.body);
+    write_queue_meta(&fixture, 7, "building");
+
+    let refused = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(refused.status, 409, "deferred merge: {}", refused.body);
+    let message = body(&refused)["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(message.contains("linear history"), "{message}");
+    assert!(message.contains("landing #7"), "{message}");
+    assert_eq!(fixture.main_ref(), fixture.base_oid, "main must not move");
+
+    // Once the entry has landed (or left the queue), the direct path is open.
+    write_queue_meta(&fixture, 7, "landed");
+    let merged = router.put(&format!("/repos/acme/demo/pulls/{number}/merge"), "{}");
+    assert_eq!(
+        merged.status, 200,
+        "merge after the queue drained: {}",
+        merged.body
+    );
+    assert_eq!(fixture.main_ref(), fixture.head_oid);
+
+    fixture.cleanup();
+}
