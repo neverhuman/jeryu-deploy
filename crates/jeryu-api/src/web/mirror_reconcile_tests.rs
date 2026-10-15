@@ -222,3 +222,65 @@ fn a_tag_push_folds_into_what_the_repo_page_shows() {
     assert!(held.tag_drift.is_empty());
     assert!(!held.needs_a_person());
 }
+
+#[test]
+fn attention_uses_the_sync_error_even_without_a_check_run() {
+    let core = core_with_repo();
+    let state = WebState::new(core);
+    let mut failed = report(MirrorSync::Unknown);
+    failed.forge_head = None;
+    failed.github_head = None;
+    failed.error = Some("JERYU_MIRROR_REMOTE_ALLOWLIST is not configured".to_string());
+    let sync = record(state.github.core(), "acme", "demo", failed, None, at(0));
+    let error = sync.error.clone().unwrap();
+    state.mirror_state.record(sync);
+    assert!(checks(state.github.core(), MIRROR_CHECK_NAME).is_empty());
+    let items = super::super::pipeline::attention::collect(&state, at(1)).items;
+    let card = items
+        .iter()
+        .find(|item| item.kind == "mirror_failing")
+        .unwrap();
+    assert!(card.reason.contains(&error), "{}", card.reason);
+    assert!(!card.reason.contains("deploy key"));
+    assert!(!card.next_step.contains("SSH"));
+    assert!(card.action.command.is_none());
+
+    write_check(
+        state.github.core(),
+        "acme",
+        "demo",
+        MirrorCheck {
+            name: MIRROR_CHECK_NAME,
+            head_sha: &"a".repeat(40),
+            conclusion: CheckConclusion::Failure,
+            title: "push failed",
+            summary: "an earlier push error".to_string(),
+        },
+    );
+    let failures = super::super::repositories::mirror_failures(&state);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].reason, error);
+    write_check(
+        state.github.core(),
+        "acme",
+        "demo",
+        MirrorCheck {
+            name: MIRROR_CHECK_NAME,
+            head_sha: &"a".repeat(40),
+            conclusion: CheckConclusion::Success,
+            title: "push succeeded",
+            summary: "push succeeded".to_string(),
+        },
+    );
+
+    let healthy = record(
+        state.github.core(),
+        "acme",
+        "demo",
+        report(MirrorSync::InSync),
+        None,
+        at(2),
+    );
+    state.mirror_state.record(healthy);
+    assert!(super::super::repositories::mirror_failures(&state).is_empty());
+}

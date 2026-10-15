@@ -141,6 +141,14 @@ name if any variable is defined nowhere — before `switch.sh` stops anything, s
 production stays up. Without that check the forge comes back with an empty
 argument and crash-loops with the previous release already gone.
 
+The installer also requires a nonempty `JERYU_MIRROR_REMOTE_ALLOWLIST` in the
+service environment, for example `github.com/example-org`. Configure it in a
+service environment file or `Environment=` drop-in; setting it only in the
+deploy caller's shell does not configure the service. Later environment files
+can override earlier values, and an empty value is refused before production
+stops. Sites that intentionally run without mirror pushes must explicitly set
+`JERYU_GITHUB_PUSH=0` in the service environment instead.
+
 To change a limit without a release, edit the limits file and run
 `scripts/release/install-forge-unit.sh` on the forge host, then
 `systemctl --user restart jeryu.service`. `install-forge-unit.sh --help` lists

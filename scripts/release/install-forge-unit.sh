@@ -164,6 +164,78 @@ done
   exit 1
 }
 
+# Check the service environment, not this installer's inherited shell. Files
+# override Environment=, and later files override earlier ones in systemd.
+python3 - "$rendered" "${dropins[@]}" <<'PYENV'
+import os
+from pathlib import Path
+import pwd
+import re
+import shlex
+import sys
+
+values = {}
+files = []
+unset = []
+
+def words(raw):
+    return shlex.split(raw, comments=False, posix=True)
+
+def expand(path):
+    return path.replace("%%", "\0").replace("%h", os.path.expanduser("~")).replace(
+        "%u", pwd.getpwuid(os.getuid()).pw_name
+    ).replace("\0", "%")
+
+for conf in sys.argv[1:]:
+    section = ""
+    for line in Path(conf).read_text().splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        if section != "[Service]" or "=" not in line or line.startswith(("#", ";")):
+            continue
+        key, raw = line.split("=", 1)
+        if key == "Environment":
+            if not raw.strip():
+                values.clear()
+            for assignment in words(raw):
+                name, value = assignment.split("=", 1)
+                values[name] = value
+        elif key == "EnvironmentFile":
+            if not raw.strip():
+                files.clear()
+            files.extend(expand(path) for path in words(raw))
+        elif key == "UnsetEnvironment":
+            if not raw.strip():
+                unset.clear()
+            unset.extend(words(raw))
+for path in files:
+    optional = path.startswith("-")
+    file = Path(path[1:] if optional else path)
+    if optional and not file.exists():
+        continue
+    for line in file.read_text().splitlines():
+        if re.match(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=", line):
+            name, raw = line.strip().split("=", 1)
+            name = name.strip()
+            if name not in ("JERYU_GITHUB_PUSH", "JERYU_MIRROR_REMOTE_ALLOWLIST"):
+                continue
+            # EnvironmentFile values are not shell-expanded.
+            parsed = words(raw)
+            values[name] = " ".join(parsed)
+for entry in unset:
+    name, separator, value = entry.partition("=")
+    if not separator or values.get(name) == value:
+        values.pop(name, None)
+required = "JERYU_MIRROR_REMOTE_ALLOWLIST"
+if values.get("JERYU_GITHUB_PUSH") != "0" and not any(
+    part for part in re.split(r"[\s,]+", values.get(required, "")) if part
+):
+    sys.exit(f"jeryu.service needs {required} in Environment= or EnvironmentFile=; "
+             "refusing before stopping the forge. Configure allowed host/owner pairs "
+             "or explicitly disable mirror pushes with JERYU_GITHUB_PUSH=0.")
+PYENV
+
 if cmp -s "$rendered" "$units/jeryu.service"; then
   echo "[unit] jeryu.service is already the current one (MemoryMax=$JERYU_FORGE_MEMORY_MAX, TasksMax=$JERYU_FORGE_TASKS_MAX)"
 else

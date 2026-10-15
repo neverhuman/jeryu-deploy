@@ -1122,6 +1122,24 @@ pub(crate) fn mirror_failures(
         if repo.archived {
             continue;
         }
+        // Use the same reconcile result exposed as /api/v1/mirrors sync.error.
+        // Reconcile can fail before it has a head SHA to write a check-run.
+        if let Some(sync) = state.mirror_state.get(&repo.owner, &repo.name)
+            && let Some(error) = sync.error.as_ref().filter(|error| !error.trim().is_empty())
+            && let Ok(checked_at) = chrono::DateTime::parse_from_rfc3339(&sync.checked_at)
+        {
+            failures.push(crate::web::pipeline::attention::MirrorFailure {
+                repo: sync.repo,
+                failed_at: checked_at.with_timezone(&chrono::Utc),
+                last_success_at: sync.last_push_at.as_deref().and_then(|at| {
+                    chrono::DateTime::parse_from_rfc3339(at)
+                        .ok()
+                        .map(|at| at.with_timezone(&chrono::Utc))
+                }),
+                reason: error.clone(),
+            });
+            continue;
+        }
         let Ok(runs) = core.list_check_runs(&repo.owner, &repo.name, None) else {
             continue;
         };

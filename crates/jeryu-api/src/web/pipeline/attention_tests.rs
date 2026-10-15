@@ -3059,10 +3059,9 @@ fn a_failing_mirror_is_one_item_however_many_repositories() {
             .contains("No push has ever succeeded from this host.")
     );
     assert!(!item.reason.contains("x-access-token"));
-    assert_eq!(
-        item.action.run_in.as_deref(),
-        Some("forge-box, as the user the forge runs as")
-    );
+    assert_eq!(item.action.run_in, None);
+    assert_eq!(item.action.command, None);
+    assert!(!item.reason.contains("deploy key"));
     // The oldest failure dates the item.
     assert_eq!(item.repo.as_deref(), Some("jeryu/jeryu-cache"));
 

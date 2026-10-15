@@ -23,6 +23,7 @@ JERYU_FORGE_MEMORY_HIGH=3G
 JERYU_FORGE_MEMORY_MAX=4G
 JERYU_FORGE_TASKS_MAX=512
 JERYU_FORGE_OOM_SCORE_ADJ=-500
+JERYU_MIRROR_REMOTE_ALLOWLIST=github.com/acme
 EOF
 PREV=prod-20260101T000000Z-aaaaaaa-unsigned REL=prod-20260102T000000Z-bbbbbbb-unsigned
 mkdir -p "$JERYU_HOME"/{bin,share,incoming,releases,backups} "$JERYU_DATA"
@@ -110,6 +111,41 @@ grep -q "installed jeryu.service" "$T/unit-dropin.log" || fail "the installer di
 rm -rf "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d" "$unit"
 ok "install-forge-unit accepts the same drop-in once an environment file defines the variable"
 
+# Validate the service's config, even when the caller has an allowlist.
+stage
+"$JERYU_SYSTEMCTL" --user start jeryu.service
+cp "$JERYU_FORGE_LIMITS_ENV" "$T/limits-with-mirror"
+sed '/^JERYU_MIRROR_REMOTE_ALLOWLIST=/d' "$T/limits-with-mirror" >"$JERYU_FORGE_LIMITS_ENV"
+for value in missing empty separators; do
+  cp "$JERYU_FORGE_LIMITS_ENV" "$T/mirror-env-base"
+  case "$value" in
+    empty) echo 'JERYU_MIRROR_REMOTE_ALLOWLIST=""' >>"$JERYU_FORGE_LIMITS_ENV" ;;
+    separators) echo 'JERYU_MIRROR_REMOTE_ALLOWLIST=" , "' >>"$JERYU_FORGE_LIMITS_ENV" ;;
+  esac
+  rc=0
+  JERYU_MIRROR_REMOTE_ALLOWLIST=github.com/shell-only bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/mirror-unset.log" 2>&1 || rc=$?
+  [[ $rc != 0 ]] || fail "switch accepted $value mirror allowlist"
+  grep -q 'JERYU_MIRROR_REMOTE_ALLOWLIST' "$T/mirror-unset.log" || fail "refusal did not name mirror allowlist"
+  if grep -q 'stopping jeryu.service' "$T/mirror-unset.log"; then fail "missing allowlist stopped production"; fi
+  kill -0 "$(cat "$T/pid")" || fail "missing allowlist stopped running forge"
+  [[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "missing allowlist moved live release"
+  [[ ! -e "$JERYU_SYSTEMD_USER_DIR/jeryu.service" ]] || fail "missing allowlist installed unit"
+  cp "$T/mirror-env-base" "$JERYU_FORGE_LIMITS_ENV"
+done
+echo 'JERYU_GITHUB_PUSH=0' >>"$JERYU_FORGE_LIMITS_ENV"
+bash "$here/install-forge-unit.sh" >"$T/mirror-disabled.log" 2>&1 || fail "explicitly disabled mirrors refused"
+rm "$JERYU_SYSTEMD_USER_DIR/jeryu.service"
+cp "$T/limits-with-mirror" "$JERYU_FORGE_LIMITS_ENV"
+mkdir -p "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d"
+printf 'JERYU_MIRROR_REMOTE_ALLOWLIST=\n' >"$T/mirror.env"
+printf '[Service]\nEnvironmentFile=%s\n' "$T/mirror.env" >"$JERYU_SYSTEMD_USER_DIR/jeryu.service.d/30-mirror.conf"
+if bash "$here/install-forge-unit.sh" >"$T/mirror-overridden.log" 2>&1; then fail "empty override accepted"; fi
+printf 'JERYU_MIRROR_REMOTE_ALLOWLIST="github.com/acme github.com/example"\n' >"$T/mirror.env"
+bash "$here/install-forge-unit.sh" >"$T/mirror-configured.log" 2>&1 || fail "configured mirror refused"
+rm "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d/30-mirror.conf" "$JERYU_SYSTEMD_USER_DIR/jeryu.service"
+rmdir "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d"
+ok "mirror allowlist preflight refuses missing or empty config before stopping, and accepts configured or disabled mirrors"
+
 stage
 "$JERYU_SYSTEMCTL" --user start jeryu.service
 for n in forge work codegraph shift; do
@@ -155,7 +191,7 @@ bad_site() { # MESSAGE-FRAGMENT LINES... — a limits file that must be refused,
   [[ ! -e "$unit" ]] || fail "a refused install wrote a unit"
 }
 full=(JERYU_FORGE_MEMORY_HIGH=3G JERYU_FORGE_MEMORY_MAX=4G JERYU_FORGE_TASKS_MAX=512
-  JERYU_FORGE_OOM_SCORE_ADJ=-500)
+  JERYU_FORGE_OOM_SCORE_ADJ=-500 JERYU_MIRROR_REMOTE_ALLOWLIST=github.com/acme)
 for name in JERYU_FORGE_MEMORY_HIGH JERYU_FORGE_MEMORY_MAX JERYU_FORGE_TASKS_MAX \
   JERYU_FORGE_OOM_SCORE_ADJ; do
   bad_site "does not set $name" "${full[@]/#$name=*/}"

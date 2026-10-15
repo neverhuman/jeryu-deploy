@@ -4,7 +4,7 @@
 
 use chrono::{DateTime, Utc};
 
-use super::{Draft, Hosts, Item, Severity, Shell, repo_href};
+use super::{Draft, Hosts, Item, Severity, repo_href};
 
 /// A configured GitHub mirror whose newest push failed.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,7 +27,7 @@ fn cause(reason: &str) -> &str {
         .trim()
 }
 
-pub(crate) fn mirror_items(failures: &[MirrorFailure], hosts: &Hosts) -> Vec<Item> {
+pub(crate) fn mirror_items(failures: &[MirrorFailure], _hosts: &Hosts) -> Vec<Item> {
     let Some(oldest) = failures.iter().min_by_key(|failure| failure.failed_at) else {
         return Vec::new();
     };
@@ -53,9 +53,7 @@ pub(crate) fn mirror_items(failures: &[MirrorFailure], hosts: &Hosts) -> Vec<Ite
         ),
         reason: format!(
             "git says: {}. Affected: {shown}{}. {} Merges are not affected, but GitHub no longer \
-             has what main has. The forge pushes through a git `insteadOf` rewrite to an SSH \
-             deploy key on its host; when that rewrite or key is missing, git falls back to \
-             HTTPS with a placeholder token and GitHub refuses it.",
+             has what main has.",
             cause(&oldest.reason),
             if more == 0 {
                 String::new()
@@ -69,14 +67,9 @@ pub(crate) fn mirror_items(failures: &[MirrorFailure], hosts: &Hosts) -> Vec<Ite
             },
         ),
         href: "/repos".to_string(),
-        label: "Set up the mirror's SSH rewrite and deploy key on the forge host",
+        label: "Inspect the mirror error and correct its cause",
         api: None,
-        command: Some(Shell {
-            line: "git config --global --get-regexp '^url\\..*insteadof'".to_string(),
-            // `--global` reads the home of whoever runs it, and the pushes are
-            // made by the forge's own user.
-            run_in: format!("{}, as the user the forge runs as", hosts.forge),
-        }),
+        command: None,
     }
     .build();
     item.since = Some(
