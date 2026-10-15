@@ -161,6 +161,29 @@ fn page_limit(query: &EventsQuery) -> i64 {
 }
 
 impl EventStore {
+    pub(crate) fn flow_open_lifecycle(
+        &self,
+        family: Option<&str>,
+    ) -> Result<Vec<crate::web::flow::closure::OpenVisit>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner.conn.prepare("SELECT lot_id,station,entered_ms,repo,pr,family,started_ms IS NOT NULL,direction='hold' FROM flow_ledger WHERE left_ms IS NULL AND (?1 IS NULL OR family=?1) ORDER BY entered_ms,seq").map_err(|e|e.to_string())?;
+        stmt.query_map(params![family], |r| {
+            Ok(crate::web::flow::closure::OpenVisit {
+                lot: r.get(0)?,
+                station: r.get(1)?,
+                entered: r.get(2)?,
+                repo: r.get(3)?,
+                pr: r.get(4)?,
+                family: r.get(5)?,
+                started: r.get(6)?,
+                held: r.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+    }
+    #[cfg(test)]
     pub(crate) fn flow_repositories(
         &self,
         family: Option<&str>,

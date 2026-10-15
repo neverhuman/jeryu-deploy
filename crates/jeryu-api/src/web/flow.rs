@@ -9,6 +9,7 @@
 //! arithmetic is in [`report`]; the station list in [`stations`] is shared
 //! with `GET /api/v1/flow/layout`. Contract: `docs/flow.md`, ADR 0013.
 
+pub(crate) mod closure;
 pub(crate) mod delivery;
 pub(crate) mod history;
 pub(crate) mod layout;
@@ -151,21 +152,23 @@ pub(crate) async fn flow(
     let worker_state = state.clone();
     let read = tokio::task::spawn_blocking(move || {
         let reached = worker_state.events.flow_reached(read_family.as_deref())?;
-        let visits = worker_state.events.flow_visits_scoped(
+        let mut visits = worker_state.events.flow_visits_scoped(
             read_family.as_deref(),
             since_ms,
             read_repo.as_deref(),
         )?;
-        let repositories = worker_state
+        let open = worker_state
             .events
-            .flow_repositories(read_family.as_deref())?;
-        Ok::<_, String>((visits, reached, repositories))
+            .flow_open_lifecycle(read_family.as_deref())?;
+        let lifecycle = closure::snapshot(&worker_state, &open, read_repo.as_deref());
+        lifecycle.filter(&mut visits);
+        Ok::<_, String>((visits, reached, lifecycle))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((visits, reached, repositories)) => {
+        Ok((visits, reached, lifecycle)) => {
             let request = Request {
                 family,
                 days,
@@ -173,7 +176,9 @@ pub(crate) async fn flow(
             };
             let mut body = serde_json::to_value(report::build(&request, &visits, &reached))
                 .expect("flow serializes");
-            body["repository_wip"] = repositories;
+            body["repository_wip"] = lifecycle.repositories;
+            body["closures"] = serde_json::json!(lifecycle.items);
+            body["lifecycle_problems"] = serde_json::json!(lifecycle.problems);
             body["repo"] = serde_json::json!(repo);
             Json(body).into_response()
         }
