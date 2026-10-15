@@ -79,6 +79,68 @@ pub(crate) fn tag_updates(before: &[GitRef], after: &[GitRef]) -> Vec<String> {
         .collect()
 }
 
+/// After a push moved these pull requests' heads, record each one's merge base
+/// with its base branch as its base (`ForgeCore::record_pull_request_base`),
+/// so a head rebased onto a newer base stops showing that base's commits as
+/// its own changes, in its diff and in every review of it. A pull request whose
+/// base branch or merge base cannot be read keeps the base it had; a push never
+/// fails over this.
+pub(crate) fn follow_pull_bases(
+    core: &ForgeCore,
+    git_bin: &str,
+    resolved: &jeryu_gitd::repo::Repository,
+    owner: &str,
+    repo: &str,
+    pulls: &[jeryu_core::PullRequest],
+) {
+    for pr in pulls {
+        let spec = format!("refs/heads/{}^{{commit}}", pr.base.ref_name);
+        let Ok(tip) = jeryu_gitd::command::run_capture(
+            git_bin,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &spec,
+            ],
+            Some(&resolved.path),
+        ) else {
+            continue;
+        };
+        let tip = String::from_utf8_lossy(&tip.stdout).trim().to_string();
+        let merge_base = match jeryu_gitd::merge_base(git_bin, resolved, &tip, &pr.head.sha) {
+            Ok(Some(merge_base)) => merge_base,
+            Ok(None) => continue,
+            Err(err) => {
+                eprintln!(
+                    "pull base: {owner}/{repo}#{}: no merge base of {} and {}: {err}",
+                    pr.number, pr.base.ref_name, pr.head.sha
+                );
+                continue;
+            }
+        };
+        // Equal means nothing moved; equal to the head means the head is
+        // already in the base, an empty diff core refuses to record.
+        if merge_base == pr.base.sha || merge_base == pr.head.sha {
+            continue;
+        }
+        if let Err(err) = core.record_pull_request_base(
+            "system:push",
+            owner,
+            repo,
+            pr.number,
+            &pr.head.sha,
+            &merge_base,
+        ) {
+            eprintln!(
+                "pull base: {owner}/{repo}#{}: could not record base {merge_base}: {err}",
+                pr.number
+            );
+        }
+    }
+}
+
 /// For each updated commit, compile its workflows, run each job in the sandbox,
 /// and record a completed check-run with the real conclusion.
 /// The bridge must preserve Git refs: version and changelog changes belong in
@@ -99,8 +161,11 @@ pub(crate) fn on_push(
     let git_bin = manager.config().git_bin.clone();
     let origin_url = resolved.path.to_string_lossy().to_string();
     for update in updates {
-        if let Some(branch) = update.ref_name.strip_prefix("refs/heads/") {
-            let _ = core.refresh_pull_request_heads_for_ref(owner, repo, branch, &update.new_oid);
+        if let Some(branch) = update.ref_name.strip_prefix("refs/heads/")
+            && let Ok(pulls) =
+                core.refresh_pull_request_heads_for_ref(owner, repo, branch, &update.new_oid)
+        {
+            follow_pull_bases(core, &git_bin, &resolved, owner, repo, &pulls);
         }
         // Record the audit this head needs and publish a pending
         // `jankurai/proof` for it. The forge runs no auditor: a gate runner

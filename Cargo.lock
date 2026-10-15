@@ -1328,7 +1328,7 @@ dependencies = [
 [[package]]
 name = "jeryu-core"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.19#bf8f58765ef3bd69dacebe3fb6e9c1b90f20e9bd"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
 dependencies = [
  "argon2",
  "chrono",
@@ -1362,7 +1362,7 @@ dependencies = [
 [[package]]
 name = "jeryu-enterprise"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.19#bf8f58765ef3bd69dacebe3fb6e9c1b90f20e9bd"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
 
 [[package]]
 name = "jeryu-gateway"
@@ -1390,7 +1390,7 @@ dependencies = [
 [[package]]
 name = "jeryu-gitd"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.19#bf8f58765ef3bd69dacebe3fb6e9c1b90f20e9bd"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1467,7 +1467,7 @@ source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-re
 [[package]]
 name = "jeryu-proof"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.19#bf8f58765ef3bd69dacebe3fb6e9c1b90f20e9bd"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
 dependencies = [
  "jeryu-core",
 ]
@@ -1475,7 +1475,7 @@ dependencies = [
 [[package]]
 name = "jeryu-readmodel"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.19#bf8f58765ef3bd69dacebe3fb6e9c1b90f20e9bd"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
 dependencies = [
  "chrono",
  "serde",

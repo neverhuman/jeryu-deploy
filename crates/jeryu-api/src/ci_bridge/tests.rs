@@ -1527,3 +1527,95 @@ fn tag_updates_report_created_and_moved_tags_only() {
     );
     assert!(crate::ci_bridge::tag_updates(&after, &after).is_empty());
 }
+
+/// After the author rebases onto a moved main and pushes, the pull request's
+/// base becomes the moved main, so its diff and its review stop including
+/// main's own commits. A push that does not rebase leaves the base alone.
+#[test]
+fn a_rebased_push_moves_the_pull_requests_base_to_its_merge_base() {
+    use jeryu_core::{CreatePullRequestRequest, PullRequest};
+    use jeryu_gitd::{GitdConfig, RepoId};
+
+    let storage = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let manager = RepoManager::new(GitdConfig::new(storage.path()));
+    let resolved = manager
+        .create_bare(&RepoId::new("jeryu", "follow-base").unwrap())
+        .unwrap();
+    let bare = resolved.path.to_string_lossy().to_string();
+    let w = work.path();
+    git(w, &["init", "-q", "-b", "main"]);
+    git(w, &["config", "user.email", "ci@example.invalid"]);
+    git(w, &["config", "user.name", "CI"]);
+    git(w, &["config", "commit.gpgsign", "false"]);
+    write(w, "README.md", "seed\n");
+    git(w, &["add", "-A"]);
+    git(w, &["commit", "-q", "-m", "seed"]);
+    let opened_base = git_out(w, &["rev-parse", "HEAD"]);
+    git(w, &["checkout", "-q", "-b", "feature"]);
+    write(w, "feature.txt", "feature\n");
+    git(w, &["add", "-A"]);
+    git(w, &["commit", "-q", "-m", "feature"]);
+    let head = git_out(w, &["rev-parse", "HEAD"]);
+    git(w, &["push", "-q", &bare, "main", "feature"]);
+
+    let core = core_with_repo("follow-base");
+    let number = core
+        .create_pull_request(
+            "jeryu",
+            "follow-base",
+            "alice",
+            CreatePullRequestRequest {
+                title: "feature".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(head.clone()),
+                base_sha: Some(opened_base.clone()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap()
+        .number;
+    let base_of = |core: &ForgeCore| {
+        core.get_pull_request("jeryu", "follow-base", number)
+            .unwrap()
+            .base
+            .sha
+    };
+    let push = |core: &ForgeCore, new_head: &str| -> Vec<PullRequest> {
+        let pulls = core
+            .refresh_pull_request_heads_for_ref("jeryu", "follow-base", "feature", new_head)
+            .unwrap();
+        follow_pull_bases(core, "git", &resolved, "jeryu", "follow-base", &pulls);
+        pulls
+    };
+
+    // Another commit on the same branch: still forked from the opened base.
+    write(w, "feature.txt", "feature, more\n");
+    git(w, &["commit", "-q", "-am", "more"]);
+    let more = git_out(w, &["rev-parse", "HEAD"]);
+    git(w, &["push", "-q", &bare, "feature"]);
+    assert_eq!(push(&core, &more).len(), 1);
+    assert_eq!(base_of(&core), opened_base, "no rebase, no new base");
+
+    // Main moves on; the author rebases the branch onto it and force-pushes.
+    git(w, &["checkout", "-q", "main"]);
+    write(w, "other.txt", "other\n");
+    git(w, &["add", "-A"]);
+    git(w, &["commit", "-q", "-m", "main moves"]);
+    let moved = git_out(w, &["rev-parse", "HEAD"]);
+    git(w, &["push", "-q", &bare, "main"]);
+    git(w, &["checkout", "-q", "feature"]);
+    git(w, &["rebase", "-q", "main"]);
+    let rebased = git_out(w, &["rev-parse", "HEAD"]);
+    git(w, &["push", "-q", "--force", &bare, "feature"]);
+    push(&core, &rebased);
+    assert_eq!(base_of(&core), moved, "the base follows the rebase");
+    assert_eq!(
+        core.get_pull_request("jeryu", "follow-base", number)
+            .unwrap()
+            .head
+            .sha,
+        rebased
+    );
+}

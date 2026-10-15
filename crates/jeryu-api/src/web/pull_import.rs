@@ -308,7 +308,13 @@ fn import_pull(
             if moved {
                 // A force-push on GitHub: the forge pull request follows the
                 // branch it already points at.
-                let _ = core.refresh_pull_request_heads_for_ref(owner, name, &branch, &head_sha);
+                if let Ok(pulls) =
+                    core.refresh_pull_request_heads_for_ref(owner, name, &branch, &head_sha)
+                {
+                    crate::ci_bridge::follow_pull_bases(
+                        core, &git_bin, &resolved, owner, name, &pulls,
+                    );
+                }
             }
             let _ = core.update_pull_request(
                 owner,
