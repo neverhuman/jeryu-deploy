@@ -433,11 +433,15 @@ case "\$method \$url" in
     [ -e "$P/refuse-pr" ] && exit 22; cat >>"$P/prs.jsonl"; echo >>"$P/prs.jsonl"
     [ ! -e "$P/post-create-pulls.json" ] || cp "$P/post-create-pulls.json" "$P/pulls.json"
     [ ! -e "$P/post-create-detail.json" ] || cp "$P/post-create-detail.json" "$P/detail.json"
+    [ ! -e "$P/post-create-checks.json" ] || cp "$P/post-create-checks.json" "$P/checks.json"
     echo '{"number":7}' ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls?"*)
     page="\${url##*page=}"; page="\${page%%&*}"
     if [ -e "$P/pulls.json.\$page" ]; then cat "$P/pulls.json.\$page"; elif [ "\$page" = 1 ]; then cat "$P/pulls.json"; else echo '[]'; fi ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/merge-queue?"*) cat "$P/queue.json" ;;
+  "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*"/checks")
+    [ ! -e "$P/after-checks-detail.json" ] || cp "$P/after-checks-detail.json" "$P/detail.json"
+    cat "$P/checks.json" ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*) cat "$P/detail.json" ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*)
     [ -e "$P/refuse-close-detail" ] && exit 22
@@ -567,21 +571,24 @@ ok "auto-pin never proposes twice: an existing pull request (on any page), a pus
 
 # A stale bump no longer blocks a newer head. #60 is auto-pin's own bump of h1 (an ancestor of the
 # head h2). It is closed with a comment, and the bump for h2 opens in the same tick, unless it is
-# approved or queued, pins a commit that is not an ancestor, or is the head's own bump.
+# approved without a finished failing required gate, queued, pins a commit that is not an
+# ancestor, or is the head's own bump.
 cp "$P/state/opened.tsv" "$P/opened.tsv.keep"; builds_keep="$(lines "$P/builds")"
 : >"$P/prs.jsonl"; : >"$P/events.jsonl"
 side_sha="$(g "$P/web" commit-tree -m side "$(git -C "$P/web" rev-parse 'HEAD^{tree}')" -p "$w1")" # off main
 git -C "$P/state/jeryu-web.git" fetch -q "$P/web" "$side_sha" # the cache has seen it, as it would an orphaned pin
 stale_pr() { # NUMBER REF CREATED_AT
   printf "%s\t%s\t%s\n" "$(git -C "$P/state/jeryu-web.git" rev-parse "${2#auto/pin-web-}^{commit}")" "$1" "$3" >>"$P/state/opened.tsv"
-  jq -n --argjson n "$1" --arg ref "$2" --arg at "$3" '[{number: $n, state: "open", title: "release: pin jeryu-web abc1234", created_at: $at,
-    head: {ref: $ref, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
+  jq -n --argjson n "$1" --arg ref "$2" --arg at "$3" --arg sha "$(git -C "$P/deploy.git" rev-parse "$2" 2>/dev/null || true)" \
+    '[{number: $n, state: "open", title: "release: pin jeryu-web abc1234", created_at: $at,
+    head: {ref: $ref, sha: $sha, repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$P/pulls.json"
 }
 undo_bump() { # forget what a test tick opened for h2
   git -C "$P/deploy.git" update-ref -d "refs/heads/$b2" 2>/dev/null || true
   cp "$P/opened.tsv.keep" "$P/state/opened.tsv"; : >"$P/prs.jsonl"; : >"$P/events.jsonl"; : >"$P/comments.log"; : >"$P/closed.log"
   : >"$P/builds"; for _ in $(seq 1 "$builds_keep"); do echo build >>"$P/builds"; done
   echo '{"reviews":[]}' >"$P/detail.json"; echo '{"entries":[],"page":{"has_more":false}}' >"$P/queue.json"
+  echo '{"checks":[]}' >"$P/checks.json"
 }
 now_iso="$(date -u +%FT%TZ)"; b2="auto/pin-web-${h2:0:12}"
 approval='{"reviews":[{"state":"APPROVED","effective":true}]}'
@@ -592,6 +599,51 @@ grep -q "bump #60 has a current approval" "$P/run.log" && grep -q "bump #60 is o
   && [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" && -z "$(git -C "$P/deploy.git" for-each-ref "refs/heads/$b2")" ]] \
   || { cat "$P/run.log" >&2; fail "auto-pin closed or replaced an approved bump"; }
 undo_bump
+
+approved_stale_pr() {
+  stale_pr 60 "$b1" "$now_iso"
+  jq --argjson approval "$approval" '.[0] | $approval + {summary: {
+    state: .state, base_ref: "main", head_ref: .head.ref, head_sha: .head.sha}}' "$P/pulls.json" >"$P/detail.json"
+}
+for required_state in success pending running cancelled skipped unknown; do
+  approved_stale_pr
+  jq -n --arg status "$required_state" '{checks: [
+    {required: true, status: $status}, {required: false, status: "failure"}]}' >"$P/checks.json"
+  auto_pin >"$P/run.log" 2>&1 || fail "a tick behind an approved $required_state bump failed"
+  [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] || fail "approved $required_state bump was replaced"
+  undo_bump
+done
+for required_results in '{"checks":[]}' 'unreadable' \
+  '{"checks":[{"required":false,"status":"failure"}]}' \
+  '{"checks":[{"required":true,"status":"failure"},{"required":true,"status":"pending"}]}'; do
+  approved_stale_pr; echo "$required_results" >"$P/checks.json"
+  auto_pin >"$P/run.log" 2>&1 || fail "a tick with incomplete required evidence failed"
+  [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] || fail "incomplete required evidence discarded approval"
+  undo_bump
+done
+failed_required='{"checks":[{"required":true,"status":"failure"},{"required":true,"status":"success"}]}'
+approved_stale_pr; echo "$failed_required" >"$P/checks.json"
+auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "approved failed bump blocked replacement"; }
+[[ "$(posted "$P/prs.jsonl")" == 1 ]] && grep -q '^60 {"state":"closed"}$' "$P/closed.log" \
+  || fail "approved failed bump was not replaced and closed"
+grep -q 'requires its own review and checks' "$P/comments.log" || fail "replacement does not explain fresh review"
+jq -es 'any(.[]; .kind == "pin.bump_superseded")' "$P/events.jsonl" >/dev/null || fail "replacement has no supersede event"
+undo_bump
+
+approved_stale_pr; echo "$failed_required" >"$P/checks.json"
+jq '.summary.head_sha = "0000000000000000000000000000000000000000"' "$P/detail.json" >"$P/after-checks-detail.json"
+auto_pin >"$P/run.log" 2>&1 || fail "a moving head failed the tick"
+[[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] || fail "a different head's failure discarded approval"
+mv "$P/after-checks-detail.json" "$P/after-checks-detail.saved"; undo_bump
+
+approved_stale_pr; echo "$failed_required" >"$P/checks.json"
+echo '{"checks":[{"required":true,"status":"success"}]}' >"$P/post-create-checks.json"
+auto_pin >"$P/run.log" 2>&1 || fail "a recovered gate failed the tick"
+[[ "$(posted "$P/prs.jsonl")" == 1 && ! -s "$P/closed.log" ]] || fail "a recovered approved bump was closed"
+jq -es 'any(.[]; .kind == "pin.bump_failed" and .needs_human == true)
+  and all(.[]; .kind != "pin.bump_superseded")' "$P/events.jsonl" >/dev/null || fail "recovered bump has no cleanup signal"
+mv "$P/post-create-checks.json" "$P/post-create-checks.saved"; undo_bump
+ok "approved stale bumps are replaced only for finished exact-head required failures, rechecked before close"
 
 stale_pr 60 "$b1" "$now_iso"; echo '{"entries":[{"number":60,"state":"building"}],"page":{"has_more":false}}' >"$P/queue.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick behind a queued bump failed"

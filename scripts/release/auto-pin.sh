@@ -13,7 +13,8 @@
 #      proposes whatever is newer), when this head already has its branch and pull request, or
 #      when the head's combined status is not `success`.
 #      An open bump that pins an OLDER commit on the way to this head, and is neither queued nor
-#      approved, and has no changes-requested review inside JERYU_AUTO_PIN_SUPERSEDE_AFTER,
+#      approved (unless its exact-head required checks finished with failure), and has no
+#      changes-requested review inside JERYU_AUTO_PIN_SUPERSEDE_AFTER,
 #      is closed after the replacement exists, and the new bump
 #      opens in the same tick (`pin.bump_superseded`). A queued bump is never closed; a bump pinning a
 #      commit that is not an ancestor of the head is left alone with a `pin.bump_diverged` event, and
@@ -362,8 +363,9 @@ if (( other_count > 1 )); then
 fi
 
 # supersede_stale N: the open bump #N pins an older commit of jeryu-web main than this head. When it
-# is neither queued nor approved and has no changes-requested review inside the grace period,
-# prepare its replacement. Closing waits until the new PR exists.
+# is not queued and has no changes-requested review inside the grace period, prepare its
+# replacement. An approval preserves a viable bump, but not one whose exact-head required
+# checks have finished with failure. Closing waits until the new PR exists; its review starts fresh.
 # Returns 1 when it stays. Anything it cannot read counts as stays.
 supersede_stale() {
   local n="$1" row ref created pinned_sha queue_rows reviews_json approved changes age queued
@@ -399,7 +401,9 @@ supersede_stale() {
   changes="$(jq -r 'any((.reviews // [])[]; .effective == true and .state == "CHANGES_REQUESTED")' <<<"$reviews_json" 2>/dev/null)" || return 1
   age=0; [ -z "$created" ] || age=$(( $(date -u +%s) - $(date -u -d "$created" +%s 2>/dev/null || date -u +%s) ))
   if [ "$approved" = true ]; then
-    say "bump #$n has a current approval; not superseding"; return 1
+    if ! required_failed "$n" "$row" "$reviews_json"; then
+      say "bump #$n has a current approval without a finished failing required gate; not superseding"; return 1
+    fi
   fi
   if [ "$changes" = true ] && (( age <= supersede_after )); then
     say "bump #$n has requested changes inside the grace period; not superseding"; return 1
@@ -407,6 +411,25 @@ supersede_stale() {
   say "bump #$n pins ${pinned_sha:0:12}, behind green main ${head:0:12}, and is not queued (approved=$approved changes_requested=$changes age=${age}s); superseding"
   superseded_pr="$n"; superseded_pinned="$pinned_sha"
   return 0
+}
+# required_failed N LIST_ROW DETAIL: check only the old bump's required results, bound to its
+# listed head. The checks endpoint follows the PR head, so bracket it with exact-head reads.
+# Missing, unreadable, running or advisory-only failures never discard an approval. This runs
+# again immediately before close, after the replacement build and creation have completed.
+required_failed() {
+  local n="$1" row="$2" detail="$3" sha checks current
+  sha="$(jq -r '.head.sha // empty' <<<"$row")" || return 1
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  jq -e --arg sha "$sha" --arg ref "$(jq -r '.head.ref' <<<"$row")" '
+    .summary.state == "open" and .summary.base_ref == "main"
+    and .summary.head_ref == $ref and .summary.head_sha == $sha' <<<"$detail" >/dev/null || return 1
+  checks="$(api GET "/api/v1/repos/$repo_path/pulls/$n/checks" 2>/dev/null)" || return 1
+  jq -e '[.checks[] | select(.required == true)] as $required
+    | any($required[]; .status == "failure")
+      and all($required[]; .status | IN("success", "failure"))' <<<"$checks" >/dev/null 2>&1 || return 1
+  current="$(api GET "/api/v1/repos/$repo_path/pulls/$n" 2>/dev/null)" || return 1
+  jq -e --arg sha "$sha" '.summary.state == "open" and .summary.base_ref == "main"
+    and .summary.head_sha == $sha' <<<"$current" >/dev/null || return 1
 }
 # duration_seconds 6h|90m|3600 -> seconds; prints nothing for a malformed value.
 duration_seconds() {
@@ -560,7 +583,7 @@ if [ -n "$superseded_pr" ]; then
   fi
 fi
 if [ -n "$superseded_pr" ]; then
-  jq -n --arg b "Superseded by ${head:0:7} in #$number: the replacement pull request exists. This older bump was not queued or approved and had no requested changes inside the grace period." \
+  jq -n --arg b "Superseded by ${head:0:7} in #$number: the replacement pull request exists and requires its own review and checks. This older bump was not queued, had no requested changes inside the grace period, and either had no approval or its exact-head required gate finished with failure." \
     '{body: $b}' | api POST "/api/v3/repos/$repo_path/issues/$superseded_pr/comments" --data-binary @- >/dev/null 2>&1 \
     || say "bump #$superseded_pr: the comment was not accepted (ignored)"
   emit pin.bump_superseded false "auto-pin:superseded:$superseded_pr:${head:0:12}" \
