@@ -181,7 +181,7 @@ fn a_lot_that_flows_leaves_one_forward_visit_per_station() {
     // the visit starts on arrival, so the whole wait is process time.
     let shift = at(&visits, Station::Shift)[0];
     assert_eq!(shift.entered_ms, START + 13 * MINUTE);
-    assert_eq!(shift.started_ms, Some(START + 13 * MINUTE));
+    assert_eq!(shift.started_ms, None, "timer wait is not execution");
     assert_eq!(shift.left_ms, Some(START + 15 * MINUTE));
     // Merge was entered when the head was approved and green, not before.
     let merge = at(&visits, Station::Merge)[0];
@@ -264,7 +264,7 @@ fn a_red_gate_loops_back_to_work_and_the_lot_returns() {
 /// A reviewer that holds sends the work back; the todoq attempt that is
 /// blocked is held at Work until a person releases it.
 #[test]
-fn a_held_review_reworks_and_a_blocked_todo_is_held_at_work() {
+fn a_held_review_and_a_blocked_todo_remain_at_their_stations() {
     let (_dir, store) = store();
     let held = "20261012-000003-cccccc";
     for (kind, outcome, minute, carry_pr) in [
@@ -310,8 +310,8 @@ fn a_held_review_reworks_and_a_blocked_todo_is_held_at_work() {
     let visits = visits_of(&store);
     let review = at(&visits, Station::Review);
     assert_eq!(review.len(), 1);
-    assert_eq!(review[0].direction, "rework");
-    assert_eq!(review[0].rework_to, Some(Station::Work));
+    assert_eq!(review[0].direction, "hold");
+    assert_eq!(review[0].rework_to, None);
 
     let work: Vec<&Visit> = at(&visits, Station::Work)
         .into_iter()
@@ -328,7 +328,7 @@ fn a_held_review_reworks_and_a_blocked_todo_is_held_at_work() {
     let report = report_of(&store, 30);
     let work = station(&report, "work");
     assert_eq!(work["wip"]["held"], 1);
-    assert_eq!(work["wip"]["waiting"], 1, "the reworked lot is waiting");
+    assert_eq!(work["wip"]["waiting"], 0, "review hold stays at review");
     assert_eq!(work["wip"]["active"], 0);
     assert_eq!(
         work["oldest_wait_s"],
@@ -369,9 +369,9 @@ fn a_held_review_reworks_and_a_blocked_todo_is_held_at_work() {
     let work = station(&report, "work");
     assert_eq!(work["wip"]["held"], 0);
     // The slot still had it when the hold went on, so it is working again,
-    // beside the lot the reviewer sent back.
+    // while the review hold stays at Review.
     assert_eq!(work["wip"]["active"], 1);
-    assert_eq!(work["wip"]["waiting"], 1);
+    assert_eq!(work["wip"]["waiting"], 0);
 }
 
 /// A refused merge-queue replay and a killed attempt are both rework: one
@@ -703,8 +703,8 @@ fn percentiles_the_bottleneck_and_an_eta_come_from_the_samples() {
     // Stage's tool is the release timer: no queue, and the whole wait from
     // the merge at 30 to the staged release at 40 is process time.
     let stage = station(&report, "stage");
-    assert_eq!(stage["queue_s"]["p50"], 0);
-    assert_eq!(stage["process_s"]["p50"], 10 * 60);
+    assert!(stage["queue_s"].is_null());
+    assert!(stage["process_s"].is_null());
     // Queue holds the most lot-hours of waiting: two minutes for a slot,
     // longer than any other station's queue.
     let queue = station(&report, "queue");
@@ -781,13 +781,13 @@ fn percentiles_the_bottleneck_and_an_eta_come_from_the_samples() {
     assert_eq!(waiting["eta_partial"], true, "{waiting}");
     assert_eq!(
         waiting["eta_unknown_stations"],
-        serde_json::json!(["pin"]),
+        serde_json::json!(["shift", "pin", "stage"]),
         "Pin has no estimate, so the ETA names it instead of guessing"
     );
     // Queue's two minutes less the one already spent (60), plus every other
     // station with an estimate: Work 660, Shift 120, Review 300, Gate 480,
     // Merge 420, Stage 600, Deploy 300. Pin contributes nothing.
-    let sum = 60 + 660 + 120 + 300 + 480 + 420 + 600 + 300;
+    let sum = 60 + 660 + 300 + 480 + 420 + 300;
     assert_eq!(waiting["eta_s"]["p50"], sum, "{waiting}");
     assert_eq!(
         waiting["eta_s"]["p90"], sum,
@@ -888,9 +888,12 @@ fn an_eta_sums_the_stations_still_ahead() {
     // Work's own eleven minutes less the two already spent (540), plus the
     // p50 of every station still ahead: Shift 120, Review 300, Gate 480,
     // Merge 420, Pin 480, Stage 600, Deploy 300.
-    assert_eq!(eta, 540 + 120 + 300 + 480 + 420 + 480 + 600 + 300);
-    assert_eq!(lot["eta_partial"], false, "every station ahead has one");
-    assert_eq!(lot["eta_unknown_stations"], serde_json::json!([]));
+    assert_eq!(eta, 540 + 300 + 480 + 420 + 480 + 300);
+    assert_eq!(lot["eta_partial"], true, "timer starts are not measured");
+    assert_eq!(
+        lot["eta_unknown_stations"],
+        serde_json::json!(["shift", "stage"])
+    );
     // Work itself, at eleven minutes, is the slowest station the lot still
     // has to get through; Stage, at ten, is the slowest one after it.
     assert_eq!(lot["slowest_ahead"], "work");
@@ -1464,7 +1467,27 @@ async fn flow_route_is_admin_only_refuses_bad_windows_and_answers_real_numbers()
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
     assert_eq!(json_of(refused).await["code"], "permission_denied");
 
+    assert_eq!(
+        call("/api/v1/flow/history?station=gate", &user)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call("/api/v1/flow/history?station=queue&days=7", &admin)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
     for bad in [
+        "/api/v1/flow/history?repo=missing-owner",
+        "/api/v1/flow/history?repo=/empty",
+        "/api/v1/flow/history?station=unknown",
+        "/api/v1/flow/history?day=not-a-day",
+        "/api/v1/flow/history?state=unknown",
+        "/api/v1/flow/history?offset=100001",
         "/api/v1/flow?days=14",
         "/api/v1/flow?days=seven",
         "/api/v1/flow?window=30d",
@@ -1523,4 +1546,177 @@ async fn flow_route_is_admin_only_refuses_bad_windows_and_answers_real_numbers()
     // drops the history.
     let narrow = json_of(call("/api/v1/flow?days=7", &admin).await.unwrap()).await;
     assert_eq!(narrow["window"]["until"], narrow["generated_at"]);
+}
+
+#[test]
+fn daily_history_keeps_retries_holds_and_family_filters_distinct() {
+    let (_dir, store) = store();
+    let mut event = NewEvent {
+        event_id: Some("one".into()),
+        family: Some("acme".into()),
+        repo: Some("acme/widget".into()),
+        pr: Some(1),
+        source: "test".into(),
+        kind: "gate.started".into(),
+        summary: "run one".into(),
+        detail: Some(serde_json::json!({"runner":"runner-1"})),
+        ..Default::default()
+    };
+    store.insert("operator", &event, START).unwrap();
+    store.insert("operator", &event, START + 1).unwrap();
+    event.event_id = Some("two".into());
+    event.kind = "gate.finished".into();
+    event.outcome = Some("error".into());
+    store.insert("operator", &event, START + MINUTE).unwrap();
+    event.event_id = Some("three".into());
+    event.kind = "gate.started".into();
+    event.outcome = None;
+    store
+        .insert("operator", &event, START + 2 * MINUTE)
+        .unwrap();
+    event.event_id = Some("four".into());
+    event.kind = "gate.finished".into();
+    event.outcome = Some("success".into());
+    store
+        .insert("operator", &event, START + 3 * MINUTE)
+        .unwrap();
+    let mut query = super::history::Query {
+        family: Some("acme".into()),
+        station: Some("gate".into()),
+        days: Some(7),
+        ..Default::default()
+    };
+    let history = store.flow_history(&query, START + 4 * MINUTE).unwrap();
+    let body = serde_json::to_value(history).unwrap();
+    let day = &crate::web::shift::rfc3339_ms(START)[..10];
+    assert_eq!(body["daily"][day]["arrived"], 2);
+    assert_eq!(body["daily"][day]["started"], 2);
+    assert_eq!(body["daily"][day]["failed"], 1);
+    assert_eq!(body["daily"][day]["passed"], 1);
+    assert_eq!(body["daily"].as_object().unwrap().len(), 7);
+    query.state = Some("failed".into());
+    query.day = Some(day.into());
+    let body =
+        serde_json::to_value(store.flow_history(&query, START + 4 * MINUTE).unwrap()).unwrap();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["items"][0]["runner"], "runner-1");
+    query.family = Some("globex".into());
+    assert_eq!(
+        store
+            .flow_history(&query, START + 4 * MINUTE)
+            .unwrap()
+            .total,
+        0
+    );
+    query.family = Some("acme".into());
+    query.repo = Some("acme/another".into());
+    assert_eq!(
+        store
+            .flow_history(&query, START + 4 * MINUTE)
+            .unwrap()
+            .total,
+        0
+    );
+}
+
+#[test]
+fn verified_delivery_closes_only_member_lots_and_replay_is_idempotent() {
+    let (_dir, store) = store();
+    for pr in [1, 2] {
+        store
+            .insert(
+                "operator",
+                &NewEvent {
+                    family: Some("acme".into()),
+                    repo: Some("acme/widget".into()),
+                    pr: Some(pr),
+                    sha: Some(format!("{pr:040x}")),
+                    source: "forge".into(),
+                    kind: "pr.merged".into(),
+                    summary: "merged".into(),
+                    ..Default::default()
+                },
+                START,
+            )
+            .unwrap();
+    }
+    let revision = super::delivery::Revision {
+        repo: "acme/widget".into(),
+        pr: 1,
+        sha: format!("{:040x}", 1),
+        family: Some("acme".into()),
+    };
+    let mut delivery = super::delivery::Delivery {
+        seq: 100,
+        ts: START + MINUTE,
+        kind: "release.staged".into(),
+        outcome: None,
+        family: Some("acme".into()),
+        repo: "acme/deploy".into(),
+        sha: format!("{:040x}", 3),
+        detail: Some(serde_json::json!({"release":"release-1"})),
+    };
+    store
+        .flow_apply_delivery(&delivery, std::slice::from_ref(&revision))
+        .unwrap();
+    let visits = store.flow_visits(Some("acme"), START).unwrap();
+    assert!(visits.iter().any(|v| v.lot_id == "acme/widget#1"
+        && v.station == Station::Deploy
+        && v.direction == "hold"));
+    assert!(visits.iter().any(|v| v.lot_id == "acme/widget#2"
+        && v.station == Station::Stage
+        && v.left_ms.is_none()));
+    delivery.seq = 101;
+    delivery.ts += MINUTE;
+    delivery.kind = "deploy.created".into();
+    store
+        .flow_apply_delivery(&delivery, std::slice::from_ref(&revision))
+        .unwrap();
+    delivery.seq = 102;
+    delivery.ts += MINUTE;
+    delivery.kind = "deploy.status".into();
+    delivery.outcome = Some("success".into());
+    store
+        .flow_apply_delivery(&delivery, std::slice::from_ref(&revision))
+        .unwrap();
+    store
+        .flow_apply_delivery(&delivery, std::slice::from_ref(&revision))
+        .unwrap();
+    let visits = store.flow_visits(Some("acme"), START).unwrap();
+    assert_eq!(
+        visits
+            .iter()
+            .filter(|v| v.station == Station::Deploy && v.direction == "forward")
+            .count(),
+        1
+    );
+    let query = super::history::Query {
+        family: Some("acme".into()),
+        lot: Some("acme/widget#1".into()),
+        days: Some(7),
+        ..Default::default()
+    };
+    let body =
+        serde_json::to_value(store.flow_history(&query, START + 10 * MINUTE).unwrap()).unwrap();
+    assert_eq!(body["deliveries"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["state"] == "held")
+            .count(),
+        1
+    );
+    let other = super::history::Query {
+        family: Some("globex".into()),
+        ..query
+    };
+    assert!(
+        store
+            .flow_history(&other, START + 10 * MINUTE)
+            .unwrap()
+            .deliveries
+            .is_empty()
+    );
 }

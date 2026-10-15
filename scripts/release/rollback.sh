@@ -31,7 +31,7 @@ SNAP="$J/backups/pre-$REL"
 $SYSTEMCTL --user stop jeryu.service
 KEEP="$J/backups/post-$REL-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$KEEP"; chmod 700 "$KEEP"
-for n in forge.sqlite work.sqlite codegraph.sqlite; do
+for n in forge.sqlite work.sqlite codegraph.sqlite shift.sqlite; do
   cp -a "$DATA/$n" "$KEEP/"
   for s in -wal -shm; do [[ -e "$DATA/$n$s" ]] && mv "$DATA/$n$s" "$KEEP/"; done
   cp -a "$SNAP/$n" "$DATA/$n"

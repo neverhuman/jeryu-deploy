@@ -1,4 +1,43 @@
-# Flow
+# Flow: decisions, station history, and verified delivery
+
+The live view is a repository-aware map. Review and required checks run in
+parallel and join before merge. A web pin opens a new deploy-repository PR;
+that PR passes its own review, checks, and merge. Staging produces a release
+that intentionally waits for activation authorization. ADR 0013 supersedes
+the original linear-map design below.
+
+Click a station for its purpose, trigger, success/failure/hold paths, reporting
+services, current work and daily UTC transition bars. Click a bar segment to
+filter evidence; inspect an item for its recorded journey and release receipts.
+`GET /api/v1/flow/history` accepts `family`, `repo`, `station`, `days=7|28|90`,
+`day=YYYY-MM-DD`, `state`, `lot`, and `offset`. It is admin-only. Each page holds
+at most 100 transitions. Daily totals use the entire filtered window, not the
+page. States are arrived, started, passed, rework, held, released and failed.
+Days include today and the preceding days; today is incomplete. Counts are
+transitions, not unique items. Changing day/state does not change bar totals.
+
+Migration 0020 keeps transitions and release receipts permanently. Historical
+arrival/start/exit times are recovered from visits; detailed hold and runner
+coverage starts at `detailed_since`. Missing metadata stays unknown. Review
+holds stay at Review; runner errors retry Gate; code failures return to Work.
+Shift/Stage have no measured start until a producer records one, so their
+wait is no longer called active processing.
+
+On Flow reads, retained staging and production deployment events are reconciled
+in batches of at most 128. Each immutable Git ancestry walk is capped at 100,000
+commits. Missing objects and revisions outside that bound stay unresolved.
+Only known merged PR revisions in the shipped ancestry close pending visits;
+not every PR merged before the deployment. The exact deploy lock supplies the
+web bundle revision; other lock entries are not assumed shipped. Successful
+reads and per-lot receipts make replay idempotent. No runtime database deletion
+or destructive rebuild is required. Rollback uses the release's database backup.
+
+`repository_wip` supplements the existing report with recorded open visits by
+repository/station. Parallel station counts overlap. The headline no longer
+claims a proven bottleneck from incomplete historical estimates.
+
+## Original design and compatibility fields
+
 
 Where work sits on the delivery line, how long it waits at each step, where it
 loops back, and which step is the bottleneck. Decision record:

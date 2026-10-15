@@ -159,6 +159,51 @@ fn page_limit(query: &EventsQuery) -> i64 {
 }
 
 impl EventStore {
+    pub(crate) fn flow_repositories(
+        &self,
+        family: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt=inner.conn.prepare("SELECT repo,station,SUM(direction='hold'),SUM(direction!='hold' AND started_ms IS NOT NULL),SUM(direction!='hold' AND started_ms IS NULL) FROM flow_ledger WHERE left_ms IS NULL AND repo IS NOT NULL AND (?1 IS NULL OR family=?1) GROUP BY repo,station ORDER BY repo,station").map_err(|e|e.to_string())?;
+        let rows=stmt.query_map(params![family],|r|Ok(serde_json::json!({"repo":r.get::<_,String>(0)?,"station":r.get::<_,String>(1)?,"held":r.get::<_,i64>(2)?,"active":r.get::<_,i64>(3)?,"waiting":r.get::<_,i64>(4)?}))).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+        Ok(serde_json::Value::Array(rows))
+    }
+
+    pub(crate) fn flow_delivery_inputs(
+        &self,
+    ) -> Result<
+        (
+            Vec<crate::web::flow::delivery::Delivery>,
+            Vec<crate::web::flow::delivery::Revision>,
+        ),
+        String,
+    > {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        Ok((
+            crate::web::flow::delivery::pending(&inner.conn)?,
+            crate::web::flow::delivery::revisions(&inner.conn)?,
+        ))
+    }
+    pub(crate) fn flow_apply_delivery(
+        &self,
+        event: &crate::web::flow::delivery::Delivery,
+        revisions: &[crate::web::flow::delivery::Revision],
+    ) -> Result<(), String> {
+        let mut inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let tx = inner.conn.transaction().map_err(|e| e.to_string())?;
+        crate::web::flow::delivery::apply(&tx, event, revisions)?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn flow_history(
+        &self,
+        query: &crate::web::flow::history::Query,
+        now: i64,
+    ) -> Result<crate::web::flow::history::History, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        crate::web::flow::history::read(&inner.conn, query, now)
+    }
+
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|err| err.to_string())?;
         conn.busy_timeout(std::time::Duration::from_secs(5))
@@ -702,6 +747,14 @@ impl EventStore {
         family: Option<&str>,
         since_ms: i64,
     ) -> Result<Vec<Visit>, String> {
+        self.flow_visits_scoped(family, since_ms, None)
+    }
+    pub(crate) fn flow_visits_scoped(
+        &self,
+        family: Option<&str>,
+        since_ms: i64,
+        repo: Option<&str>,
+    ) -> Result<Vec<Visit>, String> {
         type Row = (
             String,
             String,
@@ -718,7 +771,7 @@ impl EventStore {
                 .prepare_cached(
                     "SELECT lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to
                        FROM flow_ledger
-                      WHERE (?1 IS NULL OR family = ?1)
+                      WHERE (?1 IS NULL OR family = ?1) AND (?3 IS NULL OR repo=?3)
                         AND lot_id IN (
                             SELECT lot_id FROM flow_ledger
                              WHERE (left_ms IS NULL OR left_ms >= ?2)
@@ -727,7 +780,7 @@ impl EventStore {
                 )
                 .map_err(|err| err.to_string())?;
             let rows = stmt
-                .query_map(params![family, since_ms], |row| {
+                .query_map(params![family, since_ms, repo], |row| {
                     Ok((
                         row.get(0)?,
                         row.get(1)?,

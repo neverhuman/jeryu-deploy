@@ -1,0 +1,16 @@
+migration = "0020_flow_evidence"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/flow"
+apply = "migrate_shift_store, one transaction"
+[lock_timeout]
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+[statement_timeout]
+mechanism = "indexed ledger copy and retained event backfill, once"
+value = "bounded by existing ledger and retained event rows"
+[rollback]
+plan = "restore pre-release shift.sqlite backup and previous binary"
+backup = "release switch SQLite backup"
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::flow"

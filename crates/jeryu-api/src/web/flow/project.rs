@@ -73,12 +73,13 @@ pub(crate) fn steps(kind: &str, outcome: Option<&str>) -> Vec<Step> {
         "shift.pr_opened" | "pr.opened" | "pr.ready_for_review" => {
             vec![Leave(Shift), Enter(Review), Enter(Gate)]
         }
-        "review.started" => vec![Enter(Review), Start(Review)],
+        "review.started" => vec![Enter(Review), Release(Review), Start(Review)],
         "review.finished" | "pr.review" | "pr.reviewed" => match outcome {
             "approve" | "approved" => vec![Leave(Review)],
             // A reviewer that holds, asks for changes or refuses to publish
             // sends the work back to the worker.
-            "hold" | "request_changes" | "failed" | "publication_rejected" | "too_large" => {
+            "hold" => vec![Hold(Review)],
+            "request_changes" | "failed" | "publication_rejected" | "too_large" => {
                 vec![Rework(Review, Work)]
             }
             _ => Vec::new(),
@@ -87,7 +88,8 @@ pub(crate) fn steps(kind: &str, outcome: Option<&str>) -> Vec<Step> {
         "gate.started" => vec![Enter(Gate), Start(Gate)],
         "gate.finished" | "gate.log" => match outcome {
             "success" => vec![Leave(Gate)],
-            "failure" | "error" | "timed_out" | "inputs_changed" => vec![Rework(Gate, Work)],
+            "failure" => vec![Rework(Gate, Work)],
+            "error" | "timed_out" | "inputs_changed" => vec![Rework(Gate, Gate)],
             _ => Vec::new(),
         },
         "queue.enqueued" => vec![Enter(Merge), Start(Merge)],
@@ -96,15 +98,23 @@ pub(crate) fn steps(kind: &str, outcome: Option<&str>) -> Vec<Step> {
         // A replay that failed or could not be replayed at all needs the
         // branch worked on again.
         "queue.failed" | "queue.refused" => vec![Rework(Merge, Work)],
-        "queue.landed" | "pr.merged" | "todo.merged" => vec![Leave(Merge), Enter(Stage)],
+        "queue.landed" | "pr.merged" | "todo.merged" => vec![
+            Leave(Queue),
+            Leave(Work),
+            Leave(Shift),
+            Leave(Review),
+            Leave(Gate),
+            Leave(Merge),
+            Enter(Stage),
+        ],
         "pin.bump_opened" => vec![Enter(Pin), Start(Pin)],
         // A failed bump is a second visit to Pin, so the loop is countable.
         "pin.bump_failed" => vec![Rework(Pin, Pin)],
         // The staged release carries the work: the pin, if there was one,
         // reached it.
-        "release.staged" => vec![Leave(Pin), Leave(Stage), Enter(Deploy)],
+        "release.staged" => vec![Leave(Pin), Leave(Stage), Enter(Deploy), Hold(Deploy)],
         "release.stage_failed" => vec![Rework(Stage, Stage)],
-        "deploy.created" => vec![Enter(Deploy), Start(Deploy)],
+        "deploy.created" => vec![Enter(Deploy), Release(Deploy), Start(Deploy)],
         "deploy.status" => match outcome {
             "success" => vec![Leave(Deploy)],
             "failure" | "error" => vec![Rework(Deploy, Stage)],
@@ -142,6 +152,16 @@ pub(crate) struct EventView<'a> {
 /// Project one event into `flow_ledger` on `conn`, which the caller has in a
 /// transaction with the event's own insert.
 pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), String> {
+    if matches!(event.kind, "pr.merged" | "queue.landed")
+        && let (Some(repo), Some(pr), Some(sha)) = (event.repo, event.pr, event.sha)
+        && super::delivery::valid_sha(sha)
+    {
+        conn.execute(
+            "INSERT OR IGNORE INTO flow_merge_revisions(repo,pr,sha,family) VALUES (?1,?2,?3,?4)",
+            params![repo, pr, sha, event.family],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     let steps = steps(event.kind, event.outcome);
     if steps.is_empty() {
         return Ok(());
@@ -404,6 +424,11 @@ pub(crate) fn lots_of_pr(conn: &Connection, repo: &str, pr: i64) -> Result<Vec<S
 /// Rewrite the visits of a pull-request-only lot onto the todo that carries
 /// it, and give the todo's own visits the pull request.
 fn adopt(conn: &Connection, todo_id: &str, repo: &str, pr: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE OR IGNORE flow_activity SET lot_id=?1 WHERE lot_id=?2",
+        params![todo_id, format!("{repo}#{pr}")],
+    )
+    .map_err(|e| e.to_string())?;
     let pr_lot = format!("{repo}#{pr}");
     if pr_lot != todo_id {
         conn.execute(
@@ -472,13 +497,17 @@ fn apply_step(
             if open_visit(conn, &lot.id, station)?.is_none() {
                 enter(conn, event, lot, station)?;
             }
-            conn.execute(
-                "UPDATE flow_ledger SET started_ms = ?3, source_seq_last = ?4
+            let changed = conn
+                .execute(
+                    "UPDATE flow_ledger SET started_ms = ?3, source_seq_last = ?4
                   WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL
                     AND started_ms IS NULL",
-                params![lot.id, station.id(), event.ts_ms, event.seq],
-            )
-            .map_err(|err| err.to_string())?;
+                    params![lot.id, station.id(), event.ts_ms, event.seq],
+                )
+                .map_err(|err| err.to_string())?;
+            if changed > 0 {
+                super::history::record(conn, event, &lot.id, station, "started")?;
+            }
             Ok(())
         }
         Step::Leave(station) => close(conn, event, lot, station, "forward", None),
@@ -494,22 +523,30 @@ fn apply_step(
             if open_visit(conn, &lot.id, station)?.is_none() {
                 enter(conn, event, lot, station)?;
             }
-            conn.execute(
-                "UPDATE flow_ledger SET direction = 'hold', outcome = ?3, source_seq_last = ?4
-                  WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL",
-                params![lot.id, station.id(), event.outcome, event.seq],
-            )
-            .map_err(|err| err.to_string())?;
+            let changed = conn
+                .execute(
+                    "UPDATE flow_ledger SET direction = 'hold', outcome = ?3, source_seq_last = ?4
+                  WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL AND direction != 'hold'",
+                    params![lot.id, station.id(), event.outcome, event.seq],
+                )
+                .map_err(|err| err.to_string())?;
+            if changed > 0 {
+                super::history::record(conn, event, &lot.id, station, "held")?;
+            }
             Ok(())
         }
         Step::Release(station) => {
-            conn.execute(
-                "UPDATE flow_ledger SET direction = 'open', source_seq_last = ?3
+            let changed = conn
+                .execute(
+                    "UPDATE flow_ledger SET direction = 'open', source_seq_last = ?3
                   WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL
                     AND direction = 'hold'",
-                params![lot.id, station.id(), event.seq],
-            )
-            .map_err(|err| err.to_string())?;
+                    params![lot.id, station.id(), event.seq],
+                )
+                .map_err(|err| err.to_string())?;
+            if changed > 0 {
+                super::history::record(conn, event, &lot.id, station, "released")?;
+            }
             Ok(())
         }
     }
@@ -547,6 +584,7 @@ fn enter(
         ],
     )
     .map_err(|err| err.to_string())?;
+    super::history::record(conn, event, &lot.id, station, "arrived")?;
     Ok(())
 }
 
@@ -573,21 +611,34 @@ fn close(
     direction: &str,
     back_to: Option<Station>,
 ) -> Result<(), String> {
-    conn.execute(
-        "UPDATE flow_ledger SET left_ms = ?3, direction = ?4, rework_to = ?5,
+    let changed = conn
+        .execute(
+            "UPDATE flow_ledger SET left_ms = ?3, direction = ?4, rework_to = ?5,
              outcome = COALESCE(?6, outcome), source_seq_last = ?7
           WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL",
-        params![
-            lot.id,
-            station.id(),
-            event.ts_ms,
-            direction,
-            back_to.map(Station::id),
-            event.outcome,
-            event.seq,
-        ],
-    )
-    .map_err(|err| err.to_string())?;
+            params![
+                lot.id,
+                station.id(),
+                event.ts_ms,
+                direction,
+                back_to.map(Station::id),
+                event.outcome,
+                event.seq,
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+    if changed > 0 {
+        let state = if direction == "forward" {
+            "passed"
+        } else if matches!(event.outcome, Some("error" | "timed_out"))
+            || event.kind.ends_with("stage_failed")
+        {
+            "failed"
+        } else {
+            "rework"
+        };
+        super::history::record(conn, event, &lot.id, station, state)?;
+    }
     Ok(())
 }
 
@@ -619,4 +670,40 @@ fn left_forward(conn: &Connection, lot_id: &str, station: Station) -> Result<boo
         .optional()
         .map_err(|err| err.to_string())?;
     Ok(direction.as_deref() == Some("forward"))
+}
+
+/// A verified release membership. The separate receipt makes replay idempotent
+/// without suppressing the original event when it had no PR join.
+pub(crate) fn deliver(
+    conn: &Connection,
+    event: &EventView<'_>,
+    shipper: &str,
+    revision: &str,
+) -> Result<(), String> {
+    for (lot, _) in lots_for(conn, event)? {
+        let pending=conn.query_row("SELECT EXISTS(SELECT 1 FROM flow_ledger WHERE lot_id=?1 AND station IN ('pin','stage','deploy') AND left_ms IS NULL AND entered_ms<=?2)",params![lot.id,event.ts_ms],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?;
+        if !pending {
+            continue;
+        }
+        let release = event
+            .detail
+            .and_then(|d| d.get("release"))
+            .and_then(serde_json::Value::as_str);
+        let inserted=conn.execute("INSERT OR IGNORE INTO flow_delivery_receipts(event_seq,lot_id,repo,revision,release,kind,ts_ms) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![event.seq,lot.id,shipper,revision,release,event.kind,event.ts_ms]).map_err(|e|e.to_string())?;
+        if inserted == 0 {
+            continue;
+        }
+        // A successful deployment proves release membership even if the staging
+        // event has expired. It does not invent a staging timestamp.
+        if event.kind.starts_with("deploy.") {
+            for station in [Station::Pin, Station::Stage] {
+                close(conn, event, &lot, station, "forward", None)?;
+            }
+            enter(conn, event, &lot, Station::Deploy)?;
+        }
+        for step in steps(event.kind, event.outcome) {
+            apply_step(conn, event, &lot, step)?;
+        }
+    }
+    Ok(())
 }

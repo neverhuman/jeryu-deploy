@@ -75,16 +75,10 @@ impl Station {
             .map_or(0, |index| u8::try_from(index + 1).unwrap_or(u8::MAX))
     }
 
-    /// Whether the station's tool has the lot from the moment it arrives.
-    ///
-    /// Most stations have a start signal: a slot claims the todo, a runner
-    /// beats, the queue enqueues. Shift and Stage have none (`docs/flow.md`
-    /// leaves their "Starts when" empty) because their tool is a timer that
-    /// is already running: the lot is in its hands on arrival. Their queue
-    /// time is therefore zero and the whole visit is process time, rather
-    /// than both being unknown and taking every ETA down the line with them.
+    /// A timer owning a queue does not prove that execution started.
+    /// Only an explicit start event records active processing.
     pub(crate) fn starts_on_arrival(self) -> bool {
-        matches!(self, Self::Shift | Self::Stage)
+        false
     }
 
     /// The station a stored `flow_ledger` row names, or `None` for an id no

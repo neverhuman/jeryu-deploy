@@ -505,7 +505,7 @@ fn lots(visits: &[Visit], stations: &[StationReport], now_ms: i64) -> Vec<LotRep
 
 /// Where a lot opens in the web app. A todo's lot is its Work page; a pull
 /// request no todo carries (`<owner>/<repo>#<n>`) opens that pull request.
-pub(super) fn lot_href(lot_id: &str) -> String {
+pub(crate) fn lot_href(lot_id: &str) -> String {
     if let Some((repo, number)) = lot_id.rsplit_once('#')
         && let Some((owner, name)) = repo.rsplit_once('/')
         && !owner.is_empty()

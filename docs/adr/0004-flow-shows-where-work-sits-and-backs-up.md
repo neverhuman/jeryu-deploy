@@ -1,9 +1,9 @@
 # 0004. Show where work sits and backs up as one Flow view
 
-Status: Accepted
+Status: Superseded
 Date: 2026-10-09
 Supersedes: none
-Superseded-by: none
+Superseded-by: 0013
 
 ## Context
 

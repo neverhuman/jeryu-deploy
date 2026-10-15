@@ -40,7 +40,7 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
 - **`switch.sh`** (on the forge host) refuses unless the live symlink names an
   installed binary, the checksums hold and no snapshot exists yet; it records the
   live release as the rollback target in `~/.jeryu/releases/<release>/ROLLBACK.env`
-  (whatever `PREV` staging saw); then stops, snapshots `forge`/`work`/`codegraph`
+  (whatever `PREV` staging saw); then stops, snapshots `forge`/`work`/`codegraph`/`shift`
   with SQLite's backup API, installs, repoints `~/.jeryu/bin/jeryu` and
   `~/.jeryu/share/web-dist`, starts, and proves the running binary is the staged one.
   It polls `JERYU_HEALTH_URL` (a required site setting, the forge's health

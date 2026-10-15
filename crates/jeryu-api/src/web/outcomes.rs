@@ -62,6 +62,7 @@ impl StrictFields for OutcomesQuery {
 
 fn window_days(query: &OutcomesQuery) -> Result<i64, String> {
     flow::days(&FlowQuery {
+        repo: None,
         family: None,
         days: query.days.clone(),
         window: query.window.clone(),

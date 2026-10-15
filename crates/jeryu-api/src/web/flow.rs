@@ -9,6 +9,8 @@
 //! arithmetic is in [`report`]; the station list in [`stations`] is shared
 //! with `GET /api/v1/flow/layout`. Contract: `docs/flow.md`, ADR 0004.
 
+pub(crate) mod delivery;
+pub(crate) mod history;
 pub(crate) mod layout;
 pub(crate) mod project;
 pub(crate) mod report;
@@ -43,6 +45,7 @@ pub(crate) const DEFAULT_DAYS: i64 = 28;
 pub(crate) struct FlowQuery {
     /// Either spelling of a family key; the server canonicalises it.
     pub family: Option<String>,
+    pub repo: Option<String>,
     /// The window in days: one of [`WINDOWS`].
     pub days: Option<String>,
     /// The same window as the design spells it (`7d`, `28d`, `90d`).
@@ -50,10 +53,15 @@ pub(crate) struct FlowQuery {
 }
 
 impl StrictFields for FlowQuery {
-    const KEYS: &'static [&'static str] = &["family", "days", "window"];
+    const KEYS: &'static [&'static str] = &["family", "repo", "days", "window"];
     const REPAIR_HINT: &'static str = "send days as 7, 28 or 90 (or window as 7d, 28d or 90d)";
 
     fn check_values(&self) -> Result<(), String> {
+        if self.repo.as_ref().is_some_and(|r| {
+            r.len() > 200 || r.split('/').count() != 2 || r.split('/').any(str::is_empty)
+        }) {
+            return Err("repo must be owner/name".into());
+        }
         days(self).map(|_| ())
     }
 }
@@ -129,28 +137,40 @@ pub(crate) async fn flow(
             );
         }
     };
+    let repo = query.repo.clone();
+    let read_repo = repo.clone();
     let now = Utc::now().timestamp_millis();
     let since_ms = report::window_start(now, days);
     let read_family = family.clone();
     let worker_state = state.clone();
     let read = tokio::task::spawn_blocking(move || {
+        delivery::reconcile(&worker_state)?;
         let reached = worker_state.events.flow_reached(read_family.as_deref())?;
-        let visits = worker_state
+        let visits = worker_state.events.flow_visits_scoped(
+            read_family.as_deref(),
+            since_ms,
+            read_repo.as_deref(),
+        )?;
+        let repositories = worker_state
             .events
-            .flow_visits(read_family.as_deref(), since_ms)?;
-        Ok::<_, String>((visits, reached))
+            .flow_repositories(read_family.as_deref())?;
+        Ok::<_, String>((visits, reached, repositories))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((visits, reached)) => {
+        Ok((visits, reached, repositories)) => {
             let request = Request {
                 family,
                 days,
                 now_ms: now,
             };
-            Json(report::build(&request, &visits, &reached)).into_response()
+            let mut body = serde_json::to_value(report::build(&request, &visits, &reached))
+                .expect("flow serializes");
+            body["repository_wip"] = repositories;
+            body["repo"] = serde_json::json!(repo);
+            Json(body).into_response()
         }
         Err(reason) => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,

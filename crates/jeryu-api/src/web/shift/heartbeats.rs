@@ -110,6 +110,11 @@ pub(super) const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0019_outcome_ledger",
         include_str!("../../../../../db/migrations/0019_outcome_ledger.sql"),
     ),
+    (
+        20,
+        "0020_flow_evidence",
+        include_str!("../../../../../db/migrations/0020_flow_evidence.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;

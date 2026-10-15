@@ -1402,6 +1402,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/scorecard", get(scorecard::scorecard)),
         ("/api/v1/flow", get(flow::flow)),
         ("/api/v1/flow/layout", get(flow::layout)),
+        ("/api/v1/flow/history", get(flow::history::history)),
         ("/api/v1/usage", get(usage::usage)),
         ("/api/v1/outcomes", get(outcomes::outcomes)),
         ("/api/v1/release-board", get(release_board::list_boards)),

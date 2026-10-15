@@ -73,7 +73,7 @@ mkdir -p "$SNAP"; chmod 700 "$SNAP"
 python3 - "$DATA" "$SNAP" <<'P'
 import hashlib, sqlite3, sys
 src, dst = sys.argv[1], sys.argv[2]
-for name in ("forge.sqlite", "work.sqlite", "codegraph.sqlite"):
+for name in ("forge.sqlite", "work.sqlite", "codegraph.sqlite", "shift.sqlite"):
     s = sqlite3.connect(f"file:{src}/{name}?mode=ro", uri=True)
     d = sqlite3.connect(f"{dst}/{name}")
     s.backup(d); d.close(); s.close()

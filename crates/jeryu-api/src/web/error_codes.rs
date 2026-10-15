@@ -207,6 +207,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "no product family of that name: the filter would have matched nothing",
     ),
     entry(
+        "flow_history_failed",
+        500,
+        "the flow activity history could not be read",
+    ),
+    entry(
         "flow_layout_read_failed",
         500,
         "the heartbeat store behind the flow layout could not be read",
