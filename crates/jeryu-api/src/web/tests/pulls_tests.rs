@@ -2523,7 +2523,18 @@ async fn closing_a_landed_pull_request_names_the_commit_it_landed_as() {
 
     // main takes the same change as another commit, which is the shape of a
     // pin bump whose pin reached main through a replacement pull request.
-    git_in(&fx.work, &["cherry-pick", &fx.head]);
+    // A plain cherry-pick can reproduce the original hash within one second;
+    // make the replacement identity explicit while preserving the same patch.
+    git_in(&fx.work, &["cherry-pick", "--no-commit", &fx.head]);
+    git_in(
+        &fx.work,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "land the change through a replacement",
+        ],
+    );
     git_in(
         &fx.work,
         &["push", "--quiet", fx.bare.to_str().unwrap(), "main"],
