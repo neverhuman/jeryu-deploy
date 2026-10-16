@@ -105,7 +105,10 @@ retained `target/evidence/required/run.*` directory, containing readable stage
 logs, `stages.jsonl` and an atomically replaced `receipt.json`. Receipts include
 source head/dirtiness, recipe hashes, command identifiers, exit codes and elapsed
 seconds. A running or incomplete receipt is never success; these diagnostics
-are not merge authority. Keep this evidence when cleaning build outputs; the
+are not merge authority. Each run keeps the newest `JERYU_GATE_EVIDENCE_KEEP`
+(20) finalized run directories and discards a run that never finalized once it
+is older than `JERYU_GATE_EVIDENCE_STALE_DAYS` (7), so a crashed run's receipt
+survives long enough to read. Keep this evidence when cleaning build outputs; the
 normal `lanes sweep --apply` archives report/log files under `target/` before
 removing a lane. Do not remove that directory by hand before preserving it.
 

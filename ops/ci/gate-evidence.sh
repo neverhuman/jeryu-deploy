@@ -6,6 +6,7 @@ gate_evidence_init() {
   command -v jq >/dev/null || { echo 'missing prerequisite jq; install jq using your system package manager' >&2; exit 1; }
   mkdir -p "$repo_root/target/evidence/required"
   gate_run="$(mktemp -d "$repo_root/target/evidence/required/run.XXXXXXXX")"
+  gate_evidence_prune "$repo_root/target/evidence/required" "$gate_run"
   gate_steps="$gate_run/stages.jsonl"
   : > "$gate_steps"
   gate_failure=0
@@ -24,6 +25,33 @@ gate_evidence_init() {
   trap 'exit 143' TERM
   gate_receipt running null
   echo "[pr-ci] retained evidence: $gate_run" >&2
+}
+
+# Bound retained evidence: every run leaves a directory, so keep the newest
+# finalized runs and drop ones no gate can still be writing. Never touch the
+# caller's current run, and never a receipt still reading "running" until it is
+# older than any gate could run for: that is a crashed run's only evidence.
+gate_evidence_prune() {
+  local root="$1" current="$2" keep stale_days dir started
+  keep="${JERYU_GATE_EVIDENCE_KEEP:-20}"
+  stale_days="${JERYU_GATE_EVIDENCE_STALE_DAYS:-7}"
+  case "$keep" in ''|*[!0-9]*) keep=20 ;; esac
+  case "$stale_days" in ''|*[!0-9]*) stale_days=7 ;; esac
+  local -a finalized=()
+  for dir in "$root"/run.*; do
+    [ -d "$dir" ] && [ "$dir" != "$current" ] || continue
+    started="$(jq -r 'select(.conclusion != "running") | .started_at // empty' "$dir/receipt.json" 2>/dev/null || true)"
+    if [ -n "$started" ]; then
+      finalized+=("$started	$dir")
+    elif [ -n "$(find "$dir" -maxdepth 0 ! -newermt "-$stale_days days" 2>/dev/null)" ]; then
+      rm -rf -- "$dir"
+    fi
+  done
+  (( ${#finalized[@]} > keep )) || return 0
+  # mktemp names carry no tab or newline, so one record per line is unambiguous.
+  printf '%s\n' "${finalized[@]}" | sort -k1,1n |
+    head -n "$(( ${#finalized[@]} - keep ))" |
+    while IFS=$'\t' read -r started dir; do rm -rf -- "$dir"; done
 }
 
 gate_receipt() {

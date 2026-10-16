@@ -5,6 +5,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 mkdir -p target/evidence/required-fixtures
 work="$(mktemp -d "$repo_root/target/evidence/required-fixtures/run.XXXXXXXX")"
+source ops/ci/gate-evidence.sh
+gate_evidence_prune "$repo_root/target/evidence/required-fixtures" "$work"
 cat > "$work/fixture.sh" <<'FIXTURE'
 set -euo pipefail
 cd "$1"
@@ -80,4 +82,32 @@ run_case interruption 143
 run_case killed 137
 run_case incomplete 1
 run_case success 0
+# Retained evidence must stay bounded: a gate host runs this recipe every push.
+prune_case() {
+  local root="$work/prune" dir i
+  mkdir -p "$root"
+  for i in 1 2 3 4 5 6 7; do
+    dir="$root/run.final$i"
+    mkdir -p "$dir"
+    jq -nc --argjson started "$i" '{conclusion:"failure", started_at:$started}' > "$dir/receipt.json"
+  done
+  mkdir -p "$root/run.livefresh" "$root/run.livestale"
+  jq -nc '{conclusion:"running", started_at:1}' > "$root/run.livefresh/receipt.json"
+  jq -nc '{conclusion:"running", started_at:1}' > "$root/run.livestale/receipt.json"
+  touch -d '30 days ago' "$root/run.livestale"
+  mkdir -p "$root/run.current"
+  touch -d '30 days ago' "$root/run.current"
+  JERYU_GATE_EVIDENCE_KEEP=3 JERYU_GATE_EVIDENCE_STALE_DAYS=7 \
+    gate_evidence_prune "$root" "$root/run.current"
+  local kept
+  kept="$(cd "$root" && printf '%s\n' run.* | sort | tr '\n' ' ')"
+  [[ "$kept" == "run.current run.final5 run.final6 run.final7 run.livefresh " ]] || {
+    echo "prune kept: $kept" >&2; exit 1; }
+  # A tolerated non-numeric cap must not delete anything beyond the stale run.
+  JERYU_GATE_EVIDENCE_KEEP=nonsense gate_evidence_prune "$root" "$root/run.current"
+  kept="$(cd "$root" && printf '%s\n' run.* | sort | tr '\n' ' ')"
+  [[ "$kept" == "run.current run.final5 run.final6 run.final7 run.livefresh " ]] || {
+    echo "prune (default cap) kept: $kept" >&2; exit 1; }
+}
+prune_case
 echo "gate evidence fixtures passed; retained at $work"
