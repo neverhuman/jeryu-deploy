@@ -3129,3 +3129,272 @@ fn ci_declaration_lane_names_take_only_context_shaped_names() {
     assert!(names("this is not toml {{{").is_empty());
     assert!(names("[[lane]]\nname = \"a b/c\"\n").is_empty());
 }
+
+/// The `workflow` block of an open pull request on a protected base that asks
+/// for one approval and the `ci/required` context, with the given evidence
+/// recorded on the head (and optionally on an older head).
+struct WorkflowCase {
+    core: ForgeCore,
+    repo: jeryu_core::Repository,
+    number: u64,
+}
+
+const WORKFLOW_HEAD: &str = "1111111111111111111111111111111111111111";
+const WORKFLOW_OLD_HEAD: &str = "2222222222222222222222222222222222222222";
+
+impl WorkflowCase {
+    fn new(draft: bool) -> Self {
+        let core = ForgeCore::new();
+        let repo = core
+            .create_repository(
+                "acme",
+                CreateRepositoryRequest {
+                    name: "flow".to_string(),
+                    private: false,
+                    description: None,
+                    default_branch: Some("main".to_string()),
+                },
+            )
+            .unwrap();
+        core.set_branch_protection(
+            "acme",
+            "flow",
+            "main",
+            SetBranchProtectionRequest {
+                required_status_checks: vec!["ci/required".to_string()],
+                required_approving_review_count: 1,
+                ..SetBranchProtectionRequest::default()
+            },
+        )
+        .unwrap();
+        let pr = core
+            .create_pull_request(
+                "acme",
+                "flow",
+                "dana",
+                CreatePullRequestRequest {
+                    title: "flow".to_string(),
+                    head: "feature".to_string(),
+                    base: "main".to_string(),
+                    head_sha: Some(WORKFLOW_HEAD.to_string()),
+                    draft,
+                    ..CreatePullRequestRequest::default()
+                },
+            )
+            .unwrap();
+        Self {
+            core,
+            repo,
+            number: pr.number,
+        }
+    }
+
+    fn check(&self, head: &str, conclusion: Option<CheckConclusion>) {
+        self.core
+            .create_check_run(
+                "acme",
+                "flow",
+                CreateCheckRunRequest {
+                    name: "ci/required".to_string(),
+                    head_sha: head.to_string(),
+                    status: Some(if conclusion.is_some() {
+                        jeryu_core::CheckRunStatus::Completed
+                    } else {
+                        jeryu_core::CheckRunStatus::InProgress
+                    }),
+                    conclusion,
+                    details_url: Some("https://gate-host.invalid/logs/1".to_string()),
+                    ..CreateCheckRunRequest::default()
+                },
+            )
+            .unwrap();
+    }
+
+    fn approve(&self, head: &str) {
+        self.core
+            .create_review(
+                "acme",
+                "flow",
+                self.number,
+                "bob",
+                CreateReviewRequest {
+                    body: None,
+                    event: ReviewState::Approved,
+                    comments: Vec::new(),
+                    expected_head_sha: Some(head.to_string()),
+                },
+            )
+            .unwrap();
+    }
+
+    async fn workflow(self) -> Value {
+        let state = Arc::new(WebState::new(self.core));
+        let detail = response_json(
+            crate::web::pulls::detail(
+                State(state),
+                authenticated_account("bob"),
+                AxumPath((self.repo.id.to_string(), self.number)),
+            )
+            .await,
+        )
+        .await;
+        detail["workflow"].clone()
+    }
+}
+
+#[tokio::test]
+async fn workflow_names_one_outcome_for_every_lifecycle_and_gate_state() {
+    use jeryu_core::PullRequestState::Closed;
+    let success = || Some(CheckConclusion::Success);
+
+    let draft = WorkflowCase::new(true).workflow().await;
+    assert_eq!(draft["outcome"], "draft", "{draft}");
+    assert_eq!(draft["next_action"]["code"], "pull.ready_for_review");
+    assert_eq!(draft["can_merge"], false);
+
+    let pending = WorkflowCase::new(false);
+    pending.check(WORKFLOW_HEAD, None);
+    pending.approve(WORKFLOW_HEAD);
+    let pending = pending.workflow().await;
+    assert_eq!(pending["outcome"], "checks_pending", "{pending}");
+    assert_eq!(pending["next_action"]["code"], "wait_for_checks");
+
+    let failed = WorkflowCase::new(false);
+    failed.check(WORKFLOW_HEAD, Some(CheckConclusion::Failure));
+    let failed = failed.workflow().await;
+    assert_eq!(failed["outcome"], "checks_failed", "{failed}");
+    assert_eq!(failed["required_checks"][0]["state"], "failing");
+
+    let review = WorkflowCase::new(false);
+    review.check(WORKFLOW_HEAD, success());
+    let review = review.workflow().await;
+    assert_eq!(review["outcome"], "review_needed", "{review}");
+    assert_eq!(review["review"]["approvals"], 0);
+    assert_eq!(review["review"]["required_approvals"], 1);
+
+    let ready = WorkflowCase::new(false);
+    ready.check(WORKFLOW_HEAD, success());
+    ready.approve(WORKFLOW_HEAD);
+    let ready = ready.workflow().await;
+    assert_eq!(ready["outcome"], "ready", "{ready}");
+    assert_eq!(ready["can_merge"], true);
+    assert_eq!(ready["next_action"]["code"], "pull.merge");
+    assert_eq!(ready["next_action"]["expected_head_sha"], WORKFLOW_HEAD);
+    assert_eq!(ready["passport"]["head_sha"], WORKFLOW_HEAD);
+    assert!(ready["passport"]["blockers"].as_array().unwrap().is_empty());
+
+    let closed = WorkflowCase::new(false);
+    closed
+        .core
+        .update_pull_request(
+            "acme",
+            "flow",
+            closed.number,
+            jeryu_core::UpdatePullRequestRequest {
+                state: Some(Closed),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let closed = closed.workflow().await;
+    assert_eq!(closed["outcome"], "closed", "{closed}");
+    assert_eq!(closed["lifecycle"], "closed");
+    assert_eq!(closed["can_merge"], false);
+
+    // Missing evidence entirely is waiting, not green.
+    let missing = WorkflowCase::new(false).workflow().await;
+    assert_eq!(missing["outcome"], "checks_pending", "{missing}");
+    assert_eq!(missing["required_checks"][0]["state"], "missing");
+}
+
+#[tokio::test]
+async fn workflow_merged_pull_request_reports_merged() {
+    let case = WorkflowCase::new(false);
+    let state = WebState::new(case.core);
+    let mut pr = state
+        .github
+        .core()
+        .get_pull_request("acme", "flow", case.number)
+        .unwrap();
+    pr.merged = true;
+    let workflow = crate::web::pulls::workflow_observed_against(&state, &pr, &pr.head.sha);
+    assert_eq!(workflow["outcome"], "merged", "{workflow}");
+    assert_eq!(workflow["next_action"]["code"], "none");
+}
+
+#[tokio::test]
+async fn workflow_results_on_an_older_head_never_make_the_current_head_ready() {
+    let case = WorkflowCase::new(false);
+    // A green check recorded on a head the PR does not have. The core itself
+    // refuses an approval pinned to another head, so only the check is seeded.
+    case.check(WORKFLOW_OLD_HEAD, Some(CheckConclusion::Success));
+    let workflow = case.workflow().await;
+    assert_ne!(workflow["outcome"], "ready", "{workflow}");
+    assert_eq!(workflow["required_checks"][0]["state"], "missing");
+    assert_eq!(workflow["required_checks"][0]["head_sha"], WORKFLOW_HEAD);
+    assert_eq!(workflow["review"]["approvals"], 0, "{workflow}");
+    let reviews = workflow["review"]["reviews"].as_array().unwrap();
+    assert!(
+        reviews
+            .iter()
+            .all(|review| review["counts_for_head"] == false),
+        "{workflow}"
+    );
+}
+
+#[tokio::test]
+async fn workflow_a_head_change_during_observation_voids_the_verdict() {
+    let case = WorkflowCase::new(false);
+    case.check(WORKFLOW_HEAD, Some(CheckConclusion::Success));
+    case.approve(WORKFLOW_HEAD);
+    let state = WebState::new(case.core);
+    let pr = state
+        .github
+        .core()
+        .get_pull_request("acme", "flow", case.number)
+        .unwrap();
+    let steady = crate::web::pulls::workflow_observed_against(&state, &pr, WORKFLOW_HEAD);
+    assert_eq!(steady["outcome"], "ready", "{steady}");
+
+    let moved = crate::web::pulls::workflow_observed_against(&state, &pr, WORKFLOW_OLD_HEAD);
+    assert_eq!(moved["outcome"], "head_changed", "{moved}");
+    assert_eq!(moved["head_sha"], WORKFLOW_HEAD);
+    assert_eq!(moved["current_head_sha"], WORKFLOW_OLD_HEAD);
+    assert_eq!(moved["can_merge"], false);
+    assert_eq!(moved["next_action"]["code"], "refresh_workflow");
+}
+
+#[tokio::test]
+async fn workflow_does_not_leak_a_log_link_the_reader_cannot_open() {
+    let case = WorkflowCase::new(false);
+    case.check(WORKFLOW_HEAD, Some(CheckConclusion::Failure));
+    let workflow = case.workflow().await;
+    let text = workflow.to_string();
+    assert!(!text.contains("gate-host.invalid"), "{text}");
+    assert!(workflow["required_checks"][0]["evidence_url"].is_null());
+}
+
+#[tokio::test]
+async fn workflow_keeps_the_existing_detail_fields_beside_it() {
+    let case = WorkflowCase::new(false);
+    let state = Arc::new(WebState::new(case.core));
+    let detail = response_json(
+        crate::web::pulls::detail(
+            State(state),
+            authenticated_account("bob"),
+            AxumPath((case.repo.id.to_string(), case.number)),
+        )
+        .await,
+    )
+    .await;
+    for field in [
+        "summary",
+        "merge_passport",
+        "reviews",
+        "passport_hash",
+        "html_url",
+    ] {
+        assert!(detail.get(field).is_some(), "{field} missing in {detail}");
+    }
+    assert_eq!(detail["workflow"]["schema"], "pr_workflow/v1");
+}

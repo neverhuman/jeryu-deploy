@@ -1215,7 +1215,18 @@ fn detail_response(
     pr: &PullRequest,
     authenticated_login: Option<&str>,
 ) -> AxumResponse {
-    let detail = detail_for_pr(state, pr, authenticated_login);
+    let required = required_contexts(state, pr);
+    let detail = detail_for_pr_with_required_contexts(state, pr, &required, authenticated_login);
+    let checks = checks_for_pr(state, pr);
+    // Read the head again after everything above was built from `pr`: a push
+    // in between makes this observation about a head that is no longer current.
+    let current_head = state
+        .github
+        .core()
+        .get_pull_request(&pr.owner, &pr.repo, pr.number)
+        .ok()
+        .map(|current| current.head.sha);
+    let workflow = workflow::view(pr, &detail, &checks, &required, current_head.as_deref());
     let mut value = serde_json::to_value(detail).expect("pull detail serializes");
     with_replacement(state, pr, &mut value);
     with_canonical_links(pr, &mut value);
@@ -1223,7 +1234,22 @@ fn detail_response(
         with_replacement(state, pr, summary);
         with_canonical_links(pr, summary);
     }
+    value["workflow"] = workflow;
     Json(value).into_response()
+}
+
+/// The `workflow` block for `pr` as observed against a stated current head,
+/// so a test can move the head between the observation and the re-read.
+#[cfg(test)]
+pub(super) fn workflow_observed_against(
+    state: &WebState,
+    pr: &PullRequest,
+    current_head: &str,
+) -> Value {
+    let required = required_contexts(state, pr);
+    let detail = detail_for_pr_with_required_contexts(state, pr, &required, None);
+    let checks = checks_for_pr(state, pr);
+    workflow::view(pr, &detail, &checks, &required, Some(current_head))
 }
 
 /// Adds the two links a client needs to the payload, so nobody has to build a
@@ -1678,6 +1704,7 @@ mod expected;
 pub(in crate::web) mod landed;
 pub(in crate::web) mod owner_paths;
 mod posture;
+mod workflow;
 
 #[cfg(test)]
 pub(super) use expected::lane_names as lane_names_for_test;
