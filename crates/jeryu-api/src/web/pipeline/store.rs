@@ -437,6 +437,7 @@ impl EventStore {
         let view = project::EventView {
             seq: event.seq,
             reporter: &event.reporter,
+            actor: event.actor.as_deref(),
             event_id: event.event_id.as_deref(),
             ts_ms,
             kind: &event.kind,
@@ -574,6 +575,7 @@ impl EventStore {
         let view = project::EventView {
             seq,
             reporter,
+            actor: event.actor.as_deref(),
             event_id: event.event_id.as_deref(),
             ts_ms: now_ms,
             kind: &event.kind,
@@ -870,13 +872,17 @@ impl EventStore {
             Option<i64>,
             String,
             Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<(String, String, i64)>,
         );
         let rows: Vec<Row> = {
             let inner = self.inner.lock().expect("pipeline event mutex poisoned");
             let mut stmt = inner
                 .conn
                 .prepare_cached(
-                    "SELECT lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to
+                    "SELECT lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to,
+                            repo, pr, hold_reason, hold_by, hold_since_ms
                        FROM flow_ledger
                       WHERE (?1 IS NULL OR family = ?1) AND (?3 IS NULL OR repo=?3)
                         AND lot_id IN (
@@ -896,6 +902,17 @@ impl EventStore {
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        {
+                            let reason: Option<String> = row.get(9)?;
+                            let by: Option<String> = row.get(10)?;
+                            let since: Option<i64> = row.get(11)?;
+                            match (reason, by, since) {
+                                (Some(reason), Some(by), Some(since)) => Some((reason, by, since)),
+                                _ => None,
+                            }
+                        },
                     ))
                 })
                 .map_err(|err| err.to_string())?;
@@ -903,7 +920,19 @@ impl EventStore {
                 .map_err(|err| err.to_string())?
         };
         let mut visits = Vec::with_capacity(rows.len());
-        for (lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to) in rows {
+        for (
+            lot_id,
+            station,
+            entered_ms,
+            started_ms,
+            left_ms,
+            direction,
+            rework_to,
+            repo,
+            pr,
+            hold,
+        ) in rows
+        {
             // A row naming a station this binary does not know is left out
             // rather than guessed at.
             let Some(station) = Station::parse(&station) else {
@@ -917,6 +946,15 @@ impl EventStore {
                 left_ms,
                 direction,
                 rework_to: rework_to.as_deref().and_then(Station::parse),
+                repo,
+                pr,
+                hold: hold.map(
+                    |(reason, by, since_ms)| crate::web::flow::report::HoldRecord {
+                        reason,
+                        by,
+                        since_ms,
+                    },
+                ),
             });
         }
         Ok(visits)

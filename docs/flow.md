@@ -22,7 +22,22 @@ transitions, not unique items. Changing day/state does not change bar totals.
 Migration 0020 keeps transitions and release receipts permanently. Historical
 arrival/start/exit times are recovered from visits; detailed hold and runner
 coverage starts at `detailed_since`. Missing metadata stays unknown. Review
-holds stay at Review; runner errors retry Gate; code failures return to Work.
+holds stay at Review; runner errors retry Gate; red gates hold at Gate.
+A lot that stopped stays at the station where it stopped, held, with a
+`hold` object on its `lots[]` entry: `reason` (`review_hold`, `gate_red`,
+`queue_conflict`, `queue_failed`, `superseded`), `by` (the reviewer's login,
+the check's name, `merge-queue`, or the replacing pull request), `since` (the
+oldest event on the current head that caused it), `age_s`, `nobody_acting`
+(no open Work visit for this lot since the hold) and, for a review hold, `review_href`. It counts in that
+station's held WIP and `oldest_wait_s`. The rework arc back to Work is drawn
+only when a new head arrives. `superseded` is read at request time from the
+rule behind needs-you's `pr_superseded`. `pr_href` is the pull request page
+for any lot bound to one. Migration 0025 adds nullable hold metadata. Existing ledger rows are not
+rebuilt: earlier holds retain no reason, and earlier failures already projected
+as rework still need reconciliation. Separate fix todos are not yet joined
+to the held lot; `nobody_acting` currently sees only that lot's Work visit.
+Events without comparable head SHAs cannot establish a new head.
+
 Shift/Stage have no measured start until a producer records one, so their
 wait is no longer called active processing.
 
@@ -217,9 +232,9 @@ numbers.
 | 1 | Queue | `filed` | `todo.filed` | `todo.claimed` | `todo.claimed` | worker slots (shift heartbeats) | — |
 | 2 | Work | `claimed`, `done` | `todo.claimed` | `worker.stage` → agent | `todo.attempt_finished` `done` | worker slots | Queue on `retry`, `killed`, `ratelimit`, `retarget` |
 | 3 | Shift | `shift` | landed on a shift branch | — | `pr.opened` for the shift | shift PR opener | — |
-| 4 | Review | `review` | `pr.opened` / new head | `review.started` | `review.finished` / `pr.review` | reviewer (`redteam`) | Work on `hold` |
-| 5 | Gate | `gate` | head needs its required context | `gate.started` | `gate.finished` | gate slots (no label) | Work on `failure` |
-| 6 | Merge | `queue`, `merged` | approved and green | `queue.enqueued` or merge call | `pr.merged` / `queue.landed` | merge pass, merge queue | Gate on `queue.building`; Review/Work on `queue.failed`, `queue.refused` |
+| 4 | Review | `review` | `pr.opened` / new head | `review.started` | `review.finished` / `pr.review` | reviewer (`redteam`) | Work when a new head follows a hold |
+| 5 | Gate | `gate` | head needs its required context | `gate.started` | `gate.finished` | gate slots (no label) | Work when a new head follows a failure |
+| 6 | Merge | `queue`, `merged` | approved and green | `queue.enqueued` or merge call | `pr.merged` / `queue.landed` | merge pass, merge queue | Gate on `queue.building`; Work when a new head follows a failure/refusal |
 | 7 | Pin | `pinned` | merged, consumer pin behind | `pin.bump_opened` | the pin reaches the work | `auto-pin` (`automation`) | Pin on `pin.bump_failed` |
 | 8 | Stage | `staged` | pinned (or merged when self-releasing) | — | `release.staged` carries the work | `auto-stage` (`automation`) | Stage on `release.stage_failed` |
 | 9 | Deploy | `deployed` | staged | `deploy.created` | `deploy.status` `success` carries the work | a person (`deploy`) | Stage on `failure`, `error` |

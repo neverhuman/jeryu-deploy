@@ -33,6 +33,39 @@ pub(crate) enum Step {
     Hold(Station),
     /// A person acted and the lot can move again.
     Release(Station),
+    /// The lot stopped here for a reason the event names, and stays here:
+    /// held, with who holds it and since when. No rework arc is drawn until
+    /// a new head arrives ([`release_on_new_head`]).
+    HoldFor(Station, Cause),
+}
+
+/// What stopped a lot at a station. The wire spelling is
+/// [`Cause::reason`] (`hold.reason` of `GET /api/v1/flow`); the verdicts
+/// are the ones needs-you raises `reviewer_stuck`, `pr_changes_requested`,
+/// `pr_checks_failing`, `queue_refused` and `queue_failed` for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cause {
+    ReviewHold,
+    GateRed,
+    QueueConflict,
+    QueueFailed,
+}
+
+impl Cause {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::ReviewHold => "review_hold",
+            Self::GateRed => "gate_red",
+            Self::QueueConflict => "queue_conflict",
+            Self::QueueFailed => "queue_failed",
+        }
+    }
+}
+
+/// Event kinds that bring a head to a pull request: the only events that may
+/// say a held lot has a new head to judge.
+fn brings_head(kind: &str) -> bool {
+    sweeps_shift(kind) || kind == "review.started"
 }
 
 /// What `kind` with `outcome` means for the route.
@@ -43,8 +76,9 @@ pub(crate) enum Step {
 /// (`pr.skipped`, `gate.log` of a pass still running) maps to no step, and a
 /// step for a station the lot is not at is dropped by [`apply`].
 pub(crate) fn steps(kind: &str, outcome: Option<&str>) -> Vec<Step> {
+    use Cause::{GateRed, QueueConflict, QueueFailed, ReviewHold};
     use Station::{Deploy, Gate, Merge, Pin, Queue, Review, Shift, Stage, Work};
-    use Step::{Enter, Hold, Leave, Release, Rework, Start};
+    use Step::{Enter, Hold, HoldFor, Leave, Release, Rework, Start};
     let outcome = outcome.unwrap_or_default();
     match kind {
         "todo.filed" => vec![Enter(Queue)],
@@ -77,27 +111,31 @@ pub(crate) fn steps(kind: &str, outcome: Option<&str>) -> Vec<Step> {
         "review.finished" | "pr.review" | "pr.reviewed" => match outcome {
             "approve" | "approved" => vec![Leave(Review)],
             // A reviewer that holds, asks for changes or refuses to publish
-            // sends the work back to the worker.
-            "hold" => vec![Hold(Review)],
-            "request_changes" | "failed" | "publication_rejected" | "too_large" => {
-                vec![Rework(Review, Work)]
+            // has stopped the lot at Review: it stays there, held, until a
+            // new head arrives or somebody acts.
+            verdict
+                if crate::web::pipeline::attention::review_hold_explanation(verdict).is_some() =>
+            {
+                vec![HoldFor(Review, ReviewHold)]
             }
             _ => Vec::new(),
         },
         "pr.approved" => vec![Leave(Review)],
-        "gate.started" => vec![Enter(Gate), Start(Gate)],
+        // A rerun on the same head keeps its named hold until it passes.
+        "gate.started" => vec![Enter(Gate), Release(Gate), Start(Gate)],
         "gate.finished" | "gate.log" => match outcome {
             "success" => vec![Leave(Gate)],
-            "failure" => vec![Rework(Gate, Work)],
+            "failure" => vec![HoldFor(Gate, GateRed)],
             "error" | "timed_out" | "inputs_changed" => vec![Rework(Gate, Gate)],
             _ => Vec::new(),
         },
-        "queue.enqueued" => vec![Enter(Merge), Start(Merge)],
+        "queue.enqueued" => vec![Enter(Merge), Release(Merge), Start(Merge)],
         // A rebuild sends the head back through the gate.
         "queue.building" => vec![Rework(Merge, Gate)],
         // A replay that failed or could not be replayed at all needs the
-        // branch worked on again.
-        "queue.failed" | "queue.refused" => vec![Rework(Merge, Work)],
+        // branch worked on again; the lot waits at Merge, held.
+        "queue.failed" => vec![HoldFor(Merge, QueueFailed)],
+        "queue.refused" => vec![HoldFor(Merge, QueueConflict)],
         "queue.landed" | "pr.merged" | "todo.merged" => vec![
             Leave(Queue),
             Leave(Work),
@@ -133,6 +171,7 @@ pub(crate) struct EventView<'a> {
     /// Who posted the event and the id it gave it: together the key that
     /// makes the projection count an event once, however often it is posted.
     pub reporter: &'a str,
+    pub actor: Option<&'a str>,
     pub event_id: Option<&'a str>,
     pub ts_ms: i64,
     pub kind: &'a str,
@@ -170,6 +209,7 @@ pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), Stri
         return Ok(());
     }
     for (lot, joined) in lots_for(conn, event)? {
+        release_on_new_head(conn, event, &lot)?;
         // A lot that joins an open pull request's new head leaves Shift and
         // waits for review of that head, as it would have had it been on the
         // branch when the pull request opened.
@@ -197,6 +237,68 @@ pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+/// A held lot whose head changed is no longer stuck on the old head: the
+/// hold closes as rework to Work (the arc is drawn now, because a new head
+/// actually arrived) and the lot is judged afresh by the steps that follow.
+/// The fix attempt's own Work visit is opened by its claim, not here.
+///
+/// A new head is an event that names a different sha than the hold recorded.
+/// A hold recorded without a sha, or an event without one, cannot be compared:
+/// such an event cannot establish that a new head arrived.
+fn release_on_new_head(conn: &Connection, event: &EventView<'_>, lot: &Lot) -> Result<(), String> {
+    if !brings_head(event.kind) {
+        return Ok(());
+    }
+    let sha = event.sha.filter(|sha| !sha.is_empty());
+    let stale: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT station FROM flow_ledger
+                  WHERE lot_id = ?1 AND left_ms IS NULL AND direction = 'hold'
+                    AND hold_reason IS NOT NULL AND entered_ms <= ?3
+                    AND hold_sha IS NOT NULL AND ?2 IS NOT NULL AND hold_sha != ?2",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![lot.id, sha, event.ts_ms], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?
+    };
+    for station in stale.iter().filter_map(|id| Station::parse(id)) {
+        close(conn, event, lot, station, "rework", Some(Station::Work))?;
+    }
+    Ok(())
+}
+
+/// Who holds the lot: the reviewer's login or the check's name. The
+/// producer's own `detail` names them; the poster stands in for a reviewer
+/// that said nothing, and the gate runner's check run for a check that did.
+fn holder(event: &EventView<'_>, cause: Cause) -> String {
+    let detail = |key: &str| {
+        event
+            .detail
+            .and_then(|d| d.get(key))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && v.len() <= 120)
+            .map(ToString::to_string)
+    };
+    match cause {
+        Cause::ReviewHold => detail("reviewer")
+            .or_else(|| detail("login"))
+            .or_else(|| event.actor.map(str::to_string))
+            .unwrap_or_else(|| event.reporter.to_string()),
+        Cause::GateRed => detail("check")
+            .or_else(|| detail("context"))
+            .or_else(|| detail("recipe"))
+            .unwrap_or_else(|| "pr-gate-runner".to_string()),
+        Cause::QueueConflict | Cause::QueueFailed => "merge-queue".to_string(),
+    }
 }
 
 /// Whether this is the first time the event reaches the projection.
@@ -241,7 +343,7 @@ pub(crate) fn for_each_event(
     let mut stmt = conn
         .prepare(
             "SELECT seq, ts_ms, kind, outcome, family, repo, pr, todo_id, shift,
-                    reporter, event_id, sha, detail_json, summary
+                    reporter, event_id, sha, detail_json, summary, actor
                FROM pipeline_events ORDER BY seq",
         )
         .map_err(|err| err.to_string())?;
@@ -262,6 +364,7 @@ pub(crate) fn for_each_event(
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, Option<String>>(12)?,
                 row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
             ))
         })
         .map_err(|err| err.to_string())?
@@ -284,6 +387,7 @@ pub(crate) fn for_each_event(
         sha,
         detail,
         summary,
+        actor,
     ) in &rows
     {
         read += 1;
@@ -293,6 +397,7 @@ pub(crate) fn for_each_event(
         fold(&EventView {
             seq: *seq,
             reporter,
+            actor: actor.as_deref(),
             event_id: event_id.as_deref(),
             ts_ms: *ts_ms,
             kind,
@@ -554,12 +659,51 @@ fn apply_step(
             }
             Ok(())
         }
+        Step::HoldFor(station, cause) => {
+            if open_visit(conn, &lot.id, station)?.is_none() {
+                enter(conn, event, lot, station)?;
+            }
+            let was_held: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM flow_ledger WHERE lot_id = ?1 AND station = ?2
+                        AND left_ms IS NULL AND direction = 'hold')",
+                    params![lot.id, station.id()],
+                    |row| row.get(0),
+                )
+                .map_err(|err| err.to_string())?;
+            // `since` is the oldest event of the same cause on the same head:
+            // a repeated verdict keeps the first one's time.
+            let changed = conn
+                .execute(
+                    "UPDATE flow_ledger SET direction = 'hold', outcome = ?3, source_seq_last = ?4,
+                        hold_since_ms = CASE WHEN hold_reason IS ?5 AND hold_sha IS ?7
+                                              AND hold_since_ms IS NOT NULL
+                                             THEN MIN(hold_since_ms, ?8) ELSE ?8 END,
+                        hold_reason = ?5, hold_by = ?6, hold_sha = ?7
+                      WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL",
+                    params![
+                        lot.id,
+                        station.id(),
+                        event.outcome,
+                        event.seq,
+                        cause.reason(),
+                        holder(event, cause),
+                        event.sha.filter(|sha| !sha.is_empty()),
+                        event.ts_ms,
+                    ],
+                )
+                .map_err(|err| err.to_string())?;
+            if changed > 0 && !was_held {
+                super::history::record(conn, event, &lot.id, station, "held")?;
+            }
+            Ok(())
+        }
         Step::Release(station) => {
             let changed = conn
                 .execute(
                     "UPDATE flow_ledger SET direction = 'open', source_seq_last = ?3
                   WHERE lot_id = ?1 AND station = ?2 AND left_ms IS NULL
-                    AND direction = 'hold'",
+                    AND direction = 'hold' AND (hold_reason IS NULL OR station = 'merge')",
                     params![lot.id, station.id(), event.seq],
                 )
                 .map_err(|err| err.to_string())?;

@@ -17,6 +17,17 @@ use crate::web::pipeline::Event;
 use crate::web::pulls::PullPosture;
 use crate::web::pulls::landed::Landed;
 
+/// The verdicts that leave a review waiting on a person. Shared with Flow.
+pub(crate) fn review_hold_explanation(verdict: &str) -> Option<&'static str> {
+    match verdict {
+        "hold" | "request_changes" => Some("it found a problem and requested changes"),
+        "too_large" => Some("the diff is larger than the reviewer accepts, so nothing was posted"),
+        "publication_rejected" => Some("the forge refused the review it tried to post"),
+        "failed" => Some("the review run ended without a usable verdict"),
+        _ => None,
+    }
+}
+
 /// An open pull request and where its merge gate stands.
 #[derive(Clone, Debug)]
 pub(crate) struct PullFacts {
@@ -54,23 +65,74 @@ pub(crate) struct SupersededPullFacts {
     pub status: &'static str,
 }
 
+/// An open pull request and the later pull request that replaced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Superseded {
+    pub repo: String,
+    pub number: u64,
+    pub replacement_repo: String,
+    pub replacement_number: u64,
+    pub replacement_state: &'static str,
+    pub replaced_at: DateTime<Utc>,
+}
+
+/// Each older open pull request replaced by a later pull: the one rule
+/// behind `pr_superseded` rows and Flow's `superseded` holds.
+pub(crate) fn superseded_pulls(pulls: &[SupersededPullFacts]) -> Vec<(usize, Superseded)> {
+    pulls
+        .iter()
+        .enumerate()
+        .filter(|(_, old)| old.status == "open")
+        .filter_map(|(index, old)| {
+            let replacement = pulls
+                .iter()
+                .filter(|new| {
+                    new.repo == old.repo
+                        && !old.author.trim().is_empty()
+                        && new.author.eq_ignore_ascii_case(&old.author)
+                        && new.base_ref == old.base_ref
+                        && source_repository(new) == source_repository(old)
+                        && new.status != "closed"
+                        && new.created_at > old.created_at
+                        && (explicitly_replaces(new, old.number)
+                            || new
+                                .head_ref
+                                .strip_prefix(&old.head_ref)
+                                .is_some_and(|suffix| {
+                                    suffix.starts_with("-r") && suffix[2..].parse::<u32>().is_ok()
+                                }))
+                })
+                .max_by_key(|new| new.created_at)?;
+            Some((
+                index,
+                Superseded {
+                    repo: old.repo.clone(),
+                    number: old.number,
+                    replacement_repo: replacement.repo.clone(),
+                    replacement_number: replacement.number,
+                    replacement_state: if replacement.status == "merged" {
+                        "merged"
+                    } else {
+                        "open"
+                    },
+                    replaced_at: replacement.created_at,
+                },
+            ))
+        })
+        .collect()
+}
+
 /// One action row for each older open pull request replaced by a later pull.
 pub(crate) fn superseded_pull_items(pulls: &[SupersededPullFacts]) -> Vec<Item> {
-    pulls.iter().filter(|old| old.status == "open").filter_map(|old| {
-        let replacement = pulls.iter().filter(|new| new.repo == old.repo
-            && !old.author.trim().is_empty()
-            && new.author.eq_ignore_ascii_case(&old.author)
-            && new.base_ref == old.base_ref
-            && source_repository(new) == source_repository(old)
-            && new.status != "closed" && new.created_at > old.created_at && (explicitly_replaces(new, old.number) || new.head_ref.strip_prefix(&old.head_ref).is_some_and(|suffix| suffix.starts_with("-r") && suffix[2..].parse::<u32>().is_ok())))
-            .max_by_key(|new| new.created_at)?;
+    superseded_pulls(pulls).into_iter().map(|(index, found)| {
+        let old = &pulls[index];
+        let replacement = pulls.iter().find(|new| new.repo == found.replacement_repo && new.number == found.replacement_number).unwrap_or(old);
         let label = format!("{}#{}", old.repo, old.number);
-        let state = if replacement.status == "merged" { "merged" } else { "open" };
         let mut item = Draft { id: format!("pr-superseded:{}:{}", old.repo, old.number), kind: "pr_superseded", severity: Severity::Action,
-            title: format!("{label} was replaced by {}#{}", replacement.repo, replacement.number),
-            reason: format!("\"{}\" was superseded by \"{}\" ({}). Close the older pull request and leave a comment pointing to its replacement.", old.title, replacement.title, state),
+            title: format!("{label} was replaced by {}#{}", found.replacement_repo, found.replacement_number),
+            reason: format!("\"{}\" was superseded by \"{}\" ({}). Close the older pull request and leave a comment pointing to its replacement.", old.title, replacement.title, found.replacement_state),
             href: pull_href(&old.repo, old.number), label: "Close it and point to the replacement", api: Some(close_pull_call(&old.repo, old.number)), command: None }.build();
-        item.repo = Some(old.repo.clone()); item.pr = Some(old.number); Some(item)
+        item.repo = Some(old.repo.clone()); item.pr = Some(old.number); item
     }).collect()
 }
 
@@ -913,12 +975,8 @@ pub(crate) fn runner_items(
         let Some(last) = &record.heartbeat.last else {
             continue;
         };
-        let explained = match last.conclusion.as_str() {
-            "hold" => "it found a problem it rates critical and requested changes",
-            "too_large" => "the diff is larger than the reviewer accepts, so nothing was posted",
-            "publication_rejected" => "the forge refused the review it tried to post",
-            "failed" => "the review run ended without a usable verdict",
-            _ => continue,
+        let Some(explained) = review_hold_explanation(&last.conclusion) else {
+            continue;
         };
         let Some(pr) = last
             .pr

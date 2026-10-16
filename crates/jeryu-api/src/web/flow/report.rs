@@ -31,6 +31,19 @@ pub(crate) struct Visit {
     pub left_ms: Option<i64>,
     pub direction: String,
     pub rework_to: Option<Station>,
+    /// The pull request the visit is bound to, when it is.
+    pub repo: Option<String>,
+    pub pr: Option<i64>,
+    /// Why a held visit stopped, when the producer said (`project::Cause`).
+    pub hold: Option<HoldRecord>,
+}
+
+/// What `flow_ledger` records about a hold.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HoldRecord {
+    pub reason: String,
+    pub by: String,
+    pub since_ms: i64,
 }
 
 impl Visit {
@@ -135,6 +148,29 @@ pub(crate) struct LotReport {
     pub eta_unknown_stations: Vec<&'static str>,
     pub slowest_ahead: Option<&'static str>,
     pub href: String,
+    /// The pull request page, when the lot is bound to a pull request.
+    pub pr_href: Option<String>,
+    /// Set while the lot is held for a named reason; null otherwise.
+    pub hold: Option<HoldReport>,
+}
+
+/// Where a lot stopped and who holds it. Read by the Live page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct HoldReport {
+    /// `review_hold`, `gate_red`, `queue_conflict`, `queue_failed` or
+    /// `superseded`.
+    pub reason: String,
+    /// The reviewer's login, the check's name, or the replacing pull request.
+    pub by: String,
+    /// The oldest event on the current head that caused the hold.
+    pub since: String,
+    /// Seconds since `since`.
+    pub age_s: i64,
+    /// True when the head has not changed since the hold and no fix has been
+    /// claimed: no open Work visit for this lot began after the hold.
+    pub nobody_acting: bool,
+    /// The pull request's review, when the hold is a review's.
+    pub review_href: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -529,6 +565,14 @@ fn lots(
             } else {
                 eta(station, visit, stations, now_ms)
             };
+            let pr_href = match (&visit.repo, visit.pr) {
+                (Some(repo), Some(pr)) if pr > 0 => Some(pr_page(repo, pr)),
+                _ => lot_pr_page(&visit.lot_id),
+            };
+            let hold = visit
+                .held()
+                .then(|| hold_report(visit, visits, pr_href.as_deref(), now_ms))
+                .flatten();
             lots.push(LotReport {
                 lot_id: visit.lot_id.clone(),
                 station: station.id(),
@@ -545,28 +589,106 @@ fn lots(
                 eta_unknown_stations: eta.unknown,
                 slowest_ahead: eta.slowest,
                 href: lot_href(&visit.lot_id),
+                pr_href,
+                hold,
             });
         }
     }
     lots
 }
 
-/// Where a lot opens in the web app. A todo's lot is its Work page; a pull
-/// request no todo carries (`<owner>/<repo>#<n>`) opens that pull request.
-pub(crate) fn lot_href(lot_id: &str) -> String {
-    if let Some((repo, number)) = lot_id.rsplit_once('#')
-        && let Some((owner, name)) = repo.rsplit_once('/')
-        && !owner.is_empty()
-        && !name.is_empty()
-        && number.parse::<u64>().is_ok()
-    {
-        return format!(
-            "/{}/{}/pull/{number}",
-            path_segment(owner),
-            path_segment(name)
-        );
+/// Hold the open visits of every pull request that a later one replaced, at
+/// the station each stopped at: `superseded`, by the replacement, since the
+/// replacement opened. The ledger's own hold for the visit, if any, is
+/// replaced: the pull request is not going to move whatever stopped it.
+pub(crate) fn mark_superseded(
+    visits: &mut [Visit],
+    found: &[crate::web::pipeline::attention::Superseded],
+) {
+    for visit in visits.iter_mut().filter(|visit| {
+        visit.left_ms.is_none()
+            && matches!(
+                visit.station,
+                Station::Work | Station::Shift | Station::Review | Station::Gate | Station::Merge
+            )
+    }) {
+        let (Some(repo), Some(pr)) = (&visit.repo, visit.pr) else {
+            continue;
+        };
+        let Some(hit) = found
+            .iter()
+            .find(|s| s.repo == *repo && i64::try_from(s.number) == Ok(pr))
+        else {
+            continue;
+        };
+        visit.direction = "hold".to_string();
+        visit.hold = Some(HoldRecord {
+            reason: "superseded".to_string(),
+            by: format!("{}#{}", hit.replacement_repo, hit.replacement_number),
+            since_ms: hit.replaced_at.timestamp_millis(),
+        });
     }
-    format!("/work/{}", path_segment(lot_id))
+}
+
+/// The hold of a held visit, or `None` when the producer recorded no reason
+/// (a todo blocked at Work, a hold from before holds carried one).
+///
+/// `nobody_acting` reads the lot's other open visits: a fix is claimed when
+/// the lot has an unheld Work visit that began after the hold.
+/// The head is unchanged by construction: a new head closes the hold
+/// (`project::release_on_new_head`).
+fn hold_report(
+    visit: &Visit,
+    visits: &[Visit],
+    pr_href: Option<&str>,
+    now_ms: i64,
+) -> Option<HoldReport> {
+    if !visit.held() {
+        return None;
+    }
+    let hold = visit.hold.as_ref()?;
+    let fix_claimed = visits.iter().any(|other| {
+        other.lot_id == visit.lot_id
+            && other.station == Station::Work
+            && other.left_ms.is_none()
+            && !other.held()
+            && other.entered_ms >= hold.since_ms
+    });
+    Some(HoldReport {
+        reason: hold.reason.clone(),
+        by: hold.by.clone(),
+        since: rfc3339_ms(hold.since_ms),
+        age_s: seconds(now_ms - hold.since_ms),
+        nobody_acting: !fix_claimed,
+        review_href: (hold.reason == "review_hold")
+            .then(|| pr_href.map(|href| format!("{href}#changes-requested")))
+            .flatten(),
+    })
+}
+
+/// The pull request page of `owner/name#number`.
+pub(crate) fn pr_page(repo: &str, number: i64) -> String {
+    let segments: Vec<String> = repo.split('/').map(path_segment).collect();
+    format!("/repos/jeryu/{}/pulls/{number}", segments.join("/"))
+}
+
+/// The pull request page a pull-request-only lot id (`<owner>/<repo>#<n>`)
+/// names.
+fn lot_pr_page(lot_id: &str) -> Option<String> {
+    let (repo, number) = lot_id.rsplit_once('#')?;
+    let (owner, name) = repo.rsplit_once('/')?;
+    if owner.is_empty() || name.is_empty() {
+        return None;
+    }
+    let number: i64 = number.parse().ok().filter(|n| *n > 0)?;
+    Some(pr_page(repo, number))
+}
+
+/// Where a lot opens in the web app. A todo's lot is its Work page; a pull
+/// request no todo carries (`<owner>/<repo>#<n>`) opens that pull request's
+/// page.
+pub(crate) fn lot_href(lot_id: &str) -> String {
+    lot_pr_page(lot_id).unwrap_or_else(|| format!("/work/{}", path_segment(lot_id)))
 }
 
 /// One URL path segment: unreserved bytes kept, everything else escaped.

@@ -192,6 +192,7 @@ pub(crate) fn apply(
         let view = EventView {
             seq: event.seq,
             reporter: "flow-delivery",
+            actor: None,
             event_id: None,
             ts_ms: event.ts,
             kind: &event.kind,

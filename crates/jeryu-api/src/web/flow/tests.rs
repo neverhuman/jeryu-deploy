@@ -49,6 +49,16 @@ fn post(store: &EventStore, event: &Post<'_>) {
 }
 
 fn post_as(store: &EventStore, family: &str, repo: Option<&str>, event: &Post<'_>) {
+    post_head(store, family, repo, event, None);
+}
+
+fn post_head(
+    store: &EventStore,
+    family: &str,
+    repo: Option<&str>,
+    event: &Post<'_>,
+    sha: Option<&str>,
+) {
     store
         .insert(
             "operator",
@@ -60,6 +70,7 @@ fn post_as(store: &EventStore, family: &str, repo: Option<&str>, event: &Post<'_
                 family: Some(family.to_string()),
                 repo: repo.map(str::to_string),
                 pr: event.pr,
+                sha: sha.map(str::to_string),
                 todo_id: event.todo.map(str::to_string),
                 shift: event.shift.map(str::to_string),
                 ..NewEvent::default()
@@ -223,8 +234,10 @@ fn a_red_gate_loops_back_to_work_and_the_lot_returns() {
         ("pr.merged", None, 40, true),
     ];
     for (kind, outcome, minute, carry_pr) in steps {
-        post(
+        post_head(
             &store,
+            "acme",
+            Some("acme/widget"),
             &Post {
                 kind,
                 outcome: *outcome,
@@ -233,6 +246,11 @@ fn a_red_gate_loops_back_to_work_and_the_lot_returns() {
                 shift: Some(shift),
                 at_ms: START + (*minute) * MINUTE,
             },
+            Some(if *minute < 31 {
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            } else {
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }),
         );
     }
     let visits = visits_of(&store);
@@ -240,12 +258,18 @@ fn a_red_gate_loops_back_to_work_and_the_lot_returns() {
     assert_eq!(gates.len(), 2, "two gate visits, one per head");
     assert_eq!(gates[0].direction, "rework");
     assert_eq!(gates[0].rework_to, Some(Station::Work));
-    assert_eq!(gates[0].left_ms, Some(START + 20 * MINUTE));
+    // The red gate held the lot at Gate; the arc back to Work is drawn when
+    // the new head arrives (minute 31), not when the gate failed.
+    assert_eq!(gates[0].left_ms, Some(START + 31 * MINUTE));
     assert_eq!(gates[1].direction, "forward");
 
     let work = at(&visits, Station::Work);
-    assert_eq!(work.len(), 2, "the red gate opened a second Work visit");
-    assert_eq!(work[1].entered_ms, START + 20 * MINUTE);
+    assert_eq!(
+        work.len(),
+        2,
+        "the second attempt opened a second Work visit"
+    );
+    assert_eq!(work[1].entered_ms, START + 21 * MINUTE);
     assert_eq!(work[1].left_ms, Some(START + 30 * MINUTE));
     assert_eq!(
         at(&visits, Station::Merge)[0].left_ms,
@@ -261,7 +285,7 @@ fn a_red_gate_loops_back_to_work_and_the_lot_returns() {
     assert_eq!(gate["rework"][0]["rate"], 0.5, "one of the two that left");
 }
 
-/// A reviewer that holds sends the work back; the todoq attempt that is
+/// A reviewer that holds keeps the lot at Review; the todoq attempt that is
 /// blocked is held at Work until a person releases it.
 #[test]
 fn a_held_review_and_a_blocked_todo_remain_at_their_stations() {
@@ -428,10 +452,14 @@ fn a_refused_replay_and_a_killed_attempt_both_loop_back() {
         .filter(|visit| visit.lot_id == refused)
         .collect();
     assert_eq!(merge.len(), 1);
-    assert_eq!(merge[0].direction, "rework");
-    assert_eq!(merge[0].rework_to, Some(Station::Work));
+    // A refused replay holds the lot at Merge; no arc until a new head.
+    assert_eq!(merge[0].direction, "hold");
+    assert_eq!(merge[0].rework_to, None);
     assert_eq!(merge[0].started_ms, Some(START + 14 * MINUTE));
-    assert_eq!(merge[0].left_ms, Some(START + 19 * MINUTE));
+    assert_eq!(merge[0].left_ms, None);
+    let hold = merge[0].hold.as_ref().expect("the refusal is recorded");
+    assert_eq!(hold.reason, "queue_conflict");
+    assert_eq!(hold.since_ms, START + 19 * MINUTE);
 
     let queue: Vec<&Visit> = at(&visits, Station::Queue)
         .into_iter()
@@ -448,9 +476,8 @@ fn a_refused_replay_and_a_killed_attempt_both_loop_back() {
 
     let report = report_of(&store, 30);
     let merge = station(&report, "merge");
-    assert_eq!(merge["rework"][0]["to"], "work");
-    assert_eq!(merge["rework"][0]["count"], 1);
-    assert_eq!(merge["rework"][0]["rate"], 1.0, "nothing else left Merge");
+    assert_eq!(merge["rework"], serde_json::json!([]), "no new head yet");
+    assert_eq!(merge["wip"]["held"], 1);
     assert_eq!(merge["first_pass_rate"], Value::Null, "nothing passed yet");
     let work = station(&report, "work");
     assert_eq!(work["rework"][0]["to"], "queue");
@@ -673,8 +700,14 @@ fn a_lot_links_to_its_todo_or_to_its_pull_request() {
         lot_href("20261012-000041-aaaaaa"),
         "/work/20261012-000041-aaaaaa"
     );
-    assert_eq!(lot_href("acme/widget#31"), "/acme/widget/pull/31");
-    assert_eq!(lot_href("acme/team/widget#7"), "/acme%2Fteam/widget/pull/7");
+    assert_eq!(
+        lot_href("acme/widget#31"),
+        "/repos/jeryu/acme/widget/pulls/31"
+    );
+    assert_eq!(
+        lot_href("acme/team/widget#7"),
+        "/repos/jeryu/acme/team/widget/pulls/7"
+    );
     assert_eq!(lot_href("odd lot#x"), "/work/odd%20lot%23x");
 }
 
@@ -1317,8 +1350,10 @@ fn a_report_reads_only_the_window_and_answers_as_the_whole_ledger_would() {
             Some(403),
         ),
     ] {
-        post(
+        post_head(
             &store,
+            "acme",
+            Some("acme/widget"),
             &Post {
                 kind,
                 outcome,
@@ -1327,6 +1362,11 @@ fn a_report_reads_only_the_window_and_answers_as_the_whole_ledger_would() {
                 shift: Some("dayshift/looped"),
                 at_ms,
             },
+            Some(if at_ms < START + 50 * day {
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            } else {
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }),
         );
     }
     for (index, todo) in [
@@ -1430,6 +1470,9 @@ fn closure_reconciliation_preserves_observed_metrics_and_changes_only_current_in
             left_ms: (n < 3).then_some(START + 10 * MINUTE),
             direction: if n < 3 { "forward" } else { "open" }.into(),
             rework_to: None,
+            repo: None,
+            pr: None,
+            hold: None,
         })
         .collect();
     let request = Request {

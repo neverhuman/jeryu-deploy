@@ -19,6 +19,8 @@ pub(crate) mod stations;
 pub(crate) mod topology;
 
 #[cfg(test)]
+mod hold_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod topology_tests;
@@ -155,11 +157,17 @@ pub(crate) async fn flow(
     let worker_state = state.clone();
     let read = tokio::task::spawn_blocking(move || {
         let reached = worker_state.events.flow_reached(read_family.as_deref())?;
-        let visits = worker_state.events.flow_visits_scoped(
+        let mut visits = worker_state.events.flow_visits_scoped(
             read_family.as_deref(),
             since_ms,
             read_repo.as_deref(),
         )?;
+        // A pull request a later one replaced is stuck where it stopped,
+        // whatever the ledger says; the rule is needs-you's `pr_superseded`.
+        report::mark_superseded(
+            &mut visits,
+            &super::pipeline::attention::superseded_open_pulls(&worker_state),
+        );
         let open = worker_state
             .events
             .flow_open_lifecycle(read_family.as_deref())?;

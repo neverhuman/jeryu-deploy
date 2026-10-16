@@ -58,8 +58,9 @@ pub(crate) use board::{BoardFacts, BoardLane, board_items};
 pub(crate) use flow::gate_definition_paths;
 pub(crate) use flow::{
     DraftFacts, LatestDeployment, MainRedFacts, ProductionFacts, PullFacts,
-    ReviewerOfflineThresholds, SupersededPullFacts, draft_items, drop_shadowed_pull_rows,
-    main_red_items, pull_items, queue_items, release_items, runner_items, superseded_pull_items,
+    ReviewerOfflineThresholds, Superseded, SupersededPullFacts, draft_items,
+    drop_shadowed_pull_rows, main_red_items, pull_items, queue_items, release_items,
+    review_hold_explanation, runner_items, superseded_pull_items,
 };
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
@@ -554,6 +555,15 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
         }
     }
     pulls
+}
+
+/// The open pull requests a later pull request replaced (the facts behind
+/// `pr_superseded`), for Flow to hold at the station they stopped at.
+pub(crate) fn superseded_open_pulls(state: &WebState) -> Vec<flow::Superseded> {
+    flow::superseded_pulls(&all_pull_facts(state))
+        .into_iter()
+        .map(|(_, found)| found)
+        .collect()
 }
 
 fn all_pull_facts(state: &WebState) -> Vec<SupersededPullFacts> {
