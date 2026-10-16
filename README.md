@@ -96,6 +96,19 @@ bash ops/ci/pr-ci.sh
 
 This is the same entry point the protected `jeryu-deploy/required` check runs.
 `just gate`, `just required` and `scripts/ci-local.sh` are aliases for it.
+Set `JERYU_TOOL_RENDER` to the executable `ops/render-tool-manifest.sh` in a
+trusted jeryu-tool checkout outside this worktree when the default sibling path
+is unavailable. The web status proof also needs a Git read credential or
+`JERYU_WEB_PIN_TOKEN_FILE` (a regular mode-0600 file). Prerequisites are checked
+before builds. Each run prints its
+retained `target/evidence/required/run.*` directory, containing readable stage
+logs, `stages.jsonl` and an atomically replaced `receipt.json`. Receipts include
+source head/dirtiness, recipe hashes, command identifiers, exit codes and elapsed
+seconds. A running or incomplete receipt is never success; these diagnostics
+are not merge authority. Keep this evidence when cleaning build outputs; the
+normal `lanes sweep --apply` archives report/log files under `target/` before
+removing a lane. Do not remove that directory by hand before preserving it.
+
 The commands below are narrower loops for iteration, not the gate:
 
 - `just fast`

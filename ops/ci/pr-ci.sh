@@ -14,31 +14,25 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 source ops/ci/lib.sh
-require_jankurai
-bash "${repo_root}/ops/ci/test-governed-jankurai.sh"
-# No gate may run with the ci_bridge mock flag set (it would pass without running).
-bash "${repo_root}/ops/ci/test-ci-env.sh"
-# The production release scripts (switch/rollback) against a throwaway forge home.
-bash "${repo_root}/scripts/release/test-release-scripts.sh"
-# The release-board collector (/releases) against a throwaway forge and stand-in todoq/curl.
-bash "${repo_root}/scripts/release-board/test-release-board.sh"
-
-# Verify only this PR worktree against the family manifest; the post-rollout
-# control-plane check verifies the complete canonical family. The renderer is
-# jeryu-tool's, outside this checkout: a missing one fails closed, and one inside
-# this checkout (which the pull request under test could have written) is refused.
-if [ -z "${JERYU_TOOL_RENDER+x}" ]; then
-JERYU_TOOL_RENDER="$repo_root/../jeryu-tool/ops/render-tool-manifest.sh"
-fi
-[ -n "$JERYU_TOOL_RENDER" ] || { echo "[pr-ci] missing JERYU_TOOL_RENDER" >&2; exit 1; }
-[ -x "$JERYU_TOOL_RENDER" ] || { echo "[pr-ci] renderer is not executable: $JERYU_TOOL_RENDER" >&2; exit 1; }
+source ops/ci/gate-evidence.sh
+source ops/ci/gate-preflight.sh
+gate_evidence_init
+gate_stage preflight gate_preflight
+# Preflight runs in a child; resolve the checked path in the parent too.
+JERYU_TOOL_RENDER="${JERYU_TOOL_RENDER-$repo_root/../jeryu-tool/ops/render-tool-manifest.sh}"
 render_real="$(realpath "$JERYU_TOOL_RENDER")"
-case "$render_real/" in
-"$(realpath "$repo_root")/"*) echo "[pr-ci] refusing a renderer inside this checkout: $JERYU_TOOL_RENDER" >&2; exit 1 ;;
-esac
+gate_stage auditor-preflight gate_auditor_preflight
+# Export the verified identity for callers that need it in this shell.
+require_jankurai
+gate_stage evidence-fixtures bash ops/ci/test-gate-evidence.sh
+gate_stage governed-auditor-fixtures bash ops/ci/test-governed-jankurai.sh
+gate_stage ci-env-fixtures bash ops/ci/test-ci-env.sh
+gate_stage release-fixtures bash scripts/release/test-release-scripts.sh
+gate_stage release-board-fixtures bash scripts/release-board/test-release-board.sh
+
 echo "[pr-ci] jankurai pin drift check" >&2
 consumer_repo="$(awk -F'\"' '/^workspace =/ {print $2; exit}' agent/audit-policy.toml)"
-bash "$render_real" --check --repo "$consumer_repo" \
+gate_stage pin-drift bash "$render_real" --check --repo "$consumer_repo" \
 --repo-root "$consumer_repo=$repo_root"
 
 # jeryu governs the worker count from live load (overrides any request). host-ci
@@ -77,13 +71,13 @@ if [ -n "${JERYU_CI_BUILD_CACHE_DIR:-}" ]; then
   echo "[pr-ci] ordinary compilation in ${CARGO_TARGET_DIR} (the gate runner's build cache)" >&2
 fi
 echo "[pr-ci] (jobs=$JOBS) cargo fmt --all --check" >&2
-cargo fmt --all --check
+gate_stage format cargo fmt --all --check
 
 echo "[pr-ci] cargo clippy --workspace --all-targets -- -D warnings" >&2
-cargo clippy --locked --workspace --all-targets --jobs "$JOBS" -- -D warnings
+gate_stage clippy cargo clippy --locked --workspace --all-targets --jobs "$JOBS" -- -D warnings
 
 echo "[pr-ci] cargo clippy --workspace --all-targets --all-features -- -D warnings" >&2
-cargo clippy --locked --workspace --all-targets --all-features --jobs "$JOBS" -- -D warnings
+gate_stage clippy-all-features cargo clippy --locked --workspace --all-targets --all-features --jobs "$JOBS" -- -D warnings
 
 # The kernel-sandbox-runtime integration tests spawn REAL sandboxes (user/mount/pid
 # namespaces + cgroup-v2 + landlock/seccomp). They require an UNMANAGED cgroup
@@ -120,24 +114,25 @@ for tmpfs in "${JERYU_CI_TEST_TMPDIR:-}" /dev/shm; do
   fi
 done
 if [ -n "$test_tmp" ]; then
-  trap 'rm -rf -- "$test_tmp"' EXIT
+  # Chain cleanup without replacing the evidence finalizer.
+  trap 'code=$?; rm -rf -- "$test_tmp"; gate_evidence_finish "$code"' EXIT
   echo "[pr-ci] test temp directories on $test_tmp" >&2
 fi
 TMPDIR="${test_tmp:-${TMPDIR:-/tmp}}" JERYU_JANKURAI_BIN=/nonexistent/jankurai \
-  cargo test --locked --workspace "${HOST_CI_EXCLUDE_PACKAGES[@]}" --jobs "$JOBS" --no-fail-fast -- \
+  gate_stage workspace-tests cargo test --locked --workspace "${HOST_CI_EXCLUDE_PACKAGES[@]}" --jobs "$JOBS" --no-fail-fast -- \
   --test-threads "$TEST_THREADS" "${host_ci_skip_args[@]}"
 
 echo "[pr-ci] immutable web-bundle integration" >&2
-bash "${repo_root}/ops/ci/web.sh"
+gate_stage web-bundle bash "${repo_root}/ops/ci/web.sh"
 
-assert_cargo_lock_unchanged
+gate_stage lock-unchanged assert_cargo_lock_unchanged
 echo "[pr-ci] jankurai audit (>= 85)" >&2
-run_governed_jankurai audit . --full --mode advisory --policy agent/audit-policy.toml \
+gate_stage audit run_governed_jankurai audit . --full --mode advisory --policy agent/audit-policy.toml \
   --json .jankurai/repo-score.json --md .jankurai/repo-score.md
 score="$(jq -r '.score // 0' .jankurai/repo-score.json)"
 caps="$(jq -c '.caps_applied // []' .jankurai/repo-score.json)"
 echo "[pr-ci] jankurai score=${score} caps=${caps}" >&2
-jq -e '(.score // 0) >= 85 and ((.caps_applied // []) | length == 0)' \
+gate_stage audit-floor jq -e '(.score // 0) >= 85 and ((.caps_applied // []) | length == 0)' \
   .jankurai/repo-score.json >/dev/null
 
 # This report is the recipe's own floor check, written by the head under test, so it
@@ -148,10 +143,12 @@ jq -e '(.score // 0) >= 85 and ((.caps_applied // []) | length == 0)' \
 # this head, before the PR exists. Refuses only where the rollout is on
 # (agent/jankurai-gate.toml); elsewhere it reports and passes.
 echo "[pr-ci] jankurai gate (hosted jankurai/proof verdict for this head)" >&2
-bash "${repo_root}/ops/ci/jankurai-gate.sh"
+gate_stage audit-policy bash "${repo_root}/ops/ci/jankurai-gate.sh"
 
 echo "[pr-ci] security lane"
-JERYU_SECURITY_NETWORK=1 bash "${repo_root}/ops/ci/security.sh"
-assert_cargo_lock_unchanged
+JERYU_SECURITY_NETWORK=1 gate_stage security bash "${repo_root}/ops/ci/security.sh"
+gate_stage lock-unchanged assert_cargo_lock_unchanged
 
 echo "[pr-ci] PASS — fmt + clippy + workspace tests + web bundle + jankurai + security all green" >&2
+
+gate_complete=true
