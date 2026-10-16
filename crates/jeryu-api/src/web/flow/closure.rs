@@ -183,7 +183,10 @@ fn replacement(
         .or_else(|| target(body, repo))?;
     let pr = pulls.get(&(repo.clone(), number));
     Some(Replacement {
-        href: format!("/repos/jeryu/{repo}/pulls/{number}"),
+        href: format!(
+            "/repos/{}/{repo}/pulls/{number}",
+            crate::links::NATIVE_PROVIDER
+        ),
         label: format!("{repo}#{number}"),
         state: match pr {
             Some(p) if p.merged => "merged",
@@ -298,7 +301,7 @@ pub(crate) fn snapshot(
                     "pull_request",
                     pr.title.clone(),
                     pr.body.clone().unwrap_or_default(),
-                    format!("/repos/jeryu/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number),
+                    crate::links::native_pull_app_path(&pr.owner, &pr.repo, pr.number),
                 ))
             } else if v.pr.is_none() {
                 v.family

@@ -255,8 +255,14 @@ pub(crate) fn collect_pull_requests(
                 state_evidence,
                 source_links: vec![SourceLink {
                     label: format!("{}#{}", repo.full_name, pr.number),
-                    url: format!("/repos/jeryu/{}/pulls/{}", repo.full_name, pr.number),
+                    url: crate::links::native_pull_app_path(&repo.owner, &repo.name, pr.number),
                 }],
+                html_url: crate::links::pull_html_url(
+                    crate::links::NATIVE_PROVIDER,
+                    &repo.owner,
+                    &repo.name,
+                    pr.number,
+                ),
                 updated_at: pr.updated_at.to_rfc3339(),
             });
         }

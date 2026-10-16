@@ -145,6 +145,7 @@ fn active_view_drops_merged_and_closed_prs_and_their_checks() {
         },
         state_evidence: EvidenceState::Fresh,
         source_links: Vec::new(),
+        html_url: String::new(),
         updated_at: format!("2026-09-{:02}T00:00:00+00:00", number),
     };
     let check = |head: &str| ControlCheckRun {
@@ -783,6 +784,7 @@ fn open_pull_requests_sort_ahead_of_finished_ones() {
         },
         state_evidence: EvidenceState::Missing,
         source_links: Vec::new(),
+        html_url: String::new(),
         updated_at: updated.to_string(),
     };
     // Repository order would put the merged jeryu/* rows first and push the

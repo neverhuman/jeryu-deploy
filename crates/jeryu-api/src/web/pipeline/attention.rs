@@ -382,7 +382,7 @@ pub(super) fn parse_time(text: &str) -> Option<DateTime<Utc>> {
 /// (`/repos/<provider>/<owner>/<name>`), and the forge's own provider segment
 /// is `jeryu`.
 pub(super) fn repo_href(repo: &str) -> String {
-    format!("/repos/jeryu/{repo}")
+    format!("/repos/{}/{repo}", crate::links::NATIVE_PROVIDER)
 }
 
 pub(super) fn pull_href(repo: &str, number: u64) -> String {

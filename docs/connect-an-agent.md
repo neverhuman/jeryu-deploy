@@ -116,3 +116,28 @@ is at `FORGE/api/v1/docs/errors.md`. Background for your human:
   for a separate token for each.
 - Pull requests are the way changes reach `main`. The forge reviews and merges
   them; you cannot push to `main`.
+
+## Sharing a link to a repository or a pull request
+
+When you tell your human about a pull request, give them a link they can
+click. Do not build one from parts — the API answers JSON on paths the web app
+does not serve, so an HTTP 200 on a URL you assembled is no proof that it
+opens anything.
+
+Every native repository and pull request response carries both links:
+
+- `html_url` — the browser URL. Paste this one.
+- `api_url` — where the same object is fetched as JSON. Never paste this one.
+
+```
+GET FORGE/api/v1/capabilities                       # what this forge serves, including `links`
+GET FORGE/api/v1/repos/<owner>/<repo>/pulls/<n>     # the pull request
+# share the response's html_url, verbatim
+```
+
+For a repository this forge hosts, `html_url` is `FORGE/<owner>/<repo>` and
+`FORGE/<owner>/<repo>/pull/<n>`; a pull request tab is that URL plus `/files`,
+`/checks` or `/commits`. A repository the forge mirrors from another host keeps
+`FORGE/repos/<provider>/<owner>/<repo>`, because two hosts can carry the same
+`owner/name`. Links in the older provider-qualified shape still open the same
+page, so nothing you already recorded has to be rewritten.

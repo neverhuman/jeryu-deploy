@@ -25,7 +25,7 @@ use jeryu_readmodel::contracts::{
     RepositoryVisibility, ToolFleetEntry, ToolFleetResponse, TreeEntry, TreeEntryKind,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::jankurai::audits::{
     RunnerAuditSubmission, author_produced_submission, authorize_runner_submission,
@@ -104,7 +104,7 @@ pub(super) async fn repos(
     let mut list = filtered_repo_list_response_for_user(&state, &query, Some(&account));
     let (repositories, page) = page.apply(std::mem::take(&mut list.repositories));
     list.repositories = repositories;
-    Json(RepositoryPage { list, page }).into_response()
+    Json(linked_page(RepositoryPage { list, page })).into_response()
 }
 
 pub(super) async fn repo_detail(
@@ -112,7 +112,7 @@ pub(super) async fn repo_detail(
     AxumPath(id): AxumPath<String>,
 ) -> AxumResponse {
     match find_repo(&state, &id) {
-        Some(repo) => Json(repo_summary(&state, &repo)).into_response(),
+        Some(repo) => Json(linked_summary(repo_summary(&state, &repo))).into_response(),
         None => api_error_with_hint(
             axum::http::StatusCode::NOT_FOUND,
             "not_found",
@@ -363,7 +363,7 @@ pub(super) async fn repo_update(
         };
         super::pipeline::emit::repository_moved(&state, &repo.full_name, &updated, &account.login);
     }
-    Json(repo_summary(&state, &updated)).into_response()
+    Json(linked_summary(repo_summary(&state, &updated))).into_response()
 }
 
 fn repo_update_invalid(reason: &str) -> AxumResponse {
@@ -882,6 +882,50 @@ pub(super) fn repo_summaries_for_user(
         })
         .map(|repo| repo_summary_with_red(state, &repo, &red))
         .collect()
+}
+
+/// A repository summary with the two links a client needs to it, so nobody
+/// builds a route from parts: `html_url`, the canonical browser URL
+/// (`/{owner}/{name}` for a repository this forge hosts, provider-qualified
+/// for a mirror of another host), and `api_url`, where the same repository is
+/// fetched as JSON. The fields are added on serialization, beside the typed
+/// summary rather than inside it.
+pub(super) fn linked_summary(summary: RepositorySummary) -> Value {
+    let mut value = serde_json::to_value(summary).expect("repository summary serializes");
+    with_canonical_links(&mut value);
+    value
+}
+
+/// [`linked_summary`] for every row of a listing page.
+fn linked_page(page: RepositoryPage) -> Value {
+    let mut value = serde_json::to_value(page).expect("repository page serializes");
+    if let Some(rows) = value.get_mut("repositories").and_then(Value::as_array_mut) {
+        for row in rows {
+            with_canonical_links(row);
+        }
+    }
+    value
+}
+
+/// Adds `html_url` and `api_url` to one serialized repository summary. The
+/// provider comes from the row's own `id.host`, so a mirrored repository is
+/// never addressed as if this forge hosted it.
+fn with_canonical_links(value: &mut Value) {
+    let Some(id) = value.get("id") else { return };
+    let (Some(host), Some(owner), Some(name)) = (
+        id.get("host").and_then(Value::as_str),
+        id.get("owner").and_then(Value::as_str),
+        id.get("name").and_then(Value::as_str),
+    ) else {
+        return;
+    };
+    let html_url = crate::links::repo_html_url(host, owner, name);
+    let api_url = crate::links::repo_api_url(owner, name);
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert("html_url".to_string(), Value::String(html_url));
+    object.insert("api_url".to_string(), Value::String(api_url));
 }
 
 pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySummary {

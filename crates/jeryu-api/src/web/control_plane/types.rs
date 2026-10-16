@@ -148,6 +148,12 @@ pub(crate) struct ControlPullRequest {
     pub checks: CheckSummary,
     pub state_evidence: EvidenceState,
     pub source_links: Vec<SourceLink>,
+    /// The canonical browser URL of the pull request, for a reader (or an MCP
+    /// client's human) to open. `source_links` stays the in-app path this
+    /// forge's own pages use; both resolve to the same page. Defaulted so a
+    /// payload written before the field existed still reads.
+    #[serde(default)]
+    pub html_url: String,
     /// When the forge last touched the pull request (RFC 3339, UTC). The
     /// collection is ordered by it, newest first, within the open ones and
     /// within the finished ones. Defaulted so a payload written before the

@@ -415,7 +415,7 @@ fn readable_repositories(state: &WebState, account: &AccountSummary) -> Vec<Repo
 }
 
 fn repo_front_page(repo: &Repository) -> String {
-    format!("/repos/jeryu/{}/{}", repo.owner, repo.name)
+    crate::links::native_repo_app_path(&repo.owner, &repo.name)
 }
 
 fn repository_hits(state: &WebState, account: &AccountSummary, needle: &str) -> Vec<Ranked> {

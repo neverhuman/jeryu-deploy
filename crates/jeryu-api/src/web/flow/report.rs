@@ -699,7 +699,11 @@ fn hold_report(
 /// The pull request page of `owner/name#number`.
 pub(crate) fn pr_page(repo: &str, number: i64) -> String {
     let segments: Vec<String> = repo.split('/').map(path_segment).collect();
-    format!("/repos/jeryu/{}/pulls/{number}", segments.join("/"))
+    format!(
+        "/repos/{}/{}/pulls/{number}",
+        crate::links::NATIVE_PROVIDER,
+        segments.join("/")
+    )
 }
 
 /// The pull request page a pull-request-only lot id (`<owner>/<repo>#<n>`)

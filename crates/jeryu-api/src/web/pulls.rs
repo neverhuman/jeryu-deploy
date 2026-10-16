@@ -321,6 +321,7 @@ fn summary_list_item(state: &WebState, pr: &PullRequest) -> Value {
     value["required_contexts"] =
         serde_json::to_value(contexts).expect("required contexts serialize");
     with_replacement(state, pr, &mut value);
+    with_canonical_links(pr, &mut value);
     value
 }
 
@@ -1217,10 +1218,37 @@ fn detail_response(
     let detail = detail_for_pr(state, pr, authenticated_login);
     let mut value = serde_json::to_value(detail).expect("pull detail serializes");
     with_replacement(state, pr, &mut value);
+    with_canonical_links(pr, &mut value);
     if let Some(summary) = value.get_mut("summary") {
         with_replacement(state, pr, summary);
+        with_canonical_links(pr, summary);
     }
     Json(value).into_response()
+}
+
+/// Adds the two links a client needs to the payload, so nobody has to build a
+/// route from parts: `html_url`, the canonical browser URL of this pull
+/// request (`/{owner}/{repo}/pull/{number}` for a repository this forge
+/// hosts), and `api_url`, where the same pull request is fetched as JSON. They
+/// are deliberately separate fields: opening `api_url` gives JSON, and
+/// fetching `html_url` gives the web app.
+fn with_canonical_links(pr: &PullRequest, value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "html_url".to_string(),
+        json!(crate::links::pull_html_url(
+            crate::links::NATIVE_PROVIDER,
+            &pr.owner,
+            &pr.repo,
+            pr.number
+        )),
+    );
+    object.insert(
+        "api_url".to_string(),
+        json!(crate::links::pull_api_url(&pr.owner, &pr.repo, pr.number)),
+    );
 }
 
 /// Adds `superseded_by` (the pull request that replaced this one, or null),

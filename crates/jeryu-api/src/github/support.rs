@@ -12,10 +12,6 @@ use serde_json::{Value, json};
 use crate::discovery::GH_AUTH_DOCS;
 use crate::routes::Response;
 
-/// Public origin of the web UI, e.g. `https://git.neverhuman.org`. The
-/// production unit sets it.
-const PUBLIC_ORIGIN_ENV: &str = "JERYU_PRODUCTION_ORIGIN";
-
 /// Path prefix the GitHub-compatible edge is served under. It is stripped
 /// before segment matching, so anything rendering a URL back to a caller
 /// (`Link` headers) has to put it back.
@@ -25,14 +21,13 @@ pub(crate) const V3_PREFIX: &str = "/api/v3";
 /// rooted path is prefixed with the configured public origin; without one
 /// (local dev, tests) the path is returned unchanged.
 pub(crate) fn web_url(path: &str) -> String {
-    web_url_with_origin(std::env::var(PUBLIC_ORIGIN_ENV).ok().as_deref(), path)
+    crate::links::absolute(path)
 }
 
+/// [`web_url`] against an explicit origin, for the callers that already hold
+/// one (and for tests).
 fn web_url_with_origin(origin: Option<&str>, path: &str) -> String {
-    match origin.map(|origin| origin.trim().trim_end_matches('/')) {
-        Some(origin) if !origin.is_empty() && path.starts_with('/') => format!("{origin}{path}"),
-        _ => path.to_string(),
-    }
+    crate::links::absolute_with_origin(origin, path)
 }
 
 pub(crate) const MCP_GUIDANCE_TOOLS: &[&str] = &[
@@ -71,11 +66,11 @@ pub(crate) const GH_SETUP_REPAIR_COMMAND: &str =
 
 /// The public origin this deployment is reached at, if it has one.
 pub(crate) fn public_origin() -> Option<String> {
-    std::env::var(PUBLIC_ORIGIN_ENV).ok()
+    crate::links::public_origin()
 }
 
 /// `jeryu gh-setup` for the host the caller reached. Production sets
-/// [`PUBLIC_ORIGIN_ENV`], and a loopback address is an instruction an internet
+/// [`crate::links::PUBLIC_ORIGIN_ENV`], and a loopback address is an instruction an internet
 /// client cannot follow, so the public origin wins wherever one is configured.
 pub(crate) fn gh_setup_command() -> String {
     gh_setup_command_with_origin(public_origin().as_deref())
@@ -293,11 +288,7 @@ where
 /// segment matching, so the prefix goes back on here and the public origin in
 /// front of it: a `Link` URL a client can follow verbatim, like `html_url`.
 pub(super) fn link_base(route_path: &str, query: &str) -> String {
-    link_base_with_origin(
-        std::env::var(PUBLIC_ORIGIN_ENV).ok().as_deref(),
-        route_path,
-        query,
-    )
+    link_base_with_origin(crate::links::public_origin().as_deref(), route_path, query)
 }
 
 fn link_base_with_origin(origin: Option<&str>, route_path: &str, query: &str) -> String {

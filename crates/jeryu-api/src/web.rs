@@ -1728,8 +1728,40 @@ fn capabilities_payload(origin: Option<&str>, tools: &BTreeSet<String>) -> Value
                 .map(|(flag, note)| ((*flag).to_string(), Value::String((*note).to_string())))
                 .collect::<serde_json::Map<String, Value>>(),
         },
+        "links": links_capability(origin),
         "fast_path_advice":
             "Prefer the jeryu MCP tools for mutations; gh REST/GraphQL is supported but slower.",
+    })
+}
+
+/// What the manifest says about links: which field to open in a browser, which
+/// to fetch as JSON, and the shape each one has. A client that reads this has
+/// no reason to build a route from parts — and building one is how a shared
+/// link ends up naming a repository nobody asked for.
+fn links_capability(origin: Option<&str>) -> Value {
+    let browser = crate::links::absolute_with_origin(origin, "/{owner}/{repo}/pull/{number}");
+    let api =
+        crate::links::absolute_with_origin(origin, "/api/v1/repos/{owner}/{repo}/pulls/{number}");
+    json!({
+        "purpose": "Browser links and API links are different fields. Open html_url; fetch api_url. Never assemble either from parts: use the value the response returned.",
+        "html_url": {
+            "meaning": "The canonical browser URL of the object: what to paste into a chat or a pull request body.",
+            "repository": crate::links::absolute_with_origin(origin, "/{owner}/{repo}"),
+            "pull_request": browser,
+            "hosted_here": "Repositories this forge hosts omit the provider. A repository it mirrors from another host keeps /repos/{provider}/{owner}/{repo}, because two hosts can carry the same owner/name.",
+            "aliases": "Provider-qualified URLs (/repos/jeryu/{owner}/{repo}/pulls/{number}) still resolve to the same object, so links already in circulation keep working."
+        },
+        "api_url": {
+            "meaning": "Where the same object is fetched as JSON. Returns JSON, not a page.",
+            "repository": crate::links::absolute_with_origin(origin, "/api/v1/repos/{owner}/{repo}"),
+            "pull_request": api
+        },
+        "discovery_example": [
+            format!("GET {}", discovery::CAPABILITIES_PATH),
+            "GET /api/v1/repos/{owner}/{repo}/pulls/{number}".to_string(),
+            "share the response's html_url verbatim".to_string()
+        ],
+        "warning": "An HTTP 200 on a URL you built yourself is not proof it is a browser link: the API answers JSON on paths the web app does not route."
     })
 }
 

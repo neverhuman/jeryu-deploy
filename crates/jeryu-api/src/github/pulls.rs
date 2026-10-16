@@ -1708,8 +1708,14 @@ fn replacement_refused(status: u16, code: &str, message: &str) -> Response {
     )
 }
 
+/// The in-app page of a pull request, which is also what the
+/// GitHub-compatible edge's `html_url` says: a provider-qualified path, the
+/// shape every link already in circulation has. The forge's own canonical
+/// browser link (`/{owner}/{repo}/pull/{number}`) is
+/// [`crate::links::pull_browser_path`], and the web app resolves both onto
+/// this one page.
 pub(crate) fn pull_request_web_path(owner: &str, repo: &str, number: u64) -> String {
-    format!("/repos/jeryu/{owner}/{repo}/pulls/{number}")
+    crate::links::native_pull_app_path(owner, repo, number)
 }
 
 pub(super) fn pull_request_json(pr: &PullRequest) -> Value {
