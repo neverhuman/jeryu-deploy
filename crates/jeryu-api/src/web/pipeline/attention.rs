@@ -44,6 +44,7 @@ mod hosts;
 mod mirror;
 mod pins;
 mod pushed;
+mod scorecard;
 mod stranded;
 mod summary;
 #[cfg(test)]
@@ -66,16 +67,17 @@ pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
 pub(crate) use pins::{pin_items, web_pin_bump_prs};
 pub(crate) use pushed::{PushedAfterMergeFacts, pushed_after_merge_items};
+pub(crate) use scorecard::digest_items;
 pub(crate) use stranded::{StrandedBranchFacts, stranded_branch_items};
 pub(crate) use summary::{FamilyCounts, family_summary};
 pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
 /// `v1.1` added `action.api`, `v1.2` the optional `budget`, `v1.3` the
-/// optional `pulls`, `v1.4` the optional `assignee` and `v1.5` the page's
+/// optional `pulls`, `v1.4` the optional `assignee`, `v1.5` the page's
 /// `families` summary (and a `family` read off `repo` when a collector named
-/// none): every earlier field is unchanged, so a client written against `v1`
-/// reads a `v1.5` answer as it always did.
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.5";
+/// none) and `v1.6` the optional `digest`: every earlier field is unchanged,
+/// so a client written against `v1` reads a `v1.6` answer as it always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.6";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -175,6 +177,7 @@ pub(crate) const KINDS: &[&str] = &[
     "release_staged",
     "reviewer_offline",
     "reviewer_stuck",
+    "scorecard_digest",
     "shift_budget_spent",
     "shift_stranded_work",
     "shift_without_pr",
@@ -280,6 +283,11 @@ pub(crate) struct Item {
     /// absent on every other item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Set on `scorecard_digest` only: the week's headline numbers as the
+    /// weekly job recorded them, so a surface shows them without parsing
+    /// `reason`. The key is absent on every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<crate::web::scorecard::digest::Digest>,
     pub href: String,
     pub action: Action,
     pub next_step: String,
@@ -339,6 +347,7 @@ impl Draft<'_> {
             budget: None,
             pulls: None,
             assignee: None,
+            digest: None,
             href: self.href,
             action: match self.command {
                 Some(shell) => Action {
@@ -1193,6 +1202,20 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     // What `/releases` is showing: a red lane, a source its collector could
     // not read, a board that stopped arriving.
     items.extend(board_items(&board_facts(state), now));
+    // The week's Scorecard numbers, as the weekly job recorded them: a week
+    // that ended is not state the collectors can recompute, so this rule
+    // reads the recorded digest.
+    items.extend(digest_items(
+        &state
+            .events
+            .query(&super::types::EventsQuery {
+                kind: Some(crate::web::scorecard::weekly::DIGEST_KIND.to_string()),
+                limit: Some(1),
+                ..Default::default()
+            })
+            .unwrap_or_default(),
+        now,
+    ));
     // An acknowledged item is one somebody deliberately deferred: leave it
     // out, and out of the counts, until its date passes (see `acks.rs`).
     let hidden = state

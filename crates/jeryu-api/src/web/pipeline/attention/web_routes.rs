@@ -33,6 +33,8 @@ pub(crate) const WEB_ROUTES: &[&str] = &[
     "/releases/family/:family",
     "/intelligence",
     "/intelligence/dependencies",
+    // The delivery scorecard, where the weekly digest row sends a reader.
+    "/scorecard",
     "/quality-gate",
     "/quality-gate/rules/:rule",
     "/quality-gate/heads/:owner/:name/:sha",

@@ -12,11 +12,11 @@ use super::attention::{
     ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
     Filter, Hosts, Item, KINDS, LatestDeployment, MainRedFacts, MirrorDrift, MirrorFailure,
     ProductionFacts, PullFacts, PushedAfterMergeFacts, ReviewerOfflineThresholds, Severity,
-    StrandedBranchFacts, SupersededPullFacts, board_items, budget_items, divergence_items,
-    draft_items, drop_shadowed_pull_rows, gate_definition_paths, main_red_items, mirror_items,
-    only_matching, order, pin_items, pull_items, pushed_after_merge_items, queue_items,
-    release_items, runner_items, shift_items, stranded_branch_items, superseded_pull_items,
-    todo_items, web_routes, worker_items,
+    StrandedBranchFacts, SupersededPullFacts, board_items, budget_items, digest_items,
+    divergence_items, draft_items, drop_shadowed_pull_rows, gate_definition_paths, main_red_items,
+    mirror_items, only_matching, order, pin_items, pull_items, pushed_after_merge_items,
+    queue_items, release_items, runner_items, shift_items, stranded_branch_items,
+    superseded_pull_items, todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -2664,7 +2664,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["schema_version"], "jeryu.attention/v1.5");
+    assert_eq!(body["schema_version"], "jeryu.attention/v1.6");
     let items = body["items"].as_array().unwrap();
     let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
     // Critical first (open todos and no worker has ever reported), then the
@@ -3590,6 +3590,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("release_staged", "/releases"),
     ("reviewer_offline", "/runners"),
     ("reviewer_stuck", "/repos/:provider/:owner/*"),
+    ("scorecard_digest", "/scorecard"),
     ("shift_budget_spent", "/work"),
     ("shift_stranded_work", "/work"),
     ("shift_without_pr", "/repos/:provider/:owner/*"),
@@ -4087,6 +4088,13 @@ fn one_of_every_kind() -> Vec<Item> {
         "2026-09-19T12:50:00Z",
         true,
     );
+    items.extend(digest_items(
+        &[digest_event(
+            "2026-09-19T00:00:00Z",
+            Some(serde_json::to_value(digest_of(true)).unwrap()),
+        )],
+        now(),
+    ));
     items.extend(budget_items(
         &[exhausted(
             21,
@@ -4117,6 +4125,156 @@ fn one_of_every_kind() -> Vec<Item> {
         &hosts(),
     ));
     items
+}
+
+/// A recorded weekly Scorecard digest, as the job writes it: `warnings` is
+/// what makes the row a decision rather than a reading.
+fn digest_of(warnings: bool) -> crate::web::scorecard::digest::Digest {
+    use crate::web::scorecard::digest::{Digest, Line, OldestUnownedHold, Warning};
+    Digest {
+        schema_version: "jeryu.scorecard.digest/v1".to_string(),
+        generated_at: "2026-09-19T00:00:00Z".to_string(),
+        window: "7d".to_string(),
+        family: Some("acme".to_string()),
+        headline: vec![
+            Line {
+                metric: "lead_time_p50".to_string(),
+                label: "lead time p50".to_string(),
+                unit: "seconds".to_string(),
+                value: Some(12_000.0),
+                previous: Some(6_000.0),
+                change: Some(6_000.0),
+                change_pct: Some(100.0),
+                direction: "worse".to_string(),
+                unknown: None,
+                sample_size: 9,
+            },
+            Line {
+                metric: "review_catch_rate".to_string(),
+                label: "review catch rate".to_string(),
+                unit: "percent".to_string(),
+                value: None,
+                previous: None,
+                change: None,
+                change_pct: None,
+                direction: "unknown".to_string(),
+                unknown: Some("source_not_landed: review finding outcomes".to_string()),
+                sample_size: 0,
+            },
+        ],
+        false_done_by_arm: Vec::new(),
+        false_done_arms_omitted: 0,
+        oldest_unowned_hold: Some(OldestUnownedHold {
+            age: "over_7d".to_string(),
+            unowned: 2,
+            held: 3,
+        }),
+        warnings: if warnings {
+            vec![Warning {
+                guardrail: "lead_time_p50".to_string(),
+                guardrail_label: "lead time p50".to_string(),
+                unit: "seconds".to_string(),
+                previous: 6_000.0,
+                value: 12_000.0,
+                volume: "prs_merged_per_day".to_string(),
+                volume_label: "pull requests merged per day".to_string(),
+                volume_previous: 2.0,
+                volume_value: 5.0,
+            }]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// The digest event the inbox reads, recorded at `ts`.
+fn digest_event(ts: &str, detail: Option<Value>) -> Event {
+    Event {
+        kind: "scorecard.digest".to_string(),
+        source: "forge".to_string(),
+        reporter: "forge".to_string(),
+        needs_human: false,
+        summary: "Weekly scorecard (7d)".to_string(),
+        detail,
+        family: None,
+        family_label: None,
+        shift: None,
+        todo_id: None,
+        ts: ts.to_string(),
+        ..exhausted(21, "acme", "nightshift/2026-09-19", ts, 0)
+    }
+}
+
+/// The week's numbers are one row carrying the payload, so a surface shows
+/// them without parsing the reason, and a traded guardrail makes it a decision.
+#[test]
+fn the_weekly_digest_row_carries_the_payload_and_names_the_trade() {
+    let digest = digest_of(true);
+    let detail = serde_json::to_value(&digest).unwrap();
+    let items = digest_items(&[digest_event("2026-09-19T00:00:00Z", Some(detail))], now());
+    assert_eq!(items.len(), 1);
+    let row = &items[0];
+    assert_eq!(row.kind, "scorecard_digest");
+    assert_eq!(row.severity, Severity::Action);
+    assert_eq!(row.digest.as_ref(), Some(&digest));
+    assert_eq!(row.family.as_deref(), Some("acme"));
+    assert_eq!(row.since.as_deref(), Some("2026-09-19T00:00:00Z"));
+    assert!(
+        row.reason.contains("lead time p50 3h 20m"),
+        "{}",
+        row.reason
+    );
+    // An unknown tile says so rather than reading as a zero.
+    assert!(
+        row.reason
+            .contains("review catch rate unknown (source_not_landed"),
+        "{}",
+        row.reason
+    );
+    assert!(row.reason.contains("over_7d"), "{}", row.reason);
+    assert!(
+        row.reason
+            .contains("while pull requests merged per day rose from 2 to 5"),
+        "{}",
+        row.reason
+    );
+    assert!(row.action.command.is_none());
+    assert!(row.action.api.is_none());
+}
+
+/// A week with nothing traded away is a reading, not a decision.
+#[test]
+fn a_week_with_no_trade_off_is_a_watch_row() {
+    let detail = serde_json::to_value(digest_of(false)).unwrap();
+    let items = digest_items(&[digest_event("2026-09-19T00:00:00Z", Some(detail))], now());
+    assert_eq!(items[0].severity, Severity::Watch);
+    assert_eq!(items[0].action.label, "Read the week's numbers");
+}
+
+/// Last week's digest has been replaced by this week's, so it leaves the
+/// inbox; an event with no payload the inbox can read shows no row at all.
+#[test]
+fn a_stale_or_unreadable_digest_shows_no_row() {
+    let detail = serde_json::to_value(digest_of(false)).unwrap();
+    assert!(
+        digest_items(
+            &[digest_event("2026-09-10T00:00:00Z", Some(detail.clone()))],
+            now()
+        )
+        .is_empty()
+    );
+    assert!(digest_items(&[digest_event("2026-09-19T00:00:00Z", None)], now()).is_empty());
+    assert!(
+        digest_items(
+            &[digest_event(
+                "2026-09-19T00:00:00Z",
+                Some(json!({"half": "a payload"}))
+            )],
+            now()
+        )
+        .is_empty()
+    );
+    assert!(digest_items(&[], now()).is_empty());
 }
 
 /// Every kind the rules emit is in [`KINDS`], the closed set `?kind=` accepts,

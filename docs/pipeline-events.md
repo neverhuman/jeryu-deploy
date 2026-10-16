@@ -145,6 +145,7 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 | `deploy.created`, `deploy.status` | a write to the Deployments API; `outcome` is the deployment status state, `needs_human` for `failure` and `error`; `reason` is the status description, which `deploy-release.sh` ends with the last meaningful line of switch.sh's output on failure. The status request may also carry `log_path` (the operator's kept switch log on the release host) and `log_tail`: the Deployments API stores neither, and the event's `detail` carries both (the tail cut to its last 20 lines and at most 6000 bytes of JSON, so the event fits the 8 KiB `detail` limit) |
 | `repo.archived`, `repo.unarchived` | a repository became read-only, or writable again. Archiving deletes nothing and is reversible, so both are a plain success and the kind is what says which way it went; `detail` carries `archived` |
 | `repo.renamed`, `repo.transferred` | the repository moved: a rename inside its owner, or a transfer to another one. The old slug keeps resolving until a repository is created there, so neither is a warning; `detail` carries `{from, to}` |
+| `scorecard.digest`, `scorecard.digest_undelivered` | the weekly Scorecard digest job (`JERYU_SCORECARD_DIGEST_INTERVAL_HOURS`, default 168 hours) built a digest of the `7d` Scorecard window: `detail` is the whole `jeryu.scorecard.digest/v1` payload and `event_id` is `scorecard-digest-<yyyy-mm-dd>`, so a restart cannot record the same day twice. `needs_human` is set when a guardrail got worse while its paired volume metric rose. The event is recorded before the outbound post is attempted, and a post the forge could not make is `scorecard.digest_undelivered` (`needs_human`, `reason` naming the target's answer) rather than a retry: the digest is already in the attention inbox, and retrying would post the same week twice |
 
 
 ### Review catch rate
@@ -392,7 +393,7 @@ for 10 seconds), never from old events, so an item disappears when its cause
 is fixed.
 
 ```json
-{"schema_version": "jeryu.attention/v1.5", "generated_at": "...",
+{"schema_version": "jeryu.attention/v1.6", "generated_at": "...",
  "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1},
  "total": 4,
  "families": [{"family": "acme", "family_label": "acme",
@@ -435,6 +436,7 @@ the forge's own rows (no family) last, with `family` null.
 | `href` | the in-app page where the step happens |
 | `action` | `{"label", "command", "run_in", "api"}`. `command` is a copyable shell line when the step happens off-site, else null. `run_in` says where that line is run, as a short phrase naming the machine and the directory (`"node-a, any directory"`, `"node-a, in a jeryu/jeryu-deploy checkout"`); it is a string on every item whose `command` is set and the key is absent on every other item. `api` is the call that performs the step, and the key is absent when no route of this API does it (see [Replaying a step](#replaying-a-step)) |
 | `budget` | `{"spent_usd", "budget_usd", "waiting"}` on `shift_budget_spent` only, from the `shift.exhausted` event's `detail`: the spend, the operator's cap and how many claimable todos were left waiting. A number the event did not carry is absent, and so is the whole key on every other kind |
+| `digest` | the `jeryu.scorecard.digest/v1` payload on `scorecard_digest` only, from the `scorecard.digest` event's `detail`: the headline numbers with their week-over-week change, the false-done rate per arm, the oldest unowned hold and the guardrails that got worse on rising volume. The key is absent on every other kind |
 | `next_step` | the one next step as a sentence: `<label>: on <run_in>, run \`<command>\`` or `<label>: open <href>` |
 
 Every item names exactly one next step: run `action.command` on the machine and
@@ -514,6 +516,7 @@ pushes leave from there).
 | `todo_waiting_on_blocker` | watch | open, and a `blocked_by` todo is blocked, handed off, or done but not merged |
 | `shift_without_pr` | action | a shift branch holds todos that are on no base commit (`unmerged_todos`), with no pull request or only a closed one. Being ahead by sha is not enough: a branch closed and replaced by a rebased one stays ahead for ever |
 | `shift_budget_spent` | action | the newest `shift.exhausted` of a family (which is also the newest of its shift: a new shift's event replaces the one before it) said the operator's shift budget ran out with claimable todos still waiting, and no `todo.claimed` has been posted for the family since. Nothing else says so: the cap is the operator's, not state the forge holds, so this one rule reads the event log. An event whose `detail.waiting` is 0 is a shift that ended tidily and asks for nobody |
+| `scorecard_digest` | action when a guardrail got worse while its paired volume metric rose, else watch | the newest `scorecard.digest` event, while it is less than 8 days old (by when the next week's digest has replaced it). A week that ended is not state the collectors can recompute, so this rule reads the recorded event; the numbers are exactly what `GET /api/v1/scorecard?window=7d` answered, `value` against the tile's own `previous`, and a tile the Scorecard answers as unknown stays unknown. The row carries them on `digest`, `href` is `/scorecard`, and nothing is acted on for a reading, so it offers no `action.api` |
 | `shift_stranded_work` | action | a shift's pull request already merged, and todos landed on the branch afterwards: their `Todo:` trailer is on no base commit, so the work is finished and on no open pull request |
 | `mirror_diverged` | critical | the newest reconcile found GitHub holding commits the forge does not, or a tag GitHub published at another commit; ONE item PER repository, naming the commits, because each one is its own history question. Nothing was forced and nothing was deleted (`docs/github-mirror.md`) |
 | `mirror_failing` | action | the newest `jeryu/github-mirror` push failed for one or more repositories; ONE item for the whole forge, naming up to four of them and what git said; the step is on the forge host (SSH rewrite and deploy key) |

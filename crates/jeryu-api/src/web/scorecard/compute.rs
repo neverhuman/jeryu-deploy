@@ -276,7 +276,7 @@ fn sorted(mut samples: Vec<i64>) -> Vec<i64> {
     samples
 }
 
-fn pct1(numerator: usize, denominator: usize) -> f64 {
+pub(crate) fn pct1(numerator: usize, denominator: usize) -> f64 {
     ((numerator as f64 / denominator as f64) * 1000.0).round() / 10.0
 }
 

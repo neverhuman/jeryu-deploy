@@ -89,6 +89,16 @@ pub(super) const FORGE_KINDS: &[ForgeKind] = &[
         "web/pipeline/emit.rs",
         "fn runner_heartbeat",
     ),
+    kind(
+        "scorecard.digest",
+        "web/scorecard/weekly.rs",
+        "\"scorecard.digest\"",
+    ),
+    kind(
+        "scorecard.digest_undelivered",
+        "web/scorecard/weekly.rs",
+        "\"scorecard.digest_undelivered\"",
+    ),
     kind("shift.pr_opened", "web/shift.rs", "\"shift.pr_opened\""),
     kind("todo.action", "web/shift.rs", "\"todo.action\""),
     kind("todo.commented", "web/shift.rs", "\"todo.commented\""),

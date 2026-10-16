@@ -280,3 +280,51 @@ and checks due this month, with at most 500 rows displayed; counts use all rows.
 A due, unchecked hypothesis appears in attention as `todo_check_outcome`, with
 the todo assignee or, if absent, its requester as owner. Recorded checks clear
 that reminder. Queue files retain the fields when older workers rewrite them.
+
+## Weekly digest
+
+Once a week the forge reads its own `7d` Scorecard report and publishes the
+headline of it: lead time p50 and p85, change failure rate, time to restore,
+review catch rate, false-done rate (with its rate per experiment arm), cost
+per successful change, and merged-but-unreleased, each against the equal week
+before it, plus the oldest standing hold nobody has acted on since. The
+numbers are the tiles themselves — `value` against the tile's own `previous`,
+read back out of the report — so the digest has no arithmetic of its own, and
+a tile the Scorecard answers as unknown (today `review_catch_rate` and
+`time_to_restore`, whose sources have not landed) stays unknown in the digest,
+with its reason, rather than being filled in from elsewhere.
+
+The digest also calls out every guardrail that got worse while the volume
+metric it is paired with rose: the rates and times a change carries against
+`prs_merged_per_day`, and the false-done rate against
+`completed_work_items_per_day`, which is what it is counted over. That is the
+shape of quality traded for throughput, and it is what makes the attention row
+a decision rather than a reading. `successful_changes` is deliberately not one
+of those volume metrics: a change is successful once it has been clear of
+failure and rework for 14 days, so in a 7-day window that tile cannot rise.
+
+It is published twice:
+
+- **The attention inbox.** The job records a `scorecard.digest` event whose
+  `detail` is the whole payload, and `GET /api/v1/attention` carries it as a
+  `scorecard_digest` row (admin-only, like the rest of the inbox) with the
+  payload on the row's `digest` field and `/scorecard` as its `href`. The row
+  is `action` when a guardrail was traded away and `watch` otherwise, and it
+  leaves the inbox once the digest is more than 8 days old.
+- **An outbound webhook.** `JERYU_SCORECARD_DIGEST_WEBHOOK` is POSTed the same
+  payload as JSON (`schema_version: "jeryu.scorecard.digest/v1"`). There is no
+  default: with nothing configured the digest is recorded for the inbox and
+  nothing is sent anywhere, and a value that is not an absolute `http` or
+  `https` URL with a host is refused and logged rather than posted to.
+
+`JERYU_SCORECARD_DIGEST_INTERVAL_HOURS` sets the cadence (default 168, one
+week; `0` disables). The loop wakes hourly and builds a digest only when both
+the newest recorded one and the last one this process built are older than the
+interval, so deploys neither skip the week's digest nor post another one on
+every restart. The event is recorded first, under an `event_id` of the day it
+covers, so a crash or a restart cannot post the same week twice; a delivery
+the forge then fails to make is recorded as `scorecard.digest_undelivered`
+(`needs_human`), which asks a person to look, instead of being retried into
+duplicate posts. The payload's arm list is capped (busiest arms first, the
+rest counted in `false_done_arms_omitted`) because it is stored as one event
+`detail`, which is byte-limited.
