@@ -44,6 +44,7 @@ working (an older binary checks only the migrations it knows).
 | `0023_change_outcomes.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/human_time.rs` |
 | `0024_incident_ledger.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/incidents.rs` |
 | `0025_flow_holds.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/flow` |
+| `0026_pull_request_replacements.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/github/pull_replacements.rs` |
 
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. A migration that alters an existing table also has a

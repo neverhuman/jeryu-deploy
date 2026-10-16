@@ -474,7 +474,7 @@ that wants linear history, deciding a title.
 | `todo_blocked` (`handoff`, `agent_blocked`), `todo_handoff`, `todo_parked` (`action`) | the same route with `{"action": "release"}` |
 | `pr_draft_waiting` | `POST /api/v1/repos/<owner>/<name>/pulls/<n>/ready` |
 | `pr_ready_to_merge` | `POST /api/v1/repos/<owner>/<name>/pulls/<n>/queue` |
-| `pr_superseded` | `PATCH /api/v3/repos/<owner>/<name>/pulls/<n>` with `{"state":"closed"}`; the row names the replacement to cite when closing; both PRs must share the author, base and source repository |
+| `pr_superseded` | `PATCH /api/v3/repos/<owner>/<name>/pulls/<n>` with `{"state":"closed","superseded_by":<m>}`: one call closes it, records the replacement link and posts the `Replaced by #<m>` comment. The row reads a recorded link when the forge has one; without one it derives the replacement, and then both PRs must share the author, base and source repository |
 | `queue_failed` | the same: the entry is retried by queueing it again once the reason is fixed |
 | `queue_refused` (a code with no step of its own) | the same |
 

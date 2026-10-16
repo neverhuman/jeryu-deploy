@@ -569,6 +569,10 @@ fn lots(
                 (Some(repo), Some(pr)) if pr > 0 => Some(pr_page(repo, pr)),
                 _ => lot_pr_page(&visit.lot_id),
             };
+            // A lot whose pull request a later one replaced follows the chain:
+            // its link opens the pull request the work is in now, and the hold
+            // still names it. `mark_superseded` recorded that replacement.
+            let pr_href = replacement_page(visit).or(pr_href);
             let hold = visit
                 .held()
                 .then(|| hold_report(visit, visits, pr_href.as_deref(), now_ms))
@@ -595,6 +599,16 @@ fn lots(
         }
     }
     lots
+}
+
+/// The page of the pull request that replaced this lot's own, when a
+/// `superseded` hold names one (`<owner>/<repo>#<n>`).
+fn replacement_page(visit: &Visit) -> Option<String> {
+    let hold = visit.hold.as_ref()?;
+    if hold.reason != "superseded" {
+        return None;
+    }
+    lot_pr_page(&hold.by)
 }
 
 /// Hold the open visits of every pull request that a later one replaced, at

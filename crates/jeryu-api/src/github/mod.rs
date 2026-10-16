@@ -30,6 +30,7 @@ mod hooks;
 mod issues;
 mod listing;
 mod merge_settings;
+pub(crate) mod pull_replacements;
 pub(crate) mod pulls;
 mod releases;
 mod repos;
@@ -105,6 +106,8 @@ pub struct GithubRouter {
     work_store: Option<WorkStore>,
     work_bridge_repairs: WorkBridgeRepairQueue,
     merge_settings: merge_settings::RepoMergeSettings,
+    /// Replaced pull request -> the pull request that replaced it.
+    pull_replacements: pull_replacements::PullReplacements,
     #[cfg(feature = "web")]
     repo_manager: Option<std::sync::Arc<jeryu_gitd::RepoManager>>,
     /// Opt-in, tests only: finalize a merge with a synthesized sha when no
@@ -130,6 +133,7 @@ impl GithubRouter {
             work_store: None,
             work_bridge_repairs: WorkBridgeRepairQueue::default(),
             merge_settings: merge_settings::RepoMergeSettings::default(),
+            pull_replacements: pull_replacements::PullReplacements::default(),
             #[cfg(feature = "web")]
             repo_manager: None,
             #[cfg(feature = "web")]
@@ -165,6 +169,36 @@ impl GithubRouter {
     pub fn with_merge_settings_store(mut self, path: &std::path::Path) -> Result<Self, String> {
         self.merge_settings = merge_settings::RepoMergeSettings::with_store(path)?;
         Ok(self)
+    }
+
+    /// Persist the pull request replacement links (replaced -> replacing) in
+    /// the sqlite file at `path` (the web server's `<data_dir>/shift.sqlite`),
+    /// seeding this router with what it holds. Without this call the links live
+    /// only in this router, so a replaced pull request reads as plain closed
+    /// work again after a restart.
+    #[cfg(feature = "web")]
+    pub fn with_pull_replacement_store(mut self, path: &std::path::Path) -> Result<Self, String> {
+        self.pull_replacements = pull_replacements::PullReplacements::with_store(path)?;
+        Ok(self)
+    }
+
+    /// The recorded replacement links, for the routes and views that read
+    /// them (the v1 and v3 pull request JSON, needs-you's `pr_superseded`
+    /// rule, Flow's `superseded` hold).
+    pub(crate) fn pull_replacements(&self) -> &pull_replacements::PullReplacements {
+        &self.pull_replacements
+    }
+
+    /// Links the already-closed pull requests whose own closing comment, title
+    /// or body names what replaced them. Returns how many links it recorded;
+    /// pull requests that already have one are left alone, so it is safe to
+    /// call at every startup.
+    pub fn backfill_pull_replacements(&self) -> usize {
+        pull_replacements::backfill(
+            &self.core,
+            &self.pull_replacements,
+            chrono::Utc::now().timestamp_millis(),
+        )
     }
 
     /// Attach a git [`RepoManager`](jeryu_gitd::RepoManager) so the PR merge

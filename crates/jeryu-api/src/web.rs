@@ -412,7 +412,9 @@ impl WebState {
                 .with_work_bridge_repair_store(&shift_path)
                 .expect("open work bridge repair store")
                 .with_merge_settings_store(&shift_path)
-                .expect("open repo merge settings store"),
+                .expect("open repo merge settings store")
+                .with_pull_replacement_store(&shift_path)
+                .expect("open pull request replacement store"),
             tui,
             spa_dir,
             ws: WsHub::new(),
@@ -845,6 +847,13 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     // todoq pushes claims straight to a queue repo's `queue` branch, so the
     // family queues are opted back out right after that backfill.
     shift::exempt_queues_from_default_branch_protection(&state, BOOTSTRAP_ADMIN_LOGIN);
+    // A pull request closed before the forge recorded replacements says what
+    // replaced it only in its closing comment; this reads those pointers once
+    // and records the link, and does nothing for the links it already has.
+    let backfilled = state.github.backfill_pull_replacements();
+    if backfilled > 0 {
+        eprintln!("jeryu-api recorded {backfilled} pull request replacement links from pointers");
+    }
     let state = shared_state(state, &config.spa_dir);
     tool_finder_schedule::spawn(state.clone());
     codegraph_schedule::spawn(state.clone());

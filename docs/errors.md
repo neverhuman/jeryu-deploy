@@ -201,6 +201,12 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `pull_origin_author_forbidden` | 403 | a pull request's own author may not mark its origin |
 | `pull_origin_importer_required` | 403 | only an admin or a JERYU_PULL_IMPORTERS login may mark a pull request's origin |
 | `pull_origin_invalid_request` | 422 | the pull request origin body failed validation |
+| `pull_replacement_cross_repo` | 422 | a replacement is a pull request of the same repository |
+| `pull_replacement_cycle` | 422 | the replacement link asked for would make a cycle |
+| `pull_replacement_invalid` | 422 | superseded_by is the number of a pull request of this repository |
+| `pull_replacement_merged` | 409 | a merged pull request landed its own change, so nothing replaced it |
+| `pull_replacement_self` | 422 | a pull request cannot replace itself |
+| `pull_replacement_unknown` | 404 | the repository has no pull request with that number |
 | `pull_request_serialize_failed` | 500 | the pull request could not be serialized |
 | `pull_review_invalid_request` | 422 | the review body failed validation |
 | `pull_self_approval_forbidden` | 403 | an author may not approve their own pull request |

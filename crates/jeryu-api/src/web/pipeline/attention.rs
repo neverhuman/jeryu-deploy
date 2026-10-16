@@ -500,11 +500,14 @@ pub(super) fn auto_pin_call(repo: &str, head: Option<&str>) -> ApiCall {
     }
 }
 
-pub(super) fn close_pull_call(repo: &str, number: u64) -> ApiCall {
+pub(super) fn close_pull_call(repo: &str, number: u64, superseded_by: u64) -> ApiCall {
     ApiCall {
         method: "PATCH",
         path: format!("/api/v3/repos/{repo}/pulls/{number}"),
-        body: Some(json!({"state":"closed"})),
+        // One call closes it, records the pull request that replaced it and
+        // leaves the pointer comment, so the row's own click is what the
+        // replacement link is written by.
+        body: Some(json!({"state": "closed", "superseded_by": superseded_by})),
         confirm: None,
     }
 }
@@ -557,13 +560,71 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     pulls
 }
 
-/// The open pull requests a later pull request replaced (the facts behind
+/// The pull requests a later pull request replaced (the facts behind
 /// `pr_superseded`), for Flow to hold at the station they stopped at.
+///
+/// Every replacement is followed to the end of its chain: a lot of `#141`,
+/// replaced by `#145` which was itself replaced by `#147`, is held by `#147`,
+/// the pull request that is still live. A pull request with a recorded link is
+/// included whatever state it is in, so a lot still open at a station under a
+/// pull request that was closed as replaced names its replacement too.
 pub(crate) fn superseded_open_pulls(state: &WebState) -> Vec<flow::Superseded> {
-    flow::superseded_pulls(&all_pull_facts(state))
+    let facts = all_pull_facts(state);
+    let mut found: Vec<flow::Superseded> = flow::superseded_pulls(&facts)
         .into_iter()
         .map(|(_, found)| found)
-        .collect()
+        .collect();
+    for old in &facts {
+        let Some(number) = old.recorded_replacement else {
+            continue;
+        };
+        if found
+            .iter()
+            .any(|hit| hit.repo == old.repo && hit.number == old.number)
+        {
+            continue;
+        }
+        let Some(replacement) = facts
+            .iter()
+            .find(|new| new.repo == old.repo && new.number == number)
+        else {
+            continue;
+        };
+        found.push(flow::Superseded {
+            repo: old.repo.clone(),
+            number: old.number,
+            replacement_repo: replacement.repo.clone(),
+            replacement_number: replacement.number,
+            replacement_state: match replacement.status {
+                "merged" => "merged",
+                "closed" => "closed",
+                _ => "open",
+            },
+            replaced_at: replacement.created_at,
+        });
+    }
+    for hit in &mut found {
+        let Some((owner, name)) = hit.replacement_repo.split_once('/') else {
+            continue;
+        };
+        if let Some(end) =
+            state
+                .github
+                .pull_replacements()
+                .chain_end(owner, name, hit.replacement_number)
+            && let Some(last) = facts
+                .iter()
+                .find(|new| new.repo == hit.replacement_repo && new.number == end)
+        {
+            hit.replacement_number = last.number;
+            hit.replacement_state = match last.status {
+                "merged" => "merged",
+                "closed" => "closed",
+                _ => "open",
+            };
+        }
+    }
+    found
 }
 
 fn all_pull_facts(state: &WebState) -> Vec<SupersededPullFacts> {
@@ -575,34 +636,41 @@ fn all_pull_facts(state: &WebState) -> Vec<SupersededPullFacts> {
         let Ok(listed) = state.core.list_pull_requests(&repo.owner, &repo.name, None) else {
             continue;
         };
-        pulls.extend(listed.into_iter().map(|pr| SupersededPullFacts {
-            repo: format!("{}/{}", pr.owner, pr.repo),
-            author: pr.author,
-            base_ref: pr.base.ref_name,
-            source_repository: pr.source_repository,
-            number: pr.number,
-            title: pr.title,
-            body: pr.body,
-            head_ref: pr.head.ref_name,
-            created_at: pr.created_at,
-            status: if pr.merged {
-                "merged"
-            } else if matches!(
-                pr.state,
-                jeryu_core::PullRequestState::Open
-                    | jeryu_core::PullRequestState::Draft
-                    | jeryu_core::PullRequestState::ReadyForReview
-                    | jeryu_core::PullRequestState::Approved
-                    | jeryu_core::PullRequestState::Mergeable
-                    | jeryu_core::PullRequestState::Queued
-                    | jeryu_core::PullRequestState::BlockedByChecks
-                    | jeryu_core::PullRequestState::BlockedByPolicy
-                    | jeryu_core::PullRequestState::SpeculativeMergeTesting
-            ) {
-                "open"
-            } else {
-                "closed"
-            },
+        pulls.extend(listed.into_iter().map(|pr| {
+            SupersededPullFacts {
+                recorded_replacement: state
+                    .github
+                    .pull_replacements()
+                    .superseded_by(&pr.owner, &pr.repo, pr.number)
+                    .map(|link| link.number),
+                repo: format!("{}/{}", pr.owner, pr.repo),
+                author: pr.author,
+                base_ref: pr.base.ref_name,
+                source_repository: pr.source_repository,
+                number: pr.number,
+                title: pr.title,
+                body: pr.body,
+                head_ref: pr.head.ref_name,
+                created_at: pr.created_at,
+                status: if pr.merged {
+                    "merged"
+                } else if matches!(
+                    pr.state,
+                    jeryu_core::PullRequestState::Open
+                        | jeryu_core::PullRequestState::Draft
+                        | jeryu_core::PullRequestState::ReadyForReview
+                        | jeryu_core::PullRequestState::Approved
+                        | jeryu_core::PullRequestState::Mergeable
+                        | jeryu_core::PullRequestState::Queued
+                        | jeryu_core::PullRequestState::BlockedByChecks
+                        | jeryu_core::PullRequestState::BlockedByPolicy
+                        | jeryu_core::PullRequestState::SpeculativeMergeTesting
+                ) {
+                    "open"
+                } else {
+                    "closed"
+                },
+            }
         }));
     }
     pulls

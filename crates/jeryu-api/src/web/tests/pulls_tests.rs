@@ -2592,6 +2592,7 @@ async fn closing_a_landed_pull_request_names_the_commit_it_landed_as() {
         State(fx.state.clone()),
         authenticated_account("alice"),
         path(),
+        axum::body::Bytes::new(),
     )
     .await;
     assert_eq!(refused.status(), StatusCode::CONFLICT);
@@ -2626,6 +2627,7 @@ async fn closing_a_landed_pull_request_names_the_commit_it_landed_as() {
             State(fx.state.clone()),
             authenticated_account("alice"),
             path(),
+            axum::body::Bytes::new(),
         )
         .await,
     )
@@ -2659,6 +2661,7 @@ async fn closing_a_landed_pull_request_names_the_commit_it_landed_as() {
         State(fx.state.clone()),
         authenticated_account("alice"),
         path(),
+        axum::body::Bytes::new(),
     )
     .await;
     assert_eq!(again.status(), StatusCode::CONFLICT);

@@ -367,6 +367,9 @@ fn a_superseded_pull_request_is_held_where_it_stopped() {
     assert_eq!(held["state"], "held");
     assert_eq!(held["hold"]["reason"], "superseded");
     assert_eq!(held["hold"]["by"], "acme/widget#4");
+    // The lot follows the chain: its link opens the replacement, not the pull
+    // request that is not going to move again.
+    assert_eq!(held["pr_href"], "/repos/jeryu/acme/widget/pulls/4");
     assert_eq!(held["hold"]["age_s"], 60 * 60);
     assert_eq!(station(&body, "review")["wip"]["held"], 1);
 }

@@ -63,6 +63,10 @@ pub(crate) struct SupersededPullFacts {
     pub head_ref: String,
     pub created_at: DateTime<Utc>,
     pub status: &'static str,
+    /// The replacement a close-as-replaced recorded for this pull request
+    /// (`github/pull_replacements.rs`). Set, it is the answer; the branch and
+    /// text rules below are only for a replacement nobody has recorded yet.
+    pub recorded_replacement: Option<u64>,
 }
 
 /// An open pull request and the later pull request that replaced it.
@@ -84,6 +88,14 @@ pub(crate) fn superseded_pulls(pulls: &[SupersededPullFacts]) -> Vec<(usize, Sup
         .enumerate()
         .filter(|(_, old)| old.status == "open")
         .filter_map(|(index, old)| {
+            // A recorded link is the record itself: it is read, not re-derived.
+            if let Some(number) = old.recorded_replacement
+                && let Some(replacement) = pulls
+                    .iter()
+                    .find(|new| new.repo == old.repo && new.number == number)
+            {
+                return Some((index, found(old, replacement)));
+            }
             let replacement = pulls
                 .iter()
                 .filter(|new| {
@@ -103,23 +115,25 @@ pub(crate) fn superseded_pulls(pulls: &[SupersededPullFacts]) -> Vec<(usize, Sup
                                 }))
                 })
                 .max_by_key(|new| new.created_at)?;
-            Some((
-                index,
-                Superseded {
-                    repo: old.repo.clone(),
-                    number: old.number,
-                    replacement_repo: replacement.repo.clone(),
-                    replacement_number: replacement.number,
-                    replacement_state: if replacement.status == "merged" {
-                        "merged"
-                    } else {
-                        "open"
-                    },
-                    replaced_at: replacement.created_at,
-                },
-            ))
+            Some((index, found(old, replacement)))
         })
         .collect()
+}
+
+/// One replaced pull request and the pull request that replaced it.
+fn found(old: &SupersededPullFacts, replacement: &SupersededPullFacts) -> Superseded {
+    Superseded {
+        repo: old.repo.clone(),
+        number: old.number,
+        replacement_repo: replacement.repo.clone(),
+        replacement_number: replacement.number,
+        replacement_state: match replacement.status {
+            "merged" => "merged",
+            "closed" => "closed",
+            _ => "open",
+        },
+        replaced_at: replacement.created_at,
+    }
 }
 
 /// One action row for each older open pull request replaced by a later pull.
@@ -131,7 +145,7 @@ pub(crate) fn superseded_pull_items(pulls: &[SupersededPullFacts]) -> Vec<Item> 
         let mut item = Draft { id: format!("pr-superseded:{}:{}", old.repo, old.number), kind: "pr_superseded", severity: Severity::Action,
             title: format!("{label} was replaced by {}#{}", found.replacement_repo, found.replacement_number),
             reason: format!("\"{}\" was superseded by \"{}\" ({}). Close the older pull request and leave a comment pointing to its replacement.", old.title, replacement.title, found.replacement_state),
-            href: pull_href(&old.repo, old.number), label: "Close it and point to the replacement", api: Some(close_pull_call(&old.repo, old.number)), command: None }.build();
+            href: pull_href(&old.repo, old.number), label: "Close it and point to the replacement", api: Some(close_pull_call(&old.repo, old.number, found.replacement_number)), command: None }.build();
         item.repo = Some(old.repo.clone()); item.pr = Some(old.number); item
     }).collect()
 }

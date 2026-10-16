@@ -615,6 +615,36 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the pull request origin body failed validation",
     ),
     entry(
+        "pull_replacement_cross_repo",
+        422,
+        "a replacement is a pull request of the same repository",
+    ),
+    entry(
+        "pull_replacement_cycle",
+        422,
+        "the replacement link asked for would make a cycle",
+    ),
+    entry(
+        "pull_replacement_invalid",
+        422,
+        "superseded_by is the number of a pull request of this repository",
+    ),
+    entry(
+        "pull_replacement_merged",
+        409,
+        "a merged pull request landed its own change, so nothing replaced it",
+    ),
+    entry(
+        "pull_replacement_self",
+        422,
+        "a pull request cannot replace itself",
+    ),
+    entry(
+        "pull_replacement_unknown",
+        404,
+        "the repository has no pull request with that number",
+    ),
+    entry(
         "pull_request_serialize_failed",
         500,
         "the pull request could not be serialized",

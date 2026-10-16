@@ -57,7 +57,10 @@ impl GithubRouter {
                     })
                     .collect();
                 self.sort_pulls(&mut kept, list);
-                let body: Vec<Value> = kept.into_iter().map(pull_request_json).collect();
+                let body: Vec<Value> = kept
+                    .into_iter()
+                    .map(|pr| self.pull_request_json_with_replacement(pr))
+                    .collect();
                 paginate(path, page, &body, |slice, _total| {
                     Value::Array(slice.to_vec())
                 })
@@ -177,7 +180,7 @@ impl GithubRouter {
                         "",
                     );
                 }
-                json_response(201, &pull_request_json(&pr))
+                json_response(201, &self.pull_request_json_with_replacement(&pr))
             }
             Err(err) => error_response(err),
         }
@@ -374,12 +377,112 @@ impl GithubRouter {
             Ok(value) => value,
             Err(response) => return response,
         };
+        // `{"state": "closed", "superseded_by": <m>}` is the one call that
+        // closes a pull request, records what replaced it and leaves the
+        // pointer comment; a body without `superseded_by` is the plain update.
+        match replacement_in_body(body) {
+            Err(response) => return response,
+            Ok(Some(replacing)) => {
+                return self.close_as_replaced(owner, repo, number, replacing, body);
+            }
+            Ok(None) => {}
+        }
         let req: UpdatePullRequestRequest = match parse_body(body) {
             Ok(value) => value,
             Err(response) => return response,
         };
         match self.core.update_pull_request(owner, repo, number, req) {
-            Ok(pr) => json_response(200, &pull_request_json(&pr)),
+            Ok(pr) => json_response(200, &self.pull_request_json_with_replacement(&pr)),
+            Err(err) => error_response(err),
+        }
+    }
+
+    /// Closes `number`, records that `replacing` replaced it and posts the
+    /// pointer comment, in one call.
+    ///
+    /// The comment goes first, so a close whose pointer never arrived cannot
+    /// happen; then the link, so a closed pull request is never left without
+    /// the record this call exists for; the close last, which is the step a
+    /// rerun of the same call repeats harmlessly.
+    fn close_as_replaced(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        replacing: u64,
+        body: &str,
+    ) -> Response {
+        if !closing(body) {
+            return replacement_refused(
+                422,
+                "pull_replacement_requires_close",
+                "recording a replacement closes the pull request: send {\"state\": \"closed\", \
+                 \"superseded_by\": <number>}",
+            );
+        }
+        let replaced = match self.core.get_pull_request(owner, repo, number) {
+            Ok(pr) => pr,
+            Err(err) => return error_response(err),
+        };
+        if replaced.merged || replaced.state == PullRequestState::Merged {
+            return replacement_refused(
+                409,
+                "pull_replacement_merged",
+                "this pull request merged: its own change landed, so nothing replaced it",
+            );
+        }
+        // The replacement must be a pull request of this repository; a number
+        // from somewhere else is refused rather than recorded as a dead link.
+        if let Err(err) = self.core.get_pull_request(owner, repo, replacing) {
+            return match err {
+                ForgeError::NotFound(_) => replacement_refused(
+                    404,
+                    "pull_replacement_unknown",
+                    &format!("{owner}/{repo} has no pull request #{replacing}"),
+                ),
+                other => error_response(other),
+            };
+        }
+        let actor = actor(body);
+        if let Err(err) = self.core.create_review(
+            owner,
+            repo,
+            number,
+            &actor,
+            jeryu_core::CreateReviewRequest {
+                body: Some(replacement_comment(replacing)),
+                event: jeryu_core::ReviewState::Commented,
+                comments: Vec::new(),
+                expected_head_sha: Some(replaced.head.sha.clone()),
+            },
+        ) {
+            return error_response(err);
+        }
+        if let Err(refused) = self.pull_replacements.record(
+            owner,
+            repo,
+            number,
+            replacing,
+            &actor,
+            chrono::Utc::now().timestamp_millis(),
+        ) {
+            let status = if refused.code == "storage_failed" {
+                500
+            } else {
+                422
+            };
+            return replacement_refused(status, refused.code, &refused.message);
+        }
+        match self.core.update_pull_request(
+            owner,
+            repo,
+            number,
+            UpdatePullRequestRequest {
+                state: Some(PullRequestState::Closed),
+                ..UpdatePullRequestRequest::default()
+            },
+        ) {
+            Ok(pr) => json_response(200, &self.pull_request_json_with_replacement(&pr)),
             Err(err) => error_response(err),
         }
     }
@@ -1501,7 +1604,7 @@ impl GithubRouter {
     /// the PR's own range, counted in the bare repository. Without a git
     /// backend the count falls back to the commits recorded on the PR.
     fn pull_request_json_with_commit_count(&self, pr: &PullRequest) -> Value {
-        let mut value = pull_request_json(pr);
+        let mut value = self.pull_request_json_with_replacement(pr);
         #[cfg(feature = "web")]
         if let Some(count) = self.pull_commit_count(pr)
             && let Some(object) = value.as_object_mut()
@@ -1510,6 +1613,99 @@ impl GithubRouter {
         }
         value
     }
+}
+
+impl GithubRouter {
+    /// The pull JSON plus what replaced it and what it replaced: `superseded_by`
+    /// is the pull request that replaced this one (null when none did), and
+    /// `supersedes` the pull requests this one replaced, ascending. Both are
+    /// numbers of the same repository.
+    pub(crate) fn pull_request_json_with_replacement(&self, pr: &PullRequest) -> Value {
+        let mut value = pull_request_json(pr);
+        if let Some(object) = value.as_object_mut() {
+            let links = &self.pull_replacements;
+            object.insert(
+                "superseded_by".to_owned(),
+                match links.superseded_by(&pr.owner, &pr.repo, pr.number) {
+                    Some(link) => json!(link.number),
+                    None => Value::Null,
+                },
+            );
+            object.insert(
+                "supersedes".to_owned(),
+                json!(links.supersedes(&pr.owner, &pr.repo, pr.number)),
+            );
+        }
+        value
+    }
+}
+
+/// The comment a close-as-replaced leaves on the pull request it closed. It
+/// says `Replaced by #<m>`, which is also one of the forms the backfill reads,
+/// so the pointer and the link always agree.
+pub(crate) fn replacement_comment(replacing: u64) -> String {
+    format!(
+        "Replaced by #{replacing}: the change lands there, so there is nothing left for this \
+         pull request to land."
+    )
+}
+
+/// The replacement a `PATCH` body names, if any. A number of this repository
+/// is the only accepted spelling: `owner/name#7` or `#7` names a pull request
+/// somewhere else or in another shape, and is refused rather than guessed at.
+fn replacement_in_body(body: &str) -> std::result::Result<Option<u64>, Response> {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return Ok(None);
+    };
+    match value.get("superseded_by") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => match number.as_u64() {
+            Some(number) if number > 0 => Ok(Some(number)),
+            _ => Err(replacement_refused(
+                422,
+                "pull_replacement_invalid",
+                "superseded_by is the number of a pull request of this repository",
+            )),
+        },
+        Some(Value::String(text)) if text.trim().parse::<u64>().is_ok_and(|n| n > 0) => {
+            Ok(Some(text.trim().parse().expect("checked above")))
+        }
+        Some(_) => Err(replacement_refused(
+            422,
+            "pull_replacement_cross_repo",
+            "a replacement is a pull request of the same repository: send its number alone, \
+             not an owner, a repository or a URL",
+        )),
+    }
+}
+
+/// Whether the body asks for the close this call records the replacement with.
+fn closing(body: &str) -> bool {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("state")
+                .and_then(Value::as_str)
+                .map(|state| state.eq_ignore_ascii_case("closed"))
+        })
+        .unwrap_or(false)
+}
+
+fn replacement_refused(status: u16, code: &str, message: &str) -> Response {
+    json_response(
+        status,
+        &json!({
+            "message": message,
+            "errors": [{ "code": code }],
+            "documentation_url": docs_url(),
+            "jeryu_steering": steering(
+                "jeryu.explain_blockers",
+                "a replacement link joins two pull requests of one repository; ask jeryu which \
+                 pull request replaced this one",
+            ),
+        }),
+    )
 }
 
 pub(crate) fn pull_request_web_path(owner: &str, repo: &str, number: u64) -> String {

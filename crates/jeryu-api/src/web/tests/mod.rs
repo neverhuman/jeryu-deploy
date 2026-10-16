@@ -47,6 +47,7 @@ mod human_time_tests;
 mod jankurai_audit_tests;
 mod pull_import_tests;
 mod pull_origin_tests;
+mod pull_replacement_tests;
 mod pulls_tests;
 mod regate_tests;
 mod release_actions_tests;

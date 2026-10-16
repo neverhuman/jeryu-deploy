@@ -47,6 +47,7 @@ fn superseded_pull_rows_name_replacement_and_offer_close_call() {
         head_ref: "feature".into(),
         created_at: now(),
         status: "open",
+        recorded_replacement: None,
     };
     let replacement = SupersededPullFacts {
         author: "alice".into(),
@@ -59,6 +60,7 @@ fn superseded_pull_rows_name_replacement_and_offer_close_call() {
         head_ref: "feature-r2".into(),
         created_at: now() + Duration::hours(1),
         status: "merged",
+        recorded_replacement: None,
     };
     let items = superseded_pull_items(&[old, replacement]);
     assert_eq!(items.len(), 1);
@@ -68,7 +70,52 @@ fn superseded_pull_rows_name_replacement_and_offer_close_call() {
     assert_eq!(items[0].action.api.as_ref().unwrap().method, "PATCH");
     assert_eq!(
         items[0].action.api.as_ref().unwrap().body,
-        Some(json!({"state":"closed"}))
+        Some(json!({"state": "closed", "superseded_by": 5}))
+    );
+}
+
+#[test]
+fn a_recorded_replacement_is_read_instead_of_derived() {
+    let old = SupersededPullFacts {
+        author: "alice".into(),
+        base_ref: "main".into(),
+        source_repository: String::new(),
+        repo: "acme/widgets".into(),
+        number: 141,
+        title: "first go".into(),
+        body: None,
+        head_ref: "feature".into(),
+        created_at: now(),
+        status: "open",
+        recorded_replacement: Some(145),
+    };
+    // Nothing about this pull request would derive the link: another author,
+    // another base, another branch, and it says nothing about #141. The
+    // recorded link is the record, so the row names it anyway.
+    let replacement = SupersededPullFacts {
+        author: "bruno".into(),
+        base_ref: "release".into(),
+        source_repository: String::new(),
+        repo: "acme/widgets".into(),
+        number: 145,
+        title: "landed go".into(),
+        body: None,
+        head_ref: "cherry-pick".into(),
+        created_at: now() + Duration::hours(2),
+        status: "merged",
+        recorded_replacement: None,
+    };
+    let derived = SupersededPullFacts {
+        recorded_replacement: None,
+        ..old.clone()
+    };
+    assert!(superseded_pull_items(&[derived, replacement.clone()]).is_empty());
+    let items = superseded_pull_items(&[old, replacement]);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].title.contains("#145"));
+    assert_eq!(
+        items[0].action.api.as_ref().unwrap().body,
+        Some(json!({"state": "closed", "superseded_by": 145}))
     );
 }
 
@@ -85,6 +132,7 @@ fn replacement_text_and_branch_suffix_cannot_close_another_authors_or_scopes_pul
         head_ref: "feature".into(),
         created_at: now(),
         status: "open",
+        recorded_replacement: None,
     };
     let newer = SupersededPullFacts {
         number: 5,
@@ -126,6 +174,7 @@ fn superseded_pull_rows_follow_r_chains_and_ignore_newest_or_other_repositories(
             head_ref: head.into(),
             created_at,
             status: "open",
+            recorded_replacement: None,
         };
     let rows = superseded_pull_items(&[
         pull(1, "acme/widgets", "feature", now(), None),
@@ -3697,6 +3746,7 @@ fn one_of_every_kind() -> Vec<Item> {
             head_ref: "feature".into(),
             created_at: now(),
             status: "open",
+            recorded_replacement: None,
         },
         SupersededPullFacts {
             author: "alice".into(),
@@ -3709,6 +3759,7 @@ fn one_of_every_kind() -> Vec<Item> {
             head_ref: "feature-r2".into(),
             created_at: now() + Duration::minutes(1),
             status: "open",
+            recorded_replacement: None,
         },
     ]));
 

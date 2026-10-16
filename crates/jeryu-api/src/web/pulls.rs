@@ -320,6 +320,7 @@ fn summary_list_item(state: &WebState, pr: &PullRequest) -> Value {
     }
     value["required_contexts"] =
         serde_json::to_value(contexts).expect("required contexts serialize");
+    with_replacement(state, pr, &mut value);
     value
 }
 
@@ -331,7 +332,7 @@ pub(super) async fn detail(
     let Some((_, pr)) = resolve_pr(&state, &id, number) else {
         return not_found("load pull request detail", "pull request not found");
     };
-    Json(detail_for_pr(&state, &pr, Some(&account.login))).into_response()
+    detail_response(&state, &pr, Some(&account.login))
 }
 
 pub(super) async fn diff(
@@ -459,7 +460,7 @@ pub(super) async fn review(
                     finding_comments,
                 );
                 super::human_time::pull_mark(&state, &updated, &account.login);
-                Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
+                detail_response(&state, &updated, Some(&account.login))
             }
             Err(error) => core_error(error, "reload pull request after review"),
         },
@@ -605,7 +606,7 @@ pub(super) async fn approve(
             Ok(updated) => {
                 super::pipeline::emit::pull_approved(&state, &updated, &account.login);
                 super::human_time::pull_mark(&state, &updated, &account.login);
-                Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
+                detail_response(&state, &updated, Some(&account.login))
             }
             Err(error) => core_error(error, "reload pull request after approval"),
         },
@@ -718,7 +719,7 @@ pub(super) async fn merge(
     {
         Ok(updated) => {
             super::pipeline::emit::pull_merged(&state, &updated, &account.login, "merge");
-            Json(detail_for_pr(&state, &updated, None)).into_response()
+            detail_response(&state, &updated, None)
         }
         Err(error) => core_error(error, "reload pull request after merge"),
     }
@@ -796,7 +797,7 @@ fn set_draft(
         );
     }
     if pr.draft == draft {
-        return Json(detail_for_pr(state, &pr, Some(&account.login))).into_response();
+        return detail_response(state, &pr, Some(&account.login));
     }
     let updated = match state.github.core().update_pull_request(
         &repo.owner,
@@ -828,7 +829,7 @@ fn set_draft(
         }),
     );
     super::pipeline::emit::pull_draft_changed(state, &updated, &account.login);
-    Json(detail_for_pr(state, &updated, Some(&account.login))).into_response()
+    detail_response(state, &updated, Some(&account.login))
 }
 
 /// `POST /api/v1/repos/:id/pulls/:number/close`: close an open pull request
@@ -845,11 +846,19 @@ pub(super) async fn close(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
+    body: Bytes,
 ) -> AxumResponse {
     let purpose = "close pull request already on its base branch";
+    let replacing = match replacement_asked_for(&body) {
+        Ok(replacing) => replacing,
+        Err(response) => return *response,
+    };
     let Some((repo, pr)) = resolve_pr(&state, &id, number) else {
         return not_found(purpose, "pull request not found");
     };
+    if let Some(replacing) = replacing {
+        return close_as_replaced(&state, &account, &repo, &pr, replacing);
+    }
     if !matches!(web_pr_state(&pr), WebPullRequestState::Open) {
         return repair_error(
             StatusCode::CONFLICT,
@@ -921,7 +930,196 @@ pub(super) async fn close(
             "landed_as": landing,
         }),
     );
-    Json(detail_for_pr(&state, &updated, Some(&account.login))).into_response()
+    detail_response(&state, &updated, Some(&account.login))
+}
+
+/// The replacement a close body names: `{"superseded_by": <number>}`, the v1
+/// spelling of the GitHub edge's `PATCH .../pulls/<n>` with the same field. An
+/// empty body is the plain landed-close this route has always performed.
+///
+/// The number is a pull request of the same repository. A spelling that names
+/// another repository (`globex/widgets#5`, a URL) is refused rather than
+/// guessed at: a replacement link only ever joins two pull requests of one
+/// repository.
+fn replacement_asked_for(body: &Bytes) -> Result<Option<u64>, Box<AxumResponse>> {
+    if body.is_empty() {
+        return Ok(None);
+    }
+    let invalid = || {
+        repair_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "pull_replacement_invalid",
+            "close pull request as replaced",
+            "superseded_by is the number of a pull request of this repository",
+            &[
+                "send {\"superseded_by\": 145} with the number of the replacing pull request",
+                "send an empty body to close a pull request whose change already landed",
+            ],
+            PROOF_LANE,
+            None,
+        )
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return Err(Box::new(invalid()));
+    };
+    match value.get("superseded_by") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => match number.as_u64() {
+            Some(number) if number > 0 => Ok(Some(number)),
+            _ => Err(Box::new(invalid())),
+        },
+        Some(Value::String(text)) if text.trim().parse::<u64>().is_ok_and(|n| n > 0) => {
+            Ok(Some(text.trim().parse().expect("checked above")))
+        }
+        Some(_) => Err(Box::new(repair_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "pull_replacement_cross_repo",
+            "close pull request as replaced",
+            "a replacement is a pull request of the same repository",
+            &[
+                "send the replacement's number alone, without an owner, a repository or a URL",
+                "open a pull request against this repository and name that one",
+            ],
+            PROOF_LANE,
+            None,
+        ))),
+    }
+}
+
+/// Closes a pull request a later one replaced, records the link and leaves the
+/// pointer comment, in one call: the `POST /api/v1/repos/:id/pulls/:number/close`
+/// body `{"superseded_by": <m>}`.
+///
+/// Writing the repository is enough to perform it — a replacement is landed by
+/// whoever could have pushed the branch — and nothing in the pull requests'
+/// own text decides it: the caller names the replacement and the forge checks
+/// it is a pull request of this repository, not itself, and not one that would
+/// close a cycle.
+///
+/// The comment goes first, so a recorded link always has the pointer a reader
+/// of an older client still sees; then the link; then the close, which is the
+/// step a rerun repeats harmlessly.
+fn close_as_replaced(
+    state: &WebState,
+    account: &AccountSummary,
+    repo: &jeryu_core::Repository,
+    pr: &PullRequest,
+    replacing: u64,
+) -> AxumResponse {
+    let purpose = "close pull request as replaced";
+    if account.role != UserRole::Admin
+        && !state
+            .core
+            .user_can_write_repo(&account.login, &repo.owner, &repo.name)
+    {
+        return repair_error(
+            StatusCode::FORBIDDEN,
+            "permission_denied",
+            purpose,
+            "recording a replacement needs write access to the repository",
+            &[
+                "ask somebody with write access to close it and name the replacement",
+                "close it on the pull request page, which closes any pull request",
+            ],
+            PROOF_LANE,
+            None,
+        );
+    }
+    if pr.merged || matches!(web_pr_state(pr), WebPullRequestState::Merged) {
+        return repair_error(
+            StatusCode::CONFLICT,
+            "pull_replacement_merged",
+            purpose,
+            "this pull request merged: its own change landed, so nothing replaced it",
+            &["reload the pull request: it is merged"],
+            PROOF_LANE,
+            Some(json!({ "state": web_pr_state(pr) })),
+        );
+    }
+    if state
+        .core
+        .get_pull_request(&repo.owner, &repo.name, replacing)
+        .is_err()
+    {
+        return repair_error(
+            StatusCode::NOT_FOUND,
+            "pull_replacement_unknown",
+            purpose,
+            &format!(
+                "{}/{} has no pull request #{replacing}",
+                repo.owner, repo.name
+            ),
+            &[
+                "open the replacement pull request first, then close this one naming it",
+                "check the number: a replacement is a pull request of this repository",
+            ],
+            PROOF_LANE,
+            None,
+        );
+    }
+    if let Err(error) = state.github.core().create_review(
+        &repo.owner,
+        &repo.name,
+        pr.number,
+        &account.login,
+        CreateReviewRequest {
+            body: Some(crate::github::pulls::replacement_comment(replacing)),
+            event: ReviewState::Commented,
+            comments: Vec::new(),
+            expected_head_sha: Some(pr.head.sha.clone()),
+        },
+    ) {
+        return core_error(error, "comment the replacement before closing");
+    }
+    if let Err(refused) = state.github.pull_replacements().record(
+        &repo.owner,
+        &repo.name,
+        pr.number,
+        replacing,
+        &account.login,
+        chrono::Utc::now().timestamp_millis(),
+    ) {
+        let status = if refused.code == "storage_failed" {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        };
+        return repair_error(
+            status,
+            refused.code,
+            purpose,
+            &refused.message,
+            &[
+                "name the pull request that carries this change now",
+                "follow the chain: the replacement may itself have been replaced",
+            ],
+            PROOF_LANE,
+            Some(json!({ "superseded_by": replacing })),
+        );
+    }
+    let updated = match state.github.core().update_pull_request(
+        &repo.owner,
+        &repo.name,
+        pr.number,
+        UpdatePullRequestRequest {
+            state: Some(jeryu_core::PullRequestState::Closed),
+            ..UpdatePullRequestRequest::default()
+        },
+    ) {
+        Ok(updated) => updated,
+        Err(error) => return core_error(error, purpose),
+    };
+    let _ = state.github.core().append_audit_as(
+        &account.login,
+        "pull_request.close_as_replaced",
+        &format!("{}/{}#{}", repo.owner, repo.name, pr.number),
+        "completed",
+        json!({
+            "superseded_by": replacing,
+            "head_sha": updated.head.sha,
+        }),
+    );
+    detail_response(state, &updated, Some(&account.login))
 }
 
 fn resolve_pr(
@@ -1005,6 +1203,64 @@ fn state_matches(pr: &PullRequest, filter: Option<&str>) -> bool {
         // `list` refuses any other value before filtering.
         _ => true,
     }
+}
+
+/// The pull request page's payload: the typed detail, plus the replacement
+/// link this repository recorded for the pull request. The link is read from
+/// the forge's own record (`github/pull_replacements.rs`), so a page, a list
+/// row and the GitHub edge all answer the same two fields.
+fn detail_response(
+    state: &WebState,
+    pr: &PullRequest,
+    authenticated_login: Option<&str>,
+) -> AxumResponse {
+    let detail = detail_for_pr(state, pr, authenticated_login);
+    let mut value = serde_json::to_value(detail).expect("pull detail serializes");
+    with_replacement(state, pr, &mut value);
+    if let Some(summary) = value.get_mut("summary") {
+        with_replacement(state, pr, summary);
+    }
+    Json(value).into_response()
+}
+
+/// Adds `superseded_by` (the pull request that replaced this one, or null),
+/// `superseded_by_state` (where that replacement stands) and `supersedes` (the
+/// pull requests it replaced, ascending) to a payload.
+fn with_replacement(state: &WebState, pr: &PullRequest, value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let links = state.github.pull_replacements();
+    let replacement = links.superseded_by(&pr.owner, &pr.repo, pr.number);
+    object.insert(
+        "superseded_by".to_string(),
+        match &replacement {
+            Some(link) => json!(link.number),
+            None => Value::Null,
+        },
+    );
+    // Where the replacement itself stands, so a reader of "Replaced by #147"
+    // knows whether the work has landed without opening it. Null when the
+    // replacement is gone from the store.
+    object.insert(
+        "superseded_by_state".to_string(),
+        replacement
+            .as_ref()
+            .and_then(|link| {
+                state
+                    .github
+                    .core()
+                    .get_pull_request(&pr.owner, &pr.repo, link.number)
+                    .ok()
+            })
+            .map_or(Value::Null, |replacing| {
+                serde_json::to_value(web_pr_state(&replacing)).expect("pull state serializes")
+            }),
+    );
+    object.insert(
+        "supersedes".to_string(),
+        json!(links.supersedes(&pr.owner, &pr.repo, pr.number)),
+    );
 }
 
 fn detail_for_pr(

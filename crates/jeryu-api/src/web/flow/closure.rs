@@ -165,11 +165,22 @@ fn target(body: &str, repo: &str) -> Option<(String, u64)> {
     Some((name.into(), number))
 }
 fn replacement(
+    state: &WebState,
     body: &str,
     repo: &str,
+    pr_number: Option<u64>,
     pulls: &BTreeMap<(String, u64), PullRequest>,
 ) -> Option<Replacement> {
-    let (repo, number) = target(body, repo)?;
+    let (repo, number) = pr_number
+        .and_then(|number| {
+            let (owner, name) = repo.split_once('/')?;
+            let end = state
+                .github
+                .pull_replacements()
+                .chain_end(owner, name, number)?;
+            Some((repo.to_string(), end))
+        })
+        .or_else(|| target(body, repo))?;
     let pr = pulls.get(&(repo.clone(), number));
     Some(Replacement {
         href: format!("/repos/jeryu/{repo}/pulls/{number}"),
@@ -215,7 +226,15 @@ pub(crate) fn snapshot(
     }
     let replacements: BTreeSet<_> = pulls
         .iter()
-        .filter_map(|((repo, _), pr)| target(pr.body.as_deref().unwrap_or(""), repo))
+        .filter_map(|((repo, number), pr)| {
+            let (owner, name) = repo.split_once('/')?;
+            state
+                .github
+                .pull_replacements()
+                .chain_end(owner, name, *number)
+                .map(|end| (repo.clone(), end))
+                .or_else(|| target(pr.body.as_deref().unwrap_or(""), repo))
+        })
         .collect();
     for (repo, number) in replacements {
         if pulls.contains_key(&(repo.clone(), number)) {
@@ -308,7 +327,8 @@ pub(crate) fn snapshot(
                 if result.items.len() == MAX_CLOSURES {
                     continue;
                 }
-                let replacement = replacement(&body, v.repo.as_deref().unwrap_or(""), &pulls);
+                let replacement =
+                    replacement(state, &body, v.repo.as_deref().unwrap_or(""), v.pr, &pulls);
                 let (disposition, needs_attention) = disposition(&body, replacement.as_ref());
                 result.items.push(Closure {
                     lot_id: v.lot.clone(),
@@ -626,6 +646,28 @@ mod tests {
         assert!(
             !mixed.excluded.contains(&followup.key()),
             "merging an older pull cannot hide a later hold sharing its todo"
+        );
+        core.update_pull_request(
+            "acme",
+            "widget",
+            pr.number,
+            UpdatePullRequestRequest {
+                state: Some(PullRequestState::Closed),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        state
+            .github
+            .pull_replacements()
+            .record("acme", "widget", pr.number, later.number, "author", 2000)
+            .unwrap();
+        let replaced = snapshot(&state, &open, None);
+        assert_eq!(replaced.items[0].disposition, "replacement_recorded");
+        assert!(!replaced.items[0].needs_attention);
+        assert_eq!(
+            replaced.items[0].replacement.as_ref().unwrap().label,
+            format!("acme/widget#{}", later.number)
         );
     }
     #[test]

@@ -140,6 +140,11 @@ pub(super) const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0025_flow_holds",
         include_str!("../../../../../db/migrations/0025_flow_holds.sql"),
     ),
+    (
+        26,
+        "0026_pull_request_replacements",
+        include_str!("../../../../../db/migrations/0026_pull_request_replacements.sql"),
+    ),
 ];
 
 pub(crate) const RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
