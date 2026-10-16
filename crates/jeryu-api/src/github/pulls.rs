@@ -333,7 +333,8 @@ impl GithubRouter {
                     },
                     "documentation_url": docs_url(),
                     "jeryu_steering": steering(
-                        "jeryu.propose_patch",
+                        None,
+                        Some("PATCH /repos/{owner}/{repo}/pulls/{number}"),
                         "this change overlaps an open pull request; push it onto that PR instead of opening a duplicate",
                     ),
                 });
@@ -591,7 +592,8 @@ impl GithubRouter {
                         }],
                         "documentation_url": docs_url(),
                         "jeryu_steering": steering(
-                            "jeryu.request_merge",
+                            None,
+                            None,
                             "the server is missing its git repository manager; an operator must \
                              wire one (`GithubRouter::with_repo_manager`) before merges can land",
                         ),
@@ -1700,9 +1702,10 @@ fn replacement_refused(status: u16, code: &str, message: &str) -> Response {
             "errors": [{ "code": code }],
             "documentation_url": docs_url(),
             "jeryu_steering": steering(
-                "jeryu.explain_blockers",
-                "a replacement link joins two pull requests of one repository; ask jeryu which \
-                 pull request replaced this one",
+                None,
+                Some("GET /repos/{owner}/{repo}/pulls/{number}"),
+                "a replacement link joins two pull requests of one repository; read the pull \
+                 request to see which one replaced it",
             ),
         }),
     )

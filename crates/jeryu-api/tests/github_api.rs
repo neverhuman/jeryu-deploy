@@ -62,7 +62,15 @@ fn merge_without_a_git_backend_fails_closed() {
     assert_eq!(merged.status, 503, "merge: {}", merged.body);
     let payload = body(&merged);
     assert_eq!(payload["errors"][0]["code"], "git_backend_unavailable");
-    assert_eq!(payload["jeryu_steering"]["mcp_tool"], "jeryu.request_merge");
+    // No MCP tool merges here, so the steering names none: an operator has to
+    // wire the git backend.
+    assert_eq!(payload["jeryu_steering"]["mcp_tool"], Value::Null);
+    assert!(
+        payload["jeryu_steering"]["hint"]
+            .as_str()
+            .expect("hint")
+            .contains("git repository manager")
+    );
     assert!(payload["merged"].is_null(), "merge: {}", merged.body);
 
     // The PR is untouched: still open, with no merge sha invented for it.
@@ -494,8 +502,13 @@ fn overlapping_change_reports_the_existing_pr_without_creating_a_new_one() {
         "html_url points at the existing PR: {}",
         refused.body
     );
-    // The machine repair hint survives the shape change.
-    assert_eq!(parsed["jeryu_steering"]["mcp_tool"], "jeryu.propose_patch");
+    // The machine repair hint survives the shape change, and names the route
+    // that updates the pull request the change belongs on.
+    assert_eq!(parsed["jeryu_steering"]["mcp_tool"], Value::Null);
+    assert_eq!(
+        parsed["jeryu_steering"]["supported_route"],
+        "PATCH /repos/{owner}/{repo}/pulls/{number}"
+    );
     // No success signal: neither a reuse header nor a new PR row.
     assert!(header(&refused, "X-Jeryu-Reused-PR").is_none());
     assert_eq!(
@@ -1058,7 +1071,8 @@ fn unsupported_actions_writes_return_guided_local_ci_errors() {
         let parsed = body(&response);
         assert_eq!(
             parsed["message"],
-            "Hosted GitHub Actions writes are not supported on Jeryu; CI is local and MCP-driven."
+            "Hosted GitHub Actions writes are not supported on Jeryu; the forge gates a pull \
+             request head instead of dispatching workflows."
         );
         assert!(parsed["documentation_url"].is_string());
         assert_eq!(
@@ -1098,18 +1112,16 @@ fn unsupported_actions_writes_return_guided_local_ci_errors() {
             parsed["jeryu_connection"]["actions_workflow_runs"],
             "GET /repos/alice/jeryu/actions/workflows/{workflow_id}/runs"
         );
-        assert_eq!(parsed["jeryu_steering"]["mcp_tool"], "jeryu.run_tests");
-        assert_eq!(
-            parsed["jeryu_steering"]["mcp_tools"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
-        assert_eq!(parsed["jeryu_steering"]["mcp_tools"][0], "jeryu.run_tests");
-        assert_eq!(
-            parsed["jeryu_steering"]["mcp_tools"][1],
-            "jeryu.get_ci_run_jobs"
+        // Hosted Actions writes have no MCP tool here; the steering names the
+        // route that gates a pull request's current head again.
+        assert_eq!(parsed["jeryu_steering"]["mcp_tool"], Value::Null);
+        assert!(
+            parsed["jeryu_steering"]["supported_route"]
+                .as_str()
+                .expect("supported route")
+                .contains("/regate"),
+            "{}",
+            parsed["jeryu_steering"]
         );
     }
 
@@ -1233,12 +1245,10 @@ fn error_bodies_carry_jeryu_steering_fields() {
         steering["faster_path"],
         jeryu_api::discovery::CAPABILITIES_PATH
     );
-    assert!(
-        steering["mcp_tool"]
-            .as_str()
-            .expect("mcp_tool")
-            .starts_with("jeryu.")
-    );
+    // `mcp_tool` is only ever a tool this forge dispatches, so a 404 that no
+    // tool serves carries none and names the REST route instead.
+    assert_eq!(steering["mcp_tool"], Value::Null);
+    assert_eq!(steering["supported_route"], "GET /repos/{owner}/{repo}");
     assert!(steering["hint"].as_str().expect("hint").len() > 5);
 
     // 422 from an invalid body.
@@ -1252,7 +1262,7 @@ fn error_bodies_carry_jeryu_steering_fields() {
     // 422 from a non-numeric path id.
     let bad_id = router.get("/repos/alice/jeryu/pulls/not-a-number");
     assert_eq!(bad_id.status, 422);
-    assert!(body(&bad_id)["jeryu_steering"]["mcp_tool"].is_string());
+    assert!(body(&bad_id)["jeryu_steering"]["hint"].is_string());
 
     // The catch-all 404 (unmatched route) also teaches.
     let unmatched = router.get("/repos/alice/jeryu/unknown-thing");
@@ -1358,7 +1368,19 @@ fn unsupported_graphql_returns_guided_repair_hint() {
     let parsed = body(&response);
     assert_eq!(
         parsed["message"],
-        "GraphQL query requires a guided Jeryu route"
+        "GraphQL query is outside the supported subset; use the listed REST route"
+    );
+    // The refusal publishes the subset that is served, so a client can retry
+    // with something this edge answers instead of guessing.
+    let supported: Vec<&str> = parsed["graphql_supported_operations"]
+        .as_array()
+        .expect("supported operations")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        supported.contains(&"query { viewer { login } }"),
+        "{supported:?}"
     );
     assert!(
         parsed["documentation_url"]

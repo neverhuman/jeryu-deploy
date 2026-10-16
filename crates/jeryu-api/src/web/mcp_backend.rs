@@ -10,6 +10,15 @@ use super::bot_token::{BotMcpMount, BotPrincipal};
 use super::bots;
 use super::repositories::find_repo;
 use super::{WebState, agent_runs, codegraph, control_plane};
+// The grant each web-dispatched tool requires comes from the one registry every
+// guidance surface reads: `control_plane.*`, `agent_work.*`, `tool_finder.*`
+// and the live-status reads mirror the admin-only `/api/v1` routes that serve
+// the same data, `tool_registry.summary` mirrors a route open to any
+// authenticated account, and the codegraph reads name a repository, so they ask
+// for that repository's read grant. `required_access` answers `None` for a tool
+// no adapter here runs: it stays out of discovery, and a direct call is refused
+// as `tool_unavailable` before any principal question arises.
+use crate::tool_access::{ToolAccess as Access, is_implemented, required_access};
 
 tokio::task_local! {
     static BOT_CALLER: BotPrincipal;
@@ -57,68 +66,11 @@ fn bot_mcp_limited() -> bool {
     BOT_CALLER.try_with(|_| ()).is_ok() || BOT_MOUNT.try_with(|_| ()).is_ok()
 }
 
-/// What a web-dispatched MCP tool asks of its caller.
-enum Access {
-    /// Global admin, like the `/api/v1` route that serves the same data.
-    Admin,
-    /// Read access to the repository named in the call, admins included.
-    RepoRead,
-    /// Any authenticated account, like the equivalent `/api/v1` route.
-    Account,
-}
-
-/// The grant each web-dispatched tool requires, mirroring the `/api/v1` route
-/// that serves the same data:
-///
-/// * `control_plane.*`, `repo_graph.*`, `remote.status`, `artifacts.latest`,
-///   `runner_fabric.status` and the live-status reads answer from
-///   `/api/v1/control-plane/*`, which is admin-only.
-/// * `agent_work.*` is `/api/v1/agent-runs/*`, `codegraph.tool_build.*` is
-///   `/api/v1/codegraph/tool-build/*` and `tool_finder.*` is
-///   `/api/v1/tool-finder/*`: all admin-only paths.
-/// * `tool_registry.summary` is `/api/v1/tools/registry/summary`, open to any
-///   authenticated account.
-/// * The codegraph reads name a repository, so they ask for the read grant that
-///   repository's routes ask for.
-///
-/// `None` is a tool this backend does not dispatch. No adapter runs it, so
-/// [`live_adapter_installed`] keeps it out of discovery and a direct call is
-/// refused as `tool_unavailable` before any principal question arises.
-fn required_access(tool: &str) -> Option<Access> {
-    let access = match tool {
-        "control_plane.status"
-        | "control_plane.priorities"
-        | "repo_graph.clusters"
-        | "repo_graph.query"
-        | "remote.status"
-        | "artifacts.latest"
-        | "runner_fabric.status"
-        | "get_system_snapshot"
-        | "get_ci_run_jobs"
-        | "get_ci_bottlenecks"
-        | "explain_blockers"
-        | "plan_validation" => Access::Admin,
-        tool if tool.starts_with("agent_work.")
-            || tool.starts_with("codegraph.tool_build.")
-            || tool.starts_with("tool_finder.") =>
-        {
-            Access::Admin
-        }
-        "tool_registry.summary" => Access::Account,
-        tool if is_codegraph_tool(tool) => Access::RepoRead,
-        _ => return None,
-    };
-    Some(access)
-}
-
 /// Whether a tool, named with or without its `jeryu.` prefix, needs the admin
 /// role. Tests check the agent catalog against this table, not tool names.
 #[cfg(test)]
 pub(super) fn is_admin_tool(tool: &str) -> bool {
-    matches!(
-        required_access(tool.strip_prefix("jeryu.").unwrap_or(tool)),
-        Some(Access::Admin)
-    )
+    matches!(required_access(tool), Some(Access::Admin))
 }
 
 pub(super) struct WebMcpBackend {
@@ -645,38 +597,10 @@ fn string_array(value: &Value) -> Vec<String> {
 ///
 /// Discovery advertises only these, and a call to anything else is refused as
 /// `tool_unavailable`: the production backend answers from the forge or not at
-/// all, never from an in-memory stand-in. Every name here is dispatched by
-/// [`WebMcpBackend::call`] above, so the two lists move together.
+/// all, never from an in-memory stand-in. The registry is the list, and
+/// [`WebMcpBackend::call`] dispatches every name in it.
 fn live_adapter_installed(tool: &str) -> bool {
-    is_codegraph_tool(tool)
-        || matches!(
-            tool,
-            "agent_work.start"
-                | "agent_work.status"
-                | "agent_work.control"
-                | "agent_work.events"
-                | "agent_work.tail"
-                | "agent_work.export_pr"
-                | "codegraph.tool_build.status"
-                | "codegraph.tool_build.clusters"
-                | "codegraph.tool_build.feedback"
-                | "tool_finder.clusters"
-                | "tool_finder.scan"
-                | "tool_finder.dashboard"
-                | "tool_registry.summary"
-                | "control_plane.status"
-                | "control_plane.priorities"
-                | "repo_graph.clusters"
-                | "repo_graph.query"
-                | "remote.status"
-                | "artifacts.latest"
-                | "runner_fabric.status"
-                | "get_system_snapshot"
-                | "get_ci_run_jobs"
-                | "get_ci_bottlenecks"
-                | "explain_blockers"
-                | "plan_validation"
-        )
+    is_implemented(tool)
 }
 
 fn is_codegraph_tool(tool: &str) -> bool {
@@ -1637,6 +1561,54 @@ pub fn alpha(input: &str) -> Result<String, String> {
         // `/api/v1/tools/registry/summary` is not admin-only, so neither is its tool.
         let summary = call_as(&user, &backend, "tool_registry.summary", json!({}));
         assert!(summary.success, "{summary:?}");
+    }
+
+    /// The registry is the catalog: every tool it names is advertised by the
+    /// live backend and dispatched by it, and every tool the backend
+    /// advertises is in the registry. A name in the owning MCP catalog that is
+    /// not in the registry is refused as `tool_unavailable`, so no guidance
+    /// surface may recommend it.
+    #[test]
+    fn the_registry_matches_what_the_backend_dispatches() {
+        use crate::tool_access::{IMPLEMENTED, TOOL_PREFIX};
+
+        let backend = WebMcpBackend::new(Arc::new(WebState::new(ForgeCore::new())));
+        let advertised: Vec<String> = backend.list().into_iter().map(|tool| tool.name).collect();
+        for (tool, _) in IMPLEMENTED {
+            let name = format!("{TOOL_PREFIX}{tool}");
+            assert!(
+                advertised.contains(&name),
+                "{name} is in the registry but not advertised"
+            );
+        }
+        for name in &advertised {
+            let bare = name.strip_prefix(TOOL_PREFIX).unwrap_or(name);
+            assert!(
+                crate::tool_access::is_implemented(bare),
+                "{name} is advertised but absent from the registry"
+            );
+        }
+        for value in jeryu_mcp::tool_manifest() {
+            let name = value["name"]
+                .as_str()
+                .expect("catalog tool name")
+                .to_string();
+            let bare = name.strip_prefix(TOOL_PREFIX).unwrap_or(&name).to_string();
+            if crate::tool_access::is_implemented(&bare) {
+                continue;
+            }
+            assert!(
+                !advertised.contains(&name),
+                "{name} has no adapter and must not be advertised"
+            );
+            let response = backend.call(&bare, json!({}), &ctx()).expect("call");
+            assert!(!response.success, "{name} must not report success");
+            assert_eq!(
+                response.data.expect("failure data")["code"],
+                "tool_unavailable",
+                "{name} must answer tool_unavailable"
+            );
+        }
     }
 
     #[test]

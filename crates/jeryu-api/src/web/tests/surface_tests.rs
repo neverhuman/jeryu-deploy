@@ -189,7 +189,7 @@ fn installed_mcp_tools() -> BTreeSet<String> {
 
 #[test]
 fn capabilities_payload_exposes_the_gh_command_map() {
-    let payload = capabilities_payload(None, &installed_mcp_tools());
+    let payload = capabilities_payload(None, &installed_mcp_tools(), Principal::Admin);
     assert_eq!(payload["server"], "jeryu");
     assert_eq!(payload["api_version"], "v4");
     assert_eq!(payload["graphql"], "/graphql");
@@ -210,15 +210,39 @@ fn capabilities_payload_exposes_the_gh_command_map() {
     }
     assert_eq!(map["gh repo create"], "POST /repos");
     // The mutating tools have no execution adapter on a default server, so the
-    // commands whose jeryu answer is one of them are not advertised at all.
-    for (command, tool) in [
-        ("gh pr create", MCP_PATCH_TOOL),
-        ("gh pr merge", MCP_MERGE_TOOL),
-        ("gh issue create", MCP_ISSUE_TOOL),
+    // commands whose jeryu answer would be one of them are answered with the
+    // REST route that does serve them instead of a tool nothing dispatches.
+    for (command, tool, rest) in [
+        (
+            "gh pr create",
+            MCP_PATCH_TOOL,
+            "POST /repos/{owner}/{repo}/pulls",
+        ),
+        (
+            "gh pr merge",
+            MCP_MERGE_TOOL,
+            "PUT /repos/{owner}/{repo}/pulls/{number}/merge",
+        ),
+        (
+            "gh issue create",
+            MCP_ISSUE_TOOL,
+            "POST /repos/{owner}/{repo}/issues",
+        ),
     ] {
+        assert_eq!(map[command], rest, "{command} is not routed to REST");
         assert!(
-            map.get(command).is_none(),
+            !map[command].as_str().expect("answer").contains(tool),
             "{command} is mapped to the uninstalled {tool}"
+        );
+    }
+    // Hosted Actions writes have no equivalent either, and say so with the
+    // route that does gate a head again.
+    for command in ["gh workflow run", "gh run rerun"] {
+        let answer = map[command].as_str().expect("answer");
+        assert!(answer.contains("not served"), "{command}: {answer}");
+        assert!(
+            answer.contains("/regate"),
+            "{command} does not name the re-gate route: {answer}"
         );
     }
     assert!(
@@ -256,6 +280,7 @@ fn capabilities_payload_names_the_public_origin_and_no_host_path() {
     let payload = capabilities_payload(
         Some("https://forge.example-invented.test/"),
         &installed_mcp_tools(),
+        Principal::Anonymous,
     );
     assert_eq!(
         payload["gh_auth_policy"]["run_instead"],
@@ -292,14 +317,17 @@ fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
         tools.contains(MCP_AGENT_WORK_TOOL),
         "the live backend is expected to dispatch {MCP_AGENT_WORK_TOOL}"
     );
-    let payload = capabilities_payload(None, &tools);
+    let payload = capabilities_payload(None, &tools, Principal::Admin);
 
     let advertised = payload["mcp_tools"].as_array().expect("mcp_tools array");
     assert!(
         !advertised.iter().any(|tool| tool == MCP_MERGE_TOOL),
         "an uninstalled tool is still advertised"
     );
-    assert!(payload["gh_command_map"].get("gh pr merge").is_none());
+    assert_eq!(
+        payload["gh_command_map"]["gh pr merge"],
+        "PUT /repos/{owner}/{repo}/pulls/{number}/merge"
+    );
     // A REST answer needs no tool, so it stays mapped either way.
     assert!(payload["gh_command_map"].get("gh pr list").is_some());
     // The CLI hint for the agent surface goes with that surface.
@@ -309,7 +337,7 @@ fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
     // Dropping the installed agent-work tool drops its hint too.
     let mut without_agent_work = tools.clone();
     assert!(without_agent_work.remove(MCP_AGENT_WORK_TOOL));
-    let payload = capabilities_payload(None, &without_agent_work);
+    let payload = capabilities_payload(None, &without_agent_work, Principal::Admin);
     assert!(payload["gh_auth_policy"].get("agent_auth").is_none());
 }
 
@@ -317,7 +345,7 @@ fn capabilities_payload_omits_tools_the_backend_does_not_dispatch() {
 #[test]
 fn capabilities_payload_only_names_installed_tools() {
     let installed = installed_mcp_tools();
-    let payload = capabilities_payload(None, &installed);
+    let payload = capabilities_payload(None, &installed, Principal::Admin);
     for tool in payload["mcp_tools"].as_array().expect("mcp_tools array") {
         let tool = tool.as_str().expect("tool name");
         assert!(installed.contains(tool), "uninstalled MCP tool: {tool}");
@@ -401,7 +429,7 @@ fn bootstrap_flags_close_write_surfaces_without_a_grant() {
 /// policy from one that is off for want of a grant.
 #[test]
 fn capabilities_payload_explains_every_bootstrap_feature_flag() {
-    let payload = capabilities_payload(None, &installed_mcp_tools());
+    let payload = capabilities_payload(None, &installed_mcp_tools(), Principal::Admin);
     let notes = payload["web_feature_flags"]["flags"]
         .as_object()
         .expect("feature flag notes object");

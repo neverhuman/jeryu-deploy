@@ -117,9 +117,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::GithubRouter;
 use crate::git_materializer::{CoreRedirects, GitMaterializer, GitPushHistory};
 use crate::github::{
-    GH_AUTH_BOUNDARY, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE, MCP_GUIDANCE_TOOLS,
-    MCP_RUN_TESTS_TOOL, gh_setup_command_with_origin, public_origin,
+    ACTIONS_REGATE_ROUTE, GH_AUTH_BOUNDARY, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE,
+    GRAPHQL_AUTH_NOTE, GRAPHQL_SUPPORTED_OPERATIONS, gh_setup_command_with_origin, public_origin,
 };
+use crate::tool_access::{self, Principal};
 use jeryu_gitd::{GitdConfig, RepoManager};
 use jeryu_runner_oci::{CliContainerRuntime, ContainerLifecycle};
 use jeryu_runnerd::{WarmPool, WorkcellManager};
@@ -1535,10 +1536,11 @@ async fn steer_headers(request: Request, next: Next) -> AxumResponse {
         .to_string();
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    let principal = request_principal(request.extensions());
 
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    for (name, value) in advisory_headers(&user_agent, &method, &path) {
+    for (name, value) in advisory_headers(&user_agent, &method, &path, principal) {
         if let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(name.as_bytes()),
             HeaderValue::from_str(&value),
@@ -1549,14 +1551,40 @@ async fn steer_headers(request: Request, next: Next) -> AxumResponse {
     response
 }
 
+/// Who the gate resolved for this request, as the tool registry names them.
+///
+/// Only the gate's own paths (`/api/v1/*` and `/mcp`) carry an account in the
+/// extensions; the GitHub-compatible edge authenticates inside its handlers,
+/// so a request there is read as anonymous and gets no tool hint. That is the
+/// honest answer: the hint would otherwise name a tool the caller may not be
+/// allowed to call, and the manifest the `fast-path` header points at answers
+/// for whatever credential the caller does hold.
+fn request_principal(extensions: &axum::http::Extensions) -> Principal {
+    let Some(account) = extensions.get::<AccountSummary>() else {
+        return Principal::Anonymous;
+    };
+    if account.login == auth::ANONYMOUS_LOGIN {
+        return Principal::Anonymous;
+    }
+    if extensions.get::<bot_token::BotPrincipal>().is_some() {
+        return Principal::Agent;
+    }
+    match account.role {
+        UserRole::Admin => Principal::Admin,
+        _ => Principal::User,
+    }
+}
+
 /// Pure builder for the advisory steering headers. Always emits the API version
 /// and fast-path pointer; for `gh`/automation/agent user-agents it additionally
-/// emits a per-route MCP tool hint when one is known. Factored out of the
-/// middleware so the header policy can be unit-tested without a live server.
+/// emits a per-route MCP tool hint when one is known *and* this principal may
+/// call it. Factored out of the middleware so the header policy can be
+/// unit-tested without a live server.
 fn advisory_headers(
     user_agent: &str,
     method: &HttpMethod,
     path: &str,
+    principal: Principal,
 ) -> Vec<(&'static str, String)> {
     let mut headers = vec![
         (HDR_API, "v4".to_string()),
@@ -1564,10 +1592,18 @@ fn advisory_headers(
     ];
     if is_automation_agent(user_agent)
         && let Some(tool) = suggested_tool(method, path)
+        && usable_tool(principal, tool)
     {
         headers.push((HDR_TOOL, tool.to_string()));
     }
     headers
+}
+
+/// Whether `principal` may call `tool`, which must be one this forge
+/// implements. A repository-scoped tool additionally needs the named
+/// repository in reach, which only the call can check.
+fn usable_tool(principal: Principal, tool: &str) -> bool {
+    tool_access::required_access(tool).is_some_and(|access| tool_access::can_use(principal, access))
 }
 
 /// Heuristic: does this user-agent look like the `gh` CLI, a generic HTTP
@@ -1587,15 +1623,14 @@ fn is_automation_agent(user_agent: &str) -> bool {
 }
 
 /// Suggests the jeryu MCP tool for a route+method so steered agents can switch
-/// to the faster path. Mutations map to dedicated MCP tools; all other GETs map
-/// to the generic read tool. Returns `None` when no hint applies.
+/// to the faster path. Every name here is one this forge implements: the
+/// mutations a `gh` command runs have no MCP tool at all, so those routes get
+/// no hint and the caller stays on the REST route it already found.
+/// [`advisory_headers`] then drops a hint the caller's own principal may not
+/// use. Returns `None` when no hint applies.
 fn suggested_tool(method: &HttpMethod, path: &str) -> Option<&'static str> {
     let trimmed = path.trim_end_matches('/');
     match *method {
-        HttpMethod::POST if trimmed.ends_with("/pulls") => Some(MCP_PATCH_TOOL),
-        HttpMethod::POST if trimmed.contains("/actions/") => Some(MCP_RUN_TESTS_TOOL),
-        HttpMethod::PUT if trimmed.ends_with("/merge") => Some(MCP_MERGE_TOOL),
-        HttpMethod::POST if trimmed.ends_with("/issues") => Some(MCP_ISSUE_TOOL),
         HttpMethod::GET if trimmed.contains("/actions/") => Some(MCP_CHECKS_TOOL),
         HttpMethod::GET if trimmed.contains("/check-runs") => Some(MCP_CHECKS_TOOL),
         HttpMethod::GET if trimmed.contains("/pulls") => Some(MCP_BLOCKERS_TOOL),
@@ -1604,13 +1639,39 @@ fn suggested_tool(method: &HttpMethod, path: &str) -> Option<&'static str> {
     }
 }
 
-/// Capability manifest: advertises the live endpoints plus a `gh` command -> jeryu
-/// mapping so external agents can discover and prefer the faster MCP path.
-async fn capabilities(State(state): State<Arc<WebState>>) -> Json<Value> {
+/// Capability manifest: advertises the live endpoints plus a `gh` command ->
+/// jeryu mapping, answered for the credential that asked.
+async fn capabilities(
+    State(state): State<Arc<WebState>>,
+    headers: axum::http::HeaderMap,
+) -> Json<Value> {
     Json(capabilities_payload(
         public_origin().as_deref(),
         &live_mcp_tools(&state),
+        capability_principal(&state, &headers),
     ))
+}
+
+/// Who is asking for the manifest.
+///
+/// The manifest answers without a credential ([`auth::open_path`]), so the
+/// gate resolves nothing before this handler runs and it has to authenticate
+/// whatever credential was presented itself. Anything that does not
+/// authenticate is the anonymous view: discovery stays open, and the usable
+/// tool list it carries is empty, because `/mcp` refuses an unauthenticated
+/// caller every tool.
+fn capability_principal(state: &WebState, headers: &axum::http::HeaderMap) -> Principal {
+    // A server with authentication off serves its trusted local admin
+    // everywhere else; the manifest says the same rather than under-reporting.
+    if !state.auth_required {
+        return Principal::Admin;
+    }
+    match auth::authenticate_headers(state, headers) {
+        Some(auth) if auth.bot.is_some() => Principal::Agent,
+        Some(auth) if auth.account.role == UserRole::Admin => Principal::Admin,
+        Some(_) => Principal::User,
+        None => Principal::Anonymous,
+    }
 }
 
 /// The MCP tool names this server actually dispatches, read from the live
@@ -1629,13 +1690,31 @@ fn live_mcp_tools(state: &Arc<WebState>) -> BTreeSet<String> {
 ///
 /// `tools` is the live backend catalog: every MCP tool named here is looked up
 /// in it first, and a `gh` command whose jeryu answer is a tool that is not
-/// installed is left out of the map rather than advertised.
+/// installed is answered with the supported REST route instead of being
+/// advertised.
+///
+/// `principal` is who asked. `mcp_tools` stays the whole dispatched catalog —
+/// discovery, which is open — while `your_mcp_tools` and every recommendation
+/// are narrowed to what that principal may actually call: an anonymous caller
+/// is told to get a token rather than handed a list it would be refused.
 ///
 /// `origin` is the deployment's public origin, which the gh-setup guidance
 /// names as the host to configure; the manifest is served to anonymous
 /// callers, so it has to be a host they can actually reach.
-fn capabilities_payload(origin: Option<&str>, tools: &BTreeSet<String>) -> Value {
+fn capabilities_payload(
+    origin: Option<&str>,
+    tools: &BTreeSet<String>,
+    principal: Principal,
+) -> Value {
     let installed = |tool: &str| tools.contains(tool);
+    // Installed here *and* allowed for this principal. Repository-scoped tools
+    // need the repository in reach too, which only the call can check.
+    let usable = |tool: &str| installed(tool) && usable_tool(principal, tool);
+    let your_tools: Vec<String> = tools
+        .iter()
+        .filter(|tool| usable_tool(principal, tool))
+        .cloned()
+        .collect();
     let gh_setup_command = gh_setup_command_with_origin(origin);
     let mut gh_command_map = serde_json::Map::new();
     let mut map_rest = |command: &str, target: &str| {
@@ -1672,23 +1751,46 @@ fn capabilities_payload(origin: Option<&str>, tools: &BTreeSet<String>) -> Value
     map_rest(
         "gh api",
         &format!(
-            "Use {} and the listed jeryu.* MCP tools; unsupported REST returns guided JSON.",
-            discovery::CAPABILITIES_PATH
+            "Supported REST is listed at {}; unsupported REST returns guided JSON naming the route that serves the intent.",
+            discovery::REST_DOC_PATH
         ),
     );
     map_rest("gh repo create", "POST /repos");
-    for (command, tool) in [
-        ("gh pr create", MCP_PATCH_TOOL),
-        ("gh pr merge", MCP_MERGE_TOOL),
-        ("gh workflow run", MCP_RUN_TESTS_TOOL),
-        ("gh run rerun", MCP_RUN_TESTS_TOOL),
-        ("gh run cancel", MCP_RUN_TESTS_TOOL),
-        ("gh issue create", MCP_ISSUE_TOOL),
+    // A command whose jeryu answer is an MCP tool is mapped to that tool only
+    // where the backend dispatches it and this principal may call it;
+    // otherwise it is mapped to the REST route that does serve it, so the
+    // answer is never a tool the caller would be refused.
+    for (command, tool, rest) in [
+        (
+            "gh pr create",
+            MCP_PATCH_TOOL,
+            "POST /repos/{owner}/{repo}/pulls",
+        ),
+        (
+            "gh pr merge",
+            MCP_MERGE_TOOL,
+            "PUT /repos/{owner}/{repo}/pulls/{number}/merge",
+        ),
+        (
+            "gh issue create",
+            MCP_ISSUE_TOOL,
+            "POST /repos/{owner}/{repo}/issues",
+        ),
     ] {
-        if installed(tool) {
-            gh_command_map.insert(command.to_string(), Value::String(tool.to_string()));
-        }
+        map_rest(command, if usable(tool) { tool } else { rest });
     }
+    for command in ["gh workflow run", "gh run rerun"] {
+        map_rest(
+            command,
+            &format!(
+                "Hosted Actions dispatch is not served; {ACTIONS_REGATE_ROUTE} asks for a pull request's current head to be gated again."
+            ),
+        );
+    }
+    map_rest(
+        "gh run cancel",
+        "Hosted Actions cancel is not served; a gate run ends on its own and GET /repos/{owner}/{repo}/actions/runs/{id} reports it.",
+    );
 
     let mut gh_auth_policy = json!({
         "do_not_run": ["gh auth login", "gh auth refresh", "credential-store token hunting"],
@@ -1716,9 +1818,20 @@ fn capabilities_payload(origin: Option<&str>, tools: &BTreeSet<String>) -> Value
         "routes": route_index::INDEX_PATH,
         "errors": "/api/v1/errors",
         "graphql": "/graphql",
+        "graphql_support": {
+            "endpoint": "/graphql",
+            "supported_operations": GRAPHQL_SUPPORTED_OPERATIONS,
+            "auth": GRAPHQL_AUTH_NOTE,
+            "anything_else": "Answered 501 with the REST route that serves the same intent. This forge does not execute arbitrary GitHub GraphQL.",
+            "docs": format!("{}/graphql.md", discovery::DOCS_PATH),
+        },
         "websocket": "/api/v1/ws",
         "mcp_endpoint": "/mcp",
         "mcp_tools": tools.iter().cloned().collect::<Vec<_>>(),
+        "mcp_tool_access": tool_access_map(tools),
+        "principal": principal_capability(principal),
+        "your_mcp_tools": your_tools,
+        "recommended_next_actions": recommended_next_actions(principal, &usable),
         "gh_command_map": Value::Object(gh_command_map),
         "gh_auth_policy": gh_auth_policy,
         "web_feature_flags": {
@@ -1730,8 +1843,94 @@ fn capabilities_payload(origin: Option<&str>, tools: &BTreeSet<String>) -> Value
         },
         "links": links_capability(origin),
         "fast_path_advice":
-            "Prefer the jeryu MCP tools for mutations; gh REST/GraphQL is supported but slower.",
+            "Prefer an MCP tool from your_mcp_tools where one serves your intent; everything else is the GitHub-compatible REST subset at /api/v3. GraphQL answers only the operations in graphql_support.",
     })
+}
+
+/// The grant each dispatched tool asks for, so a caller can tell a tool it may
+/// not use from one that is missing.
+fn tool_access_map(tools: &BTreeSet<String>) -> Value {
+    Value::Object(
+        tools
+            .iter()
+            .filter_map(|tool| {
+                tool_access::required_access(tool)
+                    .map(|access| (tool.clone(), Value::String(access.as_str().to_string())))
+            })
+            .collect::<serde_json::Map<String, Value>>(),
+    )
+}
+
+/// Who the manifest is answering, and what that means for the tool lists.
+fn principal_capability(principal: Principal) -> Value {
+    let meaning = match principal {
+        Principal::Anonymous => {
+            "No credential was presented. Discovery answers without one; every MCP tool refuses one. Send Authorization: Bearer <agent token> to see what that token may use."
+        }
+        Principal::Agent => {
+            "A scoped agent token. It acts as its bot: never a forge admin, and repository-scoped tools reach only the bot's granted repositories."
+        }
+        Principal::User => {
+            "An authenticated account without the admin role. Admin-only tools are not yours to call; the rest are."
+        }
+        Principal::Admin => "An authenticated account with the admin role: every dispatched tool.",
+    };
+    json!({
+        "kind": principal.as_str(),
+        "authenticated": principal.authenticated(),
+        "meaning": meaning,
+        "repo_scoped_tools": tool_access::REPO_SCOPE_NOTE,
+    })
+}
+
+/// What to do next, named for this principal only: an action here is either a
+/// REST route the forge serves or an MCP tool it dispatches *and* this
+/// principal may call. Nothing it would be refused is recommended.
+fn recommended_next_actions(principal: Principal, usable: &dyn Fn(&str) -> bool) -> Value {
+    let mut actions = vec![json!({
+        "intent": "see what this credential may use",
+        "action": format!("GET {}", discovery::CAPABILITIES_PATH),
+        "requires": "nothing",
+    })];
+    if !principal.authenticated() {
+        actions.push(json!({
+            "intent": "call any MCP tool",
+            "action": "ask your human for a scoped agent token (jat_) and send it as Authorization: Bearer <token>",
+            "requires": "an agent token",
+        }));
+    }
+    for (intent, tool, requires) in [
+        (
+            "search code in a repository you may read",
+            "jeryu.code.symbols.search",
+            "read access to the repository you name",
+        ),
+        (
+            "list the tools this forge tracks",
+            "jeryu.tool_registry.summary",
+            "any authenticated caller",
+        ),
+        (
+            "read control-plane status",
+            "jeryu.control_plane.status",
+            "the admin role",
+        ),
+    ] {
+        if usable(tool) {
+            actions.push(json!({ "intent": intent, "action": tool, "requires": requires }));
+        }
+    }
+    actions.push(json!({
+        "intent": "open a pull request",
+        "action": "POST /repos/{owner}/{repo}/pulls",
+        "requires": "write access to the repository",
+    }));
+    actions.push(json!({
+        "intent": "gate a pull request's current head again",
+        "action": ACTIONS_REGATE_ROUTE,
+        "requires": "write access to the repository",
+    }));
+    Value::Array(actions)
 }
 
 /// What the manifest says about links: which field to open in a browser, which

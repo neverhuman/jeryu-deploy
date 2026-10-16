@@ -348,7 +348,10 @@ Repair evidence:
 - Repair hint: if a Jankurai finding names a path, first run `jankurai diff-audit --base-ref origin/main .`, then the mapped proof command for that path.
 - Unsupported GitHub-compatible REST or GraphQL requests must return a
   `jeryu_repair_hint` with route/tool alternatives and a local rerun command;
-  widen the subset only with `jeryu-api` conformance tests.
+  widen the subset only with `jeryu-api` conformance tests. An alternative may
+  name an MCP tool only if `crate::tool_access` implements it and every
+  principal the body can reach may call it; otherwise name the REST route.
+  The served GraphQL subset is `docs/graphql.md`.
 
 Budget and stop conditions:
 - Default local CI uses 40 workers and should finish quickly on this workspace; if a lane exceeds 20 minutes, stop and split it into a narrower proof lane.

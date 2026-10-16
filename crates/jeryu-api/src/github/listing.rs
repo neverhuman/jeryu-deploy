@@ -286,8 +286,9 @@ fn invalid(resource: &str, field: &str, value: &str, accepted: &[&str]) -> Respo
             }],
             "documentation_url": docs_url(),
             "jeryu_steering": steering(
-                "jeryu.get_system_snapshot",
-                &format!("?{field}= accepts {accepted_list}; retry with one of those or drop the parameter"),
+                None,
+                None,
+                &format!("?{field}= accepts {accepted_list}; retry the same route with one of those or drop the parameter"),
             ),
         }),
     )

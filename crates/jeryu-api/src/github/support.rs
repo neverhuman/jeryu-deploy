@@ -30,24 +30,17 @@ fn web_url_with_origin(origin: Option<&str>, path: &str) -> String {
     crate::links::absolute_with_origin(origin, path)
 }
 
-pub(crate) const MCP_GUIDANCE_TOOLS: &[&str] = &[
-    "jeryu.get_system_snapshot",
-    "jeryu.get_ci_run_jobs",
-    "jeryu.explain_blockers",
-    "jeryu.run_tests",
-    "jeryu.plan_validation",
-    "jeryu.propose_patch",
-    "jeryu.request_merge",
-    "jeryu.bug_submit",
-    "jeryu.bug_list",
-    "jeryu.workcell.claim",
-    "jeryu.workcell.status",
-    "jeryu.workcell.repair_live",
-    "jeryu.workcell.export_pr",
-    "jeryu.workcell.release",
-];
-
-pub(crate) const MCP_RUN_TESTS_TOOL: &str = "jeryu.run_tests";
+/// The MCP tools this edge's guidance may name.
+///
+/// The bodies here go out to whoever asked, including an anonymous caller, so
+/// they name only tools this forge implements and that no authenticated
+/// principal short of admin is refused outright
+/// ([`crate::tool_access::unprivileged_tools`]). The caller's own usable set,
+/// admin tools included, is in the capability manifest at
+/// [`FASTER_PATH`], which answers for the credential that asks.
+pub(crate) fn mcp_guidance_tools() -> Vec<String> {
+    crate::tool_access::unprivileged_tools()
+}
 
 /// What the gh-setup guidance says to pass as the token file. The guidance goes
 /// out to anonymous callers, so it asks for a path the caller already has
@@ -92,6 +85,13 @@ pub(crate) const GH_AUTH_BOUNDARY: &str = "GitHub.com auth and local Jeryu host 
 /// `/.jeryu/capabilities` path is served too, but only the prefixed one is
 /// advertised, because only it resolves through every deployment's edge.
 pub(super) const FASTER_PATH: &str = crate::discovery::CAPABILITIES_PATH;
+
+/// [`FASTER_PATH`] as a route a steering block can name as the next request.
+pub(super) const CAPABILITIES_ROUTE: &str = "GET /api/v1/capabilities";
+
+/// The REST document, as a route: what a caller reads to learn the fields a
+/// route accepts.
+pub(super) const REST_DOC_ROUTE: &str = "GET /api/v1/docs/rest";
 
 /// Every route the GitHub-compatible edge serves, in the shape a caller types
 /// it. The edge's index (`GET /api/v3`), its unmatched-route 404 and the REST
@@ -163,7 +163,7 @@ pub(super) fn v3_index_response() -> Response {
                 "typed_api": crate::discovery::TYPED_INDEX_PATH,
                 "openapi": crate::discovery::OPENAPI_PATH,
             },
-            "jeryu_mcp_tools": MCP_GUIDANCE_TOOLS,
+            "jeryu_mcp_tools": mcp_guidance_tools(),
         }),
     )
 }
@@ -235,8 +235,9 @@ fn invalid_pagination(field: &str, value: &str, max: usize) -> Response {
             }],
             "documentation_url": docs_url(),
             "jeryu_steering": steering(
-                "jeryu.get_system_snapshot",
-                &format!("?{field}= takes a whole number from {ceiling}; retry with one of those or drop the parameter"),
+                None,
+                None,
+                &format!("?{field}= takes a whole number from {ceiling}; retry the same route with one of those or drop the parameter"),
             ),
         }),
     )
@@ -348,24 +349,44 @@ pub(super) fn link_header(
 }
 
 /// The jeryu steering block stamped onto every error body: a faster path, the
-/// MCP tool that would have served the intent, and a one-line hint. Errors
-/// teach instead of dead-ending the agent.
-pub(super) fn steering(mcp_tool: &str, hint: &str) -> Value {
+/// supported route that serves the intent, and a one-line hint. Errors teach
+/// instead of dead-ending the agent.
+///
+/// `mcp_tool` is an MCP tool only when one this forge implements serves the
+/// intent and no grant beyond the caller's is needed for it; otherwise it is
+/// `null` and `supported_route` names the REST route to use instead. A tool
+/// the `/mcp` endpoint would answer `tool_unavailable` for is worse than no
+/// recommendation at all, so the field is never filled with one.
+pub(super) fn steering(mcp_tool: Option<&str>, supported_route: Option<&str>, hint: &str) -> Value {
+    debug_assert!(
+        mcp_tool.is_none_or(|tool| mcp_guidance_tools().iter().any(|known| known == tool)),
+        "steering names {mcp_tool:?}, which this forge does not serve to every caller"
+    );
     json!({
         "faster_path": FASTER_PATH,
         "mcp_tool": mcp_tool,
+        "supported_route": supported_route,
         "hint": hint,
     })
 }
 
+/// Hosted GitHub Actions writes have no Jeryu equivalent to steer at: the
+/// forge gates a pull request head rather than dispatching workflows, so the
+/// steering names the re-gate route and the Actions reads that are served.
 pub(super) fn actions_write_steering() -> Value {
-    json!({
-        "faster_path": FASTER_PATH,
-        "mcp_tool": MCP_RUN_TESTS_TOOL,
-        "mcp_tools": [MCP_RUN_TESTS_TOOL, "jeryu.get_ci_run_jobs"],
-        "hint": "use jeryu.run_tests for the local CI action and jeryu.get_ci_run_jobs to inspect existing runs and workflows",
-    })
+    steering(
+        None,
+        Some(ACTIONS_REGATE_ROUTE),
+        "hosted Actions dispatch, rerun and cancel are not served; ask for the pull request's \
+         head to be gated again with the re-gate route, and read existing runs with GET \
+         /repos/{owner}/{repo}/actions/runs",
+    )
 }
+
+/// The typed Jeryu route that asks for a pull request's current head to be
+/// gated again — the forge's answer to `gh run rerun`.
+pub(crate) const ACTIONS_REGATE_ROUTE: &str =
+    "POST /api/v1/repos/{owner}/{repo}/pulls/{number}/regate";
 
 pub(super) fn parse_body<T: serde::de::DeserializeOwned>(
     body: &str,
@@ -380,8 +401,9 @@ pub(super) fn parse_body<T: serde::de::DeserializeOwned>(
                 "errors": [{ "code": "invalid", "detail": err.to_string() }],
                 "documentation_url": docs_url(),
                 "jeryu_steering": steering(
-                    "jeryu.propose_patch",
-                    "the JSON body did not validate; the typed jeryu MCP tools build a valid request for you",
+                    None,
+                    Some(REST_DOC_ROUTE),
+                    "the JSON body did not validate; the REST document lists the fields each route accepts",
                 ),
             }),
         )
@@ -397,7 +419,8 @@ pub(super) fn parse_number(raw: &str) -> std::result::Result<u64, Response> {
                 "errors": [{ "field": "number", "code": "invalid" }],
                 "documentation_url": docs_url(),
                 "jeryu_steering": steering(
-                    "jeryu.explain_blockers",
+                    None,
+                    None,
                     "the path expected a numeric id; list the resource first to get a valid number",
                 ),
             }),
@@ -449,21 +472,21 @@ pub(super) fn json_response(status: u16, value: &Value) -> Response {
 }
 
 pub(super) fn error_response(err: ForgeError) -> Response {
-    let (status, mcp_tool, hint) = match err {
+    let (status, route, hint) = match err {
         ForgeError::NotFound(_) => (
             404,
-            "jeryu.get_system_snapshot",
-            "the resource was not found; snapshot the system to find live owners/repos/numbers",
+            Some("GET /repos/{owner}/{repo}"),
+            "the resource was not found; list the owner's repositories or the collection to find a live name or number",
         ),
         ForgeError::Conflict(_) => (
             422,
-            "jeryu.propose_patch",
-            "the request conflicts with current state; let the typed MCP tool reconcile it",
+            None,
+            "the request conflicts with current state; re-read the resource and build the request from what it says now",
         ),
         ForgeError::Validation(_) => (
             422,
-            "jeryu.propose_patch",
-            "the request failed validation; the typed MCP tool builds a valid request for you",
+            Some(REST_DOC_ROUTE),
+            "the request failed validation; the REST document lists the fields each route accepts",
         ),
         // 405 matches GitHub's "not mergeable / protected branch" answer and the
         // explicit 405s in `pulls.rs`. The web admin routes (`web/auth.rs`) map
@@ -471,30 +494,30 @@ pub(super) fn error_response(err: ForgeError) -> Response {
         // "caller lacks repo admin", which is an authorization failure.
         ForgeError::BranchProtection(_) => (
             405,
-            "jeryu.explain_blockers",
-            "branch protection blocks this; ask jeryu to explain the blockers and required checks",
+            Some("GET /repos/{owner}/{repo}/branches/{branch}/protection"),
+            "branch protection blocks this; read the protection rule for the required checks and reviews",
         ),
         // Core refuses who may do this (an author approving their own pull
         // request, a dismissal by someone without the right): GitHub's 403.
         ForgeError::Forbidden(_) => (
             403,
-            "jeryu.explain_blockers",
+            None,
             "this identity may not do that here; a different reviewer or an admin has to act",
         ),
         ForgeError::RepositoryArchived(_) => (
             409,
-            "jeryu.get_system_snapshot",
+            Some("PATCH /repos/{owner}/{repo} (archived: false; admin only)"),
             "the repository is archived and read-only; unarchive it before writing",
         ),
         ForgeError::WaitlistFull => (
             503,
-            "jeryu.get_system_snapshot",
+            None,
             "the waitlist is full and not accepting new addresses",
         ),
         ForgeError::Storage(_) | ForgeError::StoreCustody(_) => (
             500,
-            "jeryu.get_system_snapshot",
-            "an internal store error occurred; snapshot the system and retry",
+            None,
+            "an internal store error occurred; retry, and tell an operator if it persists",
         ),
     };
     json_response(
@@ -502,7 +525,7 @@ pub(super) fn error_response(err: ForgeError) -> Response {
         &json!({
             "message": err.to_string(),
             "documentation_url": docs_url(),
-            "jeryu_steering": steering(mcp_tool, hint),
+            "jeryu_steering": steering(None, route, hint),
         }),
     )
 }
@@ -511,18 +534,18 @@ pub(super) fn actions_write_response(owner: &str, repo: &str) -> Response {
     json_response(
         501,
         &json!({
-            "message": "Hosted GitHub Actions writes are not supported on Jeryu; CI is local and MCP-driven.",
+            "message": "Hosted GitHub Actions writes are not supported on Jeryu; the forge gates a pull request head instead of dispatching workflows.",
             "documentation_url": docs_url(),
             "jeryu_repair_hint": {
                 "purpose": "route unsupported GitHub Actions write request",
-                "reason": "Jeryu intentionally supports local MCP-driven CI and guided read surfaces instead of hosted Actions dispatch, rerun, or cancel writes.",
+                "reason": "Jeryu gates pull request heads from its own CI and serves Actions reads for compatibility; hosted Actions dispatch, rerun and cancel writes have no equivalent here.",
                 "common_fixes": [
-                    "use /api/v1/capabilities to choose the local MCP path for the CI action",
-                    "use jeryu.run_tests instead of hosted Actions writes to run the local CI flow",
-                    "use GET /repos/{owner}/{repo}/actions/runs, GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}, or jeryu.get_ci_run_jobs to inspect existing runs before retrying"
+                    format!("to run the gate again on a pull request's current head, {ACTIONS_REGATE_ROUTE}"),
+                    "use GET /repos/{owner}/{repo}/actions/runs, GET /repos/{owner}/{repo}/actions/runs/{id}/jobs, or GET /repos/{owner}/{repo}/actions/workflows/{workflow_id} to inspect existing runs",
+                    format!("GET {FASTER_PATH} for the routes and MCP tools your own credential may use")
                 ],
                 "docs_url": docs_url(),
-                "repair_hint": "use jeryu.run_tests for the CI action, then rerun cargo test -p jeryu-api --features web --jobs 40",
+                "repair_hint": format!("ask for the head to be gated again with {ACTIONS_REGATE_ROUTE}, then read the result with GET /repos/{owner}/{repo}/actions/runs"),
             },
             "jeryu_connection": {
                 "capabilities": FASTER_PATH,
@@ -535,7 +558,7 @@ pub(super) fn actions_write_response(owner: &str, repo: &str) -> Response {
                 "actions_workflow": format!("GET /repos/{owner}/{repo}/actions/workflows/{{workflow_id}}"),
                 "actions_workflow_runs": format!("GET /repos/{owner}/{repo}/actions/workflows/{{workflow_id}}/runs"),
             },
-            "jeryu_mcp_tools": MCP_GUIDANCE_TOOLS,
+            "jeryu_mcp_tools": mcp_guidance_tools(),
             "jeryu_steering": actions_write_steering(),
         }),
     )
@@ -555,7 +578,7 @@ pub(super) fn gh_auth_workaround_response(path: &str) -> Response {
                     gh_setup_command(),
                     format!("for a stale gh host token entry, rerun {GH_SETUP_REPAIR_COMMAND}"),
                     GH_AUTH_BOUNDARY,
-                    "use GET /api/v1/capabilities or the listed jeryu.* MCP tools for PR, CI, issue, and repo workflows",
+                    format!("GET {FASTER_PATH} for the routes and MCP tools your own credential may use"),
                     "for agent native CLI credentials, run jeryu agent auth doctor <tool> and jeryu agent auth import --from-host <tool>"
                 ],
                 "docs_url": GH_AUTH_DOCS,
@@ -570,10 +593,11 @@ pub(super) fn gh_auth_workaround_response(path: &str) -> Response {
                 "agent_auth_doctor": "jeryu agent auth doctor <codex|claude|jekko>",
                 "agent_auth_import": "jeryu agent auth import --from-host <codex|claude|jekko>"
             },
-            "jeryu_mcp_tools": MCP_GUIDANCE_TOOLS,
+            "jeryu_mcp_tools": mcp_guidance_tools(),
             "jeryu_steering": steering(
-                "jeryu.get_system_snapshot",
-                "stop the gh auth flow; configure gh with jeryu gh-setup and use Jeryu MCP/API routes for the original task",
+                None,
+                Some(CAPABILITIES_ROUTE),
+                "stop the gh auth flow; configure gh with jeryu gh-setup and use the Jeryu REST or MCP route for the original task",
             ),
             "path": path,
         }),
@@ -591,16 +615,17 @@ pub(super) fn not_found(status: u16) -> Response {
                 "reason": "the request path is outside the current guided Jeryu GitHub subset",
                 "common_fixes": [
                     "retry with one of the listed GitHub-compatible REST routes",
-                    "use the typed Jeryu MCP/API tool for repository, PR, issue, check, release, or hook workflows",
+                    "use the typed Jeryu /api/v1 route for repository, PR, issue, check, release, or hook workflows",
                     "add a conformance test before widening the compatibility subset"
                 ],
                 "docs_url": docs_url(),
-                "repair_hint": "map the command to the closest listed Jeryu route or MCP tool, then rerun cargo test -p jeryu-api --features web"
+                "repair_hint": "map the command to the closest listed Jeryu route, then rerun cargo test -p jeryu-api --features web"
             },
-            "jeryu_mcp_tools": MCP_GUIDANCE_TOOLS,
+            "jeryu_mcp_tools": mcp_guidance_tools(),
             "jeryu_steering": steering(
-                "jeryu.get_system_snapshot",
-                "this path is outside the guided subset; GET /api/v1/capabilities and prefer the MCP tools",
+                None,
+                Some("GET /api/v3"),
+                "this path is outside the guided subset; GET /api/v3 lists every route it serves",
             ),
             "jeryu_api_routes": V3_ROUTES
         }),
@@ -622,11 +647,11 @@ pub(super) fn first_contact_response() -> Response {
             "start_here": FASTER_PATH,
             "advice": [
                 "GET /api/v1/capabilities for the live endpoint + gh-command map.",
-                "Prefer the typed jeryu.* MCP tools over bespoke gh REST calls; they are faster and never dead-end.",
+                "Prefer the typed jeryu.* MCP tools over bespoke gh REST calls where one serves your intent; the manifest says which ones your credential may use.",
                 format!("Do not run gh auth login or gh auth refresh for a Jeryu host; run {} for the host entry.", gh_setup_command()),
                 format!("If gh reports a stale host token entry, rerun {GH_SETUP_REPAIR_COMMAND}."),
                 GH_AUTH_BOUNDARY,
-                "Every error reply carries a jeryu_steering block naming the MCP tool that serves your intent.",
+                "Every error reply carries a jeryu_steering block naming the supported route, and the MCP tool when one serves your intent.",
             ],
             "gh_auth_policy": {
                 "do_not_run": ["gh auth login", "gh auth refresh", "credential-store token hunting"],
@@ -636,7 +661,8 @@ pub(super) fn first_contact_response() -> Response {
                 "host_auth_boundary": GH_AUTH_BOUNDARY,
                 "agent_auth": "jeryu agent auth doctor <tool>; jeryu agent auth import --from-host <tool>",
             },
-            "mcp_tools": MCP_GUIDANCE_TOOLS,
+            "mcp_tools": mcp_guidance_tools(),
+            "repo_scoped_tools": crate::tool_access::REPO_SCOPE_NOTE,
             "documentation_url": docs_url(),
         }),
     )
@@ -748,51 +774,95 @@ mod web_url_tests {
 
 #[cfg(test)]
 mod error_response_tests {
-    use super::error_response;
+    use super::{error_response, mcp_guidance_tools, steering};
     use jeryu_core::ForgeError;
     use serde_json::Value;
 
     #[test]
     fn maps_every_forge_error_to_its_pinned_status() {
-        let table: [(ForgeError, u16, &str); 6] = [
+        let table: [(ForgeError, u16, Option<&str>); 6] = [
             (
                 ForgeError::NotFound("x".into()),
                 404,
-                "jeryu.get_system_snapshot",
+                Some("GET /repos/{owner}/{repo}"),
             ),
-            (ForgeError::Conflict("x".into()), 422, "jeryu.propose_patch"),
+            (ForgeError::Conflict("x".into()), 422, None),
             (
                 ForgeError::Validation("x".into()),
                 422,
-                "jeryu.propose_patch",
+                Some("GET /api/v1/docs/rest"),
             ),
             (
                 ForgeError::BranchProtection("x".into()),
                 405,
-                "jeryu.explain_blockers",
+                Some("GET /repos/{owner}/{repo}/branches/{branch}/protection"),
             ),
             (
                 ForgeError::RepositoryArchived("x".into()),
                 409,
-                "jeryu.get_system_snapshot",
+                Some("PATCH /repos/{owner}/{repo} (archived: false; admin only)"),
             ),
-            (
-                ForgeError::Storage("x".into()),
-                500,
-                "jeryu.get_system_snapshot",
-            ),
+            (ForgeError::Storage("x".into()), 500, None),
         ];
-        for (err, status, tool) in table {
+        for (err, status, route) in table {
             let message = err.to_string();
             let response = error_response(err);
             assert_eq!(response.status, status, "status for {message}");
             let body: Value = serde_json::from_str(&response.body).expect("json body");
             assert_eq!(body["message"], message);
             assert!(body["documentation_url"].is_string());
+            // Every one of these is served over REST: there is no MCP tool for
+            // them, and naming one the forge does not dispatch would dead-end
+            // the agent that followed it.
+            assert_eq!(
+                body["jeryu_steering"]["mcp_tool"],
+                Value::Null,
+                "steering for {message} names an MCP tool"
+            );
+            assert_eq!(
+                body["jeryu_steering"]["supported_route"],
+                route.map_or(Value::Null, |route| Value::String(route.to_string())),
+                "supported route for {message}"
+            );
             assert!(
-                body["jeryu_steering"].to_string().contains(tool),
-                "steering for {message} names {tool}"
+                body["jeryu_steering"]["hint"]
+                    .as_str()
+                    .is_some_and(|hint| !hint.is_empty())
             );
         }
+    }
+
+    /// The routes the steering names are the paths discovery publishes: one
+    /// spelling of each, so a caller is never sent somewhere nothing answers.
+    #[test]
+    fn the_named_routes_are_the_paths_discovery_publishes() {
+        assert_eq!(
+            super::CAPABILITIES_ROUTE,
+            format!("GET {}", crate::discovery::CAPABILITIES_PATH)
+        );
+        assert_eq!(
+            super::REST_DOC_ROUTE,
+            format!("GET {}", crate::discovery::REST_DOC_PATH)
+        );
+    }
+
+    /// Guidance never names a tool this forge does not dispatch, and the
+    /// steering block only ever names one of the tools it may offer whoever
+    /// asks.
+    #[test]
+    fn guidance_names_only_tools_this_forge_serves_to_anyone() {
+        let offered = mcp_guidance_tools();
+        assert!(!offered.is_empty());
+        for tool in &offered {
+            assert!(crate::tool_access::is_implemented(tool), "{tool}");
+            assert_ne!(
+                crate::tool_access::required_access(tool),
+                Some(crate::tool_access::ToolAccess::Admin),
+                "{tool} is admin-only"
+            );
+        }
+        let block = steering(Some(&offered[0]), Some("GET /api/v3"), "hint");
+        assert_eq!(block["mcp_tool"], offered[0]);
+        assert_eq!(block["supported_route"], "GET /api/v3");
     }
 }

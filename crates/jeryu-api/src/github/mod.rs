@@ -45,14 +45,16 @@ use serde_json::json;
 
 use crate::routes::Response;
 
+pub(crate) use graphql::{
+    AUTH_NOTE as GRAPHQL_AUTH_NOTE, SUPPORTED_OPERATIONS as GRAPHQL_SUPPORTED_OPERATIONS,
+};
 use listing::{CommitListQuery, IssueListQuery, PullListQuery};
 pub use support::V3_ROUTES;
+pub(crate) use support::{ACTIONS_REGATE_ROUTE, mcp_guidance_tools};
 pub(crate) use support::{
     GH_AUTH_BOUNDARY, GH_SETUP_REPAIR_COMMAND, GH_SETUP_TOKEN_FILE, V3_PREFIX, gh_setup_command,
     gh_setup_command_with_origin, public_origin,
 };
-#[allow(unused_imports)]
-pub(crate) use support::{MCP_GUIDANCE_TOOLS, MCP_RUN_TESTS_TOOL};
 use support::{
     Pagination, first_contact_response, gh_auth_workaround_response, json_response, link_base,
     not_found, v3_index_response,

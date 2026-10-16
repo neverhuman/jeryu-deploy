@@ -117,6 +117,14 @@ pub(crate) fn rest_document() -> Value {
             "host_setup": crate::github::gh_setup_command(),
             "boundary": crate::github::GH_AUTH_BOUNDARY,
         },
+        "graphql": {
+            "endpoint": "/graphql",
+            "supported_operations": crate::github::GRAPHQL_SUPPORTED_OPERATIONS,
+            "auth": crate::github::GRAPHQL_AUTH_NOTE,
+            "anything_else": "Answered 501 with the REST route that serves the same intent. This \
+                              edge does not execute arbitrary GitHub GraphQL.",
+            "docs": format!("{DOCS_PATH}/graphql.md"),
+        },
         "faster_paths": {
             "typed_api": TYPED_INDEX_PATH,
             "mcp": "/mcp",
@@ -160,6 +168,17 @@ mod tests {
     fn the_rest_document_names_the_served_routes_and_the_faster_paths() {
         let document = rest_document();
         assert_eq!(document["capabilities"], CAPABILITIES_PATH);
+        // The document describes the GraphQL subset the edge actually serves.
+        let operations = document["graphql"]["supported_operations"]
+            .as_array()
+            .expect("graphql operations");
+        assert!(
+            operations
+                .iter()
+                .any(|operation| operation.as_str() == Some("query { viewer { login } }")),
+            "{operations:?}"
+        );
+        assert!(page("graphql.md").is_some(), "the graphql page is embedded");
         let routes = document["jeryu_api_routes"].as_array().expect("routes");
         assert!(
             routes

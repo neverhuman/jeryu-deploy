@@ -229,6 +229,17 @@ async fn github_forward_request(
         .next()
         .unwrap_or_default();
     let segments: Vec<_> = route.trim_matches('/').split('/').collect();
+    // GraphQL on the compatibility edge answers for the caller, exactly as
+    // `/graphql` does: the router's own entry point is unscoped (it is also
+    // used in-process, past authorization), so reading a repository through
+    // this path without the caller would show any account the metadata of a
+    // repository it may not read. Agent tokens are refused here too.
+    if method == Method::Post && segments.as_slice() == ["graphql"] {
+        if auth.bot.is_some() {
+            return github_forbidden("insufficient_scope");
+        }
+        return github_response(state.github.graphql_for_account(&body, &account));
+    }
     if method == Method::Put
         && let ["repos", owner, repo, "pulls", number, "merge"] = segments.as_slice()
         && let Ok(number) = number.parse::<u64>()
@@ -757,13 +768,13 @@ fn guided_github_edge_response(
                 "reason": reason,
                 "common_fixes": [
                     "retry with one of the listed GitHub-compatible REST routes",
-                    "use /api/v1/capabilities to choose a typed jeryu.* MCP tool",
+                    "use /api/v1/capabilities to see the routes and jeryu.* MCP tools your own credential may use",
                     "add a conformance test before widening the compatibility subset"
                 ],
                 "docs_url": crate::discovery::REST_DOC_PATH,
-                "repair_hint": "prefer the listed Jeryu MCP/API alternatives, then rerun cargo test -p jeryu-api --features web"
+                "repair_hint": "prefer the listed Jeryu REST routes, then rerun cargo test -p jeryu-api --features web"
             },
-            "jeryu_mcp_tools": super::MCP_GUIDANCE_TOOLS,
+            "jeryu_mcp_tools": crate::github::mcp_guidance_tools(),
             "jeryu_api_routes": crate::github::V3_ROUTES,
             "path": path,
         })),

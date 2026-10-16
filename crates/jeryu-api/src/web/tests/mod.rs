@@ -36,6 +36,7 @@ mod bot_setup_script;
 mod bots_owner_reach_tests;
 mod bots_tests;
 mod canonical_links_tests;
+mod capability_discovery_tests;
 mod control_plane_tests;
 mod discovery_tests;
 mod evidence_independence_tests;

@@ -72,8 +72,13 @@ with the header `Authorization: Bearer <token>`. No proxy or helper is needed.
   as the password (any user name), through a credential helper or
   `GIT_ASKPASS`, never inside the clone URL you save.
 - **GitHub tools (`gh`, Octokit):** the forge answers a GitHub-compatible REST
-  subset at `FORGE/api/v3`, listed at `FORGE/api/v1/docs/rest`. GraphQL is not
-  served, so commands that need it fail; prefer the MCP tools or plain REST.
+  subset at `FORGE/api/v3`, listed at `FORGE/api/v1/docs/rest`. GraphQL serves
+  only a small read-only subset (`__typename`, `viewer { login }`, a
+  `repository` read; see `FORGE/api/v1/docs/graphql.md` and
+  `graphql_support.supported_operations` in the capability manifest), and
+  `FORGE/graphql` refuses your agent token with `403 insufficient_scope`: it
+  takes an account credential, not a `jat_`. So a `gh` command that needs
+  GraphQL fails for you — use the REST routes or the MCP tools instead.
 
 ## 4. Check that it works
 
@@ -86,7 +91,8 @@ with the header `Authorization: Bearer <token>`. No proxy or helper is needed.
 2. Through MCP, `initialize` and then `tools/list`. Expect a handful of
    tools: code navigation and search, codegraph queries, and the tool
    registry summary. Tools that name a repository work only inside your
-   reach.
+   reach. The admin-only tools are not offered to an agent token and are
+   refused if you call one by name.
 3. `git ls-remote FORGE/git/<owner>/<repo>.git HEAD` for a repository in your
    reach prints a commit id.
 
@@ -102,6 +108,12 @@ Report the result of all three to your human.
 | 403 `insufficient_scope` on a write | The action is not allowed for agents, or the owner lacks write | Ask your human; do not look for another credential |
 | 400 on `/mcp` | Your client sent a routing header that contradicts the request body | Let the client set the headers itself, or send none |
 | A tool returns `isError` with `requires repo` | The tool needs a `repo` argument | Pass `owner/name` of a repository in your reach |
+
+`GET FORGE/api/v1/capabilities` with your token answers for *your* credential:
+`your_mcp_tools` is what this token may call, `mcp_tools` is everything the
+server dispatches, and `mcp_tool_access` says which grant each one asks for.
+Without a token the same page answers the anonymous view, where
+`your_mcp_tools` is empty — discovery is open, tool calls are not.
 
 Every error body carries `code`, a `message` and a repair hint; the full list
 is at `FORGE/api/v1/docs/errors.md`. Background for your human:

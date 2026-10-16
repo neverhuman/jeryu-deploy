@@ -1,16 +1,43 @@
 //! Guided GraphQL compatibility endpoint.
 //!
-//! Jeryu does not execute arbitrary GitHub GraphQL. The endpoint supports a
-//! tiny read-only subset used by common discovery probes and otherwise returns
-//! a GitHub-shaped error with typed Jeryu repair routes.
+//! Jeryu does not execute arbitrary GitHub GraphQL. The endpoint serves the
+//! small read-only subset in [`SUPPORTED_OPERATIONS`] — the discovery probes
+//! GitHub clients open with — and answers anything else with a GitHub-shaped
+//! error naming the REST route that serves the same intent.
+//!
+//! [`SUPPORTED_OPERATIONS`] is what the capability manifest, the REST document
+//! and `docs/graphql.md` all describe, so no surface can claim more or less
+//! GraphQL than this module answers.
 
 use jeryu_core::{AccountSummary, UserRole};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::GithubRouter;
-use super::support::{MCP_GUIDANCE_TOOLS, docs_url, json_response, parse_body};
+use super::support::{docs_url, json_response, mcp_guidance_tools, parse_body};
 use crate::routes::Response;
+
+/// Every GraphQL operation this endpoint answers. Each entry is the query as a
+/// caller writes it; [`is_typename_probe`], [`is_viewer_login_query`] and
+/// [`is_repository_read_query`] are what actually match, and
+/// `the_supported_operations_are_the_ones_served` holds the list to them.
+pub(crate) const SUPPORTED_OPERATIONS: &[&str] = &[
+    "query { __typename }",
+    "query { viewer { login } }",
+    "query { repository(owner: \"...\", name: \"...\") { name nameWithOwner isPrivate \
+     defaultBranchRef { name } url } }",
+];
+
+/// What a caller has to send. The endpoint answers for the credential that
+/// asks: an account credential (a session, or a personal access token as
+/// `Authorization: Bearer`). A scoped agent token is refused with 403
+/// `insufficient_scope` on this endpoint — an agent uses the REST subset or
+/// `/mcp` instead — and an unauthenticated caller is refused before this
+/// module runs.
+pub(crate) const AUTH_NOTE: &str = "Authenticate as an account: a web session, or a personal \
+     access token as Authorization: Bearer. A scoped agent token (jat_) is refused here with 403 \
+     insufficient_scope; agents use the GitHub-compatible REST subset or /mcp. The viewer is the \
+     authenticated account, and a repository it may not read reads as absent.";
 
 #[derive(Debug, Deserialize)]
 struct GraphqlRequest {
@@ -158,24 +185,26 @@ fn unsupported_response(query: &str, operation_name: Option<&str>) -> Response {
     json_response(
         501,
         &json!({
-            "message": "GraphQL query requires a guided Jeryu route",
+            "message": "GraphQL query is outside the supported subset; use the listed REST route",
             "documentation_url": graphql_docs_url(),
             "errors": [{
                 "type": "GUIDED_ROUTE_REQUIRED",
-                "message": "Use the listed Jeryu REST or MCP route for this workflow."
+                "message": "Use the listed Jeryu REST route for this workflow."
             }],
             "jeryu_repair_hint": {
                 "purpose": "route unsupported GitHub GraphQL request",
-                "reason": "Jeryu intentionally supports a guided GitHub-compatible subset and typed local APIs instead of broad GraphQL execution.",
+                "reason": "Jeryu serves a small read-only GraphQL subset and the GitHub-compatible REST routes; it does not execute arbitrary GraphQL.",
                 "common_fixes": [
                     "Use the GitHub-compatible REST route for repository, PR, issue, check, release, or hook workflows.",
-                    "Use the matching Jeryu MCP tool id when an agent needs typed repair context.",
+                    "Send one of the supported GraphQL operations listed here if you only need discovery.",
                     "Run the jeryu-api conformance tests before widening the GraphQL subset."
                 ],
                 "docs_url": graphql_docs_url(),
-                "repair_hint": "Prefer the listed Jeryu MCP/API alternatives; add a narrow conformance test before supporting another GraphQL read query."
+                "repair_hint": "Send the listed REST route instead; add a narrow conformance test before supporting another GraphQL read query."
             },
-            "jeryu_mcp_tools": MCP_GUIDANCE_TOOLS,
+            "graphql_supported_operations": SUPPORTED_OPERATIONS,
+            "graphql_auth": AUTH_NOTE,
+            "jeryu_mcp_tools": mcp_guidance_tools(),
             "jeryu_api_routes": [
                 "GET /repos",
                 "GET /repos/{owner}/{repo}",
@@ -205,6 +234,33 @@ fn query_fingerprint(query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every operation the published subset names is one this module matches,
+    /// and the matchers answer nothing the list leaves out: the manifest, the
+    /// REST document and the docs page all quote this list.
+    #[test]
+    fn the_supported_operations_are_the_ones_served() {
+        assert_eq!(SUPPORTED_OPERATIONS.len(), 3);
+        let matched = |query: &str| {
+            is_typename_probe(query)
+                || is_viewer_login_query(query)
+                || is_repository_read_query(query)
+        };
+        for operation in SUPPORTED_OPERATIONS {
+            assert!(matched(operation), "the subset lists {operation}, unserved");
+        }
+        for unsupported in [
+            "mutation { addStar(input: { starrableId: \"R_1\" }) { starrable { id } } }",
+            "query { organization(login: \"acme\") { name } }",
+            "query { repository(owner: \"a\", name: \"b\") { pullRequests(first: 10) { nodes { id } } } }",
+            "query { search(query: \"repo:a/b\", type: ISSUE, first: 5) { issueCount } }",
+        ] {
+            assert!(
+                !matched(unsupported),
+                "{unsupported} is answered but unlisted"
+            );
+        }
+    }
 
     #[test]
     fn quoted_arg_extracts_inline_values() {

@@ -448,6 +448,7 @@ fn advisory_headers_always_present_on_any_route() {
         "Mozilla/5.0 (browser)",
         &HttpMethod::GET,
         "/api/v1/bootstrap",
+        Principal::Admin,
     );
     assert_eq!(header_value(&headers, HDR_API), Some("v4"));
     assert_eq!(
@@ -457,57 +458,73 @@ fn advisory_headers_always_present_on_any_route() {
     assert!(header_value(&headers, HDR_TOOL).is_none());
 }
 
+/// A tool hint is only ever a tool this forge dispatches and this caller may
+/// call. The mutations `gh` runs have no MCP tool at all, so those routes get
+/// no hint; the reads that do have one are admin-only, so an agent token, a
+/// plain account and an anonymous caller are not steered at them either.
 #[test]
-fn advisory_headers_steer_gh_like_agents_to_mcp_tools() {
-    // The gh CLI UA on a PR-create maps to the propose_patch MCP tool.
-    let gh = advisory_headers(
-        "GitHub CLI 2.40.0 go-gh/2.0",
-        &HttpMethod::POST,
-        "/repos/alice/jeryu/pulls",
-    );
-    assert_eq!(header_value(&gh, HDR_TOOL), Some(MCP_PATCH_TOOL));
-
-    // A merge PUT maps to request_merge for any automation UA (curl here).
-    let merge = advisory_headers(
-        "curl/8.0",
-        &HttpMethod::PUT,
-        "/repos/alice/jeryu/pulls/7/merge",
-    );
-    assert_eq!(header_value(&merge, HDR_TOOL), Some(MCP_MERGE_TOOL));
-
-    // GET PR routes steer to blocker explanation for agent UAs.
+fn advisory_headers_steer_only_at_tools_the_caller_may_call() {
+    // An admin on a read route gets the live read tool.
     let read = advisory_headers(
         "jeryu-agent/1.0",
         &HttpMethod::GET,
         "/repos/alice/jeryu/pulls",
+        Principal::Admin,
     );
     assert_eq!(header_value(&read, HDR_TOOL), Some(MCP_BLOCKERS_TOOL));
-
-    // Issue create gets a dedicated mutation tool.
-    assert_eq!(
-        header_value(
-            &advisory_headers(
-                "python-requests/2.31",
-                &HttpMethod::POST,
-                "/repos/a/b/issues"
-            ),
-            HDR_TOOL
-        ),
-        Some(MCP_ISSUE_TOOL)
-    );
-
-    // Actions writes steer to the local CI runner entrypoint.
     assert_eq!(
         header_value(
             &advisory_headers(
                 "GitHub CLI 2.40.0 go-gh/2.0",
-                &HttpMethod::POST,
-                "/repos/alice/jeryu/actions/workflows/ci-fast.yml/dispatches"
+                &HttpMethod::GET,
+                "/repos/alice/jeryu/commits/deadbeef/check-runs",
+                Principal::Admin,
             ),
             HDR_TOOL
         ),
-        Some("jeryu.run_tests")
+        Some(MCP_CHECKS_TOOL)
     );
+
+    // The same route, a caller who may not call that tool: no hint at all.
+    for principal in [Principal::Anonymous, Principal::Agent, Principal::User] {
+        let steered = advisory_headers(
+            "GitHub CLI 2.40.0 go-gh/2.0",
+            &HttpMethod::GET,
+            "/repos/alice/jeryu/pulls",
+            principal,
+        );
+        assert!(
+            header_value(&steered, HDR_TOOL).is_none(),
+            "{principal:?} is steered at an admin tool"
+        );
+        // The fast path still points at the manifest, which answers for them.
+        assert_eq!(
+            header_value(&steered, HDR_FAST_PATH),
+            Some(crate::discovery::CAPABILITIES_PATH)
+        );
+    }
+
+    // Mutations have no MCP tool here, not even for an admin.
+    for (method, path) in [
+        (HttpMethod::POST, "/repos/alice/jeryu/pulls"),
+        (HttpMethod::PUT, "/repos/alice/jeryu/pulls/7/merge"),
+        (HttpMethod::POST, "/repos/a/b/issues"),
+        (
+            HttpMethod::POST,
+            "/repos/alice/jeryu/actions/workflows/ci-fast.yml/dispatches",
+        ),
+    ] {
+        let steered = advisory_headers(
+            "GitHub CLI 2.40.0 go-gh/2.0",
+            &method,
+            path,
+            Principal::Admin,
+        );
+        assert!(
+            header_value(&steered, HDR_TOOL).is_none(),
+            "{method} {path} is steered at a tool that does not exist"
+        );
+    }
 }
 
 #[test]
@@ -528,15 +545,7 @@ fn automation_agent_detection_is_case_insensitive_and_scoped() {
 }
 
 #[test]
-fn suggested_tool_covers_mutations_and_reads() {
-    assert_eq!(
-        suggested_tool(&HttpMethod::POST, "/repos/a/b/pulls"),
-        Some(MCP_PATCH_TOOL)
-    );
-    assert_eq!(
-        suggested_tool(&HttpMethod::PUT, "/repos/a/b/pulls/3/merge"),
-        Some(MCP_MERGE_TOOL)
-    );
+fn suggested_tool_covers_reads_and_never_a_tool_without_an_adapter() {
     assert_eq!(
         suggested_tool(&HttpMethod::GET, "/repos/a/b"),
         Some(MCP_READ_TOOL)
@@ -545,29 +554,52 @@ fn suggested_tool_covers_mutations_and_reads() {
         suggested_tool(&HttpMethod::GET, "/repos/a/b/commits/deadbeef/check-runs"),
         Some(MCP_CHECKS_TOOL)
     );
-    // A DELETE (unsupported verb) yields no hint.
-    assert!(suggested_tool(&HttpMethod::DELETE, "/repos/a/b").is_none());
+    assert_eq!(
+        suggested_tool(&HttpMethod::GET, "/repos/a/b/pulls"),
+        Some(MCP_BLOCKERS_TOOL)
+    );
+    // Mutations and unsupported verbs yield no hint: nothing here runs them.
+    for (method, path) in [
+        (HttpMethod::POST, "/repos/a/b/pulls"),
+        (HttpMethod::PUT, "/repos/a/b/pulls/3/merge"),
+        (HttpMethod::POST, "/repos/a/b/issues"),
+        (HttpMethod::DELETE, "/repos/a/b"),
+    ] {
+        assert!(
+            suggested_tool(&method, path).is_none(),
+            "{method} {path} suggests a tool"
+        );
+    }
 }
 
+/// Everything any surface names is a tool the owning MCP catalog knows and
+/// this forge dispatches: guidance, the per-route hint and the manifest.
 #[test]
-fn advertised_mcp_tools_exist_in_catalog() {
+fn advertised_mcp_tools_exist_in_catalog_and_are_dispatched() {
     let known = known_mcp_tools();
-    for tool in MCP_GUIDANCE_TOOLS {
-        assert!(known.contains(*tool), "missing MCP catalog tool: {tool}");
+    for tool in crate::github::mcp_guidance_tools() {
+        assert!(known.contains(&tool), "missing MCP catalog tool: {tool}");
+        assert!(
+            crate::tool_access::is_implemented(&tool),
+            "guidance names {tool}, which has no adapter"
+        );
     }
-    for tool in [
-        suggested_tool(&HttpMethod::POST, "/repos/a/b/pulls"),
-        suggested_tool(&HttpMethod::PUT, "/repos/a/b/pulls/3/merge"),
+    for hint in [
         suggested_tool(&HttpMethod::GET, "/repos/a/b/commits/deadbeef/check-runs"),
         suggested_tool(&HttpMethod::GET, "/repos/a/b/pulls"),
         suggested_tool(&HttpMethod::GET, "/repos/a/b"),
     ] {
-        let tool = tool.expect("tool hint");
+        let tool = hint.expect("tool hint");
         assert!(known.contains(tool), "invalid suggested MCP tool: {tool}");
+        assert!(
+            crate::tool_access::is_implemented(tool),
+            "{tool} is hinted but has no adapter"
+        );
     }
     let payload = capabilities_payload(
         None,
         &live_mcp_tools(&Arc::new(WebState::new(ForgeCore::new()))),
+        Principal::Admin,
     );
     for tool in payload["mcp_tools"].as_array().expect("mcp_tools array") {
         let tool = tool.as_str().expect("tool string");
@@ -765,20 +797,20 @@ async fn live_actions_write_returns_guided_json_and_steering_headers() {
             .and_then(|value| value.to_str().ok()),
         Some(crate::discovery::CAPABILITIES_PATH)
     );
-    assert_eq!(
-        response
-            .headers()
-            .get("x-jeryu-tool")
-            .and_then(|value| value.to_str().ok()),
-        Some("jeryu.run_tests")
-    );
+    // No tool hint: nothing here runs a hosted Actions write, so there is no
+    // MCP tool to steer at.
+    assert!(response.headers().get("x-jeryu-tool").is_none());
     let parsed = response_json(response).await;
     assert_eq!(
         parsed["jeryu_repair_hint"]["purpose"],
         "route unsupported GitHub Actions write request"
     );
     assert_eq!(parsed["jeryu_connection"]["mcp"], "/mcp");
-    assert_eq!(parsed["jeryu_steering"]["mcp_tool"], "jeryu.run_tests");
+    assert_eq!(parsed["jeryu_steering"]["mcp_tool"], Value::Null);
+    assert_eq!(
+        parsed["jeryu_steering"]["supported_route"],
+        crate::github::ACTIONS_REGATE_ROUTE
+    );
 }
 
 #[tokio::test]
@@ -835,13 +867,10 @@ async fn live_actions_workflow_routes_return_json_and_steering_headers() {
             .and_then(|value| value.to_str().ok()),
         Some("application/json")
     );
-    assert_eq!(
-        detail
-            .headers()
-            .get("x-jeryu-tool")
-            .and_then(|value| value.to_str().ok()),
-        Some("jeryu.get_ci_run_jobs")
-    );
+    // The GitHub edge authenticates inside its own handlers, so the advisory
+    // middleware has no principal to check a tool hint against and sends
+    // none: the fast-path manifest answers for whatever credential is held.
+    assert!(detail.headers().get("x-jeryu-tool").is_none());
     let detail_body = response_json(detail).await;
     assert_eq!(detail_body["name"], "ci/fast");
     let workflow_id = detail_body["id"].as_u64().expect("workflow id");
