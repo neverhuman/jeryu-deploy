@@ -11,7 +11,9 @@ tools. This page is the contract that makes it visible in one place:
 - **`/api/v1/pins`**: what each deploy repo pins and how far behind it is. It
   answers "what could be released".
 - **`/api/v1/shift/todos`** additions: whether a done todo is merged and
-  released, and which pull request carries it.
+  released, which pull request carries it, and `blocked_on` -- one line per
+  dependency of a todo no worker may claim yet, naming the id and what it
+  waits for, which is what `/work` shows beside it.
 - **`/api/v1/trace`**: where one piece of work is, from the todo that filed it
   to the deployment that ships it. It answers "where is this".
 - **`/api/v1/yield`**: what the agent factory spent against what reached main.

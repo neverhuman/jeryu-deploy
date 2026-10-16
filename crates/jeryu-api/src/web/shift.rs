@@ -12,6 +12,7 @@
 
 mod access;
 mod assignment;
+mod chain;
 pub(crate) mod comments;
 mod heartbeats;
 pub(crate) mod hypothesis;
@@ -337,6 +338,7 @@ pub(crate) fn enriched_todos(
             .map_err(|err| format!("todo queue {}: {err}", queue.family.name))?;
         let mut family_todos: Vec<ShiftTodo> = queued.iter().map(|q| q.todo.to_api(now)).collect();
         state.shift.truth.enrich(state, &queue, &mut family_todos);
+        chain::annotate(&mut family_todos);
         todos.extend(family_todos);
     }
     Ok(todos)
@@ -376,13 +378,13 @@ pub(crate) async fn list_todos(
                 );
             }
         };
-        let mut family_todos: Vec<ShiftTodo> = queued
-            .iter()
-            .map(|q| q.todo.to_api(now))
-            .filter(|t| matches(t, &query))
-            .collect();
+        // The whole family is read before the filter is applied: a todo's
+        // `blocked_on` names todos the filter may exclude, and the dependency
+        // has to be the enriched one or work already on main reads as unmerged.
+        let mut family_todos: Vec<ShiftTodo> = queued.iter().map(|q| q.todo.to_api(now)).collect();
         state.shift.truth.enrich(&state, &queue, &mut family_todos);
-        todos.extend(family_todos);
+        chain::annotate(&mut family_todos);
+        todos.extend(family_todos.into_iter().filter(|t| matches(t, &query)));
     }
     todos.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
     let (todos, page) = page.apply(todos);

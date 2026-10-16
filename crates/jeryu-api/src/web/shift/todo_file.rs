@@ -337,6 +337,8 @@ impl TodoFile {
             mode: self.mode.clone(),
             priority: self.priority,
             blocked_by: self.blocked_by.clone(),
+            // Filled per family by `chain::annotate`, which needs the other todos.
+            blocked_on: Vec::new(),
             status: self.status,
             attempts: self.attempts,
             requested_by: self.requested_by.clone(),

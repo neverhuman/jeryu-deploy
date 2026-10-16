@@ -73,6 +73,11 @@ pub(crate) struct ShiftTodo {
     pub mode: String,
     pub priority: i64,
     pub blocked_by: Vec<String>,
+    /// One line per `blocked_by` entry whose work is not on the base branch
+    /// yet, naming the id and what it waits for, as `/work` shows it beside a
+    /// todo no worker may claim (see `chain.rs`). Empty on any todo a worker
+    /// would not pick up anyway.
+    pub blocked_on: Vec<String>,
     pub status: TodoStatus,
     pub attempts: i64,
     pub requested_by: String,

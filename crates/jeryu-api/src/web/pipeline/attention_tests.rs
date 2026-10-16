@@ -222,6 +222,7 @@ fn todo(id: &str, status: &str) -> ShiftTodo {
         mode: "now".to_string(),
         priority: 2,
         blocked_by: Vec::new(),
+        blocked_on: Vec::new(),
         status: TodoStatus::parse(status).expect("known status"),
         attempts: 0,
         requested_by: "operator".to_string(),
