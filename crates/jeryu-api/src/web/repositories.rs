@@ -939,16 +939,22 @@ pub(super) fn repo_summary(state: &WebState, repo: &Repository) -> RepositorySum
 fn repo_summary_with_red(
     state: &WebState,
     repo: &Repository,
-    red: &std::collections::BTreeSet<String>,
+    red: &Result<std::collections::BTreeSet<String>, String>,
 ) -> RepositorySummary {
     summary(
         state,
         repo,
-        red.contains(&format!("{}/{}", repo.owner, repo.name)),
+        red.as_ref()
+            .map(|red| red.contains(&format!("{}/{}", repo.owner, repo.name)))
+            .map_err(Clone::clone),
     )
 }
 
-fn summary(state: &WebState, repo: &Repository, main_red: bool) -> RepositorySummary {
+fn summary(
+    state: &WebState,
+    repo: &Repository,
+    main_red: Result<bool, String>,
+) -> RepositorySummary {
     let split = state.split_catalog.classify(&repo.owner, &repo.name);
     let pulls = state
         .github
@@ -983,7 +989,8 @@ fn summary(state: &WebState, repo: &Repository, main_red: bool) -> RepositorySum
         .count() as u32;
     // Is the default branch red under the gate that runs on every push to it
     // (`main.status` events, see `pipeline::main_health`)?
-    let main_red = main_red && !repo.archived;
+    let health_unknown = main_red.is_err();
+    let main_red = main_red.unwrap_or(false) && !repo.archived;
     RepositorySummary {
         id: repo_id(repo),
         entity: EntityHandle {
@@ -1019,6 +1026,8 @@ fn summary(state: &WebState, repo: &Repository, main_red: bool) -> RepositorySum
             // `failing` so the repository page and the listing show it even
             // when no check run on the head does.
             "failing".to_string()
+        } else if health_unknown {
+            "unknown".to_string()
         } else if failing_checks > 0 {
             "warning".to_string()
         } else {

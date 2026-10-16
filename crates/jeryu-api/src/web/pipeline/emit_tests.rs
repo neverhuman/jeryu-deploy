@@ -561,6 +561,22 @@ fn a_gate_verdict_on_a_main_head_posts_the_status_and_the_escaped_defect() {
     let merge_sha = "0123456789abcdef0123456789abcdef01234567";
     pr.merge_commit_sha = Some(merge_sha.to_string());
     emit::pull_merged(&state, &pr, "mergebot", "merge_queue");
+    // The culprit remains attributable beyond the newest merge-event page.
+    for number in 0..501 {
+        state
+            .events
+            .insert(
+                "forge",
+                &super::types::NewEvent {
+                    repo: Some("jeryu/jeryu-deploy".into()),
+                    sha: Some(format!("{number:040x}")),
+                    pr: Some(10_000 + number),
+                    ..super::types::NewEvent::forge("pr.merged", "another merge")
+                },
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .unwrap();
+    }
     // The gate announced this head, which is how the test says "main is here"
     // without a git fixture; a live pass posts it from main's resolved head.
     crate::web::pipeline::record(
@@ -630,4 +646,9 @@ fn a_gate_verdict_on_a_main_head_posts_the_status_and_the_escaped_defect() {
     assert_eq!(health[0].flaky_runs, 1, "the same commit later passed");
     assert_eq!(health[0].escaped_defects, 0, "a flake is no defect");
     assert_eq!(health[0].intervals[0].culprit_pr, Some(pr.number as i64));
+    let second_red = beat(pass(merge_sha, "failure", "2026-10-06T13:00:00Z"));
+    emit::runner_heartbeat(&state, Some(&green), &second_red);
+    assert_eq!(kinds("main.escaped").len(), 2);
+    emit::runner_heartbeat(&state, Some(&green), &second_red);
+    assert_eq!(kinds("main.escaped").len(), 2, "replay is idempotent");
 }

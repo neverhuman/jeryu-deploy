@@ -1099,6 +1099,9 @@ fn bootstrap_pr_into_the_unborn_default_branch_is_accepted_and_merge_creates_it(
     fixture.cleanup();
 }
 
+#[path = "merge_gating/default_recovery.rs"]
+mod default_recovery;
+
 // ---------------------------------------------------------------------------
 // Merge -> GitHub mirror push (jeryu_api::github_mirror)
 // ---------------------------------------------------------------------------

@@ -1990,7 +1990,7 @@ async fn tui_read_model(State(state): State<Arc<WebState>>) -> Json<TuiReadModel
 /// clients. Sources real data from the MCP catalog, the forge, and the live
 /// read-model; read-only, never mutates state.
 async fn ecosystem(State(state): State<Arc<WebState>>) -> AxumResponse {
-    Json(ecosystem::ecosystem_response(state.github.core())).into_response()
+    Json(ecosystem::ecosystem_response(&state)).into_response()
 }
 
 /// `GET /api/v1/ci/runs/{id}/evidence` — the derived evidence list for a CI run

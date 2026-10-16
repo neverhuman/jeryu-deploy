@@ -246,11 +246,11 @@ fn health_of(
     }
 }
 
-/// What the store holds for `repo` (or every repository): the three kinds the
+/// What the store holds for `repo` (or every repository): the verdict and log kinds the
 /// projection reads, newest first.
 fn read_events(state: &WebState, repo: Option<&str>) -> Result<Vec<Event>, String> {
     let mut events = Vec::new();
-    for (kind, limit) in [(STATUS_KIND, 1000), ("gate.log", 1000), ("pr.merged", 1000)] {
+    for (kind, limit) in [(STATUS_KIND, 1000), ("gate.log", 1000)] {
         events.extend(state.events.query(&EventsQuery {
             repo: repo.map(str::to_string),
             kind: Some(kind.to_string()),
@@ -267,7 +267,34 @@ pub(crate) fn for_repo(
     repo: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Vec<MainHealth>, String> {
-    Ok(project(&read_events(state, repo)?, now))
+    let mut health = project(&read_events(state, repo)?, now);
+    state.events.with_conn(|conn| {
+        for health in &mut health {
+            for interval in &mut health.intervals {
+                interval.culprit_pr = merged_pr(conn, &health.repo, &interval.sha)?;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(health)
+}
+
+/// Exact attribution across the retained log, independent of event-page limits.
+pub(crate) fn merged_pr(
+    conn: &rusqlite::Connection,
+    repo: &str,
+    sha: &str,
+) -> Result<Option<i64>, String> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT pr FROM pipeline_events
+         WHERE kind = 'pr.merged' AND repo = ?1 AND sha = ?2 AND pr IS NOT NULL
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![repo, sha],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|err| err.to_string())
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -310,7 +337,7 @@ pub(crate) async fn list(
 /// verdict is `red`. The verdict is chosen in SQL (a `started` event is no
 /// verdict), so any number of `started` events cannot hide it. One indexed
 /// query; a listing of many repositories asks [`red_repos`] once instead.
-pub(crate) fn red_now(state: &WebState, repo: &str) -> bool {
+pub(crate) fn red_now(state: &WebState, repo: &str) -> Result<bool, String> {
     state
         .events
         .with_conn(|conn| {
@@ -327,40 +354,35 @@ pub(crate) fn red_now(state: &WebState, repo: &str) -> bool {
                 other => Err(other.to_string()),
             })
         })
-        .ok()
-        .flatten()
-        .is_some_and(|outcome| outcome == RED)
+        .map(|outcome| outcome.is_some_and(|outcome| outcome == RED))
 }
 
 /// Every repository whose default branch is red right now, by the same rule
 /// as [`red_now`], in one query: a repository listing asks this once rather
-/// than once per repository. A store that cannot be read answers "none red".
-pub(crate) fn red_repos(state: &WebState) -> BTreeSet<String> {
-    state
-        .events
-        .with_conn(|conn| {
-            // SQLite returns the bare `repo`/`outcome` of the row holding
-            // MAX(seq) in each group: each repository's newest verdict.
-            let mut statement = conn
-                .prepare(
-                    "SELECT repo, outcome, MAX(seq) FROM pipeline_events \
+/// than once per repository. An unreadable store returns an error.
+pub(crate) fn red_repos(state: &WebState) -> Result<BTreeSet<String>, String> {
+    state.events.with_conn(|conn| {
+        // SQLite returns the bare `repo`/`outcome` of the row holding
+        // MAX(seq) in each group: each repository's newest verdict.
+        let mut statement = conn
+            .prepare(
+                "SELECT repo, outcome, MAX(seq) FROM pipeline_events \
                      WHERE kind = ?1 AND outcome IN (?2, ?3) AND repo IS NOT NULL \
                      GROUP BY repo",
-                )
-                .map_err(|err| err.to_string())?;
-            let rows = statement
-                .query_map(rusqlite::params![STATUS_KIND, GREEN, RED], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(|err| err.to_string())?;
-            let mut red = BTreeSet::new();
-            for row in rows {
-                let (repo, outcome) = row.map_err(|err| err.to_string())?;
-                if outcome == RED {
-                    red.insert(repo);
-                }
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = statement
+            .query_map(rusqlite::params![STATUS_KIND, GREEN, RED], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut red = BTreeSet::new();
+        for row in rows {
+            let (repo, outcome) = row.map_err(|err| err.to_string())?;
+            if outcome == RED {
+                red.insert(repo);
             }
-            Ok(red)
-        })
-        .unwrap_or_default()
+        }
+        Ok(red)
+    })
 }

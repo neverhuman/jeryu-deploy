@@ -465,3 +465,25 @@ fn a_window_at_the_end_of_the_calendar_is_refused_not_a_panic() {
     });
     assert!(end >= 0);
 }
+
+#[test]
+fn a_failed_minutes_write_rolls_back_the_outcome() {
+    let (_dir, store) = store();
+    store.with_conn(|conn| {
+        conn.execute_batch("CREATE TRIGGER refuse_minutes BEFORE INSERT ON change_human_minutes BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").map_err(|err| err.to_string())
+    }).unwrap();
+    assert!(
+        store
+            .charge_human_minutes(&Mark::new(Source::Review, "dana", T0).on_pull(REPO, 7))
+            .is_err()
+    );
+    store
+        .with_conn(|conn| {
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM change_outcomes", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+            Ok(())
+        })
+        .unwrap();
+}

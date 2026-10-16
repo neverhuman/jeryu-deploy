@@ -17,6 +17,11 @@ from one that was deleted, so the exception also covers a deleted default
 branch; deleting it takes a repository admin, and git refuses to delete the
 branch HEAD names. A missing branch that is not the default is still refused.
 
+The policy deliberately permits reviewed recovery of a deleted default branch.
+It does not require proof that the branch never had commits: imported Git data
+and deleted refs cannot supply that proof. Absence must still be read
+successfully, and the ordinary merge permissions, approvals and gates apply.
+
 An explicit `base_sha` retains the existing 40-hex validation contract. The
 in-memory router without a Git backend retains its existing core behavior.
 

@@ -9,7 +9,7 @@
 //!   straight from the MCP tool catalog via [`jeryu_mcp::tool_manifest`] (the
 //!   manifest's `name`, behavioral `annotations`, and `inputSchema`).
 //! * `repo` / `provider` / `health` come from live [`ForgeCore`] state: the
-//!   first repository (sorted) plus its check-run health, mirroring the
+//!   first repository (sorted) plus its current gate and check health, using the
 //!   `repo_summary` health classifier in `web.rs`.
 //! * `queue` is the live read-model pool name backing CI work, derived from the
 //!   assembled [`crate::read_model`] pool activity (absent when no pool is live).
@@ -20,7 +20,9 @@
 //! All keys serialize as camelCase per the external client contract; absent
 //! optional fields are omitted.
 
-use jeryu_core::{CheckConclusion, ForgeCore};
+#[cfg(test)]
+use jeryu_core::CheckConclusion;
+use jeryu_core::ForgeCore;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -64,8 +66,9 @@ pub(super) struct EcosystemResponse {
 }
 
 /// Build the live ecosystem response from real catalog + forge + read-model data.
-pub(super) fn ecosystem_response(core: &ForgeCore) -> EcosystemResponse {
-    let (repo, repo_health) = representative_repo(core);
+pub(super) fn ecosystem_response(state: &super::WebState) -> EcosystemResponse {
+    let core = state.github.core();
+    let (repo, repo_health) = representative_repo(state);
     let queue = representative_queue(core);
     let manifest = jeryu_mcp::tool_manifest();
     let tools = manifest
@@ -205,28 +208,19 @@ fn depends_on(name: &str, read_only: bool) -> Vec<String> {
     deps
 }
 
-/// The first repository (sorted by full name) and its health, classified
-/// exactly as `web.rs`'s `repo_summary`: any failing check-run -> `"warning"`,
-/// otherwise `"healthy"`. Archived repositories are skipped. Returns
-/// `(None, None)` for a server with no unarchived repository.
-fn representative_repo(core: &ForgeCore) -> (Option<String>, Option<String>) {
-    let Some(repo) = core
+/// The first unarchived repository and the same health its repository page emits.
+fn representative_repo(state: &super::WebState) -> (Option<String>, Option<String>) {
+    let Some(repo) = state
+        .github
+        .core()
         .list_repositories(None)
         .into_iter()
         .find(|repo| !repo.archived)
     else {
         return (None, None);
     };
-    let failing = core
-        .list_check_runs(&repo.owner, &repo.name, None)
-        .map(|runs| {
-            runs.check_runs
-                .iter()
-                .any(|check| check.conclusion == Some(CheckConclusion::Failure))
-        })
-        .unwrap_or(false);
-    let health = if failing { "warning" } else { "healthy" };
-    (Some(repo.full_name), Some(health.to_string()))
+    let health = super::repositories::repo_summary(state, &repo).health;
+    (Some(repo.full_name), Some(health))
 }
 
 /// The first live read-model pool name backing CI work, or `None` on an empty
@@ -307,7 +301,7 @@ mod tests {
     #[test]
     fn every_catalog_tool_becomes_a_node_with_the_camelcase_shape() {
         let core = seed_core();
-        let response = ecosystem_response(&core);
+        let response = ecosystem_response(&super::super::WebState::new(core));
         assert!(response.live);
         assert_eq!(response.degraded_reason, "");
         // Exactly one node per catalog tool, none dropped.
@@ -351,7 +345,7 @@ mod tests {
     #[test]
     fn mutating_tool_node_is_classified_and_depends_on_substrate() {
         let core = seed_core();
-        let response = ecosystem_response(&core);
+        let response = ecosystem_response(&super::super::WebState::new(core));
         let patch = response
             .tools
             .iter()
@@ -368,6 +362,19 @@ mod tests {
     #[test]
     fn repo_health_reflects_a_failing_check_run() {
         let core = seed_core();
+        core.create_pull_request(
+            "alice",
+            "jeryu",
+            "alice",
+            CreatePullRequestRequest {
+                title: "Current change".into(),
+                head: "feature".into(),
+                base: "main".into(),
+                head_sha: Some("deadbeef".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         core.create_check_run(
             "alice",
             "jeryu",
@@ -380,13 +387,40 @@ mod tests {
             },
         )
         .unwrap();
-        let (_repo, health) = representative_repo(&core);
+        let (_repo, health) = representative_repo(&super::super::WebState::new(core));
         assert_eq!(health.as_deref(), Some("warning"));
     }
 
     #[test]
+    fn repo_health_includes_red_main_and_unreadable_evidence() {
+        let state = super::super::WebState::new(seed_core());
+        state
+            .events
+            .insert(
+                "forge",
+                &crate::web::pipeline::NewEvent {
+                    repo: Some("alice/jeryu".into()),
+                    sha: Some("a".repeat(40)),
+                    outcome: Some("red".into()),
+                    ..crate::web::pipeline::NewEvent::forge("main.status", "main failed")
+                },
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .unwrap();
+        assert_eq!(representative_repo(&state).1.as_deref(), Some("failing"));
+        state
+            .events
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TABLE pipeline_events")
+                    .map_err(|err| err.to_string())
+            })
+            .unwrap();
+        assert_eq!(representative_repo(&state).1.as_deref(), Some("unknown"));
+    }
+
+    #[test]
     fn empty_server_yields_nodes_without_repo_provider_or_queue() {
-        let response = ecosystem_response(&ForgeCore::new());
+        let response = ecosystem_response(&super::super::WebState::new(ForgeCore::new()));
         assert_eq!(response.tools.len(), jeryu_mcp::tool_manifest().len());
         let node = &response.tools[0];
         assert!(node.repo.is_none());
@@ -424,7 +458,7 @@ mod tests {
             },
         )
         .unwrap();
-        let response = ecosystem_response(&core);
+        let response = ecosystem_response(&super::super::WebState::new(core));
         let ci_tool = response
             .tools
             .iter()

@@ -94,6 +94,10 @@ Implemented HTTP/WebSocket routes:
 - `GET /api/v1/site-settings` (the internal wiki, shown only to callers who can read it)
 - `GET /api/v1/admin/site-settings`, `PUT /api/v1/admin/site-settings` (admin only)
 - `GET /api/v1/flow`, `GET /api/v1/flow/layout` (admin only; durable projection and live layout)
+- `GET /api/v1/main-health` (admin only; gate verdicts, red intervals and flakes)
+- `GET /api/v1/scorecard` (admin only; delivery and reliability evidence)
+- `GET|POST /api/v1/incidents` (admin reads; admin or configured event reporter writes)
+- `POST /api/v1/incidents/webhook` (admin or configured event reporter writes)
 - `GET /api/v1/human-minutes` (admin only; human minutes per change, aggregated by family, repository or work kind)
 - `GET /api/v1/events/histogram`, `GET /api/v1/usage` (admin only; event histogram and reported worker token/cost aggregates)
 - `GET|POST /api/v1/release-actions` (deployer only; bounded, expiring queue)
@@ -126,3 +130,8 @@ are recorded.
 `codegraph.query` and code navigation tools, and for
 `agent_work.start/status/control/events/export_pr`. Calls without a `repo`
 argument keep the deterministic in-memory fallback used by conformance tests.
+
+Repository summaries and ecosystem tool nodes share the health classifier:
+`healthy`, `warning` for failing current checks, `failing` for a red default
+branch gate, and `unknown` when the gate event store cannot be read. Archived
+repositories report `healthy`.

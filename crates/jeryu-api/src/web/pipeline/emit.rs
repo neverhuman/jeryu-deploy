@@ -738,21 +738,7 @@ fn main_gate_finished(
         return;
     }
     // The previous verdict decides whether this red turns main red.
-    let was_red = state
-        .events
-        .query(&super::EventsQuery {
-            repo: Some(result.repo.clone()),
-            kind: Some("main.status".to_string()),
-            limit: Some(50),
-            ..super::EventsQuery::default()
-        })
-        .ok()
-        .and_then(|events| {
-            events
-                .into_iter()
-                .find(|e| matches!(e.outcome.as_deref(), Some("green" | "red")))
-        })
-        .map(|e| e.outcome.as_deref() == Some("red"));
+    let was_red = super::main_health::red_now(state, &result.repo).ok();
     let digest = Sha256::digest(
         format!(
             "{}\n{}\n{}\n{}",
@@ -799,28 +785,18 @@ fn main_gate_finished(
         },
     );
     if outcome == "red" && was_red != Some(true) {
-        main_escaped(state, &result.repo, &result.sha);
+        main_escaped(state, &result.repo, &result.sha, &hex::encode(digest));
     }
 }
 
 /// `main.escaped`: main went red at `sha`; `pr` names the merged change whose
 /// merge commit it is, when the forge recorded one.
-fn main_escaped(state: &WebState, repo: &str, sha: &str) {
+fn main_escaped(state: &WebState, repo: &str, sha: &str, run: &str) {
     let pr = state
         .events
-        .query(&super::EventsQuery {
-            repo: Some(repo.to_string()),
-            kind: Some("pr.merged".to_string()),
-            limit: Some(500),
-            ..super::EventsQuery::default()
-        })
+        .with_conn(|conn| super::main_health::merged_pr(conn, repo, sha))
         .ok()
-        .and_then(|events| {
-            events
-                .into_iter()
-                .find(|e| e.sha.as_deref() == Some(sha))
-                .and_then(|e| e.pr)
-        });
+        .flatten();
     emit(
         state,
         NewEvent {
@@ -831,10 +807,10 @@ fn main_escaped(state: &WebState, repo: &str, sha: &str) {
             needs_human: true,
             // Two repositories can hold the same commit (an import of the
             // same history), so the repository is part of the identity; the
-            // pair is digested because an `event_id` holds no `/`.
+            // run is included so a later escape on the same head is distinct.
             event_id: Some(format!(
                 "main.escaped:{}",
-                &hex::encode(Sha256::digest(format!("{repo}\n{sha}").as_bytes()))[..32]
+                &hex::encode(Sha256::digest(format!("{repo}\n{sha}\n{run}").as_bytes()))[..32]
             )),
             ..NewEvent::forge(
                 "main.escaped",

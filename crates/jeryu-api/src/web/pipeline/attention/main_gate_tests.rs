@@ -59,10 +59,41 @@ fn red_repos_reads_every_repository_newest_verdict_in_one_query() {
     for offset in 0..60 {
         status("acme/widget", "started", 10 + offset);
     }
-    let red = red_repos(&state);
+    let red = red_repos(&state).unwrap();
     assert!(red.contains("acme/widget"), "{red:?}");
     assert!(!red.contains("acme/gadget"), "{red:?}");
-    assert!(red_now(&state, "acme/widget"));
-    assert!(!red_now(&state, "acme/gadget"));
-    assert!(!red_now(&state, "acme/never-gated"));
+    assert!(red_now(&state, "acme/widget").unwrap());
+    assert!(!red_now(&state, "acme/gadget").unwrap());
+    assert!(!red_now(&state, "acme/never-gated").unwrap());
+}
+
+#[test]
+fn unreadable_verdicts_are_unknown_in_repository_summaries() {
+    use crate::web::pipeline::main_health::{red_now, red_repos};
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "acme",
+            jeryu_core::CreateRepositoryRequest {
+                name: "widget".into(),
+                private: false,
+                description: None,
+                default_branch: None,
+            },
+        )
+        .unwrap();
+    let state = WebState::new(core);
+    state
+        .events
+        .with_conn(|conn| {
+            conn.execute_batch("DROP TABLE pipeline_events")
+                .map_err(|err| err.to_string())
+        })
+        .unwrap();
+    assert!(red_now(&state, "acme/widget").is_err());
+    assert!(red_repos(&state).is_err());
+    assert_eq!(
+        crate::web::repositories::repo_summary(&state, &repo).health,
+        "unknown"
+    );
 }

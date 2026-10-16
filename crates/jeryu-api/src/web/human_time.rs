@@ -241,7 +241,15 @@ pub(crate) fn charge(conn: &Connection, mark: &Mark<'_>) -> Result<(), String> {
     let Some(lot) = lot_of(conn, mark.todo_id, mark.repo, mark.pr)? else {
         return Ok(());
     };
-    ensure_lot(conn, &lot, mark.family, mark.repo, mark.at_ms)?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    charge_lot(&tx, mark, actor, &lot)?;
+    tx.commit().map_err(|err| err.to_string())
+}
+
+fn charge_lot(conn: &Connection, mark: &Mark<'_>, actor: &str, lot: &str) -> Result<(), String> {
+    ensure_lot(conn, lot, mark.family, mark.repo, mark.at_ms)?;
     let previous: Option<i64> = conn
         .query_row(
             "SELECT MAX(last_ms) FROM change_human_minutes
