@@ -3130,6 +3130,146 @@ fn ci_declaration_lane_names_take_only_context_shaped_names() {
     assert!(names("[[lane]]\nname = \"a b/c\"\n").is_empty());
 }
 
+/// The owner-paths route through the real router, which is where its
+/// permission check lives: the client asks for every viewer of a blocked pull
+/// request, so a caller without access to a private repository must be
+/// refused, and nobody short of a repository administrator may learn the
+/// base's protection settings. A public pull request stays readable without an
+/// account, as the repository page it belongs to already is.
+#[tokio::test]
+async fn owner_paths_refuse_strangers_and_keep_protection_from_readers() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let root = tempdir().expect("owner paths router fixture root");
+    let core = ForgeCore::new();
+    for login in ["alice", "reader", "outsider"] {
+        core.create_account(login, "owner-paths-fixture-password", UserRole::User)
+            .unwrap();
+    }
+    let open = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "owner-paths-open".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let closed = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "owner-paths-closed".to_string(),
+                private: true,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    for repo in [&open, &closed] {
+        core.set_branch_protection(
+            &repo.owner,
+            &repo.name,
+            "main",
+            SetBranchProtectionRequest {
+                required_approving_review_count: 1,
+                enforce_admins: false,
+                ..SetBranchProtectionRequest::default()
+            },
+        )
+        .unwrap();
+        core.create_pull_request(
+            &repo.owner,
+            &repo.name,
+            "alice",
+            CreatePullRequestRequest {
+                title: "needs an approval".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(format!("{}-head", repo.name)),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    }
+    let tokens: BTreeMap<String, String> = ["reader", "outsider"]
+        .into_iter()
+        .map(|login| {
+            (
+                login.to_string(),
+                core.create_personal_access_token(login, "owner paths fixture", None)
+                    .unwrap()
+                    .secret,
+            )
+        })
+        .collect();
+    let app = app(
+        WebState::new(core).with_auth(true, false, false),
+        &root.path().join("absent-spa"),
+    );
+    let ask = |repo_id: String, actor: Option<&str>| {
+        let app = app.clone();
+        let bearer = actor.map(|actor| format!("Bearer {}", tokens[actor]));
+        async move {
+            let mut request =
+                Request::builder().uri(format!("/api/v1/repos/{repo_id}/pulls/1/owner-paths"));
+            if let Some(bearer) = bearer {
+                request = request.header(header::AUTHORIZATION, bearer);
+            }
+            app.oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        }
+    };
+
+    // No account, private repository: nothing, not even the gate's shape.
+    let hidden = ask(closed.id.to_string(), None).await;
+    assert_eq!(hidden.status(), StatusCode::UNAUTHORIZED);
+
+    // No account, public pull request: the blockers, with protection masked.
+    let anonymous = ask(open.id.to_string(), None).await;
+    assert_eq!(anonymous.status(), StatusCode::OK);
+    let anonymous_page = response_json(anonymous).await;
+    assert!(
+        anonymous_page["enforce_admins"].is_null(),
+        "{anonymous_page}"
+    );
+    assert_eq!(
+        anonymous_page["viewer_may_clear_as_owner"], false,
+        "{anonymous_page}"
+    );
+
+    // An account without access to the private repository learns nothing,
+    // neither its blockers nor that its base is protected.
+    let refused = ask(closed.id.to_string(), Some("outsider")).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    let refused_body = response_json(refused).await;
+    assert!(
+        !refused_body.to_string().contains("enforce_admins"),
+        "{refused_body}"
+    );
+
+    // A reader of a repository they may read gets the blockers and whose they
+    // are, with the base's protection settings masked.
+    let served = ask(open.id.to_string(), Some("reader")).await;
+    assert_eq!(served.status(), StatusCode::OK);
+    let page = response_json(served).await;
+    assert_eq!(page["blocked"], true, "{page}");
+    assert!(page["enforce_admins"].is_null(), "{page}");
+    assert_eq!(page["viewer_is_admin"], false, "{page}");
+    assert_eq!(page["viewer_may_clear_as_owner"], false, "{page}");
+    assert!(
+        page["blockers"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()),
+        "{page}"
+    );
+}
+
 /// The `workflow` block of an open pull request on a protected base that asks
 /// for one approval and the `ci/required` context, with the given evidence
 /// recorded on the head (and optionally on an older head).
