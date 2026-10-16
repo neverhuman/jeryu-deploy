@@ -282,7 +282,7 @@ async fn capability_discovery_answers_each_principal_with_its_own_usable_tools()
             .expect("graphql auth note");
         assert!(note.contains("personal access token"), "{note}");
         assert!(note.contains("insufficient_scope"), "{note}");
-        // The old string field still answers for clients that read it.
+        // The plain string field still answers for clients that read it.
         assert_eq!(view["graphql"], "/graphql");
     }
 }

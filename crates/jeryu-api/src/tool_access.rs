@@ -188,8 +188,8 @@ mod tests {
         }
     }
 
-    /// The tools the retired guidance named: none of them has an adapter, so
-    /// no surface may recommend one.
+    /// Tool names that have circulated in guidance: none of them has an
+    /// adapter here, so no surface may recommend one.
     #[test]
     fn tools_without_an_adapter_are_not_implemented() {
         for tool in [
