@@ -68,6 +68,36 @@ fn todo_event(store: &EventStore, kind: &str, outcome: Option<&str>, todo: &str,
         .unwrap();
 }
 
+/// One event that names both a todo and the pull request it works on: what
+/// binds a todo's lot to `acme/widget#pr`.
+fn pr_todo_event(
+    store: &EventStore,
+    kind: &str,
+    outcome: Option<&str>,
+    pr: i64,
+    todo: &str,
+    minute: i64,
+) {
+    store
+        .insert(
+            "operator",
+            &NewEvent {
+                source: "todoq".to_string(),
+                kind: kind.to_string(),
+                summary: kind.to_string(),
+                outcome: outcome.map(str::to_string),
+                family: Some("acme".to_string()),
+                repo: Some("acme/widget".to_string()),
+                pr: Some(pr),
+                sha: Some(HEAD_A.to_string()),
+                todo_id: Some(todo.to_string()),
+                ..NewEvent::default()
+            },
+            START + minute * MINUTE,
+        )
+        .unwrap();
+}
+
 fn report(store: &EventStore, minute: i64) -> (Vec<Visit>, Value) {
     let visits = store.flow_visits_scoped(Some("acme"), 0, None).unwrap();
     let reached = store.flow_reached(Some("acme")).unwrap();
@@ -386,4 +416,76 @@ fn production_actor_and_recipe_identify_the_holder_and_a_rerun_keeps_the_hold() 
         "acme-required"
     );
     assert_eq!(station(&body, "gate")["rework"], serde_json::json!([]));
+}
+
+#[test]
+fn a_separate_fix_todo_claimed_for_the_pull_request_is_somebody_acting() {
+    let (_dir, store) = store();
+    let landed = "20261012-000002-bbbbbb";
+    let fix = "20261012-000003-cccccc";
+    // The todo that opened the pull request is finished; the review holds it.
+    todo_event(&store, "todo.filed", None, landed, 0);
+    todo_event(&store, "todo.claimed", None, landed, 1);
+    todo_event(&store, "todo.attempt_finished", Some("done"), landed, 8);
+    pr_todo_event(&store, "pr.opened", None, 30, landed, 10);
+    event(
+        &store,
+        "review.finished",
+        Some("request_changes"),
+        30,
+        Some(HEAD_A),
+        Some(serde_json::json!({"reviewer": "acme-reviewer"})),
+        15,
+    );
+    let (_, body) = report(&store, 60);
+    assert_eq!(lot(&body, "review", landed)["hold"]["nobody_acting"], true);
+
+    // A fix todo for the same pull request is filed and claimed: its own lot,
+    // bound to the pull request, with an open Work visit after the hold.
+    todo_event(&store, "todo.filed", None, fix, 20);
+    pr_todo_event(&store, "todo.claimed", None, 30, fix, 25);
+    let (visits, body) = report(&store, 60);
+    assert!(
+        visits.iter().any(|visit| visit.lot_id == fix
+            && visit.station == Station::Work
+            && visit.pr == Some(30)
+            && visit.left_ms.is_none()),
+        "the fix todo has its own open Work visit on the pull request: {visits:?}"
+    );
+    let held = lot(&body, "review", landed);
+    assert_eq!(held["state"], "held");
+    assert_eq!(held["hold"]["reason"], "review_hold");
+    assert_eq!(
+        held["hold"]["nobody_acting"], false,
+        "a claimed fix todo is somebody acting: {body}"
+    );
+}
+
+#[test]
+fn a_fix_todo_for_another_pull_request_leaves_the_hold_unanswered() {
+    let (_dir, store) = store();
+    let held = "20261012-000005-eeeeee";
+    let elsewhere = "20261012-000006-ffffff";
+    todo_event(&store, "todo.filed", None, held, 0);
+    todo_event(&store, "todo.claimed", None, held, 1);
+    todo_event(&store, "todo.attempt_finished", Some("done"), held, 8);
+    pr_todo_event(&store, "pr.opened", None, 40, held, 10);
+    event(
+        &store,
+        "review.finished",
+        Some("request_changes"),
+        40,
+        Some(HEAD_A),
+        None,
+        15,
+    );
+    // A todo claimed on a different pull request of the same repository.
+    todo_event(&store, "todo.filed", None, elsewhere, 20);
+    pr_todo_event(&store, "todo.claimed", None, 41, elsewhere, 25);
+    let (_, body) = report(&store, 60);
+    assert_eq!(
+        lot(&body, "review", held)["hold"]["nobody_acting"],
+        true,
+        "work on another pull request is not acting on this hold: {body}"
+    );
 }

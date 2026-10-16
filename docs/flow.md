@@ -28,14 +28,15 @@ A lot that stopped stays at the station where it stopped, held, with a
 `queue_conflict`, `queue_failed`, `superseded`), `by` (the reviewer's login,
 the check's name, `merge-queue`, or the replacing pull request), `since` (the
 oldest event on the current head that caused it), `age_s`, `nobody_acting`
-(no open Work visit for this lot since the hold) and, for a review hold, `review_href`. It counts in that
+(the head is unchanged and no fix is claimed: no open Work visit since the
+hold, on the held lot or on a separate todo bound to the same pull request)
+and, for a review hold, `review_href`. It counts in that
 station's held WIP and `oldest_wait_s`. The rework arc back to Work is drawn
 only when a new head arrives. `superseded` is read at request time from the
 rule behind needs-you's `pr_superseded`. `pr_href` is the pull request page
 for any lot bound to one. Migration 0025 adds nullable hold metadata. Existing ledger rows are not
 rebuilt: earlier holds retain no reason, and earlier failures already projected
-as rework still need reconciliation. Separate fix todos are not yet joined
-to the held lot; `nobody_acting` currently sees only that lot's Work visit.
+as rework still need reconciliation.
 Events without comparable head SHAs cannot establish a new head.
 
 Shift/Stage have no measured start until a producer records one, so their

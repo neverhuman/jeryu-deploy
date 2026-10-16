@@ -633,8 +633,11 @@ pub(crate) fn mark_superseded(
 /// The hold of a held visit, or `None` when the producer recorded no reason
 /// (a todo blocked at Work, a hold from before holds carried one).
 ///
-/// `nobody_acting` reads the lot's other open visits: a fix is claimed when
-/// the lot has an unheld Work visit that began after the hold.
+/// `nobody_acting` reads the open Work visits around the hold: a fix is
+/// claimed when the held lot itself, or a separate todo working the same pull
+/// request, has an unheld Work visit that began after the hold. A worker's
+/// claim is what opens that visit (`todo.claimed`), so a claimed fix todo for
+/// a held pull request answers the hold even though it is its own lot.
 /// The head is unchanged by construction: a new head closes the hold
 /// (`project::release_on_new_head`).
 fn hold_report(
@@ -647,13 +650,26 @@ fn hold_report(
         return None;
     }
     let hold = visit.hold.as_ref()?;
-    let fix_claimed = visits.iter().any(|other| {
-        other.lot_id == visit.lot_id
-            && other.station == Station::Work
-            && other.left_ms.is_none()
-            && !other.held()
-            && other.entered_ms >= hold.since_ms
-    });
+    // The pull request the hold is about, when the visit names one: what a
+    // separate fix todo is recognised by.
+    let held_pr = match (&visit.repo, visit.pr) {
+        (Some(repo), Some(pr)) if pr > 0 => Some((repo.as_str(), pr)),
+        _ => None,
+    };
+    let fix_claimed = visits
+        .iter()
+        .filter(|other| {
+            other.station == Station::Work
+                && other.left_ms.is_none()
+                && !other.held()
+                && other.entered_ms >= hold.since_ms
+        })
+        .any(|other| {
+            other.lot_id == visit.lot_id
+                || held_pr.is_some_and(|(repo, pr)| {
+                    other.repo.as_deref() == Some(repo) && other.pr == Some(pr)
+                })
+        });
     Some(HoldReport {
         reason: hold.reason.clone(),
         by: hold.by.clone(),
