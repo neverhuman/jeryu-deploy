@@ -26,7 +26,8 @@ use serde_json::json;
 
 use super::WebState;
 use super::account_email::normalize_address;
-use super::mail::OutgoingMail;
+use super::mail::{MailBrand, OutgoingMail};
+use super::mail_layout::BrandedMessage;
 
 const SUBJECT_KIND: &str = "waitlist_mail";
 const ACTION: &str = "waitlist.confirmation";
@@ -51,7 +52,11 @@ pub(super) async fn send_receipt(state: &WebState, address: &str) {
         record(state, "requested", json!({ "reason": reason }));
         return;
     }
-    let Some(origin) = state.mailer.link("") else {
+    let Some(origin) = state
+        .mailer
+        .link("")
+        .map(|url| url.trim_end_matches('/').to_string())
+    else {
         record(
             state,
             "requested",
@@ -61,11 +66,7 @@ pub(super) async fn send_receipt(state: &WebState, address: &str) {
     };
     let outcome = state
         .mailer
-        .send(OutgoingMail {
-            to: address,
-            subject: SUBJECT.to_string(),
-            body: receipt_body(&origin),
-        })
+        .send(receipt(address, &origin, &state.mailer.brand()))
         .await;
     match outcome {
         Ok(()) => record(
@@ -112,19 +113,32 @@ pub(super) fn mailbox_key(address: &str) -> String {
     }
 }
 
-fn receipt_body(origin: &str) -> String {
-    format!(
-        "Thanks for joining the JeRyu waitlist.\n\
-         \n\
-         We will write to this address once more, when your invitation is\n\
-         ready. Joining did not create an account, and there is nothing else\n\
-         to do for now.\n\
-         \n\
-         {origin}\n\
-         \n\
-         If you did not join, ignore this message: nothing was opened in your\n\
-         name.\n"
-    )
+/// The receipt for `address`: the branded HTML and the same words as text.
+pub(super) fn receipt(address: String, origin: &str, brand: &MailBrand) -> OutgoingMail {
+    let host = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+    let why = format!(
+        "You are getting this because this address was entered on the JeRyū waitlist at {host}."
+    );
+    let message = BrandedMessage {
+        title: SUBJECT,
+        preheader: "Thanks for joining. We will write once more, when your invitation is ready.",
+        heading: "You're on the waitlist",
+        paragraphs: &[
+            "Thanks for joining the JeRyū waitlist. We will write to this address once more, when your invitation is ready.",
+            "Joining did not create an account, and there is nothing else to do for now.",
+        ],
+        button: Some(("Visit JeRyū", origin)),
+        notes: &[
+            "If you did not join, you can ignore this email: nothing was opened in your name.",
+        ],
+        why: &why,
+    };
+    OutgoingMail {
+        to: address,
+        subject: SUBJECT.to_string(),
+        body: message.render_text(brand),
+        html: Some(message.render_html(origin, brand)),
+    }
 }
 
 /// A failed audit write is swallowed, as on the account routes: the visitor
@@ -137,14 +151,35 @@ fn record(state: &WebState, phase: &str, detail: serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{mailbox_key, receipt_body};
+    use super::{MailBrand, mailbox_key, receipt};
 
     #[test]
     fn the_receipt_names_the_forge_and_no_account() {
-        let body = receipt_body("https://forge.example/");
-        assert!(body.contains("JeRyu waitlist"), "{body}");
-        assert!(body.contains("did not create an account"), "{body}");
-        assert!(body.contains("https://forge.example/"), "{body}");
+        let mail = receipt(
+            "ada@example.com".to_string(),
+            "https://forge.example",
+            &MailBrand::default(),
+        );
+        assert_eq!(mail.subject, "You're on the JeRyu waitlist");
+        assert!(mail.body.contains("JeRyū waitlist"), "{}", mail.body);
+        assert!(
+            mail.body.contains("did not create an account"),
+            "{}",
+            mail.body
+        );
+        assert!(
+            mail.body.contains("Visit JeRyū: https://forge.example"),
+            "{}",
+            mail.body
+        );
+        assert!(
+            mail.body.contains("waitlist at forge.example."),
+            "{}",
+            mail.body
+        );
+        let html = mail.html.expect("the receipt is branded");
+        assert!(html.contains("You&#39;re on the waitlist"), "{html}");
+        assert!(html.contains("href=\"https://forge.example\""), "{html}");
     }
 
     #[test]

@@ -303,6 +303,7 @@ pub(super) async fn admin_reset_password(
             to: address.clone(),
             subject: "Your jeryu password was reset".to_string(),
             body,
+            html: None,
         })
         .await;
     if let Err(error) = outcome {

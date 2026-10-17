@@ -10,7 +10,7 @@ use axum::http::{Method as HttpMethod, StatusCode};
 use serde_json::json;
 
 use super::account_email_tests::{audited_forge, forge_with_mailer, json_reply};
-use crate::web::mail::Mailer;
+use crate::web::mail::{MailBrand, Mailer};
 
 /// The receipt leaves on its own task after the response; wait for it.
 async fn sent_after_join(mailer: &Mailer, at_least: usize) -> Vec<(String, String)> {
@@ -180,5 +180,33 @@ async fn receipts_stop_for_the_hour_past_the_ceiling() {
     assert!(
         forge.mailer.sent().is_empty(),
         "past {limit} new addresses in an hour, no receipt goes out"
+    );
+}
+
+#[tokio::test]
+async fn a_branded_receipt_carries_the_reply_to_and_the_footer() {
+    let brand = MailBrand {
+        reply_to: Some("help@example.com".to_string()),
+        footer: Some("Run by Example Co".to_string()),
+        footer_url: Some("https://example.com".to_string()),
+    };
+    let forge = forge_with_mailer(Mailer::recording_with_brand(brand));
+    join(&forge.router, json!({ "email": "katherine@example.com" })).await;
+    let sent = sent_after_join(&forge.mailer, 1).await;
+    let (_, rendered) = sent.first().expect("a receipt");
+    assert!(
+        rendered.contains("Reply-To: help@example.com\r\n"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("multipart/alternative"), "{rendered}");
+    assert!(
+        rendered.contains(
+            "Questions? Reply to this email and a person will answer, or write to help@example.com."
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Run by Example Co (https://example.com)"),
+        "{rendered}"
     );
 }

@@ -25,6 +25,7 @@ mod idempotency;
 pub(crate) mod incidents;
 mod jankurai;
 mod mail;
+mod mail_layout;
 mod managed_launch;
 mod markdown;
 mod merge_attempts;

@@ -434,6 +434,7 @@ async fn send_signup_mail(state: &Arc<WebState>, address: &str, now_ms: i64) {
             to: address.to_string(),
             subject: subject.to_string(),
             body,
+            html: None,
         })
         .await;
     match outcome {

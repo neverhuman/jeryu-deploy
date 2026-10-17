@@ -28,6 +28,17 @@
 //!   `https://jeryu.example.com`. A link is useless if it points at the bind
 //!   address, so this is not guessed from the listener.
 //!
+//! Optional, for how a message reads:
+//!
+//! - `JERYU_MAIL_REPLY_TO`: a plain address replies go to, for example
+//!   `help@example.com`, when the sender is not read by a person.
+//! - `JERYU_MAIL_FOOTER`: one line of text closing every branded message, for
+//!   example `Run by Example Co.`, linked to `JERYU_MAIL_FOOTER_URL` (https)
+//!   when that is set too.
+//!
+//! An invalid optional value is named on one startup line starting
+//! `jeryu-api mail:` and ignored; it never stops mail.
+//!
 //! Nothing here logs a message body or a link: a link in a log file is a
 //! password reset anyone with the log can spend. [`OutgoingMail`]'s `Debug`
 //! prints the recipient and subject and redacts the body for the same reason.
@@ -38,19 +49,27 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
+use base64::Engine as _;
 use uuid::Uuid;
 
 const FROM_ENV: &str = "JERYU_MAIL_FROM";
 const BASE_URL_ENV: &str = "JERYU_MAIL_BASE_URL";
 const SENDMAIL_ENV: &str = "JERYU_MAIL_SENDMAIL";
 const SPOOL_ENV: &str = "JERYU_MAIL_SPOOL";
+const REPLY_TO_ENV: &str = "JERYU_MAIL_REPLY_TO";
+const FOOTER_ENV: &str = "JERYU_MAIL_FOOTER";
+const FOOTER_URL_ENV: &str = "JERYU_MAIL_FOOTER_URL";
+const FOOTER_MAX: usize = 200;
 
 /// One message, built and ready to hand to a transport.
 #[derive(Clone)]
 pub(crate) struct OutgoingMail {
     pub to: String,
     pub subject: String,
+    /// The plain-text body; every message has one.
     pub body: String,
+    /// An HTML rendering of the same message, sent alongside the text.
+    pub html: Option<String>,
 }
 
 impl fmt::Debug for OutgoingMail {
@@ -61,31 +80,64 @@ impl fmt::Debug for OutgoingMail {
             .field("subject", &self.subject)
             // The body carries the link, which is the secret itself.
             .field("body", &"[REDACTED]")
+            .field("html", &self.html.as_ref().map(|_| "[REDACTED]"))
             .finish()
     }
 }
 
 impl OutgoingMail {
-    /// The message as RFC 5322 text, with CRLF line endings.
-    fn render(&self, from: &str, now_ms: i64) -> String {
+    /// The message as RFC 5322 text, with CRLF line endings. With an HTML
+    /// rendering it is `multipart/alternative`: the text first, then the HTML
+    /// in base64 so no line of it can run past the transport's limit.
+    fn render(&self, from: &str, reply_to: Option<&str>, now_ms: i64) -> String {
         let date = chrono::DateTime::from_timestamp_millis(now_ms)
             .unwrap_or_else(chrono::Utc::now)
             .to_rfc2822();
         let mut text = String::new();
         text.push_str(&format!("From: {from}\r\n"));
         text.push_str(&format!("To: {}\r\n", self.to));
+        if let Some(reply_to) = reply_to {
+            text.push_str(&format!("Reply-To: {reply_to}\r\n"));
+        }
         text.push_str(&format!("Subject: {}\r\n", self.subject));
         text.push_str(&format!("Date: {date}\r\n"));
         text.push_str(&format!("Message-ID: <{}@jeryu>\r\n", Uuid::new_v4()));
         text.push_str("MIME-Version: 1.0\r\n");
-        text.push_str("Content-Type: text/plain; charset=utf-8\r\n");
         text.push_str("Auto-Submitted: auto-generated\r\n");
+        let Some(html) = &self.html else {
+            text.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+            text.push_str("\r\n");
+            push_lines(&mut text, &self.body);
+            return text;
+        };
+        let boundary = format!("jeryu-{}", Uuid::new_v4().simple());
+        text.push_str(&format!(
+            "Content-Type: multipart/alternative; boundary=\"{boundary}\"\r\n"
+        ));
         text.push_str("\r\n");
-        for line in self.body.lines() {
-            text.push_str(line);
+        text.push_str(&format!("--{boundary}\r\n"));
+        text.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+        text.push_str("Content-Transfer-Encoding: 8bit\r\n");
+        text.push_str("\r\n");
+        push_lines(&mut text, &self.body);
+        text.push_str(&format!("--{boundary}\r\n"));
+        text.push_str("Content-Type: text/html; charset=utf-8\r\n");
+        text.push_str("Content-Transfer-Encoding: base64\r\n");
+        text.push_str("\r\n");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(html.as_bytes());
+        for chunk in encoded.as_bytes().chunks(76) {
+            text.push_str(std::str::from_utf8(chunk).unwrap_or_default());
             text.push_str("\r\n");
         }
+        text.push_str(&format!("--{boundary}--\r\n"));
         text
+    }
+}
+
+fn push_lines(text: &mut String, body: &str) {
+    for line in body.lines() {
+        text.push_str(line);
+        text.push_str("\r\n");
     }
 }
 
@@ -193,7 +245,56 @@ pub(crate) struct Mailer {
 struct Configured {
     from: String,
     base_url: String,
+    brand: MailBrand,
     transport: Arc<dyn MailTransport>,
+}
+
+/// What a branded message needs from the configuration besides its words.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MailBrand {
+    /// Where replies go, when the sender is not read by a person.
+    pub reply_to: Option<String>,
+    /// The closing line, and where it links.
+    pub footer: Option<String>,
+    pub footer_url: Option<String>,
+}
+
+impl MailBrand {
+    /// Read and check the optional settings; each bad one is named and dropped.
+    fn from_env() -> Self {
+        let reply_to = env_value(REPLY_TO_ENV).and_then(|raw| {
+            let address = super::account_email::normalize_address(&raw);
+            if address.is_none() {
+                eprintln!("jeryu-api mail: {REPLY_TO_ENV} is not a plain address; ignored");
+            }
+            address
+        });
+        let footer = env_value(FOOTER_ENV).and_then(|raw| {
+            let ok = raw.chars().count() <= FOOTER_MAX && !raw.chars().any(char::is_control);
+            if !ok {
+                eprintln!(
+                    "jeryu-api mail: {FOOTER_ENV} must be one line of at most {FOOTER_MAX} characters; ignored"
+                );
+            }
+            ok.then_some(raw)
+        });
+        let footer_url = env_value(FOOTER_URL_ENV).and_then(|raw| {
+            let ok = raw.starts_with("https://")
+                && raw.len() > "https://".len()
+                && !raw
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '<' | '>'));
+            if !ok {
+                eprintln!("jeryu-api mail: {FOOTER_URL_ENV} must be an https URL; ignored");
+            }
+            ok.then_some(raw)
+        });
+        Self {
+            reply_to,
+            footer,
+            footer_url,
+        }
+    }
 }
 
 impl fmt::Debug for Mailer {
@@ -234,6 +335,7 @@ impl Mailer {
             (Some(from), Some(base_url), Some(transport)) => Some(Arc::new(Configured {
                 from,
                 base_url,
+                brand: MailBrand::from_env(),
                 transport,
             })),
             _ => None,
@@ -253,6 +355,7 @@ impl Mailer {
             inner: Some(Arc::new(Configured {
                 from: "jeryu <no-reply@jeryu.test>".to_string(),
                 base_url: "https://jeryu.test".to_string(),
+                brand: MailBrand::default(),
                 transport: recording.clone(),
             })),
             recording: Some(recording),
@@ -267,6 +370,7 @@ impl Mailer {
             inner: Some(Arc::new(Configured {
                 from: "jeryu <no-reply@jeryu.test>".to_string(),
                 base_url: "https://jeryu.test".to_string(),
+                brand: MailBrand::default(),
                 transport: Arc::new(SendmailTransport {
                     program: "/nonexistent/sendmail".to_string(),
                     args: Vec::new(),
@@ -322,6 +426,29 @@ impl Mailer {
         ))
     }
 
+    /// The optional reply-to and footer a branded message carries.
+    pub(crate) fn brand(&self) -> MailBrand {
+        self.inner
+            .as_ref()
+            .map(|configured| configured.brand.clone())
+            .unwrap_or_default()
+    }
+
+    /// Test-only: a recording mailer that also carries `brand`.
+    #[cfg(test)]
+    pub(crate) fn recording_with_brand(brand: MailBrand) -> Self {
+        let recording = Arc::new(RecordingTransport::default());
+        Self {
+            inner: Some(Arc::new(Configured {
+                from: "jeryu <no-reply@jeryu.test>".to_string(),
+                base_url: "https://jeryu.test".to_string(),
+                brand,
+                transport: recording.clone(),
+            })),
+            recording: Some(recording),
+        }
+    }
+
     /// Render and hand `mail` to the transport.
     ///
     /// Both transports block — one spawns a process, the other writes a file —
@@ -333,7 +460,11 @@ impl Mailer {
         };
         let now_ms = chrono::Utc::now().timestamp_millis();
         tokio::task::spawn_blocking(move || {
-            let rendered = mail.render(&configured.from, now_ms);
+            let rendered = mail.render(
+                &configured.from,
+                configured.brand.reply_to.as_deref(),
+                now_ms,
+            );
             configured.transport.deliver(&rendered, &mail.to)
         })
         .await
@@ -358,8 +489,9 @@ mod tests {
             to: "ada@example.com".to_string(),
             subject: "Reset your jeryu password".to_string(),
             body: "line one\nline two".to_string(),
+            html: None,
         };
-        let rendered = mail.render("jeryu <no-reply@example.com>", 1_700_000_000_000);
+        let rendered = mail.render("jeryu <no-reply@example.com>", None, 1_700_000_000_000);
         assert!(
             rendered.starts_with("From: jeryu <no-reply@example.com>\r\n"),
             "{rendered}"
@@ -368,6 +500,66 @@ mod tests {
         assert!(rendered.contains("Subject: Reset your jeryu password\r\n"));
         assert!(rendered.contains("Auto-Submitted: auto-generated\r\n"));
         assert!(rendered.contains("\r\n\r\nline one\r\nline two\r\n"));
+    }
+
+    #[test]
+    fn an_html_rendering_goes_alongside_the_text_with_a_reply_to() {
+        use base64::Engine as _;
+        let mail = OutgoingMail {
+            to: "ada@example.com".to_string(),
+            subject: "Hello".to_string(),
+            body: "plain words".to_string(),
+            html: Some(format!("<p>{}</p>", "x".repeat(300))),
+        };
+        let rendered = mail.render(
+            "jeryu <no-reply@example.com>",
+            Some("help@example.com"),
+            1_700_000_000_000,
+        );
+        assert!(
+            rendered.contains("Reply-To: help@example.com\r\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Content-Type: multipart/alternative; boundary=\"jeryu-"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\nplain words\r\n"), "{rendered}");
+        assert!(
+            rendered.contains("Content-Transfer-Encoding: base64\r\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.lines().all(|line| line.len() <= 998),
+            "a line ran past 998"
+        );
+        let encoded: String = rendered
+            .split("Content-Transfer-Encoding: base64\r\n\r\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\r\n--").next())
+            .expect("an html part")
+            .split("\r\n")
+            .collect();
+        let html = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64 html");
+        assert_eq!(
+            String::from_utf8(html).unwrap(),
+            format!("<p>{}</p>", "x".repeat(300))
+        );
+    }
+
+    #[test]
+    fn a_plain_message_stays_single_part() {
+        let mail = OutgoingMail {
+            to: "ada@example.com".to_string(),
+            subject: "Hello".to_string(),
+            body: "words".to_string(),
+            html: None,
+        };
+        let rendered = mail.render("jeryu <no-reply@example.com>", None, 1_700_000_000_000);
+        assert!(!rendered.contains("multipart"), "{rendered}");
+        assert!(!rendered.contains("Reply-To"), "{rendered}");
     }
 
     /// A link in a log is a spendable reset, so the body never prints.
@@ -379,6 +571,7 @@ mod tests {
                 to: "ada@example.com".to_string(),
                 subject: "Reset your jeryu password".to_string(),
                 body: "https://jeryu.test/reset-password?token=supersecret".to_string(),
+                html: None,
             }
         );
         assert!(printed.contains("ada@example.com"), "{printed}");
@@ -405,6 +598,7 @@ mod tests {
                 to: "ada@example.com".to_string(),
                 subject: "hello".to_string(),
                 body: "body".to_string(),
+                html: None,
             })
             .await
             .expect("the recording transport accepts a message");

@@ -786,6 +786,7 @@ async fn issue_reset(state: &Arc<WebState>, address: &str) {
             to: address.to_string(),
             subject: "Reset your jeryu password".to_string(),
             body,
+            html: None,
         })
         .await;
     match outcome {
@@ -951,6 +952,7 @@ async fn send_verification(state: &Arc<WebState>, login: &str, address: &str, no
             to: address.to_string(),
             subject: "Confirm your jeryu email address".to_string(),
             body,
+            html: None,
         })
         .await;
     match outcome {

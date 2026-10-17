@@ -89,9 +89,9 @@ start with no address.
 ## Waitlist receipt
 
 A join that lists a new address (`POST /api/v1/waitlist`, owned by
-`crates/jeryu-api/src/web/waitlist_mail.rs`) mails that address one fixed
-receipt, "You're on the JeRyu waitlist", through the same `JERYU_MAIL_*`
-transport. The route's answer never depends on it: the send runs after the
+`crates/jeryu-api/src/web/waitlist_mail.rs`) mails that address one fixed,
+branded receipt, "You're on the JeRyu waitlist", through the same
+`JERYU_MAIL_*` transport. The route's answer never depends on it: the send runs after the
 response, so a new and a repeat address still get identical bytes.
 
 No receipt goes out when:
@@ -222,6 +222,17 @@ one of two ways:
 | `JERYU_MAIL_BASE_URL` | public origin links are built on, e.g. `https://jeryu.example.com` |
 | `JERYU_MAIL_SENDMAIL` | a sendmail-compatible program to pipe the message to, e.g. `/usr/sbin/sendmail -t -i` |
 | `JERYU_MAIL_SPOOL` | a directory to write one RFC 5322 `.eml` file into per message |
+| `JERYU_MAIL_REPLY_TO` | optional: a plain address replies go to, e.g. `help@example.com` (sent as `Reply-To`, and named in a branded message's footer) |
+| `JERYU_MAIL_FOOTER` | optional: one line closing a branded message, e.g. `Run by Example Co.` |
+| `JERYU_MAIL_FOOTER_URL` | optional: an `https` link for that line |
+
+A branded message (today, the waitlist receipt) is `multipart/alternative`:
+the same words as text, then HTML in base64, laid out by
+`crates/jeryu-api/src/web/mail_layout.rs`. Its wordmark is the web app's
+`/email/jeryu-wordmark.png` on `JERYU_MAIL_BASE_URL`. A sendmail program that
+only takes text still delivers it; a bridge to an HTTP mail API should send
+both parts and the `Reply-To`. An invalid optional value is named on one
+startup line starting `jeryu-api mail:` and ignored.
 
 `JERYU_MAIL_SENDMAIL` wins when both transports are set. Its configured arguments
 come first, then `--`, then the recipient, so an address beginning with `-`
