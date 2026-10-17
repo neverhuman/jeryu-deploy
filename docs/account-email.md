@@ -43,7 +43,8 @@ names the account. The sign-up routes need none because no account exists yet.
 Accounts are then made by an administrator (`POST /api/v1/admin/users`, then
 the mailed reset below), and people join a waitlist: `JERYU_WAITLIST_URL`, an
 absolute `https` URL on another site, or, without one, the forge's own
-`POST /api/v1/waitlist`. An unknown `JERYU_SIGNUP` value or an invalid
+`POST /api/v1/waitlist` (see [Waitlist receipt](#waitlist-receipt)). An
+unknown `JERYU_SIGNUP` value or an invalid
 `JERYU_WAITLIST_URL` is named on one startup line starting
 `jeryu-api sign-up:` and ignored.
 
@@ -84,6 +85,25 @@ the answer is `409`: an account never exists without the address it proved.
 
 Administrator-created accounts (`POST /api/v1/admin/users`) are unchanged and
 start with no address.
+
+## Waitlist receipt
+
+A join that lists a new address (`POST /api/v1/waitlist`, owned by
+`crates/jeryu-api/src/web/waitlist_mail.rs`) mails that address one fixed
+receipt, "You're on the JeRyu waitlist", through the same `JERYU_MAIL_*`
+transport. The route's answer never depends on it: the send runs after the
+response, so a new and a repeat address still get identical bytes.
+
+No receipt goes out when:
+
+- the address is already listed (a repeat join);
+- another listed address reaches the same mailbox: the same local part
+  without its `+tag`, and for `gmail.com`/`googlemail.com` without dots;
+- more than 60 new addresses joined in the last hour, across the whole list;
+- mail is not configured.
+
+The message never carries the name or note the visitor typed, and the
+recipient passes the same address check as every other message.
 
 ## Administrator reset
 
@@ -244,6 +264,11 @@ All under subject `account_email`, phase `requested` / `completed` /
 | `account.password_reset.admin_mailed` | an administrator's reset was mailed (`failed`: the marker could not be recorded) |
 | `account.password_reset.admin_shown` | an administrator's reset was shown instead; the detail says why (no mail, or the send failed) |
 | `account.email.claim_released` | against an account whose unproved address a new sign-up proved and took |
+
+The waitlist receipt is recorded under its own subject, `waitlist_mail`, as
+`waitlist.confirmation`: `completed` when sent, `requested` with a reason when
+held back (repeat mailbox, hourly ceiling, no mail configured), `failed` when
+the address was refused or the send failed.
 
 A detail payload never carries an address or a secret, so the trail is not an
 address directory.
