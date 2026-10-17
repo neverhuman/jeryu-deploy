@@ -74,6 +74,7 @@ mod tool_proposals;
 mod tool_registry;
 mod tool_status_messages;
 pub(crate) mod usage;
+mod waitlist_mail;
 mod work;
 mod workcells;
 mod workcells_support;

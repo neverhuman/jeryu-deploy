@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response as AxumResponse};
 use chrono::{DateTime, Duration, Utc};
 use jeryu_core::{
     AccountStatus, AccountSummary, ForgeError, PersonalAccessTokenSummary, RepoAccessGrant,
-    RepoAccessLevel, UserRole,
+    RepoAccessLevel, UserRole, WaitlistJoin,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -200,7 +200,8 @@ pub(super) fn new_account_session(state: &WebState, account: AccountSummary) -> 
 /// `POST /api/v1/waitlist` — store an email for a later invitation.
 ///
 /// This does not create an account, a session, or a cookie. A valid new
-/// address and a repeat of a stored address both answer `202 {"result":"received"}`.
+/// address and a repeat of a stored address both answer `202 {"result":"received"}`;
+/// only the new address is sent a receipt, after the response.
 pub(super) async fn waitlist_join(
     State(state): State<Arc<WebState>>,
     peer: Option<ConnectInfo<SocketAddr>>,
@@ -215,7 +216,10 @@ pub(super) async fn waitlist_join(
         request.name.as_deref(),
         request.note.as_deref(),
     ) {
-        Ok(_) => {}
+        Ok(WaitlistJoin::Created(signup)) => {
+            super::waitlist_mail::send_receipt_later(&state, signup.email);
+        }
+        Ok(WaitlistJoin::AlreadyListed(_)) => {}
         Err(error) => return waitlist_join_failure(error),
     }
     (StatusCode::ACCEPTED, Json(json!({ "result": "received" }))).into_response()
