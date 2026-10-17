@@ -217,6 +217,7 @@ pub(super) async fn waitlist_join(
         request.note.as_deref(),
     ) {
         Ok(WaitlistJoin::Created(signup)) => {
+            super::waitlist_forward::forward_later(&state, signup.clone());
             super::waitlist_mail::send_receipt_later(&state, signup.email);
         }
         Ok(WaitlistJoin::AlreadyListed(_)) => {}

@@ -105,6 +105,35 @@ No receipt goes out when:
 The message never carries the name or note the visitor typed, and the
 recipient passes the same address check as every other message.
 
+## Waitlist forwarding
+
+An operator who keeps one list across several products can have the forge
+send each **newly listed** address on, after the visitor has their answer
+(`crates/jeryu-api/src/web/waitlist_forward.rs`). The forge keeps its own row
+either way; a repeat join sends nothing.
+
+| Variable | Meaning |
+|---|---|
+| `JERYU_WAITLIST_FORWARD_URL` | an `https` URL (or `http` to loopback) that takes one JSON `POST` per new address |
+| `JERYU_WAITLIST_FORWARD_SECRET_FILE` | a file holding the shared secret (32+ characters) |
+| `JERYU_WAITLIST_PRODUCT` | the product slug sent along, default `jeryu` |
+
+The request:
+
+- headers `X-Waitlist-Timestamp: <unix seconds>` and
+  `X-Waitlist-Signature: sha256=<hex>`, the HMAC-SHA256 of
+  `"<timestamp>.<raw body>"` under the secret; a receiver should compare in
+  constant time and refuse a timestamp more than a few minutes old;
+- body `{"product","email","name","note","joinedAt","origin"}`, where
+  `origin` is `JERYU_MAIL_BASE_URL` (or `null`).
+
+Any 2xx is success. A failure is retried twice (after 2s and 10s), then
+left. Each outcome is audited under subject `waitlist_forward` as
+`waitlist.forwarded` (`completed` with the attempt count, or `failed` with
+the reason), never with the address or the URL. A missing or invalid
+setting turns forwarding off and is named on one startup line starting
+`jeryu-api waitlist:`.
+
 ## Administrator reset
 
 `POST /api/v1/admin/users/:login/reset-password`, body `{}` or

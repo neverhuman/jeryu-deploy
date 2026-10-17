@@ -75,6 +75,7 @@ mod tool_proposals;
 mod tool_registry;
 mod tool_status_messages;
 pub(crate) mod usage;
+mod waitlist_forward;
 mod waitlist_mail;
 mod work;
 mod workcells;
@@ -238,6 +239,9 @@ pub(crate) struct WebState {
     /// Whether anybody may sign up (`JERYU_SIGNUP`, closed by default) and
     /// where to join the waitlist instead (`JERYU_WAITLIST_URL`).
     pub(crate) signup_policy: signup_policy::SignupPolicy,
+    /// Where a newly listed waitlist address is also sent, if anywhere
+    /// (`JERYU_WAITLIST_FORWARD_URL`); off in a test unless the test sets it.
+    pub(crate) waitlist_forward: Option<std::sync::Arc<waitlist_forward::WaitlistForward>>,
     /// What the newest GitHub-mirror reconcile found per repository.
     pub(crate) mirror_state: mirror_reconcile::MirrorStateStore,
     /// Which repositories import their GitHub mirror's pull requests, read
@@ -443,6 +447,10 @@ impl WebState {
             signup_policy: signup_policy::SignupPolicy::default(),
             #[cfg(not(test))]
             signup_policy: signup_policy::SignupPolicy::from_env(),
+            #[cfg(test)]
+            waitlist_forward: None,
+            #[cfg(not(test))]
+            waitlist_forward: waitlist_forward::WaitlistForward::from_env(),
             mirror_state: mirror_reconcile::MirrorStateStore::default(),
             pull_import: Arc::new(crate::github_pull_import::PullImport::default()),
             github_api: None,
