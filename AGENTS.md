@@ -42,25 +42,48 @@ release-CI sibling path patches are not permitted.
 
 Whose branch it is matters less than whether its writer is still working on it.
 
+- **Not yours to take: open a replacement PR.** Two kinds of branch are never
+  taken over in place, whatever their writer is doing:
+  - `contrib/gh-*`: the GitHub importer owns these. Every import pass
+    force-resets the branch to the contributor's head and moves the PR back to
+    it, so commits pushed there are orphaned within minutes.
+  - A branch in a fork you cannot push to.
 - **Active writer: leave the branch alone.** A branch is in use while any of
-  these holds: a todoq claim or lease on a todo that lands on it; its shift is
-  still taking work; an agent session is registered on its repository and
-  branch (`todoq agents list`); something pushed to it in the last 2 hours; or
-  a person marked its PR draft or on hold. Comment on the PR instead. If the
-  work cannot wait, open a replacement PR from `main` (`git cherry-pick -x`) and
-  close the old one with a link to the new one.
-- **Finished writer: take it over in place.** When none of the above holds:
-  1. Say so first, in a PR comment: "Taking over: <why the writer is done>".
+  these holds:
+  - a todoq claim or lease on a todo that lands on it;
+  - its shift is still taking work;
+  - an agent session on its repository and branch is `active`, `idle` or
+    `stale` in `todoq agents list` (a stale session may only have missed a
+    heartbeat);
+  - something pushed to it in the last 2 hours;
+  - a person marked its PR draft or on hold;
+  - its PR is frozen (see Landing a pull request: approved, or green with a
+    human's ready mark). A push would void that review, so the freeze rule wins.
+
+  Comment on the PR instead. If the work cannot wait, open a replacement PR
+  from `main` (`git cherry-pick -x`) and close the old one with a link to the
+  new one.
+- **Finished writer: take it over in place.** A branch is finished only on
+  positive evidence: its writer said it is done or handed it over, or its PR
+  says so (a todo marked done with nothing left to land). The absence of the
+  signals above is not enough on its own. Then:
+  1. Say so first, in a PR comment: "Taking over at <sha read>: <why the
+     writer is done>".
   2. Read the head with `git ls-remote origin <branch>` and work from exactly
      that sha.
-  3. Add commits on top with a plain push. To rebase onto `main`, push with
+  3. Just before pushing, check every in-use signal above again. If one has
+     appeared, stop and comment instead.
+  4. Add commits on top with a plain push. To rebase onto `main`, first check
+     that every commit came across (`git range-diff <sha read>...HEAD`), then
+     push with
      `git push --force-with-lease=refs/heads/<branch>:<sha you read> origin HEAD:<branch>`.
      It refuses if anyone pushed since you read the branch. Never a bare
      `--force`, and never on `main` or another protected branch.
-  4. The PR keeps its number and its review thread. On the push, the forge
+  5. Follow up on the PR with the sha you replaced and the sha you pushed, so
+     the old head can be recovered.
+  6. The PR keeps its number and its review thread. On the push, the forge
      records the head's merge base with `main` as the PR's base (#401), so the
      diff shows only this PR's changes, and review runs again on the new head.
-- A replacement PR is still right for a branch in a fork you cannot push to.
 
 ## Files every PR touches
 
