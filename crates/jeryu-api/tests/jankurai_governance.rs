@@ -268,7 +268,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
     );
     assert_eq!(
         rustjet_source.get("tag").and_then(toml::Value::as_str),
-        Some("jeryu-intelligence-v5.0.0-split.8")
+        Some("jeryu-intelligence-v5.0.0-split.9")
     );
     assert!(
         rustjet_source.get("path").is_none(),
@@ -315,7 +315,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             ][..],
         ),
         (
-            "jeryu-intelligence-v5.0.0-split.8",
+            "jeryu-intelligence-v5.0.0-split.9",
             &["jeryu-codegraph", "jeryu-mcp"][..],
         ),
         (
@@ -421,7 +421,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         } else if name == "jeryu-rustjet" {
             assert_eq!(
                 source,
-                "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.8#2b35bdfc576c71ffa71a02f8cb6a6eadf37851a0"
+                "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.9#c23f14772fe8d2b884a8de76fae01a5bfaa66cfa"
             );
         }
     }
