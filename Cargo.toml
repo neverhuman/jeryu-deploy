@@ -85,7 +85,7 @@ jeryu-sandbox-linux = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.g
 # edge (release-ops' jeryu-signing) was reached only through jeryu-autonomy,
 # which the forge no longer depends on.
 [patch."http://127.0.0.1:8787/git/jeryu/jeryu-intelligence.git"]
-jeryu-rustjet = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.7" }
+jeryu-rustjet = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.8" }
 
 # Account creation and login hash with argon2 at production cost; unoptimized it
 # takes ~1 s per hash, which dominated the web tests' wall time. Optimizing just

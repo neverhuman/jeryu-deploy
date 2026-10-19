@@ -18,12 +18,12 @@ jeryu-enterprise = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag
 jeryu-ci-compiler = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-ci-compiler", optional = true }
 jeryu-ci-ir = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-ci-ir", optional = true }
 jeryu-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.20", package = "jeryu-core" }
-jeryu-codegraph = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.7", package = "jeryu-codegraph", optional = true }
+jeryu-codegraph = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.8", package = "jeryu-codegraph", optional = true }
 jeryu-agent-stream = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-agent-stream", optional = true }
 jeryu-agentbridge = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-agentbridge", optional = true }
 jeryu-gitd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.20", package = "jeryu-gitd", optional = true }
 jeryu-jira = { git = "https://github.com/neverhuman/jeryu-jira.git", tag = "jeryu-jira-v5.0.0-split.3", package = "jeryu-jira" }
-jeryu-mcp = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.7", package = "jeryu-mcp", optional = true }
+jeryu-mcp = { git = "https://github.com/neverhuman/jeryu-intelligence.git", tag = "jeryu-intelligence-v5.0.0-split.8", package = "jeryu-mcp", optional = true }
 jeryu-readmodel = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.20", package = "jeryu-readmodel" }
 jeryu-runner-core = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-runner-core", optional = true }
 jeryu-runner-oci = { git = "https://github.com/neverhuman/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.0", package = "jeryu-runner-oci", optional = true }
