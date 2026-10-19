@@ -198,42 +198,82 @@ fn key(owner: &str, repo: &str, number: u64) -> Key {
     (owner.to_string(), repo.to_string(), number)
 }
 
-/// The pull request a closing pointer names: `Landed via #7`, `Replaced by
-/// #7`, `Superseded by #7`, or a `replaces #7` the replacement itself says.
-/// Only these forms, so a sentence that merely mentions a number records
-/// nothing.
-pub(crate) fn pointer_in(text: &str) -> Option<u64> {
-    const LEADS: [&str; 4] = [
-        "landed via #",
-        "replaced by #",
-        "superseded by #",
-        "replaces #",
+/// The first closing pointer in a text: `Landed via #7`, `Replaced by #7`,
+/// `Superseded by #7`, or a `replaces #7` the replacement itself says. Only
+/// these forms, so a sentence that merely mentions a number records nothing.
+///
+/// Returns whether it names the replaced pull request (`replaces #`) and the
+/// number it names. Both come from the same match, so `replaces #3 (landed via
+/// #9)` reads as "replaces #3" and never as a link to #9.
+fn pointer(text: &str) -> Option<(bool, u64)> {
+    const LEADS: [(&str, bool); 4] = [
+        ("landed via #", false),
+        ("replaced by #", false),
+        ("superseded by #", false),
+        ("replaces #", true),
     ];
     let lowered = text.to_ascii_lowercase();
-    LEADS.iter().find_map(|lead| {
-        let start = lowered.find(lead)? + lead.len();
-        let digits: String = lowered[start..]
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        digits.parse::<u64>().ok().filter(|number| *number > 0)
-    })
+    LEADS
+        .iter()
+        .flat_map(|(lead, names_the_replaced)| {
+            lowered
+                .match_indices(lead)
+                .map(move |(at, _)| (at, at + lead.len(), *names_the_replaced))
+        })
+        .filter_map(|(at, start, names_the_replaced)| {
+            let digits: String = lowered[start..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            let number = digits.parse::<u64>().ok().filter(|number| *number > 0)?;
+            Some((at, names_the_replaced, number))
+        })
+        .min_by_key(|(at, _, _)| *at)
+        .map(|(_, names_the_replaced, number)| (names_the_replaced, number))
 }
 
-/// Which way round a pointer reads: a pull request's own `replaces #7` names
-/// the pull request *it* replaced, every other form names its replacement.
-fn pointer_names_the_replaced(text: &str) -> bool {
-    let lowered = text.to_ascii_lowercase();
-    let replaces = lowered.find("replaces #");
-    let other = ["landed via #", "replaced by #", "superseded by #"]
-        .iter()
-        .filter_map(|lead| lowered.find(lead))
-        .min();
-    match (replaces, other) {
-        (Some(replaces), Some(other)) => replaces < other,
-        (Some(_), None) => true,
-        _ => false,
+/// The branch namespace the GitHub importer writes contributions into
+/// (`web/pull_import.rs`). It is reserved: a pull request from it is a
+/// contribution whatever its recorded origin says.
+const CONTRIBUTION_BRANCH_PREFIX: &str = "contrib/gh-";
+
+/// The facts that decide whether one pull request's own text may name another
+/// as replaced. They are the derived `pr_superseded` rule's
+/// (`web/pipeline/attention/flow.rs`): the same author, base and source
+/// repository, and the claimant opened after the pull request it names.
+struct ClaimScope<'a> {
+    author: &'a str,
+    base_ref: &'a str,
+    source_repository: &'a str,
+    head_ref: &'a str,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl<'a> ClaimScope<'a> {
+    fn of(pr: &'a jeryu_core::PullRequest, repo: &'a str) -> Self {
+        let source = pr.source_repository.trim();
+        Self {
+            author: pr.author.trim(),
+            base_ref: &pr.base.ref_name,
+            source_repository: if source.is_empty() { repo } else { source },
+            head_ref: &pr.head.ref_name,
+            created_at: pr.created_at,
+        }
     }
+}
+
+/// True when `claimant`'s own `replaces #N` may record a link for `replaced`.
+/// A pull request's title and body are its author's words, and an imported
+/// contribution's are an outsider's: they can only speak for the author's own
+/// earlier work on the same base, never for somebody else's pull request.
+fn may_claim(claimant: &ClaimScope<'_>, replaced: &ClaimScope<'_>) -> bool {
+    !claimant.head_ref.starts_with(CONTRIBUTION_BRANCH_PREFIX)
+        && !replaced.head_ref.starts_with(CONTRIBUTION_BRANCH_PREFIX)
+        && !claimant.author.is_empty()
+        && claimant.author.eq_ignore_ascii_case(replaced.author)
+        && claimant.base_ref == replaced.base_ref
+        && claimant.source_repository == replaced.source_repository
+        && claimant.created_at > replaced.created_at
 }
 
 /// Links the pull requests whose own text already says what replaced them: a
@@ -244,7 +284,9 @@ fn pointer_names_the_replaced(text: &str) -> bool {
 ///
 /// Returns how many links it recorded. A refused link (itself, a cycle, a
 /// number that is not a pull request of the repository) is skipped: the text is
-/// a claim, not an instruction.
+/// a claim, not an instruction. A `replaces #3` is believed only within the
+/// scope [`may_claim`] allows, so no pull request's text can mark somebody
+/// else's pull request replaced.
 pub(crate) fn backfill(core: &ForgeCore, links: &PullReplacements, now_ms: i64) -> usize {
     let mut recorded = 0;
     for repo in core.list_repositories(None) {
@@ -252,14 +294,18 @@ pub(crate) fn backfill(core: &ForgeCore, links: &PullReplacements, now_ms: i64) 
             continue;
         };
         let numbers: Vec<u64> = pulls.iter().map(|pr| pr.number).collect();
+        let full_name = format!("{}/{}", repo.owner, repo.name);
         for pr in &pulls {
             // The replacement's own `replaces #3` is read whatever state it is
             // in; a pointer in a comment is read on a pull request that is
             // closed and not merged, which is what a replaced one is.
             let own = format!("{} {}", pr.title, pr.body.clone().unwrap_or_default());
-            if pointer_names_the_replaced(&own)
-                && let Some(replaced) = pointer_in(&own)
-                && numbers.contains(&replaced)
+            if let Some((true, replaced)) = pointer(&own)
+                && let Some(named) = pulls.iter().find(|candidate| candidate.number == replaced)
+                && may_claim(
+                    &ClaimScope::of(pr, &full_name),
+                    &ClaimScope::of(named, &full_name),
+                )
                 && links
                     .superseded_by(&repo.owner, &repo.name, replaced)
                     .is_none()
@@ -331,8 +377,10 @@ fn closing_pointer(core: &ForgeCore, pr: &jeryu_core::PullRequest) -> Option<u64
         .iter()
         .take(BACKFILL_COMMENTS)
         .map(|(_, body)| body.as_str())
-        .filter(|body| !pointer_names_the_replaced(body))
-        .find_map(pointer_in)
+        .find_map(|body| match pointer(body) {
+            Some((false, number)) => Some(number),
+            _ => None,
+        })
 }
 
 #[cfg(feature = "web")]
@@ -499,13 +547,87 @@ mod tests {
 
     #[test]
     fn only_a_pointer_form_is_read_as_one() {
-        assert_eq!(pointer_in("Landed via #145, closing this one."), Some(145));
-        assert_eq!(pointer_in("Replaced by #9"), Some(9));
-        assert_eq!(pointer_in("superseded by #12"), Some(12));
-        assert_eq!(pointer_in("Replaces #3 and #4"), Some(3));
-        assert_eq!(pointer_in("see the run of #4181 for the failure"), None);
-        assert!(pointer_names_the_replaced("replaces #3"));
-        assert!(!pointer_names_the_replaced("landed via #3"));
+        assert_eq!(
+            pointer("Landed via #145, closing this one."),
+            Some((false, 145))
+        );
+        assert_eq!(pointer("Replaced by #9"), Some((false, 9)));
+        assert_eq!(pointer("superseded by #12"), Some((false, 12)));
+        assert_eq!(pointer("Replaces #3 and #4"), Some((true, 3)));
+        assert_eq!(pointer("see the run of #4181 for the failure"), None);
+    }
+
+    #[test]
+    fn direction_and_number_come_from_the_same_pointer() {
+        // The first pointer decides both: a fixed order of forms once read
+        // "replaces #3 (landed via #9)" as a link for #9.
+        assert_eq!(pointer("replaces #3 (landed via #9)"), Some((true, 3)));
+        assert_eq!(pointer("Landed via #9; this replaces #3"), Some((false, 9)));
+        // A lead with no number does not hide a later one.
+        assert_eq!(pointer("replaces #x, replaced by #5"), Some((false, 5)));
+    }
+
+    fn scope<'a>(author: &'a str, base: &'a str, head: &'a str, minute: u32) -> ClaimScope<'a> {
+        ClaimScope {
+            author,
+            base_ref: base,
+            source_repository: "jeryu/jeryu-deploy",
+            head_ref: head,
+            created_at: chrono::TimeZone::with_ymd_and_hms(
+                &chrono::Utc,
+                2026,
+                10,
+                19,
+                12,
+                minute,
+                0,
+            )
+            .single()
+            .expect("a valid instant"),
+        }
+    }
+
+    #[test]
+    fn own_text_may_only_replace_the_authors_earlier_pull_on_the_same_base() {
+        let old = scope("alton", "main", "nightshift/1", 0);
+        assert!(may_claim(
+            &scope("Alton", "main", "nightshift/1-r2", 5),
+            &old
+        ));
+        // Another author's text names nothing of yours.
+        assert!(!may_claim(&scope("mallory", "main", "feature", 5), &old));
+        // Nor does a pull request on another base, or from another repository.
+        assert!(!may_claim(
+            &scope("alton", "release", "nightshift/1-r2", 5),
+            &old
+        ));
+        let mut forked = scope("alton", "main", "nightshift/1-r2", 5);
+        forked.source_repository = "someone/fork";
+        assert!(!may_claim(&forked, &old));
+        // An earlier pull request cannot claim a later one.
+        assert!(!may_claim(
+            &scope("alton", "main", "x", 0),
+            &scope("alton", "main", "y", 5)
+        ));
+        // An empty author matches nobody.
+        assert!(!may_claim(
+            &scope("", "main", "x", 5),
+            &scope("", "main", "y", 0)
+        ));
+    }
+
+    #[test]
+    fn an_imported_contribution_is_never_read_as_a_claim() {
+        // The importer's namespace is an outsider's words, whatever the author.
+        let old = scope("alton", "main", "nightshift/1", 0);
+        assert!(!may_claim(
+            &scope("alton", "main", "contrib/gh-42", 5),
+            &old
+        ));
+        assert!(!may_claim(
+            &scope("alton", "main", "nightshift/1-r2", 5),
+            &scope("alton", "main", "contrib/gh-41", 0)
+        ));
     }
 
     #[cfg(feature = "web")]
