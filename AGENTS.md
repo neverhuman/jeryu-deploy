@@ -29,15 +29,38 @@ release-CI sibling path patches are not permitted.
   check, answer a review comment, or make a re-pin or rebase the merge needs.
 - Other work, including extra tests and findings made while landing, goes in a
   new PR from `main` that links back to the original.
-- One writer per branch. Before pushing, compare `git ls-remote origin <branch>`
-  with the head you last fetched. If it moved, stop and fetch. Never force-push
-  a branch someone else has pushed to: open a replacement PR from `main`
-  (`git cherry-pick -x`) and close the old one with a link to the new one.
+- One writer per branch at a time. Before pushing, compare
+  `git ls-remote origin <branch>` with the head you last fetched. If it moved,
+  stop and fetch.
 - Leave a human's PR state alone. Do not convert a PR they marked ready back to
   draft. If merging it is unsafe, say why once in a comment.
 - Re-read live PR heads, merged flags, and tags before each landing step.
 - Do not edit `CHANGELOG.md` in a change: release notes are generated at release
   time from commit subjects and `Todo:` trailers.
+
+## Taking over another writer's branch
+
+Whose branch it is matters less than whether its writer is still working on it.
+
+- **Active writer: leave the branch alone.** A branch is in use while any of
+  these holds: a todoq claim or lease on a todo that lands on it; its shift is
+  still taking work; an agent session is registered on its repository and
+  branch (`todoq agents list`); something pushed to it in the last 2 hours; or
+  a person marked its PR draft or on hold. Comment on the PR instead. If the
+  work cannot wait, open a replacement PR from `main` (`git cherry-pick -x`) and
+  close the old one with a link to the new one.
+- **Finished writer: take it over in place.** When none of the above holds:
+  1. Say so first, in a PR comment: "Taking over: <why the writer is done>".
+  2. Read the head with `git ls-remote origin <branch>` and work from exactly
+     that sha.
+  3. Add commits on top with a plain push. To rebase onto `main`, push with
+     `git push --force-with-lease=refs/heads/<branch>:<sha you read> origin HEAD:<branch>`.
+     It refuses if anyone pushed since you read the branch. Never a bare
+     `--force`, and never on `main` or another protected branch.
+  4. The PR keeps its number and its review thread. On the push, the forge
+     records the head's merge base with `main` as the PR's base (#401), so the
+     diff shows only this PR's changes, and review runs again on the new head.
+- A replacement PR is still right for a branch in a fork you cannot push to.
 
 ## Files every PR touches
 
