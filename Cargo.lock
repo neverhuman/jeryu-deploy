@@ -143,7 +143,7 @@ checksum = "3109e49b1e4909e9db6515a30c633684d68cdeaa252f215214cb4fa1a5bfee2c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "synstructure",
 ]
 
@@ -155,7 +155,7 @@ checksum = "7b18050c2cd6fe86c3a76584ef5e0baf286d038cda203eb6223df2cc413565f7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -166,7 +166,7 @@ checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -434,7 +434,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -473,6 +473,12 @@ dependencies = [
  "bytes",
  "memchr",
 ]
+
+[[package]]
+name = "const-oid"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "const-oid"
@@ -568,10 +574,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "curve25519-dalek"
+version = "4.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "curve25519-dalek-derive",
+ "digest 0.10.7",
+ "fiat-crypto",
+ "rustc_version",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+
+[[package]]
+name = "der"
+version = "0.7.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
+dependencies = [
+ "const-oid 0.9.6",
+ "zeroize",
+]
 
 [[package]]
 name = "der-parser"
@@ -611,7 +654,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer 0.12.1",
- "const-oid",
+ "const-oid 0.10.2",
  "crypto-common 0.2.2",
  "ctutils",
 ]
@@ -624,7 +667,7 @@ checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -632,6 +675,36 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "serde",
+ "sha2 0.10.9",
+ "subtle",
+ "zeroize",
+]
 
 [[package]]
 name = "encoding_rs"
@@ -659,7 +732,7 @@ checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -695,6 +768,12 @@ name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
+
+[[package]]
+name = "fiat-crypto"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "find-msvc-tools"
@@ -769,7 +848,7 @@ checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1194,7 +1273,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jeryu-agent-stream"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1204,7 +1283,7 @@ dependencies = [
 [[package]]
 name = "jeryu-agentbridge"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "jeryu-ci-scheduler",
  "jeryu-core",
@@ -1249,7 +1328,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -1267,7 +1346,7 @@ source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-re
 [[package]]
 name = "jeryu-ci-compiler"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "jeryu-ci-ir",
 ]
@@ -1275,12 +1354,12 @@ dependencies = [
 [[package]]
 name = "jeryu-ci-ir"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 
 [[package]]
 name = "jeryu-ci-scheduler"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-core",
@@ -1303,7 +1382,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -1341,7 +1420,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.11.0",
  "thiserror 1.0.69",
  "uuid",
  "zeroize",
@@ -1350,7 +1429,7 @@ dependencies = [
 [[package]]
 name = "jeryu-egress"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "serde",
  "tokio",
@@ -1394,7 +1473,7 @@ source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0
 dependencies = [
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1498,20 +1577,32 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-core"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 
 [[package]]
 name = "jeryu-runner-microvm"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
+ "ed25519-dalek",
+ "hex",
  "jeryu-runner-core",
+ "jeryu-runner-protocol",
+ "jeryu-sandbox-linux",
+ "nix",
+ "ring",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
 name = "jeryu-runner-native"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "jeryu-runner-core",
  "jeryu-sandbox-linux",
@@ -1520,7 +1611,7 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-oci"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "jeryu-egress",
  "jeryu-runner-core",
@@ -1529,19 +1620,21 @@ dependencies = [
 [[package]]
 name = "jeryu-runner-protocol"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
+ "base64ct",
  "hex",
  "jeryu-ci-ir",
+ "schemars",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.11.0",
 ]
 
 [[package]]
 name = "jeryu-runner-registry"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "jeryu-ci-ir",
  "jeryu-runner-protocol",
@@ -1552,8 +1645,12 @@ dependencies = [
 [[package]]
 name = "jeryu-runnerd"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "jeryu-ci-ir",
  "jeryu-runner-core",
  "jeryu-runner-microvm",
@@ -1561,7 +1658,15 @@ dependencies = [
  "jeryu-runner-oci",
  "jeryu-runner-protocol",
  "jeryu-runner-registry",
+ "jeryu-sandbox-linux",
+ "nix",
+ "rustls",
+ "rustls-pki-types",
  "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
@@ -1572,14 +1677,14 @@ source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-int
 [[package]]
 name = "jeryu-sandbox-linux"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.4#8626a3eb90dd48bbdd132acbe90d3dab100aee11"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.5#e7cec24b06bfad00c06c2f6ce376b365b7531631"
 dependencies = [
  "jeryu-runner-core",
  "landlock",
  "libc",
  "nix",
  "seccompiler",
- "sha2",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1637,7 +1742,7 @@ dependencies = [
  "quote",
  "rustc_version",
  "simd_cesu8",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1656,7 +1761,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
 dependencies = [
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1775,6 +1880,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1817,6 +1931,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -1956,6 +2071,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pkcs8"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
+dependencies = [
+ "der",
+ "spki",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1992,7 +2117,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2174,6 +2299,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2308,6 +2453,7 @@ checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -2328,9 +2474,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.14.1"
+version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9"
+checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
  "web-time",
  "zeroize",
@@ -2406,6 +2552,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2476,7 +2647,18 @@ checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -2546,6 +2728,17 @@ dependencies = [
 
 [[package]]
 name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
@@ -2588,6 +2781,15 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "signature"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -2635,6 +2837,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spki"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
+dependencies = [
+ "base64ct",
+ "der",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2664,6 +2876,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "syn"
+version = "3.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2680,7 +2903,7 @@ checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2752,7 +2975,7 @@ checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2763,7 +2986,7 @@ checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2845,7 +3068,7 @@ checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3033,7 +3256,7 @@ checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3100,7 +3323,7 @@ checksum = "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "termcolor",
 ]
 
@@ -3299,7 +3522,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "wasm-bindgen-shared",
 ]
 
@@ -3418,7 +3641,7 @@ checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3429,7 +3652,7 @@ checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3600,7 +3823,7 @@ dependencies = [
  "heck",
  "indexmap",
  "prettyplease",
- "syn",
+ "syn 2.0.117",
  "wasm-metadata",
  "wit-bindgen-core",
  "wit-component",
@@ -3616,7 +3839,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "wit-bindgen-core",
  "wit-bindgen-rust",
 ]
@@ -3711,7 +3934,7 @@ checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "synstructure",
 ]
 
@@ -3732,7 +3955,7 @@ checksum = "0b631b19d36a892ab55420c92dbc83ccd79274f25be714855d3074aa71cab639"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3752,15 +3975,15 @@ checksum = "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "synstructure",
 ]
 
 [[package]]
 name = "zeroize"
-version = "1.8.2"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zerotrie"
@@ -3792,7 +4015,7 @@ checksum = "625dc425cab0dca6dc3c3319506e6593dcb08a9f387ea3b284dbd52a92c40555"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
