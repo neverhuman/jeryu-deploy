@@ -2612,7 +2612,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["schema_version"], "jeryu.attention/v1.4");
+    assert_eq!(body["schema_version"], "jeryu.attention/v1.5");
     let items = body["items"].as_array().unwrap();
     let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
     // Critical first (open todos and no worker has ever reported), then the
@@ -2665,6 +2665,37 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         })
     );
     assert_eq!(items[1]["shift"], "nightshift/2026-09-18");
+
+    // The staged release names only its repository; it takes that
+    // repository's family, so a family filter and the summary keep it.
+    assert_eq!(of_kind("release_staged")["family"], "jeryu", "{body}");
+    // `families` counts every family's rows over the whole inbox, and a
+    // filtered, paged call answers the same summary.
+    let families = body["families"].clone();
+    let rows: u64 = families
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|family| {
+            let subjects = &family["subjects"];
+            ["critical", "action", "watch"]
+                .iter()
+                .map(|severity| subjects[severity].as_u64().unwrap())
+                .sum::<u64>()
+        })
+        .sum();
+    assert_eq!(rows, items.len() as u64, "{families}");
+    let narrow = call(
+        HttpMethod::GET,
+        "/api/v1/attention?family=jeryu&severity=critical&limit=1",
+        &admin,
+        None,
+    )
+    .await
+    .unwrap();
+    let narrow = body_json(narrow).await;
+    assert_eq!(narrow["items"].as_array().unwrap().len(), 1, "{narrow}");
+    assert_eq!(narrow["families"], families);
 
     // An ordinary account reads neither the inbox nor its counts.
     let core = ForgeCore::new();

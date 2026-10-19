@@ -389,9 +389,12 @@ for 10 seconds), never from old events, so an item disappears when its cause
 is fixed.
 
 ```json
-{"schema_version": "jeryu.attention/v1.4", "generated_at": "...",
+{"schema_version": "jeryu.attention/v1.5", "generated_at": "...",
  "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1},
- "total": 4, "page": {"limit": 100, "page": 1, "total": 4, "has_more": false}}
+ "total": 4,
+ "families": [{"family": "acme", "family_label": "acme",
+               "subjects": {"critical": 0, "action": 2, "watch": 1}}],
+ "page": {"limit": 100, "page": 1, "total": 4, "has_more": false}}
 ```
 
 Items are sorted by severity, then oldest first. An item somebody
@@ -403,9 +406,19 @@ the paging keys `limit` (alias `per_page`) and `page` (`docs/pagination.md`).
 Each filter comes from a closed set, so one that could never match answers
 `422 invalid_query` naming what it accepts rather than an empty inbox (see
 `docs/errors.md`, "Invalid Query"); `counts` is recounted for the rows a filter
-kept, and an item of no family is not any family's. `counts` and `total` stay
+kept, and an item of no family is not any family's. An item whose collector
+named only its `repo` takes that repository's family, the one `/api/v1/repos`
+shows, so it is kept by that family's filter. `counts` and `total` stay
 over every item the filter kept, not over the page in hand, so a reader of page
 2 still sees how much is waiting.
+
+`families` is how much is waiting in each family, over the whole inbox whatever
+the filter or page, so a family strip or a nav badge needs one call and never
+counts from a page in hand. It counts subjects, the rows `/needs-you` draws:
+every item about one pull request (`repo` + `pr`), else one todo (`todo_id`),
+else one shift (`shift`), is one subject, at the worst severity among its
+items; any other item is its own subject. Named families come first by key, and
+the forge's own rows (no family) last, with `family` null.
 
 | Field | Notes |
 |---|---|

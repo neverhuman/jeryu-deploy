@@ -20,7 +20,7 @@
 //! `next_step` and guessing which endpoint it meant. `href` stays where to go
 //! to understand the item.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -45,6 +45,7 @@ mod mirror;
 mod pins;
 mod pushed;
 mod stranded;
+mod summary;
 #[cfg(test)]
 pub(super) mod web_routes;
 mod work;
@@ -65,13 +66,15 @@ pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_ite
 pub(crate) use pins::{pin_items, web_pin_bump_prs};
 pub(crate) use pushed::{PushedAfterMergeFacts, pushed_after_merge_items};
 pub(crate) use stranded::{StrandedBranchFacts, stranded_branch_items};
+pub(crate) use summary::{FamilyCounts, family_summary};
 pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
 /// `v1.1` added `action.api`, `v1.2` the optional `budget`, `v1.3` the
-/// optional `pulls` and `v1.4` the optional `assignee`: every earlier field is
-/// unchanged, so a client written against `v1` reads a `v1.4` answer as it
-/// always did.
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.4";
+/// optional `pulls`, `v1.4` the optional `assignee` and `v1.5` the page's
+/// `families` summary (and a `family` read off `repo` when a collector named
+/// none): every earlier field is unchanged, so a client written against `v1`
+/// reads a `v1.5` answer as it always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.5";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -743,6 +746,8 @@ fn state_head_red(state: &WebState, repo: &str, sha: &str) -> bool {
 
 #[cfg(test)]
 mod main_gate_tests;
+#[cfg(test)]
+mod summary_tests;
 
 fn main_red_facts(state: &WebState) -> Vec<MainRedFacts> {
     let mut facts = Vec::new();
@@ -1116,13 +1121,21 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         .hidden(now.timestamp_millis())
         .unwrap_or_default();
     items.retain(|item| !hidden.contains(&item.id));
-    // One spelling per family, whatever a collector's source called it.
+    // One spelling per family, whatever a collector's source called it. An
+    // item whose collector named only its repository takes that repository's
+    // family, the one /repos shows for it, so `?family=` and `families` keep it.
+    let mut repo_families: HashMap<String, Option<String>> = HashMap::new();
     for item in &mut items {
-        if let Some(family) = &item.family {
-            let key = super::super::family::canonical(family);
-            item.family_label = Some(super::super::family::label(&key));
-            item.family = Some(key);
-        }
+        let family = match (&item.family, &item.repo) {
+            (Some(family), _) => Some(super::super::family::canonical(family)),
+            (None, Some(repo)) => repo_families
+                .entry(repo.clone())
+                .or_insert_with(|| super::super::repositories::family_for_slug(state, repo))
+                .clone(),
+            (None, None) => None,
+        };
+        item.family_label = family.as_deref().map(super::super::family::label);
+        item.family = family;
     }
     order(&mut items);
     let count = |severity| items.iter().filter(|i| i.severity == severity).count();
@@ -1227,9 +1240,10 @@ impl Filter {
 }
 
 /// One page of the inbox. `counts` and `total` stay over every item the filter
-/// kept, so a page 2 reader still sees how much is waiting; `page` echoes what
-/// was applied, the way every paged `/api/v1` listing does
-/// (`docs/pagination.md`).
+/// kept, so a page 2 reader still sees how much is waiting; `families` stays
+/// over the whole inbox, filter or not, so a family strip counts every family
+/// from one call; `page` echoes what was applied, the way every paged
+/// `/api/v1` listing does (`docs/pagination.md`).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct AttentionPage {
     pub schema_version: &'static str,
@@ -1238,11 +1252,18 @@ pub(crate) struct AttentionPage {
     pub counts: Counts,
     /// Items the filter kept before paging.
     pub total: usize,
+    /// Rows waiting in each family, over the whole inbox (see `summary.rs`).
+    pub families: Vec<FamilyCounts>,
     pub page: PageInfo,
 }
 
-/// Cuts a collected inbox down to one page.
-pub(super) fn one_page(response: AttentionResponse, page: Page) -> AttentionPage {
+/// Cuts a collected inbox down to one page, next to the whole inbox's
+/// `families` summary.
+pub(super) fn one_page(
+    response: AttentionResponse,
+    page: Page,
+    families: Vec<FamilyCounts>,
+) -> AttentionPage {
     let (items, info) = page.apply(response.items);
     AttentionPage {
         schema_version: response.schema_version,
@@ -1250,6 +1271,7 @@ pub(super) fn one_page(response: AttentionResponse, page: Page) -> AttentionPage
         items,
         counts: response.counts,
         total: info.total,
+        families,
         page: info,
     }
 }
@@ -1304,12 +1326,13 @@ pub(crate) async fn attention(
         kind: trimmed(&query.kind),
     };
     let answer = move |response: AttentionResponse| {
+        let families = family_summary(&response.items);
         let kept = if filter.any() {
             only_matching(&response, &filter)
         } else {
             response
         };
-        Json(one_page(kept, paging)).into_response()
+        Json(one_page(kept, paging, families)).into_response()
     };
     // The collectors run git and read every open pull request: keep them off
     // the async workers.
