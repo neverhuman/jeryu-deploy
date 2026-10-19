@@ -1,8 +1,10 @@
 //! `jeryu forge pr {view,checks,comment,close,approve,regate}` and
 //! `jeryu auth doctor`: live-only commands authenticated by a token file.
 //!
-//! The forge is the git remote `origin` unless `--api-url` / `JERYU_API_URL`
-//! names one. Every write first asks the forge who the token is; a token the
+//! The forge is the address `--api-url` / `JERYU_API_URL` names, and only
+//! that: the bearer token is never sent to a host read from the clone's git
+//! config. A clone's `origin` may be a mirror or anyone's server, so it only
+//! supplies the default `owner/repo` the command acts on. Every write first asks the forge who the token is; a token the
 //! forge refuses stops the command before any write, so a dead credential is
 //! tried once instead of once per write (the forge locks an address out after
 //! repeated bad credentials). The token is read from its file by
@@ -92,8 +94,8 @@ fn origin_remote() -> Option<RemoteForge> {
 
 fn no_forge() -> ClientError {
     ClientError::NotWired(
-        "no forge address: pass --api-url, set JERYU_API_URL, or run inside a clone whose \
-         remote origin is the forge"
+        "no forge address: pass --api-url or set JERYU_API_URL (the token is never sent to \
+         the host a clone's remote origin names)"
             .to_string(),
     )
 }
@@ -124,10 +126,7 @@ pub(crate) fn run_auth_doctor(
     json: bool,
     out: &mut dyn Write,
 ) -> ClientResult<()> {
-    let base = match api_url {
-        Some(url) => url.to_string(),
-        None => origin_remote().ok_or_else(no_forge)?.base_url,
-    };
+    let base = api_url.ok_or_else(no_forge)?.to_string();
     let api = client_for(&base)?;
     let login = whoami(&api)?;
     render(
@@ -194,11 +193,9 @@ pub(crate) fn run(
     cmd: PrCommands,
     out: &mut dyn Write,
 ) -> ClientResult<()> {
+    // The address comes only from the operator; `origin` names the repository.
+    let base = api_url.ok_or_else(no_forge)?.to_string();
     let remote = origin_remote();
-    let base = match api_url {
-        Some(url) => url.to_string(),
-        None => remote.as_ref().ok_or_else(no_forge)?.base_url.clone(),
-    };
     let (owner, repo) = resolve_repo(repo_flag(&cmd), default_owner, remote.as_ref())?;
     let api = client_for(&base)?;
     execute(&api, &owner, &repo, json, cmd, out)
@@ -312,6 +309,20 @@ fn text(value: &Value, path: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With no address named, the token goes nowhere: the command refuses
+    /// before any request, even inside a clone whose `origin` is a remote
+    /// host (this test runs in the repository's own checkout).
+    #[test]
+    fn no_named_forge_address_means_no_request() {
+        let mut out = Vec::new();
+        let error = run_auth_doctor(None, false, &mut out).unwrap_err();
+        assert!(
+            matches!(&error, ClientError::NotWired(message) if message.contains("JERYU_API_URL")),
+            "{error:?}"
+        );
+        assert!(out.is_empty());
+    }
 
     #[test]
     fn parses_remote_forms_and_drops_credentials() {

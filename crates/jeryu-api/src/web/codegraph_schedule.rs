@@ -120,12 +120,16 @@ pub(super) fn refresh_due(
 /// is expected and harmless for a repository with no Cargo workspace or no
 /// commit on its default branch yet, so it never stops the pass.
 fn refresh_one(state: &Arc<WebState>, full_name: &str, ref_name: &str) -> bool {
-    match codegraph::refresh_repo_index(state, full_name, ref_name) {
-        Ok(symbols) => {
+    match codegraph::refresh_scheduled(state, full_name, ref_name) {
+        None => {
+            eprintln!("codegraph: {full_name} is already being indexed; skipped");
+            false
+        }
+        Some(Ok(symbols)) => {
             eprintln!("codegraph: indexed {full_name} at {ref_name} ({symbols} symbols)");
             true
         }
-        Err(error) => {
+        Some(Err(error)) => {
             eprintln!("codegraph: {full_name} at {ref_name} not indexed: {error}");
             false
         }

@@ -251,8 +251,20 @@ pub(super) fn repo_graph(
     if !snapshot.symbols.is_empty() && indexed_ref == wanted_ref {
         return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
     }
-    if wanted_ref != repo.default_branch {
-        throttle_other_ref(&bare)?;
+    let indexed_ref = indexed_ref.to_string();
+    let default_branch = wanted_ref == repo.default_branch;
+    // Restoring the default branch over another ref's index is always allowed:
+    // it is already bounded by the other-ref throttle. Rebuilding an index that
+    // is about the default branch but holds no symbol (nothing the analyzer
+    // reads, or a failed run) is throttled, and the read gets that empty answer.
+    let restoring_default = default_branch && !indexed_ref.is_empty() && indexed_ref != wanted_ref;
+    if !restoring_default && let Err(wait) = claim_rebuild(&bare, default_branch) {
+        if default_branch {
+            return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
+        }
+        return Err(CodeGraphRouteError::RebuildThrottled {
+            retry_after_secs: wait.as_secs().max(1),
+        });
     }
     let _one_at_a_time = REBUILD
         .lock()
@@ -276,31 +288,69 @@ pub(super) fn repo_graph(
 /// One read-driven index rebuild at a time across the process.
 static REBUILD: Mutex<()> = Mutex::new(());
 
-/// How often one repository's index may be rebuilt for a ref other than its
-/// default branch.
+/// How often a read may rebuild one repository's index: once per period for
+/// its default branch and once per period for all its other refs together.
 pub(super) const OTHER_REF_REBUILD_EVERY: Duration = Duration::from_secs(30);
 
-/// When each repository (by its bare path) was last rebuilt for a ref other
-/// than its default branch.
-static OTHER_REF_REBUILDS: LazyLock<Mutex<HashMap<PathBuf, Instant>>> =
+/// When each repository (by its bare path) was last rebuilt by a read, for its
+/// default branch (`true`) or for any other ref (`false`).
+static READ_REBUILDS: LazyLock<Mutex<HashMap<(PathBuf, bool), Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Claim this repository's next other-ref rebuild, or say how long to wait.
-fn throttle_other_ref(bare: &Path) -> std::result::Result<(), CodeGraphRouteError> {
+/// Claim this repository's next read-driven rebuild of this kind of ref, or
+/// say how long to wait. A repository whose index stays empty (nothing the
+/// analyzer reads) therefore costs one checkout per period, not one per read.
+fn claim_rebuild(bare: &Path, default_branch: bool) -> std::result::Result<(), Duration> {
     let now = Instant::now();
-    let mut last = OTHER_REF_REBUILDS
+    let mut last = READ_REBUILDS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(at) = last.get(bare)
+    let key = (bare.to_path_buf(), default_branch);
+    if let Some(at) = last.get(&key)
         && now.duration_since(*at) < OTHER_REF_REBUILD_EVERY
     {
-        let wait = OTHER_REF_REBUILD_EVERY - now.duration_since(*at);
-        return Err(CodeGraphRouteError::RebuildThrottled {
-            retry_after_secs: wait.as_secs().max(1),
-        });
+        return Err(OTHER_REF_REBUILD_EVERY - now.duration_since(*at));
     }
-    last.insert(bare.to_path_buf(), now);
+    last.insert(key, now);
     Ok(())
+}
+
+/// Repositories (by bare path, else id) a push- or timer-driven refresh is
+/// running for right now.
+static SCHEDULED_IN_FLIGHT: LazyLock<Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// A push- or timer-driven refresh, under the same one-at-a-time lock as the
+/// read path. A repository whose refresh is already running is skipped, not
+/// queued: the running one reads the newest ref, and the next push or tick
+/// catches anything later. `None` when skipped.
+pub(super) fn refresh_scheduled(
+    state: &WebState,
+    id: &str,
+    ref_name: &str,
+) -> Option<std::result::Result<usize, CodeGraphRouteError>> {
+    let key = find_repo(state, id)
+        .and_then(|repo| bare_repo_path(state, &repo).ok())
+        .map(|bare| bare.display().to_string())
+        .unwrap_or_else(|| id.to_string());
+    if !SCHEDULED_IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key.clone())
+    {
+        return None;
+    }
+    let result = {
+        let _one_at_a_time = REBUILD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        refresh_repo_index(state, id, ref_name)
+    };
+    SCHEDULED_IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&key);
+    Some(result)
 }
 
 /// Whether `bare`'s index holds any symbol at all. Cheaper than loading the

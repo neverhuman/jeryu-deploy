@@ -103,8 +103,29 @@ fn ci_declaration(state: &WebState, pr: &PullRequest) -> Option<String> {
     if let Some(known) = cached(&DECLARATIONS, &key) {
         return known;
     }
-    let object = format!("{}:{CI_DECLARATION_PATH}", pr.base.sha);
-    let read = read_ci_declaration(state, opened.path.as_path(), &object);
+    // Only a clean answer is remembered: the file is absent, or it was read.
+    // A git that failed says nothing about the commit, so it is asked again.
+    let dir = opened.path.as_path();
+    let listed = crate::web::shift::queue::git(
+        &state.repo_manager.config().git_bin,
+        dir,
+        &[
+            "ls-tree",
+            "--end-of-options",
+            &pr.base.sha,
+            "--",
+            CI_DECLARATION_PATH,
+        ],
+        &[],
+        None,
+    )
+    .ok()?;
+    let read = if listed.is_empty() {
+        None
+    } else {
+        let object = format!("{}:{CI_DECLARATION_PATH}", pr.base.sha);
+        Some(read_ci_declaration(state, dir, &object)?)
+    };
     remember(&DECLARATIONS, key, read.clone());
     read
 }
