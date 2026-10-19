@@ -1298,6 +1298,27 @@ mod tests {
             alternate.data.as_ref().expect("data")["symbols"][0]["symbol"],
             "alternate_access"
         );
+        // A second other ref straight after is throttled rather than paid
+        // for with another full checkout.
+        git(
+            &[
+                "push",
+                "--quiet",
+                bare.to_str().expect("bare utf8"),
+                "main:another",
+            ],
+            &work,
+        );
+        let throttled = call(
+            &backend,
+            "code.symbols.search",
+            json!({ "repo": "local/deploy", "query": "alternate_access", "ref": "another" }),
+        );
+        assert!(!throttled.success, "{throttled:?}");
+        assert!(
+            format!("{throttled:?}").contains("retry in"),
+            "the refusal says when to retry: {throttled:?}"
+        );
         let back_to_default = call(
             &backend,
             "code.symbols.search",

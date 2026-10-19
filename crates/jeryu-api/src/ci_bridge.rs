@@ -158,8 +158,13 @@ pub(crate) fn on_push(
     // Every ref move reaches here (receive-pack and each server-side merge), so
     // this is the one place a repository's `pushed_at` advances. It runs before
     // anything that can bail out: the refs are already durable.
-    if !updates.is_empty()
-        && let Err(error) = core.record_repository_push(owner, repo, chrono::Utc::now())
+    // A branch that moved, not a tag or a deletion, is what "pushed" means.
+    let branch_moved = updates.iter().any(|update| {
+        update.ref_name.starts_with("refs/heads/")
+            && !update.new_oid.is_empty()
+            && !update.new_oid.bytes().all(|byte| byte == b'0')
+    });
+    if branch_moved && let Err(error) = core.record_repository_push(owner, repo, chrono::Utc::now())
     {
         eprintln!("jeryu-api ci bridge: record push time of {owner}/{repo}: {error}");
     }

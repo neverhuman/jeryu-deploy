@@ -1,9 +1,11 @@
 //! Codegraph oracle REST facade.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{error::Error, fmt};
 
 use axum::Json;
@@ -217,6 +219,13 @@ pub(super) fn refresh_repo_index(
 /// answers instead of returning nothing. A caller that names a ref the index
 /// was not built from gets a refresh from that ref, and so does a caller that
 /// names none after a read of another ref left the index on it.
+///
+/// A rebuild is a full checkout and walk of the repository, and the ref comes
+/// from the caller, so rebuilds are bounded: one runs at a time in the process
+/// ([`REBUILD`]), and a repository is rebuilt for a ref other than its default
+/// branch at most once per [`OTHER_REF_REBUILD_EVERY`]. A read of the default
+/// branch is never throttled, so it always restores the index the scheduler
+/// and push refreshes keep.
 pub(super) fn repo_graph(
     state: &WebState,
     id: &str,
@@ -242,12 +251,56 @@ pub(super) fn repo_graph(
     if !snapshot.symbols.is_empty() && indexed_ref == wanted_ref {
         return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
     }
-    let ref_name = wanted_ref;
-    refresh_repo_index(state, id, ref_name)?;
+    if wanted_ref != repo.default_branch {
+        throttle_other_ref(&bare)?;
+    }
+    let _one_at_a_time = REBUILD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Another read may have rebuilt this very ref while this one waited.
+    let snapshot = store
+        .load_snapshot()
+        .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))?;
+    if !snapshot.symbols.is_empty()
+        && snapshot.index_runs.last().map(|run| run.ref_name.as_str()) == Some(wanted_ref)
+    {
+        return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
+    }
+    refresh_repo_index(state, id, wanted_ref)?;
     let snapshot = store
         .load_snapshot()
         .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))?;
     Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot))
+}
+
+/// One read-driven index rebuild at a time across the process.
+static REBUILD: Mutex<()> = Mutex::new(());
+
+/// How often one repository's index may be rebuilt for a ref other than its
+/// default branch.
+pub(super) const OTHER_REF_REBUILD_EVERY: Duration = Duration::from_secs(30);
+
+/// When each repository (by its bare path) was last rebuilt for a ref other
+/// than its default branch.
+static OTHER_REF_REBUILDS: LazyLock<Mutex<HashMap<PathBuf, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Claim this repository's next other-ref rebuild, or say how long to wait.
+fn throttle_other_ref(bare: &Path) -> std::result::Result<(), CodeGraphRouteError> {
+    let now = Instant::now();
+    let mut last = OTHER_REF_REBUILDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(at) = last.get(bare)
+        && now.duration_since(*at) < OTHER_REF_REBUILD_EVERY
+    {
+        let wait = OTHER_REF_REBUILD_EVERY - now.duration_since(*at);
+        return Err(CodeGraphRouteError::RebuildThrottled {
+            retry_after_secs: wait.as_secs().max(1),
+        });
+    }
+    last.insert(bare.to_path_buf(), now);
+    Ok(())
 }
 
 /// Whether `bare`'s index holds any symbol at all. Cheaper than loading the
@@ -262,10 +315,20 @@ pub(super) fn repo_index_is_empty(bare: &Path) -> std::result::Result<bool, Stri
 
 #[derive(Debug)]
 pub(super) enum CodeGraphRouteError {
-    RepoNotFound { id: String },
-    InvalidRef { ref_name: String, reason: String },
+    RepoNotFound {
+        id: String,
+    },
+    InvalidRef {
+        ref_name: String,
+        reason: String,
+    },
     MaterializeFailed(String),
     IndexFailed(String),
+    /// A ref other than the default branch was indexed for this repository
+    /// too recently to rebuild again.
+    RebuildThrottled {
+        retry_after_secs: u64,
+    },
 }
 
 impl CodeGraphRouteError {
@@ -304,6 +367,20 @@ impl CodeGraphRouteError {
                 ],
                 "rerun cargo test -p jeryu-api --features web --jobs 40 codegraph",
             ),
+            Self::RebuildThrottled { retry_after_secs } => codegraph_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "codegraph_rebuild_throttled",
+                "rebuild a repository index for a ref other than its default branch",
+                &format!(
+                    "this repository was indexed for another ref under {} seconds ago; retry in {retry_after_secs} seconds",
+                    OTHER_REF_REBUILD_EVERY.as_secs()
+                ),
+                &[
+                    "read the default branch, which is always available",
+                    "retry the other ref after the wait",
+                ],
+                "rerun cargo test -p jeryu-api --features web codegraph",
+            ),
             Self::IndexFailed(reason) => codegraph_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "codegraph_index_failed",
@@ -328,6 +405,10 @@ impl fmt::Display for CodeGraphRouteError {
             }
             Self::MaterializeFailed(reason) => write!(f, "materialize checkout failed: {reason}"),
             Self::IndexFailed(reason) => write!(f, "codegraph index failed: {reason}"),
+            Self::RebuildThrottled { retry_after_secs } => write!(
+                f,
+                "this repository was just indexed for another ref; retry in {retry_after_secs} seconds"
+            ),
         }
     }
 }

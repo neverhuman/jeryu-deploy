@@ -88,15 +88,33 @@ fn declared_contexts(state: &WebState, pr: &PullRequest) -> BTreeSet<String> {
 
 /// `<base>:.jeryu/ci.toml` out of the bare repository, when it is there and
 /// small enough to read on a read path.
+///
+/// Read at the pull request's recorded base commit when it has one, so the
+/// answer is a fact about an immutable commit and is cached: the checks route
+/// is anonymously readable and the attention inbox asks it for every open
+/// pull request, so neither spawns git again for a base it already read.
 fn ci_declaration(state: &WebState, pr: &PullRequest) -> Option<String> {
-    let git_bin = &state.repo_manager.config().git_bin;
     let opened = state.repo_manager.open_parts(&pr.owner, &pr.repo).ok()?;
-    let dir = opened.path.as_path();
-    let object = format!("refs/heads/{}:{CI_DECLARATION_PATH}", pr.base.ref_name);
+    if !is_commit_id(&pr.base.sha) {
+        let object = format!("refs/heads/{}:{CI_DECLARATION_PATH}", pr.base.ref_name);
+        return read_ci_declaration(state, opened.path.as_path(), &object);
+    }
+    let key = (opened.path.clone(), pr.base.sha.clone());
+    if let Some(known) = cached(&DECLARATIONS, &key) {
+        return known;
+    }
+    let object = format!("{}:{CI_DECLARATION_PATH}", pr.base.sha);
+    let read = read_ci_declaration(state, opened.path.as_path(), &object);
+    remember(&DECLARATIONS, key, read.clone());
+    read
+}
+
+fn read_ci_declaration(state: &WebState, dir: &std::path::Path, object: &str) -> Option<String> {
+    let git_bin = &state.repo_manager.config().git_bin;
     let size = crate::web::shift::queue::git(
         git_bin,
         dir,
-        &["cat-file", "-s", "--end-of-options", &object],
+        &["cat-file", "-s", "--end-of-options", object],
         &[],
         None,
     )
@@ -108,7 +126,7 @@ fn ci_declaration(state: &WebState, pr: &PullRequest) -> Option<String> {
     crate::web::shift::queue::git(
         git_bin,
         dir,
-        &["cat-file", "blob", "--end-of-options", &object],
+        &["cat-file", "blob", "--end-of-options", object],
         &[],
         None,
     )
@@ -154,21 +172,30 @@ pub(super) fn head_waiting_since(state: &WebState, pr: &PullRequest) -> DateTime
 }
 
 fn head_commit_time(state: &WebState, pr: &PullRequest) -> Option<DateTime<Utc>> {
-    if pr.head.sha.len() != 40 || !pr.head.sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !is_commit_id(&pr.head.sha) {
         return None;
     }
-    let git_bin = &state.repo_manager.config().git_bin;
     let opened = state.repo_manager.open_parts(&pr.owner, &pr.repo).ok()?;
+    // A commit's time never changes: read it once per head.
+    let key = (opened.path.clone(), pr.head.sha.clone());
+    if let Some(known) = cached(&HEAD_TIMES, &key) {
+        return known;
+    }
+    let read = read_head_commit_time(state, opened.path.as_path(), &pr.head.sha);
+    remember(&HEAD_TIMES, key, read);
+    read
+}
+
+fn read_head_commit_time(
+    state: &WebState,
+    dir: &std::path::Path,
+    sha: &str,
+) -> Option<DateTime<Utc>> {
+    let git_bin = &state.repo_manager.config().git_bin;
     let out = crate::web::shift::queue::git(
         git_bin,
-        opened.path.as_path(),
-        &[
-            "show",
-            "-s",
-            "--format=%cI",
-            "--end-of-options",
-            &pr.head.sha,
-        ],
+        dir,
+        &["show", "-s", "--format=%cI", "--end-of-options", sha],
         &[],
         None,
     )
@@ -176,6 +203,38 @@ fn head_commit_time(state: &WebState, pr: &PullRequest) -> Option<DateTime<Utc>>
     DateTime::parse_from_rfc3339(String::from_utf8_lossy(&out).trim())
         .ok()
         .map(|at| at.with_timezone(&Utc))
+}
+
+fn is_commit_id(sha: &str) -> bool {
+    sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Facts read out of an immutable commit, keyed by the bare repository and the
+/// commit id. Bounded: when full it starts over rather than growing.
+type CommitFacts<V> = std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, String), V>>,
+>;
+const MAX_CACHED_COMMITS: usize = 4096;
+
+static DECLARATIONS: CommitFacts<Option<String>> = std::sync::LazyLock::new(Default::default);
+static HEAD_TIMES: CommitFacts<Option<DateTime<Utc>>> = std::sync::LazyLock::new(Default::default);
+
+fn cached<V: Clone>(cache: &CommitFacts<V>, key: &(std::path::PathBuf, String)) -> Option<V> {
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key)
+        .cloned()
+}
+
+fn remember<V>(cache: &CommitFacts<V>, key: (std::path::PathBuf, String), value: V) {
+    let mut map = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if map.len() >= MAX_CACHED_COMMITS {
+        map.clear();
+    }
+    map.insert(key, value);
 }
 
 /// What the forge knows about a gate working on this head, for a row no

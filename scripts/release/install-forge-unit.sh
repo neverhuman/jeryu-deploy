@@ -166,7 +166,7 @@ done
 
 # Check the service environment, not this installer's inherited shell. Files
 # override Environment=, and later files override earlier ones in systemd.
-python3 - "$rendered" "${dropins[@]}" <<'PYENV'
+python3 - "$rendered" ${dropins[@]+"${dropins[@]}"} <<'PYENV'
 import os
 from pathlib import Path
 import pwd

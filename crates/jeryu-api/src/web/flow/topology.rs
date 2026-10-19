@@ -478,7 +478,14 @@ pub(crate) fn plan(inputs: &Inputs, open: &[OpenVisit]) -> Topology {
             reason: "visits_name_no_repository",
         });
     }
-    topology.unknown.dedup();
+    // The same note can be raised once per product, not only back to back.
+    let mut kept: Vec<UnknownNote> = Vec::new();
+    for note in std::mem::take(&mut topology.unknown) {
+        if !kept.contains(&note) {
+            kept.push(note);
+        }
+    }
+    topology.unknown = kept;
     topology
 }
 
