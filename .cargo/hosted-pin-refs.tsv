@@ -1,6 +1,6 @@
 # repository|immutable tag|commit|hosted support ref
 jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.5|e7cec24b06bfad00c06c2f6ce376b365b7531631|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.5
-jeryu-core|jeryu-core-v5.0.0-split.20|d45ea4c883c2ac2c606c63309b992657326ffda0|refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.20
+jeryu-core|jeryu-core-v5.0.0-split.21|e448650c82f15e896fe1138613d21d67b044532b|refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.21
 jeryu-intelligence|jeryu-intelligence-v5.0.0-split.9|c23f14772fe8d2b884a8de76fae01a5bfaa66cfa|refs/heads/preserve/hosted-cargo/jeryu-intelligence-v5.0.0-split.9
 jeryu-jira|jeryu-jira-v5.0.0-split.3|f503fce44324770bc6b438ffbf499ffba80a46da|refs/heads/preserve/hosted-cargo/jeryu-jira-v5.0.0-split.3
-jeryu-release-ops|jeryu-release-ops-v5.0.0-split.8|2c03082fe3a0cf720781058ec07a55eff98a95a9|refs/heads/preserve/hosted-cargo/jeryu-release-ops-v5.0.0-split.8
+jeryu-release-ops|jeryu-release-ops-v5.0.0-split.9|74447d074d40ba9844ac9761dd257bd23b2dcd1d|refs/heads/preserve/hosted-cargo/jeryu-release-ops-v5.0.0-split.9

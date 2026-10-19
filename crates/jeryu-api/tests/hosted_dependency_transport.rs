@@ -59,9 +59,9 @@ const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     ),
     (
         "jeryu-core",
-        "jeryu-core-v5.0.0-split.20",
-        "d45ea4c883c2ac2c606c63309b992657326ffda0",
-        "refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.20",
+        "jeryu-core-v5.0.0-split.21",
+        "e448650c82f15e896fe1138613d21d67b044532b",
+        "refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.21",
     ),
     (
         "jeryu-intelligence",
@@ -77,9 +77,9 @@ const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     ),
     (
         "jeryu-release-ops",
-        "jeryu-release-ops-v5.0.0-split.8",
-        "2c03082fe3a0cf720781058ec07a55eff98a95a9",
-        "refs/heads/preserve/hosted-cargo/jeryu-release-ops-v5.0.0-split.8",
+        "jeryu-release-ops-v5.0.0-split.9",
+        "74447d074d40ba9844ac9761dd257bd23b2dcd1d",
+        "refs/heads/preserve/hosted-cargo/jeryu-release-ops-v5.0.0-split.9",
     ),
 ];
 

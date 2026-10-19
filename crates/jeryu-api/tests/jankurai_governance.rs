@@ -233,7 +233,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         );
         assert_eq!(
             source.get("tag").and_then(toml::Value::as_str),
-            Some("jeryu-core-v5.0.0-split.20")
+            Some("jeryu-core-v5.0.0-split.21")
         );
         assert!(
             source.get("path").is_none(),
@@ -294,7 +294,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("API dependencies must be a table");
     let expected_groups = [
         (
-            "jeryu-core-v5.0.0-split.20",
+            "jeryu-core-v5.0.0-split.21",
             &[
                 "jeryu-core",
                 "jeryu-enterprise",
@@ -319,7 +319,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             &["jeryu-codegraph", "jeryu-mcp"][..],
         ),
         (
-            "jeryu-release-ops-v5.0.0-split.8",
+            "jeryu-release-ops-v5.0.0-split.9",
             &["jeryu-bench", "jeryu-obs", "jeryu-wsversion"][..],
         ),
         ("jeryu-jira-v5.0.0-split.3", &["jeryu-jira"][..]),
@@ -347,7 +347,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
                 dependency_git.is_some(),
                 "{package} must declare a Git source"
             );
-            if tag == "jeryu-core-v5.0.0-split.20" {
+            if tag == "jeryu-core-v5.0.0-split.21" {
                 assert_eq!(
                     dependency_git,
                     Some("http://127.0.0.1:8787/git/jeryu/jeryu-core.git"),
@@ -410,13 +410,13 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             core_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
             );
         } else if name == "jeryu-proof" {
             proof_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
+                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
             );
         } else if name == "jeryu-rustjet" {
             assert_eq!(

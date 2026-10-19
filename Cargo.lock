@@ -1341,7 +1341,7 @@ dependencies = [
 [[package]]
 name = "jeryu-bench"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.8#2c03082fe3a0cf720781058ec07a55eff98a95a9"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.9#74447d074d40ba9844ac9761dd257bd23b2dcd1d"
 
 [[package]]
 name = "jeryu-ci-compiler"
@@ -1407,7 +1407,7 @@ dependencies = [
 [[package]]
 name = "jeryu-core"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
 dependencies = [
  "argon2",
  "chrono",
@@ -1441,7 +1441,7 @@ dependencies = [
 [[package]]
 name = "jeryu-enterprise"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
 
 [[package]]
 name = "jeryu-gateway"
@@ -1469,7 +1469,7 @@ dependencies = [
 [[package]]
 name = "jeryu-gitd"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
 dependencies = [
  "serde",
  "serde_json",
@@ -1541,12 +1541,12 @@ dependencies = [
 [[package]]
 name = "jeryu-obs"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.8#2c03082fe3a0cf720781058ec07a55eff98a95a9"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.9#74447d074d40ba9844ac9761dd257bd23b2dcd1d"
 
 [[package]]
 name = "jeryu-proof"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
 dependencies = [
  "jeryu-core",
 ]
@@ -1554,7 +1554,7 @@ dependencies = [
 [[package]]
 name = "jeryu-readmodel"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.20#d45ea4c883c2ac2c606c63309b992657326ffda0"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
 dependencies = [
  "chrono",
  "serde",
@@ -1565,7 +1565,7 @@ dependencies = [
 [[package]]
 name = "jeryu-repogate"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.8#2c03082fe3a0cf720781058ec07a55eff98a95a9"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.9#74447d074d40ba9844ac9761dd257bd23b2dcd1d"
 dependencies = [
  "anyhow",
  "clap",
@@ -1703,7 +1703,7 @@ dependencies = [
 [[package]]
 name = "jeryu-wsversion"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.8#2c03082fe3a0cf720781058ec07a55eff98a95a9"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.9#74447d074d40ba9844ac9761dd257bd23b2dcd1d"
 dependencies = [
  "anyhow",
  "chrono",
