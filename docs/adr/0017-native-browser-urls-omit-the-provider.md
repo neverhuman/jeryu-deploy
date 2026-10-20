@@ -1,4 +1,4 @@
-# 0015. A native repository's browser URL omits the provider
+# 0017. A native repository's browser URL omits the provider
 
 Status: Accepted
 Date: 2026-10-16
