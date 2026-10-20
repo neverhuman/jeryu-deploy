@@ -149,12 +149,19 @@ pub(crate) struct AdminSiteSettingsResponse {
     pub internal_wiki_missing: bool,
     pub updated_by: Option<String>,
     pub updated_at: Option<String>,
+    /// The custody prefixes in force, stored or default.
+    pub stranded_custody_prefixes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct AdminSiteSettingsUpdate {
     /// `owner/name` of the repository to use, or `null` to clear it.
     pub internal_wiki: Option<String>,
+    /// Branch prefixes the stranded-branch rule treats as custody refs, or
+    /// `[]` to go back to the defaults. Absent leaves them as they are (and,
+    /// when sent alone, leaves the wiki as it is).
+    #[serde(default)]
+    pub stranded_custody_prefixes: Option<Vec<String>>,
 }
 
 fn wiki_repository(repo: &Repository) -> WikiRepository {
@@ -199,6 +206,7 @@ fn admin_view(state: &WebState) -> Result<AdminSiteSettingsResponse, String> {
         .as_ref()
         .and_then(|setting| find_by_id(state, &setting.value));
     Ok(AdminSiteSettingsResponse {
+        stranded_custody_prefixes: super::stranded_branches::custody_prefixes(state),
         internal_wiki_missing: stored.is_some() && repo.is_none(),
         internal_wiki: repo.as_ref().map(wiki_repository),
         updated_by: stored.as_ref().map(|setting| setting.updated_by.clone()),
@@ -243,6 +251,44 @@ pub(crate) async fn admin_put_site_settings(
 ) -> AxumResponse {
     if account.role != UserRole::Admin {
         return forbidden("admin role required");
+    }
+    if let Some(prefixes) = &update.stranded_custody_prefixes {
+        let valid = prefixes.len() <= 32
+            && prefixes.iter().all(|prefix| {
+                let prefix = prefix.trim();
+                !prefix.is_empty() && prefix.len() <= 100 && !prefix.chars().any(char::is_control)
+            });
+        if !valid {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_input",
+                "stranded_custody_prefixes must be at most 32 non-empty prefixes of at most 100 characters",
+            );
+        }
+        let joined = prefixes
+            .iter()
+            .map(|prefix| prefix.trim())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let value = (!joined.is_empty()).then_some(joined.as_str());
+        if let Err(error) = state.site_settings.set(
+            super::stranded_branches::CUSTODY_PREFIXES_KEY,
+            value,
+            &account.login,
+            chrono::Utc::now().timestamp_millis(),
+        ) {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_failed",
+                &format!("could not save site settings: {error}"),
+            );
+        }
+        if update.internal_wiki.is_none() {
+            return match admin_view(&state) {
+                Ok(view) => Json(view).into_response(),
+                Err(error) => storage_error(&error),
+            };
+        }
     }
     let repo_id = match update
         .internal_wiki

@@ -41,16 +41,25 @@ pub(crate) fn pushed_after_merge_items(facts: &[PushedAfterMergeFacts]) -> Vec<I
                 id: format!("pushed-after-merge-{}-{}", fact.repo, fact.branch),
                 kind: "pushed_after_merge",
                 severity: Severity::Action,
-                title: format!(
-                    "{} {} on {} after #{} {}",
-                    fact.commit_count,
-                    if one { "commit" } else { "commits" },
-                    fact.branch,
-                    fact.number,
-                    if fact.merged { "merged" } else { "closed" }
-                ),
+                title: if fact.merged {
+                    format!(
+                        "{} {} on {} after #{} merged",
+                        fact.commit_count,
+                        if one { "commit" } else { "commits" },
+                        fact.branch,
+                        fact.number
+                    )
+                } else {
+                    format!(
+                        "closed #{}'s branch {} still holds {} {}",
+                        fact.number,
+                        fact.branch,
+                        fact.commit_count,
+                        if one { "commit" } else { "commits" }
+                    )
+                },
                 reason: format!(
-                    "{} #{} ({}) already {}, and {named}{} {} on {} and not on {}. No open pull \
+                    "{} #{} ({}) {}, and {named}{} {} on {} and not on {}. No open pull \
                      request carries {}, so nothing gates {} and nothing lands {}. Opening a pull \
                      request from the branch -- or deleting the branch, if the work is not wanted \
                      -- takes this row away.",
@@ -58,9 +67,9 @@ pub(crate) fn pushed_after_merge_items(facts: &[PushedAfterMergeFacts]) -> Vec<I
                     fact.number,
                     fact.title,
                     if fact.merged {
-                        "merged"
+                        "already merged"
                     } else {
-                        "was closed without merging"
+                        "closed, and its branch still holds commits that never merged"
                     },
                     if more == 0 {
                         String::new()

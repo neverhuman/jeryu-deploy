@@ -152,6 +152,44 @@ async fn admins_pick_the_wiki_and_readers_see_it_only_with_access() {
     let (_, body) = read(Some(outsider.clone())).await;
     assert_eq!(body["internal_wiki"]["full_name"], "acme/docs", "{body}");
 
+    // Custody prefixes: admin only, validated, and a prefixes-only update
+    // leaves the wiki alone.
+    let put_prefixes = |token: &str, prefixes: Value| {
+        let router = router.clone();
+        let token = token.to_string();
+        async move {
+            call(
+                &router,
+                HttpMethod::PUT,
+                "/api/v1/admin/site-settings",
+                Some(&token),
+                Some(json!({ "stranded_custody_prefixes": prefixes })),
+            )
+            .await
+        }
+    };
+    let (status, body) = call(
+        &router,
+        HttpMethod::GET,
+        "/api/v1/admin/site-settings",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stranded_custody_prefixes"][0], "preserve/", "{body}");
+    let (status, _) = put_prefixes(&reader, json!(["keep/"])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = put_prefixes(&admin, json!([""])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, body) = put_prefixes(&admin, json!(["keep/", "hold/"])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stranded_custody_prefixes"], json!(["keep/", "hold/"]));
+    assert_eq!(body["internal_wiki"]["full_name"], "acme/docs", "{body}");
+    let (status, body) = put_prefixes(&admin, json!([])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stranded_custody_prefixes"][0], "preserve/", "{body}");
+
     // Clearing removes it.
     let (status, body) = put(&admin, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{body}");

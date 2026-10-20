@@ -1236,6 +1236,10 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             get(work::repo_list).post(work::repo_create),
         ),
         ("/api/v1/repos/:id/pulls", get(pulls::list)),
+        (
+            "/api/v1/repos/:id/stranded-branches",
+            get(stranded_branches::list),
+        ),
         ("/api/v1/repos/:id/pulls/:number", get(pulls::detail)),
         ("/api/v1/repos/:id/pulls/:number/diff", get(pulls::diff)),
         ("/api/v1/repos/:id/pulls/:number/checks", get(pulls::checks)),

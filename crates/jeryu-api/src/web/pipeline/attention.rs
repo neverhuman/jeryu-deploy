@@ -68,7 +68,9 @@ pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_ite
 pub(crate) use pins::{pin_items, web_pin_bump_prs};
 pub(crate) use pushed::{PushedAfterMergeFacts, pushed_after_merge_items};
 pub(crate) use scorecard::digest_items;
-pub(crate) use stranded::{StrandedBranchFacts, stranded_branch_items};
+pub(crate) use stranded::{
+    StrandedBranchFacts, split_backlog, stranded_backlog_items, stranded_branch_items,
+};
 pub(crate) use summary::{FamilyCounts, family_summary};
 pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
@@ -1136,6 +1138,10 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
             .iter()
             .any(|(repo, branch)| fact.branch == *branch && same_repo_name(&fact.repo, repo))
     });
+    // A one-time backlog arrives as one row per repository, not one per branch.
+    let (stranded, backlogs) = split_backlog(stranded, now);
+    items.extend(stranded_backlog_items(&backlogs));
+    let mut stranded = stranded;
     let pushed: Vec<_> = stranded
         .iter()
         .filter_map(|branch| {

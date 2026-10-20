@@ -15,8 +15,8 @@ use super::attention::{
     StrandedBranchFacts, SupersededPullFacts, board_items, budget_items, digest_items,
     divergence_items, draft_items, drop_shadowed_pull_rows, gate_definition_paths, main_red_items,
     mirror_items, only_matching, order, pin_items, pull_items, pushed_after_merge_items,
-    queue_items, release_items, runner_items, shift_items, stranded_branch_items,
-    superseded_pull_items, todo_items, web_routes, worker_items,
+    queue_items, release_items, runner_items, shift_items, split_backlog, stranded_backlog_items,
+    stranded_branch_items, superseded_pull_items, todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -3879,15 +3879,22 @@ fn a_push_to_a_merged_branch_asks_for_a_new_pull_request() {
 }
 
 /// A pull request somebody closed unmerged strands its branch the same way,
-/// and the row says which of the two happened.
+/// and the row names it for what it is: a closed pull request's branch that
+/// still holds commits.
 #[test]
 fn a_push_to_a_branch_closed_unmerged_says_it_was_not_merged() {
     let items = pushed_after_merge_items(&[pushed_after_merge("acme/widget-shop", false)]);
     assert!(
-        items[0].reason.contains("closed without merging"),
+        items[0].reason.contains("branch still holds commits"),
         "{}",
         items[0].reason
     );
+    assert!(
+        !items[0].reason.contains("without merging") && !items[0].reason.contains("already"),
+        "{}",
+        items[0].reason
+    );
+    assert!(items[0].title.contains("closed #115"), "{}", items[0].title);
 }
 
 /// Nothing pushed after a merge, nothing to say: the rule has no standing row
@@ -3943,6 +3950,79 @@ fn a_stranded_closed_pr_branch_recommends_a_fresh_branch() {
             && items[0].next_step.contains("cherry-pick -x"),
         "{}",
         items[0].next_step
+    );
+}
+
+fn aged_branch(repo: &str, branch: &str, days: i64) -> StrandedBranchFacts {
+    let mut fact = stranded_branch(repo, None);
+    fact.branch = branch.to_string();
+    fact.newest_at = Some(now() - Duration::days(days));
+    fact
+}
+
+/// A first run that finds months of leftovers adds one row per repository,
+/// naming the count and linking to the list; fresh branches stay individual.
+#[test]
+fn old_stranded_branches_arrive_as_one_row_per_repository() {
+    let facts = vec![
+        aged_branch("acme/widget-shop", "old/a", 90),
+        aged_branch("acme/widget-shop", "old/b", 40),
+        aged_branch("acme/widget-shop", "old/c", 10),
+        aged_branch("acme/widget-shop", "fresh/d", 1),
+        aged_branch("acme/lone", "old/only", 30),
+        aged_branch("acme/other", "old/x", 20),
+        aged_branch("acme/other", "old/y", 20),
+    ];
+    let (rest, backlogs) = split_backlog(facts, now());
+    let rest: Vec<_> = rest
+        .iter()
+        .map(|f| (f.repo.as_str(), f.branch.as_str()))
+        .collect();
+    assert_eq!(
+        rest,
+        [("acme/widget-shop", "fresh/d"), ("acme/lone", "old/only")],
+        "fresh branches and a lone old one stay individual"
+    );
+    let items = stranded_backlog_items(&backlogs);
+    assert_eq!(items.len(), 2, "{items:?}");
+    let shop = items
+        .iter()
+        .find(|item| item.repo.as_deref() == Some("acme/widget-shop"))
+        .unwrap();
+    assert_eq!(shop.kind, "stranded_branch");
+    assert!(
+        shop.title
+            .contains("3 old branches hold commits not on main: review / delete"),
+        "{}",
+        shop.title
+    );
+    assert_eq!(
+        shop.href,
+        "/api/v1/repos/acme/widget-shop/stranded-branches"
+    );
+    assert_eq!(shop.since.as_deref(), Some("2026-06-21T13:00:00Z"));
+    assert!(shop.reason.contains("old/a"), "{}", shop.reason);
+    assert_ne!(items[0].id, items[1].id);
+}
+
+#[test]
+fn the_backlog_row_names_a_bounded_number_of_branches() {
+    let facts: Vec<_> = (0..40)
+        .map(|n| aged_branch("acme/widget-shop", &format!("old/{n:02}"), 30))
+        .collect();
+    let (rest, backlogs) = split_backlog(facts, now());
+    assert!(rest.is_empty());
+    let items = stranded_backlog_items(&backlogs);
+    assert_eq!(items.len(), 1);
+    assert!(
+        items[0].title.contains("40 old branches"),
+        "{}",
+        items[0].title
+    );
+    assert!(
+        items[0].reason.contains("and 35 more"),
+        "{}",
+        items[0].reason
     );
 }
 
