@@ -412,3 +412,37 @@ fn a_claimed_todo_says_when_and_with_which_model_its_attempt_began() {
     let api = todo_in(TodoStatus::Claimed).to_api(Utc::now());
     assert_eq!((api.claimed_at, api.claim_model), (None, None));
 }
+
+#[test]
+fn acceptance_criteria_are_read_off_the_body_and_old_files_are_unknown() {
+    let mut todo = todo_in(TodoStatus::Done);
+    todo.body = "ask\n\n## Acceptance criteria\n- [x] shows Failing CI\n  - checked: test_label\n\
+                 - [ ] links out\n  - unmet: needs the api\n\n## Notes\n- [ ] not a criterion"
+        .to_string();
+    let api = TodoFile::parse(&todo.dump()).unwrap().to_api(Utc::now());
+    assert_eq!(
+        (
+            api.acceptance.state.as_str(),
+            api.acceptance.total,
+            api.acceptance.met
+        ),
+        ("set", 2, 1)
+    );
+    assert_eq!(
+        api.acceptance.items[0].evidence.as_deref(),
+        Some("test_label")
+    );
+    assert!(!api.acceptance.items[1].checked);
+    assert_eq!(
+        api.acceptance.items[1].evidence.as_deref(),
+        Some("needs the api")
+    );
+
+    // No section: `none` only when the filer said so, else filed before the block existed.
+    let old = "+++\nid = \"a\"\nfamily = \"jeryu\"\ntitle = \"t\"\n+++\nask\n";
+    assert_eq!(TodoFile::parse(old).unwrap().acceptance().state, "unknown");
+    let none = old.replace("title = \"t\"\n", "title = \"t\"\ncriteria = \"none\"\n");
+    let parsed = TodoFile::parse(&none).unwrap();
+    assert_eq!(parsed.acceptance().state, "none");
+    assert_eq!(parsed.dump().matches("criteria = \"none\"").count(), 1);
+}

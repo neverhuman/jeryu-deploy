@@ -122,6 +122,27 @@ pub(crate) struct ShiftTodo {
     pub block_kind: Option<BlockKind>,
     pub triaged: bool,
     pub worked_by: Vec<Attempt>,
+    /// The body's `## Acceptance criteria` checklist (see [`Acceptance`]).
+    pub acceptance: Acceptance,
+}
+
+/// A todo's acceptance criteria, read off its body. `state` is `set` when the
+/// body has the checklist, `none` when the filer recorded `criteria = "none"`,
+/// and `unknown` for a todo filed before the block existed.
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub(crate) struct Acceptance {
+    pub state: String,
+    pub total: i64,
+    pub met: i64,
+    pub items: Vec<Criterion>,
+}
+
+/// One criterion: its box, and the evidence line the worker recorded under it.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub(crate) struct Criterion {
+    pub text: String,
+    pub checked: bool,
+    pub evidence: Option<String>,
 }
 
 /// Why a todo stopped, which decides what the attention inbox asks of a

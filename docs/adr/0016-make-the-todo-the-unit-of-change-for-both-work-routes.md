@@ -84,8 +84,10 @@ of a scoped forge token alone is not queue claim permission.
   lock with a lease. Read-side lag is possible; a displayed claim is a
   projection and a writer must still win the queue push.
 - Two existing tracking gaps remain explicit follow-up work: `blocked_by` is
-  honoured at filing, not at claim (todo **984b89**), and acceptance criteria
-  are free prose rather than a machine-checked contract (todo **4b0aad**).
+  honoured at filing, not at claim (todo **984b89**). Acceptance criteria now
+  have a body schema (`## Acceptance criteria`, a Markdown checklist) recorded
+  in the todoq README and checked by the worker (todo **4b0aad**); the forge
+  reads it as `criteria`, `criteria_total` and `criteria_met` on a todo.
 - Personal PRs are not yet measured like fleet work merely because they have
   an identity or session cost. The trailer, session, bot-kind and person
   attribution contract needs implementation before claiming equal coverage.

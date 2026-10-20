@@ -8,7 +8,7 @@
 use chrono::{DateTime, Utc};
 use toml_edit::{DocumentMut, Value};
 
-use super::types::{Attempt, BlockKind, ShiftTodo, TodoStatus};
+use super::types::{Acceptance, Attempt, BlockKind, Criterion, ShiftTodo, TodoStatus};
 
 pub(crate) const FENCE: &str = "+++";
 pub(crate) const MODES: &[&str] = &["now", "night"];
@@ -384,8 +384,93 @@ impl TodoFile {
             ),
             triaged: self.triaged,
             worked_by: self.attempts_list(),
+            acceptance: self.acceptance(),
         }
     }
+
+    /// The body's acceptance criteria, byte-compatible with `todoq/criteria.py`.
+    pub(crate) fn acceptance(&self) -> Acceptance {
+        let items = parse_criteria(&self.body);
+        let marked_none = self
+            .extra
+            .iter()
+            .any(|(key, value)| key == "criteria" && value.as_str() == Some("none"));
+        let state = match (items.is_empty(), marked_none) {
+            (false, _) => "set",
+            (true, true) => "none",
+            (true, false) => "unknown",
+        };
+        Acceptance {
+            state: state.to_string(),
+            total: items.len() as i64,
+            met: items.iter().filter(|item| item.checked).count() as i64,
+            items,
+        }
+    }
+}
+
+/// The `## Acceptance criteria` section's `- [ ]` / `- [x]` lines, with the
+/// indented `checked:` / `unmet:` line under each as its evidence. The section
+/// ends at the next heading of the same or higher level; fenced code is skipped.
+pub(crate) fn parse_criteria(body: &str) -> Vec<Criterion> {
+    let mut items: Vec<Criterion> = Vec::new();
+    let (mut fenced, mut level, mut seen) = (false, None::<usize>, false);
+    for line in body.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        let heading = (1..=6).contains(&hashes) && line[hashes..].starts_with(' ');
+        if heading {
+            let title = line[hashes..].trim().trim_end_matches('#').trim();
+            if title.eq_ignore_ascii_case("acceptance criteria") && !seen {
+                (level, seen) = (Some(hashes), true);
+                continue;
+            }
+            if level.is_some_and(|open| hashes <= open) {
+                level = None;
+            }
+            continue;
+        }
+        if level.is_none() {
+            continue;
+        }
+        if let Some(rest) = line
+            .strip_prefix("- [")
+            .or_else(|| line.strip_prefix("* ["))
+        {
+            let mut chars = rest.chars();
+            let mark = chars.next();
+            let text = chars.as_str().strip_prefix("] ").map(str::trim);
+            if let (Some(mark @ (' ' | 'x' | 'X')), Some(text)) = (mark, text)
+                && !text.is_empty()
+            {
+                items.push(Criterion {
+                    text: text.to_string(),
+                    checked: mark != ' ',
+                    evidence: None,
+                });
+                continue;
+            }
+        }
+        let indented = line.trim_start();
+        if indented.len() < line.len()
+            && let Some(last) = items.last_mut()
+            && let Some(evidence) = indented
+                .strip_prefix("- checked:")
+                .or_else(|| indented.strip_prefix("- unmet:"))
+                .or_else(|| indented.strip_prefix("* checked:"))
+                .or_else(|| indented.strip_prefix("* unmet:"))
+        {
+            let evidence = evidence.trim();
+            last.evidence = (!evidence.is_empty()).then(|| evidence.to_string());
+        }
+    }
+    items
 }
 
 fn attempt_from(value: &Value) -> Option<Attempt> {

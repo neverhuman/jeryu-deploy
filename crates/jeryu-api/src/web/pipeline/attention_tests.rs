@@ -255,6 +255,7 @@ fn todo(id: &str, status: &str) -> ShiftTodo {
         ),
         triaged: true,
         worked_by: Vec::new(),
+        acceptance: Default::default(),
     }
 }
 
