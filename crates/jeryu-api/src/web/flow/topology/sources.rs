@@ -288,14 +288,23 @@ fn read_repo_facts(
             repo.owner.to_ascii_lowercase(),
             repo.name.to_ascii_lowercase()
         );
-        let protection = state
-            .core
-            .get_branch_protection(&repo.owner, &repo.name, &repo.default_branch)
-            .ok()
-            .map(|rule| Protection {
-                approvals: rule.required_approving_review_count,
-                required_checks: rule.required_status_checks,
-            });
+        // Only a rule that is not there means "no rule"; a rule that could not
+        // be read says nothing about the gate and must not read as `no_gate`.
+        let (protection, protection_unreadable) =
+            match state
+                .core
+                .get_branch_protection(&repo.owner, &repo.name, &repo.default_branch)
+            {
+                Ok(rule) => (
+                    Some(Protection {
+                        approvals: rule.required_approving_review_count,
+                        required_checks: rule.required_status_checks,
+                    }),
+                    false,
+                ),
+                Err(jeryu_core::ForgeError::NotFound(_)) => (None, false),
+                Err(_) => (None, true),
+            };
         let mut pins: Option<Vec<String>> = None;
         let mut lock_unreadable = false;
         for lock in locks {
@@ -313,6 +322,7 @@ fn read_repo_facts(
             family,
             default_branch: repo.default_branch.clone(),
             protection,
+            protection_unreadable,
             pins,
             lock_unreadable,
         });

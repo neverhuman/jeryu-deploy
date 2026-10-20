@@ -89,30 +89,29 @@ fn declared_contexts(state: &WebState, pr: &PullRequest) -> BTreeSet<String> {
 /// `<base>:.jeryu/ci.toml` out of the bare repository, when it is there and
 /// small enough to read on a read path.
 ///
-/// Read at the pull request's recorded base commit when it has one, so the
-/// answer is a fact about an immutable commit and is cached: the checks route
+/// Read at the commit the base branch points at now, so a lane added to or
+/// removed from the base after the pull request opened is the one shown. That
+/// commit is immutable, so the answer is cached per commit: the checks route
 /// is anonymously readable and the attention inbox asks it for every open
-/// pull request, so neither spawns git again for a base it already read.
+/// pull request, and a base that has not moved is not read by git again. A
+/// base branch that is gone falls back to the commit the pull request recorded.
 fn ci_declaration(state: &WebState, pr: &PullRequest) -> Option<String> {
     let opened = state.repo_manager.open_parts(&pr.owner, &pr.repo).ok()?;
-    if !is_commit_id(&pr.base.sha) {
-        let object = format!("refs/heads/{}:{CI_DECLARATION_PATH}", pr.base.ref_name);
-        return read_ci_declaration(state, opened.path.as_path(), &object);
-    }
-    let key = (opened.path.clone(), pr.base.sha.clone());
+    let dir = opened.path.as_path();
+    let base = base_commit(state, dir, pr)?;
+    let key = (opened.path.clone(), base.clone());
     if let Some(known) = cached(&DECLARATIONS, &key) {
         return known;
     }
     // Only a clean answer is remembered: the file is absent, or it was read.
     // A git that failed says nothing about the commit, so it is asked again.
-    let dir = opened.path.as_path();
     let listed = crate::web::shift::queue::git(
         &state.repo_manager.config().git_bin,
         dir,
         &[
             "ls-tree",
             "--end-of-options",
-            &pr.base.sha,
+            &base,
             "--",
             CI_DECLARATION_PATH,
         ],
@@ -123,11 +122,28 @@ fn ci_declaration(state: &WebState, pr: &PullRequest) -> Option<String> {
     let read = if listed.is_empty() {
         None
     } else {
-        let object = format!("{}:{CI_DECLARATION_PATH}", pr.base.sha);
+        let object = format!("{base}:{CI_DECLARATION_PATH}");
         Some(read_ci_declaration(state, dir, &object)?)
     };
     remember(&DECLARATIONS, key, read.clone());
     read
+}
+
+/// The commit a pull request's base is read at: the base branch's tip, else
+/// the recorded base commit when that is a commit id.
+fn base_commit(state: &WebState, dir: &std::path::Path, pr: &PullRequest) -> Option<String> {
+    let tip = format!("refs/heads/{}^{{commit}}", pr.base.ref_name);
+    let resolved = crate::web::shift::queue::git(
+        &state.repo_manager.config().git_bin,
+        dir,
+        &["rev-parse", "--verify", "--quiet", "--end-of-options", &tip],
+        &[],
+        None,
+    )
+    .ok()
+    .map(|out| String::from_utf8_lossy(&out).trim().to_string())
+    .filter(|id| is_commit_id(id));
+    resolved.or_else(|| is_commit_id(&pr.base.sha).then(|| pr.base.sha.clone()))
 }
 
 fn read_ci_declaration(state: &WebState, dir: &std::path::Path, object: &str) -> Option<String> {

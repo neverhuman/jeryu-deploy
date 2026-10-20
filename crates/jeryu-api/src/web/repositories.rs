@@ -1181,33 +1181,40 @@ pub(crate) fn mirror_failures(
         if repo.archived {
             continue;
         }
+        let runs = core.list_check_runs(&repo.owner, &repo.name, None).ok();
+        let mut attempts: Vec<&CheckRun> = runs
+            .iter()
+            .flat_map(|runs| runs.check_runs.iter())
+            .filter(|check| check.name == GITHUB_MIRROR_CHECK)
+            .collect();
+        attempts.sort_by_key(|check| (check.started_at, check.completed_at));
         // Use the same reconcile result exposed as /api/v1/mirrors sync.error.
-        // Reconcile can fail before it has a head SHA to write a check-run.
+        // Reconcile can fail before it has a head SHA to write a check-run. The
+        // report only refreshes on the reconcile interval, so a push that
+        // succeeded after it was taken has resolved the failure it recorded.
         if let Some(sync) = state.mirror_state.get(&repo.owner, &repo.name)
             && let Some(error) = sync.error.as_ref().filter(|error| !error.trim().is_empty())
             && let Ok(checked_at) = chrono::DateTime::parse_from_rfc3339(&sync.checked_at)
         {
-            failures.push(crate::web::pipeline::attention::MirrorFailure {
-                repo: sync.repo,
-                failed_at: checked_at.with_timezone(&chrono::Utc),
-                last_success_at: sync.last_push_at.as_deref().and_then(|at| {
-                    chrono::DateTime::parse_from_rfc3339(at)
-                        .ok()
-                        .map(|at| at.with_timezone(&chrono::Utc))
-                }),
-                reason: error.clone(),
+            let checked_at = checked_at.with_timezone(&chrono::Utc);
+            let resolved = attempts.last().is_some_and(|latest| {
+                latest.conclusion == Some(CheckConclusion::Success)
+                    && latest.completed_at.unwrap_or(latest.started_at) > checked_at
             });
-            continue;
+            if !resolved {
+                failures.push(crate::web::pipeline::attention::MirrorFailure {
+                    repo: sync.repo,
+                    failed_at: checked_at,
+                    last_success_at: sync.last_push_at.as_deref().and_then(|at| {
+                        chrono::DateTime::parse_from_rfc3339(at)
+                            .ok()
+                            .map(|at| at.with_timezone(&chrono::Utc))
+                    }),
+                    reason: error.clone(),
+                });
+                continue;
+            }
         }
-        let Ok(runs) = core.list_check_runs(&repo.owner, &repo.name, None) else {
-            continue;
-        };
-        let mut attempts: Vec<&CheckRun> = runs
-            .check_runs
-            .iter()
-            .filter(|check| check.name == GITHUB_MIRROR_CHECK)
-            .collect();
-        attempts.sort_by_key(|check| (check.started_at, check.completed_at));
         let Some(latest) = attempts.last() else {
             continue;
         };

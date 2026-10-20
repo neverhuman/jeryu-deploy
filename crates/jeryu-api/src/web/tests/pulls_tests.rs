@@ -3539,3 +3539,87 @@ async fn workflow_keeps_the_existing_detail_fields_beside_it() {
     }
     assert_eq!(detail["workflow"]["schema"], "pr_workflow/v1");
 }
+
+/// A lane added to the base branch after the pull request opened is expected
+/// of it, and a lane removed from the base stops being expected: the
+/// declaration is read at the base branch's current commit, not the one the
+/// pull request recorded when it opened.
+#[tokio::test]
+async fn checks_follow_lanes_the_base_branch_declares_now() {
+    let storage = tempfile::tempdir().expect("storage root");
+    let head_sha = bare_repo_with_ci_declaration(
+        storage.path(),
+        "alice",
+        "widgets",
+        "schema_version = \"2\"\nprovider = \"jeryu\"\n\n\
+         [[lane]]\nname = \"required\"\ncommand = \"just required\"\n",
+    );
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "widgets".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "widgets",
+            "alice",
+            CreatePullRequestRequest {
+                title: "feature".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(head_sha),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let state = Arc::new(WebState::new_with_git_storage(
+        core,
+        storage.path().to_path_buf(),
+    ));
+    let names = |state: Arc<WebState>| {
+        let id = repo.id.to_string();
+        let number = pr.number;
+        async move {
+            let checks = response_json(
+                crate::web::pulls::checks(
+                    State(state),
+                    authenticated_account("reader"),
+                    AxumPath((id, number)),
+                )
+                .await,
+            )
+            .await;
+            checks["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|check| check["name"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(names(state.clone()).await, vec!["widgets/required"]);
+
+    let work = storage.path().join("alice-widgets-ci-work");
+    let bare = storage.path().join("alice").join("widgets.git");
+    git_in(&work, &["checkout", "--quiet", "main"]);
+    std::fs::write(
+        work.join(".jeryu/ci.toml"),
+        "schema_version = \"2\"\nprovider = \"jeryu\"\n\n\
+         [[lane]]\nname = \"docs\"\ncommand = \"just docs\"\n",
+    )
+    .expect("rewrite ci.toml");
+    git_in(&work, &["commit", "--quiet", "-am", "swap lanes"]);
+    git_in(
+        &work,
+        &["push", "--quiet", bare.to_str().expect("bare utf8"), "main"],
+    );
+    assert_eq!(names(state).await, vec!["widgets/docs"]);
+}

@@ -97,6 +97,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `codegraph_index_failed` | 500 | the codegraph index could not be built |
 | `codegraph_invalid_request` | 422 | the codegraph query failed validation |
 | `codegraph_materialize_failed` | 500 | the repository could not be materialized for codegraph |
+| `codegraph_not_indexed` | 503 | the repository has no codegraph index yet, so an empty answer would be untrue |
 | `codegraph_query_failed` | 500 | the codegraph query failed |
 | `codegraph_rebuild_throttled` | 429 | the repository was indexed for another ref too recently to rebuild again |
 | `conflict` | 409 | the request conflicts with the current state |

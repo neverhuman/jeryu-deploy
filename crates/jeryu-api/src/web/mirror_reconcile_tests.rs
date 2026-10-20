@@ -272,6 +272,9 @@ fn attention_uses_the_sync_error_even_without_a_check_run() {
             summary: "push succeeded".to_string(),
         },
     );
+    // The push that succeeded after the failed reconcile report resolves it,
+    // without waiting for the next reconcile pass to refresh the report.
+    assert!(super::super::repositories::mirror_failures(&state).is_empty());
 
     let healthy = record(
         state.github.core(),

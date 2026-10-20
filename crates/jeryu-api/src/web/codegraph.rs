@@ -260,6 +260,14 @@ pub(super) fn repo_graph(
     let restoring_default = default_branch && !indexed_ref.is_empty() && indexed_ref != wanted_ref;
     if !restoring_default && let Err(wait) = claim_rebuild(&bare, default_branch) {
         if default_branch {
+            // An index that was never built (or whose build failed) records no
+            // ref and holds no symbol; answering from it would say "no such
+            // symbol" for what is really "not indexed yet".
+            if snapshot.symbols.is_empty() && indexed_ref.is_empty() {
+                return Err(CodeGraphRouteError::NotIndexed {
+                    retry_after_secs: wait.as_secs().max(1),
+                });
+            }
             return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
         }
         return Err(CodeGraphRouteError::RebuildThrottled {
@@ -340,17 +348,24 @@ pub(super) fn refresh_scheduled(
     {
         return None;
     }
-    let result = {
-        let _one_at_a_time = REBUILD
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        refresh_repo_index(state, id, ref_name)
-    };
-    SCHEDULED_IN_FLIGHT
+    // Released on drop, so a panic in the indexing run cannot leave the
+    // repository marked in flight for the life of the process.
+    let _in_flight = InFlightGuard(key);
+    let _one_at_a_time = REBUILD
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&key);
-    Some(result)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Some(refresh_repo_index(state, id, ref_name))
+}
+
+struct InFlightGuard(String);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        SCHEDULED_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.0);
+    }
 }
 
 /// Whether `bare`'s index holds any symbol at all. Cheaper than loading the
@@ -377,6 +392,11 @@ pub(super) enum CodeGraphRouteError {
     /// A ref other than the default branch was indexed for this repository
     /// too recently to rebuild again.
     RebuildThrottled {
+        retry_after_secs: u64,
+    },
+    /// The default branch has no index yet and a rebuild was attempted too
+    /// recently to try again.
+    NotIndexed {
         retry_after_secs: u64,
     },
 }
@@ -431,6 +451,20 @@ impl CodeGraphRouteError {
                 ],
                 "rerun cargo test -p jeryu-api --features web codegraph",
             ),
+            Self::NotIndexed { retry_after_secs } => codegraph_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "codegraph_not_indexed",
+                "read a repository index that has not been built",
+                &format!(
+                    "this repository has no codegraph index yet and the last attempt to build it was under {} seconds ago; retry in {retry_after_secs} seconds",
+                    OTHER_REF_REBUILD_EVERY.as_secs()
+                ),
+                &[
+                    "retry after the wait; an empty answer would not mean the symbol is absent",
+                    "check that the repository holds Rust/Cargo sources the analyzer reads",
+                ],
+                "rerun cargo test -p jeryu-api --features web codegraph",
+            ),
             Self::IndexFailed(reason) => codegraph_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "codegraph_index_failed",
@@ -458,6 +492,10 @@ impl fmt::Display for CodeGraphRouteError {
             Self::RebuildThrottled { retry_after_secs } => write!(
                 f,
                 "this repository was just indexed for another ref; retry in {retry_after_secs} seconds"
+            ),
+            Self::NotIndexed { retry_after_secs } => write!(
+                f,
+                "this repository is not indexed yet; retry in {retry_after_secs} seconds"
             ),
         }
     }
@@ -697,6 +735,12 @@ mod tests {
                 CodeGraphRouteError::IndexFailed("no Cargo.toml".to_string()),
                 "codegraph_index_failed",
             ),
+            (
+                CodeGraphRouteError::NotIndexed {
+                    retry_after_secs: 5,
+                },
+                "codegraph_not_indexed",
+            ),
         ];
         for (error, code) in errors {
             let body = response_json(error.into_response()).await;
@@ -715,6 +759,23 @@ mod tests {
         .await;
         assert_eq!(body["code"], "codegraph_query_failed");
         assert_eq!(body["common_fixes"], json!(["rerun index"]));
+    }
+
+    #[test]
+    fn a_panicking_refresh_does_not_leave_the_repository_marked_in_flight() {
+        let key = "in-flight-guard-test".to_string();
+        let outcome = std::panic::catch_unwind(|| {
+            assert!(
+                super::SCHEDULED_IN_FLIGHT
+                    .lock()
+                    .unwrap()
+                    .insert("in-flight-guard-test".to_string())
+            );
+            let _guard = super::InFlightGuard("in-flight-guard-test".to_string());
+            panic!("indexing run panicked");
+        });
+        assert!(outcome.is_err());
+        assert!(!super::SCHEDULED_IN_FLIGHT.lock().unwrap().contains(&key));
     }
 
     #[test]

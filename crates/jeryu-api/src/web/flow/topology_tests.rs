@@ -13,6 +13,7 @@ fn repo(repo: &str, family: &str) -> RepoFacts {
         family: family.into(),
         default_branch: "main".into(),
         protection: None,
+        protection_unreadable: false,
         pins: None,
         lock_unreadable: false,
     }
@@ -386,4 +387,81 @@ fn an_unscoped_answer_describes_every_family_however_many() {
     assert_eq!(shape.families_total, 12);
     assert!(!shape.families_truncated);
     assert_eq!(shape.products.len(), 12, "every family's product is listed");
+}
+
+/// A repository with no lock and no declaration that has recorded pin bump
+/// pull requests says so, rather than reading the same as one nothing is known
+/// about.
+#[test]
+fn recorded_pin_events_are_reported_as_the_pin_source() {
+    let inputs = Inputs {
+        scope: Some("acme".into()),
+        repos: vec![repo("acme/acme-app", "acme"), repo("acme/acme-lib", "acme")],
+        pin_evidence: BTreeSet::from(["acme/acme-app".to_string()]),
+        ..Inputs::default()
+    };
+    let shape = plan(&inputs, &[]);
+    let node = |name: &str| {
+        shape.products[0]
+            .repos
+            .iter()
+            .find(|node| node.repo == name)
+            .unwrap()
+    };
+    assert_eq!(node("acme/acme-app").pin_source, "recorded_pin_events");
+    assert!(node("acme/acme-app").pins_into.is_empty());
+    assert_eq!(node("acme/acme-lib").pin_source, "none");
+}
+
+/// A branch-protection rule that could not be read is unknown, not an
+/// ungated branch.
+#[test]
+fn an_unreadable_protection_rule_is_not_reported_as_no_gate() {
+    let mut app = repo("acme/acme-app", "acme");
+    app.protection_unreadable = true;
+    let inputs = Inputs {
+        scope: Some("acme".into()),
+        repos: vec![app, repo("acme/acme-lib", "acme")],
+        ..Inputs::default()
+    };
+    let shape = plan(&inputs, &[]);
+    let node = |name: &str| {
+        shape.products[0]
+            .repos
+            .iter()
+            .find(|node| node.repo == name)
+            .unwrap()
+    };
+    assert_eq!(node("acme/acme-app").route.kind, "unknown");
+    assert_eq!(node("acme/acme-app").route.source, "unreadable");
+    assert_eq!(node("acme/acme-lib").route.kind, "no_gate");
+}
+
+/// A release repository the forge does not host is reported as unknown, not
+/// named as where the product is staged and deployed.
+#[test]
+fn a_declared_release_repo_the_forge_does_not_host_is_not_named() {
+    let inputs = Inputs {
+        scope: Some("acme".into()),
+        config: vec![FamilyConfig {
+            family: "acme".into(),
+            products: vec![ProductConfig {
+                id: "app".into(),
+                repos: vec!["acme/acme-app".into()],
+                release_repo: Some("acme/acme-missing".into()),
+                ..ProductConfig::default()
+            }],
+        }],
+        repos: vec![repo("acme/acme-app", "acme")],
+        ..Inputs::default()
+    };
+    let shape = plan(&inputs, &[]);
+    let product = &shape.products[0];
+    assert!(product.release.is_none(), "{:?}", product.release);
+    assert!(
+        shape
+            .unknown
+            .iter()
+            .any(|note| note.field == "release_repo")
+    );
 }

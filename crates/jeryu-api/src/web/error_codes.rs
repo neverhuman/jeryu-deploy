@@ -155,6 +155,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         500,
         "the repository could not be materialized for codegraph",
     ),
+    entry(
+        "codegraph_not_indexed",
+        503,
+        "the repository has no codegraph index yet, so an empty answer would be untrue",
+    ),
     entry("codegraph_query_failed", 500, "the codegraph query failed"),
     entry(
         "codegraph_rebuild_throttled",

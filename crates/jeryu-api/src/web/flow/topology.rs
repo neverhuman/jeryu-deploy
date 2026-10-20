@@ -72,6 +72,8 @@ pub(crate) struct RepoFacts {
     /// `Some` when the forge holds a protection rule for the default branch.
     /// `None` is "no rule", which requires nothing.
     pub protection: Option<Protection>,
+    /// True when the rule could not be read, which is not "no rule".
+    pub protection_unreadable: bool,
     /// The repositories the default branch's pin lock names, when it holds one.
     pub pins: Option<Vec<String>>,
     /// True when the lock could not be read at all, which is not "no lock".
@@ -112,7 +114,7 @@ pub(crate) struct Route {
 impl Route {
     fn of(facts: &RepoFacts) -> Self {
         match &facts.protection {
-            None if facts.default_branch.is_empty() => Self {
+            None if facts.default_branch.is_empty() || facts.protection_unreadable => Self {
                 kind: "unknown",
                 source: "unreadable",
                 approvals: None,
@@ -576,7 +578,8 @@ fn pins_of(
     }
     if inputs.pin_evidence.contains(repo) {
         // This repository receives pin bumps itself; it proposes none onward.
-        return (Vec::new(), "none");
+        // The empty answer is backed by recorded events, not by silence.
+        return (Vec::new(), "recorded_pin_events");
     }
     (Vec::new(), "none")
 }
@@ -589,9 +592,16 @@ fn release_of(
     inputs: &Inputs,
 ) -> Option<Release> {
     let stations = vec!["stage", "deploy"];
-    if let Some(declared) = config.release_repo.as_ref() {
+    // A declaration naming a repository the forge does not host would point
+    // the release at something that cannot be staged or deployed here.
+    if let Some(declared) = config
+        .release_repo
+        .as_ref()
+        .map(|repo| repo.to_ascii_lowercase())
+        .filter(|repo| members.contains(repo))
+    {
         return Some(Release {
-            repo: declared.to_ascii_lowercase(),
+            repo: declared,
             source: "declared",
             stations,
         });
