@@ -3624,5 +3624,123 @@ async fn checks_follow_lanes_the_base_branch_declares_now() {
     assert_eq!(names(state).await, vec!["widgets/docs"]);
 }
 
+fn make_pr(
+    core: &ForgeCore,
+    owner: &str,
+    name: &str,
+    private: bool,
+) -> (jeryu_core::Repository, u64) {
+    let repo = core
+        .create_repository(
+            owner,
+            CreateRepositoryRequest {
+                name: name.to_string(),
+                private,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let pr = core
+        .create_pull_request(
+            owner,
+            name,
+            owner,
+            CreatePullRequestRequest {
+                title: "live".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("head-live".to_string()),
+                base_sha: Some("base-live".to_string()),
+                changed_files: vec!["src/lib.rs".to_string()],
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    (repo, pr.number)
+}
+
+#[tokio::test]
+async fn pull_comment_pushes_thread_event_to_its_own_repo_scope_only() {
+    let core = ForgeCore::new();
+    let (repo_a, number) = make_pr(&core, "alice", "one", false);
+    let (_repo_b, number_b) = make_pr(&core, "alice", "two", false);
+    assert_eq!(number, number_b, "same PR number in both repositories");
+    let state = Arc::new(WebState::new(core));
+
+    let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel();
+    let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel();
+    let conn_a = state.ws.register(tx_a);
+    let conn_b = state.ws.register(tx_b);
+    state
+        .ws
+        .set_scopes(conn_a, &BTreeSet::from(["repo.alice.one".to_string()]));
+    state
+        .ws
+        .set_scopes(conn_b, &BTreeSet::from(["repo.alice.two".to_string()]));
+
+    let response = crate::web::pulls::comment(
+        State(state.clone()),
+        authenticated_account("carol"),
+        AxumPath((repo_a.id.to_string(), number)),
+        axum::body::Bytes::from(
+            serde_json::json!({
+                "thread_id": null,
+                "body_markdown": "live",
+                "file_path": "src/lib.rs",
+                "line": 3,
+                "anchor_sha": "head-live"
+            })
+            .to_string(),
+        ),
+    )
+    .await;
+    assert!(response.status().is_success());
+
+    match rx_a.try_recv() {
+        Ok(ServerWsMessage::Event { event }) => {
+            assert_eq!(event.scope, "repo.alice.one");
+            assert_eq!(event.kind, "pull.thread.updated");
+            assert_eq!(event.entity, format!("pull:{}:{number}", repo_a.id));
+        }
+        other => panic!("expected thread event, got {other:?}"),
+    }
+    assert!(
+        rx_b.try_recv().is_err(),
+        "same PR number in another repository must not be updated"
+    );
+}
+
+#[test]
+fn websocket_scopes_follow_repository_read_access() {
+    let core = ForgeCore::new();
+    for login in ["alice", "bob"] {
+        core.create_account(login, "password-12345", UserRole::User)
+            .unwrap();
+    }
+    make_pr(&core, "alice", "secret", true);
+    core.create_account("root", "password-12345", UserRole::Admin)
+        .unwrap();
+    core.grant_repo_access("root", "alice", "alice", "secret", RepoAccessLevel::Read)
+        .unwrap();
+    let state = WebState::new(core);
+    let bob = authenticated_account("bob").0;
+    let alice = authenticated_account("alice").0;
+    assert!(!crate::web::ws::authorize_scope(
+        &state,
+        &bob,
+        "repo.alice.secret"
+    ));
+    assert!(crate::web::ws::authorize_scope(
+        &state,
+        &alice,
+        "repo.alice.secret"
+    ));
+    // A bare pull number names no repository, so no account may subscribe to it.
+    assert!(!crate::web::ws::authorize_scope(&state, &alice, "pull.1"));
+    let admin = authenticated_admin_account("root").0;
+    assert!(!crate::web::ws::authorize_scope(&state, &admin, "pull.1"));
+}
+
 #[path = "gh_extension_tests.rs"]
 mod gh_extension_tests;

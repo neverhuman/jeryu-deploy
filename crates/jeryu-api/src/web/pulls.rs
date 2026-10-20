@@ -477,6 +477,7 @@ pub(super) async fn review(
                         repo.owner, repo.name, updated.number
                     );
                 }
+                publish_thread_update(&state, &repo, updated.number);
                 detail_response(&state, &updated, Some(&account.login))
             }
             Err(error) => core_error(error, "reload pull request after review"),
@@ -570,6 +571,7 @@ pub(super) async fn comment(
                     repo.owner, repo.name, pr.number
                 );
             }
+            publish_thread_update(&state, &repo, pr.number);
             Json(PullRequestThreadList {
                 threads: threads_for_pr(&state, &pr),
             })
@@ -980,6 +982,26 @@ pub(super) async fn close(
         }),
     );
     detail_response(&state, &updated, Some(&account.login))
+}
+
+/// Tells the readers of `repo.<owner>.<name>` that this pull request's threads
+/// changed. The scope is the repository's own, so only accounts that may read
+/// the repository receive it; the entity names the pull request within it.
+fn publish_thread_update(state: &WebState, repo: &jeryu_core::Repository, number: u64) {
+    let scope = format!("repo.{}.{}", repo.owner, repo.name);
+    let entity = format!("pull:{}:{number}", repo.id);
+    let (scope_name, entity_name) = (scope.clone(), entity);
+    state
+        .ws
+        .publish(&scope, move |seq| jeryu_readmodel::contracts::WebEvent {
+            seq,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            scope: scope_name,
+            kind: "pull.thread.updated".to_string(),
+            entity: entity_name,
+            summary: format!("pull request #{number} threads changed"),
+            payload: json!({ "number": number }),
+        });
 }
 
 /// The replacement a close body names: `{"superseded_by": <number>}`, the v1
