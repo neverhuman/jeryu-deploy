@@ -14,6 +14,7 @@ const KINDS: &[&str] = &[
     "gate.started",
     "gate.finished",
     "todo.action",
+    "todo.attempt_finished",
     "pr.review",
     "pr.reviewed",
     "review.started",

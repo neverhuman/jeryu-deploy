@@ -849,6 +849,85 @@ impl Ctx<'_> {
         )
     }
 
+    /// Whether an event names the selected repository, by its own `repo` or by a
+    /// repository in `detail.commits`: a todo's attempt event names its first landing
+    /// as `repo` and every landing in `detail.commits`.
+    fn names_repo(&self, e: &EventRow) -> bool {
+        let Some(want) = self.repo else {
+            return true;
+        };
+        e.repo.as_deref() == Some(want)
+            || e.detail
+                .as_ref()
+                .and_then(|d| d.get("commits"))
+                .and_then(Value::as_object)
+                .is_some_and(|commits| commits.contains_key(want))
+    }
+
+    /// Acceptance criteria checked over criteria listed, for the todos reported done
+    /// in the interval that list any (the volume tiles' quality guardrail).
+    ///
+    /// The counts come from the attempt event's `detail.criteria_met` and
+    /// `criteria_total`, which todoq writes from the todo's `## Acceptance criteria`
+    /// checklist. A todo whose `criteria_state` is not `set` — filed without criteria,
+    /// or before the block existed — lists none: it is counted as uncovered in
+    /// `detail`, never as met or unmet (`docs/scorecard.md`).
+    fn acceptance_criteria_met(&self, a: i64, b: i64) -> Option<Out> {
+        covered_days(self.raw.events_from, a, b)?;
+        let done = self.raw.events.iter().filter(|e| {
+            e.kind == "todo.attempt_finished"
+                && e.outcome.as_deref() == Some("done")
+                && within(e.ts_ms, a, b)
+                && self.names_repo(e)
+        });
+        // A todo reported done more than once in the interval counts once, by its
+        // last attempt: that attempt's result is the one recorded on the todo.
+        let mut last: BTreeMap<&str, &EventRow> = BTreeMap::new();
+        for e in done {
+            let Some(todo) = e.todo_id.as_deref() else {
+                continue;
+            };
+            let seen = last.entry(todo).or_insert(e);
+            if e.seq > seen.seq {
+                *seen = e;
+            }
+        }
+        let count = |e: &EventRow, key: &str| {
+            e.detail
+                .as_ref()
+                .and_then(|d| d.get(key))
+                .and_then(Value::as_i64)
+                .unwrap_or_default()
+                .max(0) as usize
+        };
+        let (mut met, mut listed, mut todos, mut uncovered) = (0, 0, 0, 0);
+        for e in last.into_values() {
+            let state = e
+                .detail
+                .as_ref()
+                .and_then(|d| d.get("criteria_state"))
+                .and_then(Value::as_str);
+            let total = count(e, "criteria_total");
+            if state != Some("set") || total == 0 {
+                uncovered += 1;
+                continue;
+            }
+            todos += 1;
+            listed += total;
+            met += count(e, "criteria_met").min(total);
+        }
+        (listed > 0).then(|| Out {
+            value: json!(pct1(met, listed)),
+            n: todos,
+            detail: Some(json!({
+                "criteria_met": met,
+                "criteria_listed": listed,
+                "todos_with_criteria": todos,
+                "todos_without_criteria": uncovered,
+            })),
+        })
+    }
+
     fn gate_flake_rate(&self, a: i64, b: i64) -> Option<Out> {
         covered_days(self.raw.events_from, a, b)?;
         type Attempts = Vec<(i64, bool, i64)>;
@@ -1202,6 +1281,15 @@ pub(crate) fn metrics(ctx: &Ctx) -> Vec<(&'static str, Metric)> {
                         |c| !c.reworked_by.is_empty() || c.reverted_ms.is_some(),
                     )
                 },
+            ),
+        ),
+        (
+            "acceptance_criteria_met",
+            run(
+                ctx,
+                "pipeline_events todo.attempt_finished done: acceptance criteria checked over criteria listed, percent (todos filed without the checklist are uncovered, not unmet)",
+                "no_acceptance_criteria_in_window",
+                |a, b| ctx.acceptance_criteria_met(a, b),
             ),
         ),
         (

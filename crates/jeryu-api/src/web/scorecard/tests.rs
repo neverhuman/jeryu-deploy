@@ -567,6 +567,79 @@ fn gate_flake_rate_pairs_failures_and_passes_on_one_commit() {
     assert_eq!(r["gate_flake_rate"]["sample_size"], 3);
 }
 
+/// One `todo.attempt_finished` done event with the criteria counts todoq writes.
+fn done_attempt(
+    seq: i64,
+    ts: i64,
+    todo: &str,
+    state: &str,
+    met: i64,
+    total: i64,
+    commits: Value,
+) -> EventRow {
+    let mut e = event(
+        seq,
+        ts,
+        "todo.attempt_finished",
+        "acme/widget",
+        Some("done"),
+    );
+    e.todo_id = Some(todo.to_string());
+    e.detail = Some(json!({
+        "criteria_state": state,
+        "criteria_met": met,
+        "criteria_total": total,
+        "commits": commits,
+    }));
+    e
+}
+
+fn criteria_fixture() -> Raw {
+    let t = NOW - DAY_MS;
+    Raw {
+        events_from: Some(NOW - 30 * DAY_MS),
+        events: vec![
+            done_attempt(1, t, "a", "set", 2, 3, json!({"acme/widget": "s1"})),
+            // The same todo reported done twice: only its last attempt counts.
+            done_attempt(2, t, "a", "set", 3, 3, json!({"acme/widget": "s1"})),
+            done_attempt(3, t, "b", "set", 1, 1, json!({"globex/api": "s2"})),
+            // Filed before the block existed, and filed without criteria: uncovered.
+            done_attempt(4, t, "c", "unknown", 0, 0, json!({"acme/widget": "s3"})),
+            done_attempt(5, t, "d", "none", 0, 0, json!({"acme/widget": "s4"})),
+        ],
+        ..Raw::default()
+    }
+}
+
+#[test]
+fn acceptance_criteria_met_counts_checked_boxes_and_excludes_todos_without_any() {
+    let m = &report(&criteria_fixture(), &[], 7)["acceptance_criteria_met"];
+    assert_eq!(m["value"], json!(100.0)); // 3 of 3 on todo a, 1 of 1 on todo b
+    assert_eq!(m["sample_size"], 2);
+    assert_eq!(m["detail"]["criteria_met"], 4);
+    assert_eq!(m["detail"]["criteria_listed"], 4);
+    assert_eq!(m["detail"]["todos_without_criteria"], 2);
+}
+
+#[test]
+fn acceptance_criteria_met_follows_the_repository_filter_and_is_unknown_without_samples() {
+    let raw = criteria_fixture();
+    let m = &report_for(&raw, &[], Some("globex/api"), 7)["acceptance_criteria_met"];
+    // Todo b landed in globex/api; the event names acme/widget as its first landing.
+    assert_eq!(m["sample_size"], 1);
+    assert_eq!(m["detail"]["criteria_listed"], 1);
+    let empty = Raw {
+        events_from: Some(NOW - 30 * DAY_MS),
+        ..Raw::default()
+    };
+    let m = &report(&empty, &[], 7)["acceptance_criteria_met"];
+    assert_eq!(m["value"], Value::Null);
+    assert_eq!(
+        m["unknown"]["reason"],
+        json!("no_acceptance_criteria_in_window")
+    );
+}
+
 fn cost(
     ts: i64,
     kind: &str,
@@ -659,7 +732,7 @@ fn repo_filter_narrows_flow_and_events() {
 fn an_empty_ledger_makes_every_tile_unknown_never_zero() {
     let r = report(&Raw::default(), &[], 7);
     let tiles = r.as_object().unwrap();
-    assert_eq!(tiles.len(), 36);
+    assert_eq!(tiles.len(), 37);
     for (name, tile) in tiles {
         assert_eq!(tile["value"], Value::Null, "{name}");
         assert_eq!(tile["sample_size"], 0, "{name}");
