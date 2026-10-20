@@ -1,45 +1,97 @@
-# Governed Jankurai identity
+# Governed Jankurai
 
-Release and score lanes consume Jankurai only through `ops/ci/lib.sh`. The
-release-authoritative source is the local Jeryu tag
-`v1.6.11-deadlang-precision-split.4`; the installed binary must report
-`jankurai 1.6.11` and match SHA-256
-`b05c03bcb0fb2d004d3daa303ae236b8985b39e393567e8f8d274cd9f6f89103`.
-The verifier rejects missing files, symlinks, version drift, byte substitution,
-and missing or mismatched content-addressed installation receipts. It
-deterministically neutralizes an earlier ambient PATH entry by prepending the
-governed binary directory and then verifying the resulting resolution; it does
-not claim the initial PATH was rejected. The forge itself runs no auditor
-(see *Where an authoritative score is produced* below); it validates the
-complete local source, build, and protected jeryu-tool manifest authority of the
-pinned installation receipt, and accepts only a report produced by that exact
-binary. Verification
-never installs or fetches a tool, and GitHub is neither release authority nor a
-dependency of this verification path.
+The protected `jeryu-tool/tool-manifest.toml` is the one authority for the
+Jankurai release accepted by this forge. Changes to that manifest land through
+review and required checks in the Jeryu forge. The release repository named by
+the manifest is an artifact distribution location; it does not approve its own
+identity or replace protected Jeryu source and review authority.
 
-Under `JAIN_RELEASE_CI=1`, the root broker is the only path authority: the
-verifier ignores caller binary settings, requires PATH to resolve exactly to
-`/opt/jain-ci/authority/release-bin/jankurai`, requires mode `0555` with one
-physical link, and rejects caller receipt or test-authority overrides. Ordinary
-and image lanes remain content-addressed-receipt bound.
+The current schema-1 pin is `jankurai 1.7.5` (`v1.7.5`), matching the
+rendered forge constants and sandbox recipe. This describes the protected
+manifest; it is not an independent pin.
 
-The former 1.6.10 score is preserved byte-identically under
-`agent/baselines/historical/` as audit history. The active report and provenance
-under `agent/baselines/` were generated from exact hosted protected `main` with
-the governed 1.6.11 binary. The proof lane verifies their checksum, source
-commit/tree, tool identity, fingerprints, score, hard findings, and caps before
-using them. A topic must bind its exact protected base; a protected-main replay
-accepts that report only as a strict ancestor so the receipt is not
-self-referential. Those
-bytes become accepted only through detached exact-head review and protected
-merge; candidate output can never replace its own baseline.
+## Installation and trust
 
+The protected tool installer downloads only the manifest-pinned public release
+asset, its signature bundle, and signed provenance. It verifies both signatures
+offline with the pinned release key and pinned cosign binary, plus the asset,
+binary and provenance digests. The public key is committed in the tool
+repository and pinned by digest independently of the artifact download.
+Transparency-log verification is not part of this key-based trust policy.
+
+Build provenance belongs to the release pipeline. This policy supersedes the
+former Jeryu-local hermetic build: consumers must not claim that a downloaded
+release was built inside their own network-isolated source-build sandbox.
+The manifest records the source commit/tree, lockfile identities, target and
+compiler identities from the accepted signed provenance. It does not turn a
+consumer's unexecuted build into source-reproduction evidence.
+
+The installer records the verified release, physical binary path and protected
+manifest identity in a content-addressed installation receipt and authority
+stamp. The rendered shell verifier checks the installed binary and that
+receipt against the protected trust anchors; it does not download, install or
+execute a signature-verification network request. Missing, tampered or
+unexportable identity fails closed. The shell verifier still accepts source-build
+v2 receipts during the host/image migration to release-key-signed v3 receipts;
+the authority stamp alone does not retire v2. That transition does not let forge ingestion accept a binary outside
+its compiled governed identity.
+
+## Forge ingestion
+
+The generated `GOVERNED_JANKURAI_*` constants in `ci_bridge.rs` derive from the
+same manifest. Audit ingestion requires the reported version and binary digest
+to match that governed identity and validates the report's source and proof
+provenance. A locally successful score from a different tool is insufficient.
+An approved manifest change, rendered consumer source, installed gate tool,
+and deployed forge identity must be reconciled as separate rollout steps.
+
+## Agent sandbox
+
+The auditor release stage and runtime both use a libc-compatible Debian base.
+The image verifies the pinned artifact before copying it into the runtime,
+checks its digest and version there, and runs the same offline receipt guard.
+The normal agent runtime is network-isolated; artifact download happens during
+the image build. A source test is not an image-build or real-guest receipt.
+
+## Rotation and rollback
+
+[ADR 0012](adr/0012-authenticate-auditor-anchor-rotation-and-bootstrap.md)
+supersedes ADR 0011's single-anchor rotation example. Its schema-2 multi-anchor
+protocol remains proposed: this schema-1 1.7.5 pin does not implement durable
+snapshot-bound jobs, multi-slot installation or manifest-only fleet activation.
+The record requires add, activate, retire through protected manifest changes,
+with each new anchor authenticated by an already trusted key and pinned cosign.
+Clients must verify the installation-bound, ordered transition chain and
+atomically persist its checkpoint; manifest membership or a new key's own
+signature is insufficient. Exactly one anchor may be active for new proof
+jobs; historical anchors and verification material remain available.
+
+The schema-2 bootstrap must demonstrate full/diff parity, the exact no-base
+full invocation, and host/image readiness. 1.7.4 is excluded by its diff
+regression; 1.7.5's current pin does not by itself prove that bootstrap ready.
+Until that migration lands, use the existing rollout below.
+
+Change the tool manifest with `ops/pin-jankurai-release.sh` in `jeryu-tool`,
+review and land it, then use its canonical renderer for every claimed consumer.
+Never hand-edit generated identity blocks. Run the governed shell verifier,
+`cargo test --locked -p jeryu-api --features web --test jankurai_governance`,
+the full required gate, and the sandbox build/smoke lane in an admitted build
+allocation. Require fresh independent review on the final rendered head.
+
+Before retiring a producer, observe the replacement publish a valid report for
+an exact head accepted by the deployed forge. Preserve the predecessor binary
+and receipts for controlled rollback. Rollback changes authority through the
+same reviewed manifest and renderer process; it does not enable an environment
+escape hatch or weaken score floors and branch protection.
 
 ## Where an authoritative score is produced
 
 Scoring runs on the gate runners, never on the forge host. The forge serves git
 for the whole family, and an audit is a clone plus a full walk; one audit per
 pushed head once wedged it during a bulk import of ~244 branches.
+
+The flow below describes the pr-gate 2.1.x host contract used by this forge.
+It does not claim ADR 0012's proposed snapshot/job bindings are deployed.
 
 The flow, per head:
 
@@ -60,17 +112,18 @@ The flow, per head:
    **whole**: the job carries audit mode `full` and the base
    `4b825dc642cb6eb9a060e54bf8d69288fbee4904` (git's empty tree) purely as the
    marker for *no base*, which is never handed to the auditor. The runner runs
-   `jankurai audit .` — the same whole-tree invocation `<repo>/required` and
-   `ops/jankurai/backfill-repo-scores.sh` use — and the head gets a real score
-   and a `jankurai/proof` that passes or fails on its findings.
+   a whole-tree audit from the clean checkout:
 
-   It is not diffed against the empty tree: `git diff base...head` refuses a
-   tree (`object 4b825dc6... is a tree, not a commit`), so jankurai 1.6.11 reads
-   an empty change set, prints `nothing to audit`, exits 0 and writes a report
-   with no verdict in it. A parentless commit of that tree does not help either
-   — a three-dot diff needs a merge base, and an unrelated root has none. That
-   empty-tree base is why all 16 bootstrapped `root/jankurai*` mains recorded
-   `decision: tool-failed, score: null`.
+   ```sh
+   jankurai audit . --full --mode advisory --policy agent/audit-policy.toml \
+     --json "$out" --no-score-history
+   ```
+
+   The policy path must be in-tree for Jankurai 1.7.x; the runner installs
+   trusted policy bytes there before invoking it. The empty-tree marker is
+   never passed to `diff-audit`: a three-dot diff requires a commit base with
+   common ancestry. A parentless commit wrapping the empty tree cannot supply
+   that ancestry either.
 
    The ingest keeps the two apart: a `full` job accepts only a `full` report
    (a diff report for it could only be a diff against nothing), while a `diff`
@@ -86,19 +139,22 @@ The flow, per head:
    repositories that host serves, and admits only reviewed code: a `main` head
    the clone's own `main` reaches, or the head of an open pull request marked
    `origin:internal`. A contribution is never checked out on the gate host, so it
-   gets no `jankurai/proof` there; its job lapses with its lease. It clones the
+   produces no score there; its pending job lapses with its lease. It clones the
    head into a throwaway directory and gives it `agent/` and `.jeryu/` (policy,
    generated zones, boundaries, maps, CI declaration) only from a commit `main`
-   reaches -- the job's base, else `main`'s tip -- so a head never chooses the
-   metadata that scores it, and hides that substitution from the diff. It runs
+   reaches: the job's base for a diff when it is on `main`, otherwise the
+   admitted head for a `main` job, or `main`'s tip for a topic. Missing trusted
+   policy uses the runner's default policy. A topic never chooses the metadata
+   that scores it; the runner hides its substitutions from the diff. It runs
    the host's governed auditor --
    `diff-audit` against the job's base, or a whole-tree `audit` for a job with
    no commit base; niced, idle I/O and time-boxed -- and submits the report.
    The auditor is the one the host's tool installer keeps on the pin of record:
-   the repository's generated verifier checks the binary, its installation
-   receipt and the host's authority stamp, and a host whose auditor does not
-   verify audits nothing. One pass every 30 seconds, never overlapping. Every
-   pass also posts a runner heartbeat (`jankurai-audit` label,
+   `pr-gate-ensure-jankurai.sh`, installed beside the runner, checks the
+   binary, its installation receipt and the host's authority stamp. A host whose
+   auditor does not verify audits nothing. Passes start 30 seconds after the previous pass
+   finishes and never overlap. Every pass also posts a runner heartbeat
+   (`jankurai-audit` label,
    `<host>/jankurai-audit`), so `/runners` shows the auditor, what it is
    auditing, how its last audit went, the gate's installed code and the digest
    of the jankurai binary it really invokes (`tools`). The same identity sends

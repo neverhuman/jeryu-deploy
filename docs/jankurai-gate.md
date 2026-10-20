@@ -24,6 +24,15 @@ them to agree, so the local verdict and the hosted one cannot disagree about one
 sha. Every repository of the family carries the same script at the same path,
 and `ops/ci/pr-ci.sh` runs it.
 
+The auditor identity comes from protected `jeryu-tool/tool-manifest.toml`;
+the current pin is the key-signed 1.7.5 release. Installation verifies the
+release and provenance with the pinned signer and cosign. Local verification
+is offline and checks the installed binary and receipt. See
+[Governed Jankurai](governed-jankurai.md) for the trust model, rollout steps and
+the pr-gate host's independent report path. ADR 0012's multi-anchor rotation
+and bootstrap requirements remain a migration contract, not a claim that this
+pin enables schema-2 activation.
+
 The gate refuses a pull request only where the rollout is on; elsewhere it
 prints the same verdict and exits 0.
 
@@ -149,7 +158,7 @@ git -C <repo> checkout --detach origin/main
 
 ### The report of 2026-09-30
 
-Measured with the pinned auditor (`jankurai 1.6.11`) through
+Historical measurement with the then-pinned auditor (`jankurai 1.6.11`) through
 `ops/ci/jankurai-gate.sh`, against the merge-base with `origin/main`:
 
 | repository | score | floor | caps | hard findings | verdict |
@@ -157,12 +166,11 @@ Measured with the pinned auditor (`jankurai 1.6.11`) through
 | `jeryu/jeryu-ci-runner` | 93 | 85 | none | 0 | pass — gate on |
 | `jeryu/jeryu-deploy` | 86 | 85 | none | 0 | pass — gate on |
 
-The two repositories that pass have `enabled = true` in
-`agent/jankurai-gate.toml`. The family's other repositories have not been
-measured here (this change was made in a two-repository clone) and stay off until
-they are: run the loop above on the host, where every repository has a working
-tree, and extend the table with the result before adding a name to
-`JERYU_AUDIT_GATE_REPOS`.
+These are retained historical scores, not measurements with 1.7.5 or evidence
+of current fleet readiness. At that rollout, these two repositories enabled
+`agent/jankurai-gate.toml`; the table made no claim about the rest of the family.
+Before extending the rollout, rerun the command above with the manifest-pinned
+auditor and record fresh evidence with the configuration change.
 
 The exit status is the answer, and the printed verdict is the reason. Record the
 table of repository, sha, score, floor and caps with the rollout change that
