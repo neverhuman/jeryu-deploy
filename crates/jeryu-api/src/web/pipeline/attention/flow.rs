@@ -6,16 +6,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Utc};
 
 use super::{
-    BRANCH_CAMPAIGN_PRS, Draft, Hosts, Item, MERGER_STALLED_MINUTES, PullLink,
+    BRANCH_CAMPAIGN_PRS, Decision, Draft, Hosts, Item, MERGER_STALLED_MINUTES, PullLink,
     QUEUE_LOOKBACK_HOURS, QUEUE_STUCK_MINUTES, READY_TO_MERGE_MINUTES, Severity, Shell,
-    close_landed_pull_call, close_pull_call, enqueue_call, parse_time, pull_href,
-    ready_for_review_call, regate_call, web_pin_bump_prs,
+    close_landed_pull_call, close_pull_call, decline_pull_call, enqueue_call, owner_decision_call,
+    parse_time, pull_href, ready_for_review_call, regate_call, web_pin_bump_prs,
 };
 use crate::web::control_plane::{GateRunnerRecord, is_online, is_reviewer};
 use crate::web::merge_queue::{QueueEntry, QueueState};
 use crate::web::pipeline::Event;
-use crate::web::pulls::PullPosture;
 use crate::web::pulls::landed::Landed;
+use crate::web::pulls::{OwnerDecisionAsk, PullPosture};
 
 /// The verdicts that leave a review waiting on a person. Shared with Flow.
 pub(crate) fn review_hold_explanation(verdict: &str) -> Option<&'static str> {
@@ -490,6 +490,13 @@ pub(crate) fn pull_items(
             items.push(landed_item(pull, landed));
             continue;
         }
+        // The automated reviewer has asked one question about this exact head
+        // and is waiting. It is its own row, above the hold it left behind:
+        // the hold says "push a fix", and the only thing that moves this head
+        // is the answer.
+        if let Some(ask) = &posture.owner_decision {
+            items.push(owner_decision_item(pull, ask));
+        }
         let verdict: Verdict = if posture.changes_requested > 0 {
             Some((
                 "pr_changes_requested",
@@ -650,6 +657,51 @@ pub(crate) fn pull_items(
     fold_merger_stalled(&mut items, now);
     fold_branch_campaigns(&mut items, pulls);
     items
+}
+
+/// The one question the automated reviewer is waiting on, as one row with both
+/// answers on it. Yes records the owner's decision on the exact head — an
+/// approval in their name whose body states it, which is what the reviewer
+/// reads back and what the merge passport counts — and the reviewer merges it
+/// from there. No closes the pull request. The question itself is the
+/// reviewer's own text: it is shown and never acted on, and both calls are
+/// built from the repository, the number and the head alone.
+fn owner_decision_item(pull: &PullFacts, ask: &OwnerDecisionAsk) -> Item {
+    let label = format!("{}#{}", pull.repo, pull.number);
+    // By characters, never bytes: a head this rule cannot slice is not a
+    // reason to panic in the inbox.
+    let head: String = pull.head_sha.chars().take(12).collect();
+    let mut item = Draft {
+        id: format!("pr-owner-decision:{}:{}", pull.repo, pull.number),
+        kind: "pr_needs_owner_decision",
+        severity: Severity::Action,
+        title: format!("{label} needs one decision from you"),
+        // The question is the reviewer's own, and it already says what yes and
+        // no mean, so the reason says whose head it is about and leaves the
+        // question to `decision`, where the page reads it from.
+        reason: format!(
+            "The automated reviewer is holding \"{}\" by {} at head {head} and cannot settle \
+             it by itself. Every finding stays in the review either way.",
+            pull.title, pull.author
+        ),
+        href: pull_href(&pull.repo, pull.number),
+        // No `api`: the step is the owner's answer, and `decision` carries
+        // both calls, so nothing here performs one of them for them.
+        label: "Answer Yes or No",
+        api: None,
+        command: None,
+    }
+    .build();
+    item.decision = Some(Decision {
+        question: ask.question.clone(),
+        yes: owner_decision_call(&pull.repo, pull.number, &pull.head_sha),
+        no: decline_pull_call(&pull.repo, pull.number),
+    });
+    item.since = Some(pull.updated_at.to_rfc3339());
+    item.repo = Some(pull.repo.clone());
+    item.pr = Some(pull.number);
+    item.sha = Some(pull.head_sha.clone());
+    item
 }
 
 /// What every pull request of a campaign is waiting on, as a phrase for the

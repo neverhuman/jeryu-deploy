@@ -1791,6 +1791,72 @@ impl GateFailure {
     }
 }
 
+/// The one question the automated reviewer is waiting on an owner to answer,
+/// as the reviewer published it on this exact head.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OwnerDecisionAsk {
+    /// The question in the reviewer's own words: what is still open, and what
+    /// answering yes or no means. Reviewer-written text that a page shows and
+    /// nothing acts on, clipped to one inbox reason's worth.
+    pub question: String,
+}
+
+/// How long a reviewer's question may be before the inbox clips it.
+const OWNER_DECISION_QUESTION_CHARS: usize = 600;
+
+/// The check run the automated reviewer publishes on a head it cannot settle
+/// without the owner. `action_required` is the waiting state: the same run
+/// becomes `success` once the decision is recorded, so a head stops asking
+/// without anything having to remember that it did.
+const OWNER_DECISION_CHECK: &str = "pr-redteam/owner-decision";
+
+/// The line a recorded owner decision carries in its own review body: the
+/// same one the automated reviewer reads back before it publishes a verdict.
+const OWNER_DECISION_MARKER: &str = "Owner decision:";
+
+/// Whether a decision is already recorded on this head: an effective approval
+/// on it, by the account that owns the repository's namespace, whose body says
+/// it is a decision. The question has an answer from that moment, so the inbox
+/// stops asking it without waiting for the reviewer to republish its check
+/// run. A decision by one of the reviewer's other configured accounts is that
+/// installation's configuration, not the forge's, so the row stays up until
+/// the reviewer itself answers the check run — late rather than wrong.
+fn owner_decision_recorded(reviews: &[PullRequestReview], pr: &PullRequest) -> bool {
+    reviews.iter().any(|review| {
+        review.effective
+            && review.state == "APPROVED"
+            && review.head_sha.as_deref() == Some(pr.head.sha.as_str())
+            && review.author == pr.owner
+            && review.body_markdown.as_deref().is_some_and(|body| {
+                body.lines()
+                    .any(|line| line.trim_start().starts_with(OWNER_DECISION_MARKER))
+            })
+    })
+}
+
+/// The question waiting on this head, out of the check run the reviewer
+/// published. Nothing is read from anywhere else, and a run with no question
+/// in its summary asks nothing: an item with no question is not one somebody
+/// can answer.
+fn owner_decision_ask(checks: &[PullRequestCheck]) -> Option<OwnerDecisionAsk> {
+    let run = checks.iter().find(|check| {
+        check.name == OWNER_DECISION_CHECK
+            && (check.status == "action_required"
+                || check.conclusion.as_deref() == Some("action_required"))
+    })?;
+    let question = run
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|question| !question.is_empty())?;
+    Some(OwnerDecisionAsk {
+        question: question
+            .chars()
+            .take(OWNER_DECISION_QUESTION_CHARS)
+            .collect(),
+    })
+}
+
 /// Where an open pull request's merge gate stands, for the attention inbox.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PullPosture {
@@ -1811,6 +1877,9 @@ pub(crate) struct PullPosture {
     /// The default branch's main-health failure at its current Git head,
     /// if the PR is failing beside an already-red main.
     pub main_failure: Option<GateFailure>,
+    /// The one question the automated reviewer is waiting on the owner to
+    /// answer about this head, if it published one.
+    pub owner_decision: Option<OwnerDecisionAsk>,
 }
 
 /// The check run the gate runner publishes on every head it gates.
@@ -1888,6 +1957,8 @@ pub(super) fn attention_posture(state: &WebState, pr: &PullRequest) -> Option<Pu
             && summary.checks.pending == 0
             && (!required.is_empty() || summary.checks.total > 0),
         gate_failure: gate_failure(&checks),
+        owner_decision: owner_decision_ask(&checks)
+            .filter(|_| !owner_decision_recorded(&reviews_for_pr(state, pr), pr)),
         main_failure: (pr.base.ref_name == repo.default_branch)
             .then(|| crate::web::pipeline::attention::main_head(state, &pr.owner, &pr.repo))
             .flatten()

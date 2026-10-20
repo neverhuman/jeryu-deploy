@@ -84,10 +84,12 @@ pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 /// optional `pulls`, `v1.4` the optional `assignee`, `v1.5` the page's
 /// `families` summary (and a `family` read off `repo` when a collector named
 /// none) and `v1.6` the optional `digest`: every earlier field is unchanged,
-/// `v1.7` adds the optional todo `requested_by` and `v1.8` the optional
-/// `todos` (with `shift`) a held pull request carries,
-/// so a client written against `v1` reads a `v1.8` answer as it always did.
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.8";
+/// `v1.7` adds the optional todo `requested_by`, `v1.8` the optional `todos`
+/// (with `shift`) a held pull request carries and `v1.9` the optional
+/// `decision`, the one question a row puts to the owner and the call that
+/// answers it each way, so a client written against `v1` reads a `v1.9`
+/// answer as it always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.9";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -176,6 +178,7 @@ pub(crate) const KINDS: &[&str] = &[
     "pr_changes_requested",
     "pr_checks_failing",
     "pr_draft_waiting",
+    "pr_needs_owner_decision",
     "pr_ready_to_merge",
     "pr_superseded",
     "pushed_after_merge",
@@ -232,6 +235,17 @@ pub(crate) struct Action {
     /// left out of the JSON otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_in: Option<String>,
+}
+
+/// The question a row puts to the owner and the two calls that answer it, as
+/// `/needs-you` reads them: `question` is shown, `yes` and `no` are the only
+/// things a click performs. A row carrying this has no `action.api`, because
+/// the step is the owner's answer and nothing replays it for them.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct Decision {
+    pub question: String,
+    pub yes: ApiCall,
+    pub no: ApiCall,
 }
 
 /// A shell line and where it is run. One value, so that no rule can offer a
@@ -323,6 +337,11 @@ pub(crate) struct Item {
     pub digest: Option<crate::web::scorecard::digest::Digest>,
     pub href: String,
     pub action: Action,
+    /// The one question a row asks the owner, with the call that answers it
+    /// each way. Set on `pr_needs_owner_decision` only; the key is absent on
+    /// every other item, where there is one next step and nothing to decide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<Decision>,
     pub next_step: String,
 }
 
@@ -384,6 +403,7 @@ impl Draft<'_> {
             digest: None,
             review: None,
             todos: Vec::new(),
+            decision: None,
             href: self.href,
             action: match self.command {
                 Some(shell) => Action {
@@ -555,6 +575,53 @@ pub(super) fn close_pull_call(repo: &str, number: u64, superseded_by: u64) -> Ap
         // replacement link is written by.
         body: Some(json!({"state": "closed", "superseded_by": superseded_by})),
         confirm: None,
+    }
+}
+
+/// `PATCH /api/v3/repos/:owner/:name/pulls/:number`: close a pull request
+/// with no replacement to point at, which is what answering no to the
+/// reviewer's question does. Nothing is recorded as having superseded it,
+/// because nothing has.
+pub(super) fn decline_pull_call(repo: &str, number: u64) -> ApiCall {
+    ApiCall {
+        method: "PATCH",
+        path: format!("/api/v3/repos/{repo}/pulls/{number}"),
+        body: Some(json!({"state": "closed"})),
+        confirm: Some(
+            "Close this pull request? The reviewer's question goes with it; the branch and              every finding in the review are left as they are."
+                .to_string(),
+        ),
+    }
+}
+
+/// `POST /api/v1/repos/:id/pulls/:number/reviews`: record the owner's
+/// decision on one exact head, as an approval in their name whose body states
+/// that it is one. That is what the automated reviewer reads back before it
+/// publishes a verdict, and what the merge passport counts, so the one click
+/// both answers the reviewer's question and clears the approval blocker. The
+/// head is in the call: a pull request pushed in the meantime makes the route
+/// refuse it rather than approving a diff nobody saw.
+pub(super) fn owner_decision_call(repo: &str, number: u64, head_sha: &str) -> ApiCall {
+    ApiCall {
+        method: "POST",
+        path: format!("/api/v1/repos/{repo}/pulls/{number}/reviews"),
+        body: Some(json!({
+            "verdict": "approve",
+            "expected_head_sha": head_sha,
+            "body_markdown": format!(
+                "Owner decision: yes. Recorded from the Needs you inbox for head {head_sha}: \
+                 the findings the automated reviewer raised on this head are accepted and it \
+                 merges as it stands."
+            ),
+            "thread_comments": [],
+            "evidence": null,
+        })),
+        confirm: Some(
+            "Record your decision on this exact head? It is an approval in your name; every \
+             finding stays in the review, and the automated reviewer merges the pull request \
+             from there."
+                .to_string(),
+        ),
     }
 }
 

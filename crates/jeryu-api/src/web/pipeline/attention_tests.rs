@@ -27,7 +27,7 @@ use crate::web::control_plane::{
 };
 use crate::web::merge_queue::{QueueEntry, QueueState};
 use crate::web::pulls::landed::Landed;
-use crate::web::pulls::{GateFailure, PullPosture};
+use crate::web::pulls::{GateFailure, OwnerDecisionAsk, PullPosture};
 use crate::web::shift::{
     BlockKind, Heartbeat, ShiftBranch, ShiftPr, ShiftRepo, ShiftTodo, TodoStatus, WorkerRow,
 };
@@ -749,6 +749,98 @@ fn a_pull_request_already_on_its_base_asks_only_to_be_closed() {
             Value::Null
         ))
     );
+}
+
+/// The automated reviewer's one question is its own row, with both answers on
+/// it: yes records the owner's decision on the exact head, no closes the pull
+/// request. The question is shown; neither call is built from it.
+#[test]
+fn one_question_for_the_owner_is_one_row_with_both_answers() {
+    let pulls = [PullFacts {
+        title: "lower the quality floor to 92".to_string(),
+        ..pull(
+            12,
+            30,
+            PullPosture {
+                // The hold the question came with is still on the head.
+                changes_requested: 1,
+                owner_decision: Some(OwnerDecisionAsk {
+                    question: "A fix round already ran and this finding came back unchanged: \
+                               the floor drops from 94 to 92."
+                        .to_string(),
+                }),
+                ..PullPosture::default()
+            },
+        )
+    }];
+    let items = pull_items(&pulls, &[], now(), &hosts());
+    assert_eq!(
+        kinds(&items),
+        ["pr_needs_owner_decision", "pr_changes_requested"]
+    );
+    let asked = &items[0];
+    assert_eq!(asked.id, "pr-owner-decision:jeryu/jeryu-web:12");
+    assert_eq!(asked.severity, Severity::Action);
+    assert_eq!(
+        asked.title,
+        "jeryu/jeryu-web#12 needs one decision from you"
+    );
+    assert!(
+        asked.reason.contains("b761244b7637"),
+        "the row says which head is waiting: {}",
+        asked.reason
+    );
+    assert_eq!(asked.sha.as_deref(), Some(pulls[0].head_sha.as_str()));
+    // The step is the owner's answer, so nothing on `action` performs one of
+    // the two calls for them.
+    assert_eq!(asked.action.label, "Answer Yes or No");
+    assert!(asked.action.api.is_none() && asked.action.command.is_none());
+    let decision = asked
+        .decision
+        .as_ref()
+        .expect("the row carries the question and both answers");
+    assert_eq!(
+        decision.question,
+        "A fix round already ran and this finding came back unchanged: the floor drops from 94 \
+         to 92."
+    );
+    // Yes: the owner's own approval on the exact head, stating that it is a
+    // decision, which is what the reviewer reads back before it publishes.
+    assert_eq!(
+        (decision.yes.method, decision.yes.path.as_str()),
+        ("POST", "/api/v1/repos/jeryu/jeryu-web/pulls/12/reviews")
+    );
+    let body = decision.yes.body.as_ref().expect("the yes call has a body");
+    assert_eq!(body["verdict"], "approve");
+    assert_eq!(body["expected_head_sha"], pulls[0].head_sha.as_str());
+    assert!(
+        body["body_markdown"]
+            .as_str()
+            .is_some_and(|said| said.starts_with("Owner decision: yes.")),
+        "the body states the decision: {body}"
+    );
+    // No: close the pull request, with nothing recorded as superseding it.
+    assert_eq!(
+        (decision.no.method, decision.no.path.as_str()),
+        ("PATCH", "/api/v3/repos/jeryu/jeryu-web/pulls/12")
+    );
+    assert_eq!(
+        decision.no.body.as_ref().expect("the no call has a body")["state"],
+        "closed"
+    );
+    assert!(
+        decision
+            .no
+            .body
+            .as_ref()
+            .unwrap()
+            .get("superseded_by")
+            .is_none()
+    );
+    // Both answers are confirmed before they are sent.
+    assert!(decision.yes.confirm.is_some() && decision.no.confirm.is_some());
+    // Every other kind has one next step and nothing to decide.
+    assert!(items[1].decision.is_none());
 }
 
 #[test]
@@ -2886,7 +2978,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["schema_version"], "jeryu.attention/v1.8");
+    assert_eq!(body["schema_version"], "jeryu.attention/v1.9");
     let items = body["items"].as_array().unwrap();
     let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
     // Critical first (open todos and no worker has ever reported), then the
@@ -3805,6 +3897,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("pr_changes_requested", "/repos/:provider/:owner/*"),
     ("pr_checks_failing", "/repos/:provider/:owner/*"),
     ("pr_draft_waiting", "/repos/:provider/:owner/*"),
+    ("pr_needs_owner_decision", "/repos/:provider/:owner/*"),
     ("pr_ready_to_merge", "/repos/:provider/:owner/*"),
     ("pr_superseded", "/repos/:provider/:owner/*"),
     ("pushed_after_merge", "/repos/:provider/:owner/*"),
@@ -4319,6 +4412,20 @@ fn one_of_every_kind() -> Vec<Item> {
                 changed_paths: vec!["ops/ci/pr-ci.sh".to_string()],
                 ..posture(PullPosture::default(), 18)
             },
+            // A head the automated reviewer is holding on one question for
+            // the owner.
+            posture(
+                PullPosture {
+                    changes_requested: 1,
+                    owner_decision: Some(OwnerDecisionAsk {
+                        question: "Its 4 automatic fix rounds are used up and the quality \
+                                   floor it lowers is still open."
+                            .to_string(),
+                    }),
+                    ..PullPosture::default()
+                },
+                19,
+            ),
         ],
         std::slice::from_ref(&building),
         now(),

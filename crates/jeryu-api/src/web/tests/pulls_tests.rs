@@ -1885,6 +1885,153 @@ async fn attention_posture_carries_the_gate_runners_failure_cause() {
     assert_eq!(failure.cause(), "Operator gate failure (exit 1)");
 }
 
+/// The one question the automated reviewer published on a head is one inbox
+/// row with one click, and the click records the owner's decision on that
+/// exact head: the approval the reviewer reads back before it publishes a
+/// verdict, and the one the merge passport counts. Once it is recorded the row
+/// stops asking, without waiting for the reviewer to republish anything.
+#[tokio::test]
+async fn an_owner_decision_question_is_one_click_that_records_the_decision() {
+    const QUESTION: &str = "pr-redteam cannot settle alice/jeryu#1 by itself: its 4 automatic \
+                            fix rounds are used up and these findings are still open. What is \
+                            left: the quality floor drops from 94 to 92. Yes records your \
+                            decision on this exact head and lets it merge as it stands; No \
+                            closes the pull request.";
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "jeryu",
+            "bob",
+            CreatePullRequestRequest {
+                title: "lower the quality floor to 92".to_string(),
+                head: "feature".to_string(),
+                base: "main".to_string(),
+                head_sha: Some("head-asked".to_string()),
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let ask = |conclusion: CheckConclusion, summary: &str| {
+        core.create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: "pr-redteam/owner-decision".to_string(),
+                head_sha: "head-asked".to_string(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(conclusion),
+                output: Some(jeryu_core::CheckRunOutput {
+                    title: "pr-redteam needs one owner decision".to_string(),
+                    summary: summary.to_string(),
+                    text: None,
+                }),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    };
+    ask(CheckConclusion::ActionRequired, QUESTION);
+    let state = Arc::new(WebState::new(core.clone()));
+    let posture_now = || {
+        let pr = core.get_pull_request("alice", "jeryu", pr.number).unwrap();
+        crate::web::pulls::attention_posture(&state, &pr).expect("an open pull request")
+    };
+    let posture = posture_now();
+    assert_eq!(
+        posture
+            .owner_decision
+            .as_ref()
+            .map(|ask| ask.question.as_str()),
+        Some(QUESTION),
+        "the question the reviewer published is what the inbox asks"
+    );
+    // The row the inbox draws from that posture, and the call it carries.
+    let facts = crate::web::pipeline::attention::PullFacts {
+        repo: "alice/jeryu".to_string(),
+        number: pr.number,
+        title: pr.title.clone(),
+        author: pr.author.clone(),
+        head_sha: "head-asked".to_string(),
+        head_ref: "feature".to_string(),
+        base_ref: "main".to_string(),
+        updated_at: pr.updated_at,
+        posture,
+        changed_paths: Vec::new(),
+        landed: None,
+        changes_requested_since: None,
+        changes_review: None,
+        head_todos: Vec::new(),
+    };
+    let items = crate::web::pipeline::attention::pull_items(
+        std::slice::from_ref(&facts),
+        &[],
+        chrono::Utc::now(),
+        &crate::web::pipeline::attention::Hosts::default(),
+    );
+    let asked = items
+        .iter()
+        .find(|item| item.kind == "pr_needs_owner_decision")
+        .expect("one row asks the question");
+    let call = &asked
+        .decision
+        .as_ref()
+        .expect("the row carries both answers")
+        .yes;
+    assert_eq!(
+        call.path,
+        format!("/api/v1/repos/alice/jeryu/pulls/{}/reviews", pr.number)
+    );
+    // The click itself: the route the row names, with the body it carries,
+    // made by the owner.
+    let answer = crate::web::pulls::review(
+        State(state.clone()),
+        authenticated_account("alice"),
+        AxumPath(("alice/jeryu".to_string(), pr.number)),
+        axum::body::Bytes::from(call.body.clone().expect("a body").to_string()),
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::OK);
+    let recorded = core
+        .list_reviews("alice", "jeryu", pr.number)
+        .unwrap()
+        .into_iter()
+        .find(|review| review.author == "alice")
+        .expect("the owner's decision is recorded");
+    assert_eq!(recorded.state, ReviewState::Approved);
+    assert_eq!(recorded.head_sha.as_deref(), Some("head-asked"));
+    assert!(
+        recorded
+            .body
+            .as_deref()
+            .is_some_and(|said| said.starts_with("Owner decision: yes.")),
+        "the recorded review states that it is a decision: {:?}",
+        recorded.body
+    );
+    // The question has an answer, so the row stops asking it — the reviewer
+    // has not republished its check run yet, and need not have.
+    let answered = posture_now();
+    assert_eq!(answered.approvals, 1);
+    assert!(
+        answered.owner_decision.is_none(),
+        "a recorded decision stops the row asking: {:?}",
+        answered.owner_decision
+    );
+    // And a reviewer that has published its answer stops asking too.
+    ask(CheckConclusion::Success, "the owner decided");
+    assert!(posture_now().owner_decision.is_none());
+}
+
 #[tokio::test]
 async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
     let core = ForgeCore::new();
