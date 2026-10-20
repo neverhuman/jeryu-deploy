@@ -1,4 +1,4 @@
-# 0016. A feature is a chain of dependent todos
+# 0018. A feature is a chain of dependent todos
 
 Status: Accepted
 Date: 2026-10-15
