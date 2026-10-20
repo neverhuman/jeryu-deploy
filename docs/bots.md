@@ -29,8 +29,16 @@ again on every request against the owner's current grants.
   protection, transfer a repository, publish statuses or check runs, or
   record deployments.
 - A bot reaches only `/api/v1/repos/*`, `/api/v1/bot/whoami`, git over HTTPS,
-  the GitHub-compatible `/api/v3/repos/*` surface, and MCP. On MCP it sees
+  the GitHub-compatible `/api/v3/repos/*` surface, MCP, and
+  `POST /api/v1/shift/todos`. On MCP it sees
   no admin tool, and every repository argument is checked against its reach.
+- Filing shift todos is the one write outside a repository a bot may make, and
+  it is scoped by reach, not by any admin role: the call is allowed only when
+  the bot could write the family's queue repository (`<family>-todo`), and one
+  call files at most 20 todos. The todo's creator is the bot's acting account,
+  so a team bot files as `<organization>.<slug>[bot]`. Every other route under
+  `/api/v1/shift/` — reading the queue, todo actions, heartbeats — stays shut
+  to bots and answers `403`.
 - Changing the owner's password, or disabling or locking the account, revokes
   every key the account's bots hold.
 

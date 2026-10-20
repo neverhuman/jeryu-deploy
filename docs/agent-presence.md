@@ -37,8 +37,9 @@ Reporting scope:
 - A session belongs to the login that registered it while its row is stored (see the bounds below: rows go 14 days after the last beat, or earlier when their own reporter stores more than 2048). A beat from another login answers `409 presence_session_owned`. A `DELETE` of a missing or foreign session answers the same `404 presence_session_not_found`. Ownership checks and writes share one SQLite transaction. An admin may beat
   or end anyone's session; the session stays its reporter's.
 
-Bot tokens (`jat_…`) reach only `/api/v1/repos/*`, so they read a repository's
-list but do not report; reporters use a login or a personal access token.
+Bot tokens (`jat_…`) reach no presence route: a bot reads a repository's
+session list through `/api/v1/repos/*` but does not report; reporters use a
+login or a personal access token.
 
 ## Write: `POST /api/v1/agent-presence`
 
