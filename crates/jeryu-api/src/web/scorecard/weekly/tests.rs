@@ -119,8 +119,12 @@ async fn the_recorded_digest_reaches_the_attention_inbox() {
     assert_eq!(row.href, "/scorecard");
     assert_eq!(row.digest.as_ref(), Some(&stored));
     assert!(row.reason.contains("lead time p50"), "{}", row.reason);
-    // A digest older than a week and a day is last week's reading.
-    let later = now + chrono::Duration::days(9);
+    // A digest older than a week and a day is last week's reading. Age runs
+    // from when the event log recorded it (wall clock), not from `now`.
+    let recorded = chrono::DateTime::parse_from_rfc3339(&events[0].ts)
+        .expect("the event's timestamp")
+        .with_timezone(&Utc);
+    let later = recorded + chrono::Duration::days(9);
     state.attention.invalidate();
     assert!(
         !attention::collect(&state, later)
