@@ -819,6 +819,7 @@ pub(super) async fn gate(
     if viewer_run.is_none()
         && admin_only_request(request.method(), request.uri().path())
         && account.role != UserRole::Admin
+        && !(auth.bot.is_some() && bot_todo_filing(request.method(), request.uri().path()))
     {
         return forbidden("admin role required");
     }
@@ -1764,7 +1765,17 @@ fn bot_path_allowed(method: &Method, path: &str) -> bool {
     if path == "/api/v1/bot/whoami" {
         return matches!(*method, Method::GET | Method::HEAD);
     }
-    path.starts_with("/api/v1/repos/") || path == "/mcp" || path.starts_with("/mcp/")
+    bot_todo_filing(method, path)
+        || path.starts_with("/api/v1/repos/")
+        || path == "/mcp"
+        || path.starts_with("/mcp/")
+}
+
+/// `POST /api/v1/shift/todos`: the one shift write a bot may make. The handler
+/// still checks that the bot can write to the family's queue repository, so
+/// the right follows the bot's reach rather than any admin role.
+fn bot_todo_filing(method: &Method, path: &str) -> bool {
+    *method == Method::POST && matches!(path, "/api/v1/shift/todos" | "/api/v1/shift/todos/")
 }
 
 /// Repository deletion trusts the gate, and `repo_delete` does not look at the

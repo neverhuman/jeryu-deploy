@@ -6,7 +6,9 @@
 //! named in `JERYU_SHIFT_REPORTERS` as well, so a worker-pool host reports its
 //! slots without holding an admin token; and the todo action route, where any
 //! person may claim, assign, unassign or finish a todo (see `assignment.rs`)
-//! and every other action stays admin-only. Queues are read
+//! and every other action stays admin-only. A bot token may also file todos
+//! (`POST /api/v1/shift/todos`) into a family whose queue repository its reach
+//! lets it write, and nothing else under `/api/v1/shift/`. Queues are read
 //! from and written to the hosted `<family>-todo` bare repos directly; see
 //! `queue.rs`. Heartbeat history is kept in `<data_dir>/shift.sqlite`.
 
@@ -491,10 +493,16 @@ fn default_title(text: &str) -> String {
     }
 }
 
-/// `POST /api/v1/shift/todos`
+/// Todos one bot call may file at once.
+const BOT_FILE_LIMIT: usize = 20;
+
+/// `POST /api/v1/shift/todos`. Admins file anywhere; a bot (agent or access
+/// token) files only into a family whose queue repository its reach lets it
+/// write, so the right is scoped to that family and carries nothing else.
 pub(crate) async fn file_todos(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
+    bot: Option<Extension<BotPrincipal>>,
     body: Bytes,
 ) -> AxumResponse {
     let request: FileTodoRequest = match parse(&body) {
@@ -505,6 +513,32 @@ pub(crate) async fn file_todos(
         Ok(q) => q,
         Err(resp) => return *resp,
     };
+    match &bot {
+        Some(Extension(bot)) => {
+            let call = super::bots::bot_call(bot, &queue.owner, &queue.repo, true, None, None);
+            if let Err(error) = state.core.authorize_bot(&call) {
+                return super::bots::map_bot_error(error);
+            }
+            if request
+                .texts
+                .as_ref()
+                .is_some_and(|t| t.len() > BOT_FILE_LIMIT)
+            {
+                return bad_request(&format!(
+                    "a bot files at most {BOT_FILE_LIMIT} todos at once"
+                ));
+            }
+        }
+        None if account.role != UserRole::Admin => {
+            return shift_error(
+                StatusCode::FORBIDDEN,
+                "todo_action_forbidden",
+                "admin role required",
+                "ask an administrator, or file with a bot token that can write the family's queue",
+            );
+        }
+        None => {}
+    }
     let todos = match todos_from_request(&request, &queue, &account.login) {
         Ok(t) => t,
         Err(reason) => return bad_request(&reason),

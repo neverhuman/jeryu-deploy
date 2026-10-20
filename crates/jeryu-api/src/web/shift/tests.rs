@@ -4,7 +4,7 @@ use axum::http::{Method as HttpMethod, Request, StatusCode, header};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use jeryu_core::{
     CheckConclusion, CheckRunStatus, CreateCheckRunRequest, CreateRepositoryRequest, ForgeCore,
-    UserRole,
+    RepoAccessLevel, UserRole,
 };
 use jeryu_gitd::{GitdConfig, RepoManager};
 use serde_json::{Value, json};
@@ -2264,4 +2264,99 @@ async fn todo_comments_append_to_the_queue_and_leave_the_todo_alone() {
         .clone();
     assert_eq!(todo["note"], "fixed");
     assert_eq!(todo["body"], "Do the thing, twice.");
+}
+
+/// A bot token files todos into a family whose queue repository it can write,
+/// and that is every shift route it gets.
+#[tokio::test]
+async fn a_scoped_bot_token_files_todos_and_nothing_broader() {
+    use jeryu_core::{BotKind, BotReach, BotRepoRef};
+
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let repo = |name: &str| CreateRepositoryRequest {
+        name: name.to_string(),
+        private: true,
+        description: None,
+        default_branch: Some("main".to_string()),
+    };
+    core.create_account("jeryu", "jeryu-password", UserRole::Admin)
+        .unwrap();
+    core.create_repository("jeryu", repo("jeryu-todo")).unwrap();
+    core.create_repository("jeryu", repo("elsewhere")).unwrap();
+    for name in ["jeryu-todo", "elsewhere"] {
+        core.grant_repo_access("jeryu", "jeryu", "jeryu", name, RepoAccessLevel::Write)
+            .unwrap();
+    }
+    let enroll = |slug: &str, repo: &str| {
+        let bot = core
+            .enroll_bot(
+                "jeryu",
+                slug,
+                slug,
+                BotKind::GROK,
+                BotReach::Repositories {
+                    repos: vec![BotRepoRef {
+                        owner: "jeryu".to_string(),
+                        name: repo.to_string(),
+                    }],
+                },
+            )
+            .unwrap();
+        core.issue_bot_access_token("jeryu", bot.bot.id, Some("t"), None)
+            .unwrap()
+            .token
+    };
+    let (filer, stray) = (enroll("filer", "jeryu-todo"), enroll("stray", "elsewhere"));
+    let router = app(
+        WebState::new_with_git_storage(core.clone(), dir.path().to_path_buf())
+            .with_auth(true, false, false),
+        Path::new("/tmp/jeryu-no-spa"),
+    );
+    let call = |method, uri: &str, token: &str, body| {
+        router.clone().oneshot(request(method, uri, token, body))
+    };
+    let todo = json!({"family": "jeryu", "text": "from jarvi", "mode": "night"});
+
+    let filed = call(
+        HttpMethod::POST,
+        "/api/v1/shift/todos",
+        &filer,
+        Some(todo.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(filed.status(), StatusCode::CREATED);
+    assert_eq!(body_json(filed).await["title"], "from jarvi");
+
+    // Reach decides: a bot with no write to the queue repo files nothing.
+    let denied = call(
+        HttpMethod::POST,
+        "/api/v1/shift/todos",
+        &stray,
+        Some(todo.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    // Not broader: no other shift write, no admin read.
+    for (method, uri) in [
+        (HttpMethod::POST, "/api/v1/shift/todos/jeryu/x/action"),
+        (HttpMethod::POST, "/api/v1/shift/heartbeat"),
+        (HttpMethod::GET, "/api/v1/shift/todos"),
+    ] {
+        let response = call(method, uri, &filer, Some(json!({"action": "close"})))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
+    }
+    let bulk = json!({"family": "jeryu", "texts": vec!["x"; 21], "mode": "night"});
+    let over = call(HttpMethod::POST, "/api/v1/shift/todos", &filer, Some(bulk))
+        .await
+        .unwrap();
+    assert_eq!(over.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
