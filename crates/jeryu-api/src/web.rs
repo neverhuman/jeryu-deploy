@@ -308,6 +308,9 @@ pub(crate) struct WebState {
     /// `JERYU_MCP_PERSONAL_TOKEN_PEERS`, comma separated.
     pub(crate) mcp_personal_token_peers: Vec<std::net::IpAddr>,
     pub(crate) auth_rate_limits: Arc<Mutex<BTreeMap<String, auth::RateLimitBucket>>>,
+    /// The last stranded-branch scan result per repository, kept until that
+    /// repository is scanned again.
+    pub(crate) stranded_scans: Arc<Mutex<stranded_branches::ScanCache>>,
     /// Unit-test sessions must never seed agent credentials from the operator home.
     #[cfg(test)]
     session_auth_home: Arc<tempfile::TempDir>,
@@ -484,6 +487,7 @@ impl WebState {
             secure_cookies: false,
             mcp_personal_token_peers: Vec::new(),
             auth_rate_limits: Arc::new(Mutex::new(BTreeMap::new())),
+            stranded_scans: Arc::default(),
         }
     }
 

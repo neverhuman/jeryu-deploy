@@ -5,6 +5,8 @@
 //! its commits are patch-equivalent to default, it is already landed even when
 //! the commit ids differ.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use chrono::{DateTime, Utc};
 use jeryu_core::{PullRequest, PullRequestState, Repository};
 
@@ -42,6 +44,29 @@ pub(crate) struct StrandedBranch {
     pub(crate) newest_subject: String,
     pub(crate) newest_at: Option<DateTime<Utc>>,
     pub(crate) closed_pr: Option<u64>,
+    /// When the scan that produced this row looked at the branch.
+    pub(crate) scanned_at: Option<DateTime<Utc>>,
+}
+
+/// One repository's kept scan result: the stranded rows by branch name.
+#[derive(Debug, Default)]
+pub(crate) struct RepoScan {
+    rows: BTreeMap<String, StrandedBranch>,
+}
+
+/// The last result per repository (`owner/name`). A scan pass reaches only a
+/// rotating subset, so a repository outside this pass keeps what its last pass
+/// found; the budget decides how fresh a row is, not whether it shows.
+pub(crate) type ScanCache = BTreeMap<String, RepoScan>;
+
+/// What one pass learned about one repository.
+struct RepoPass {
+    full_name: String,
+    /// Every branch that could be stranded: not default, custody or carried by
+    /// an open pull request. A kept row for any other branch is stale.
+    candidates: BTreeSet<String>,
+    /// The branches this pass assessed, with the verdict for each.
+    assessed: Vec<(String, Option<StrandedBranch>)>,
 }
 
 fn is_open(pull: &PullRequest) -> bool {
@@ -389,9 +414,12 @@ fn assess_branch(
         newest_subject: newest.subject,
         newest_at: newest.at,
         closed_pr,
+        scanned_at: None,
     })
 }
 
+/// The stranded rows of every repository: this pass's findings for the
+/// repositories it reached, and each other repository's last findings.
 pub(crate) fn all_at_time(state: &WebState, now: DateTime<Utc>) -> Vec<StrandedBranch> {
     // A window's magnitude is always representable, including before the
     // Unix epoch. Keep it wide until an index is bounded by its collection.
@@ -399,13 +427,65 @@ pub(crate) fn all_at_time(state: &WebState, now: DateTime<Utc>) -> Vec<StrandedB
         .timestamp()
         .div_euclid(SCAN_WINDOW_SECONDS)
         .unsigned_abs();
-    all_at_round(state, round)
+    // Stamp the window, not the instant, so a window's answer repeats.
+    let window_start = DateTime::from_timestamp(
+        now.timestamp().div_euclid(SCAN_WINDOW_SECONDS) * SCAN_WINDOW_SECONDS,
+        0,
+    )
+    .unwrap_or(now);
+    let passes = scan_round(state, round);
+    let mut cache = state
+        .stranded_scans
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    merge_passes(&mut cache, passes, window_start);
+    // Forget repositories that are gone or archived so the cache stays bounded.
+    let live: BTreeSet<String> = state
+        .core
+        .list_repositories(None)
+        .into_iter()
+        .filter(|repo| !repo.archived)
+        .map(|repo| repo.full_name)
+        .collect();
+    cache.retain(|name, _| live.contains(name));
+    cache
+        .values()
+        .flat_map(|scan| scan.rows.values().cloned())
+        .collect()
+}
+
+fn merge_passes(cache: &mut ScanCache, passes: Vec<RepoPass>, now: DateTime<Utc>) {
+    for pass in passes {
+        let kept = cache.entry(pass.full_name).or_default();
+        kept.rows
+            .retain(|branch, _| pass.candidates.contains(branch));
+        for (branch, verdict) in pass.assessed {
+            match verdict {
+                Some(mut row) => {
+                    row.scanned_at = Some(now);
+                    kept.rows.insert(branch, row);
+                }
+                None => {
+                    kept.rows.remove(&branch);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn all_at_round(state: &WebState, round: u64) -> Vec<StrandedBranch> {
+    scan_round(state, round)
+        .into_iter()
+        .flat_map(|pass| pass.assessed)
+        .filter_map(|(_, row)| row)
+        .collect()
 }
 
 // Partial scans rotate so large forges remain responsive without permanently
 // hiding branches beyond the budget. A skipped branch is never mutated.
-fn all_at_round(state: &WebState, round: u64) -> Vec<StrandedBranch> {
-    let mut stranded = Vec::new();
+fn scan_round(state: &WebState, round: u64) -> Vec<RepoPass> {
+    let mut passes = Vec::new();
     let mut repos: Vec<_> = state
         .core
         .list_repositories(None)
@@ -445,6 +525,11 @@ fn all_at_round(state: &WebState, round: u64) -> Vec<StrandedBranch> {
             .collect();
         branches.sort_unstable();
         let branch_count = branches.len();
+        let mut pass = RepoPass {
+            full_name: repo.full_name.clone(),
+            candidates: branches.iter().map(|branch| branch.to_string()).collect(),
+            assessed: Vec::new(),
+        };
         for offset in 0..branch_count
             .min(MAX_BRANCHES_PER_REPO)
             .min(MAX_SCAN_BRANCHES - scanned_branches)
@@ -457,12 +542,14 @@ fn all_at_round(state: &WebState, round: u64) -> Vec<StrandedBranch> {
                 % branch_count as u64) as usize;
             let branch = branches[(start + offset) % branch_count];
             scanned_branches += 1;
-            if let Some(row) = assess_branch(state, repo, &pulls, branch) {
-                stranded.push(row);
-            }
+            pass.assessed.push((
+                branch.to_string(),
+                assess_branch(state, repo, &pulls, branch),
+            ));
         }
+        passes.push(pass);
     }
-    stranded
+    passes
 }
 
 /// Branches listed for one repository; the sweep is bounded, so is the list.

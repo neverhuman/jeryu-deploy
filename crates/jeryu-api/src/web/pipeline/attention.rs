@@ -1001,6 +1001,7 @@ fn stranded_branch_facts(state: &WebState, now: DateTime<Utc>) -> Vec<StrandedBr
             newest_subject: branch.newest_subject,
             newest_at: branch.newest_at,
             closed_pr: branch.closed_pr,
+            scanned_at: branch.scanned_at,
         })
         .collect()
 }
@@ -1140,7 +1141,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     });
     // A one-time backlog arrives as one row per repository, not one per branch.
     let (stranded, backlogs) = split_backlog(stranded, now);
-    items.extend(stranded_backlog_items(&backlogs));
+    items.extend(stranded_backlog_items(&backlogs, now));
     let mut stranded = stranded;
     let pushed: Vec<_> = stranded
         .iter()

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use jeryu_core::{CreatePullRequestRequest, CreateRepositoryRequest, ForgeCore};
 
 use super::*;
+use std::collections::BTreeMap;
 
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = crate::test_git::git_command()
@@ -277,7 +278,16 @@ fn inbox_scan_is_repeatable_within_a_time_window_and_rotates_after_it() {
     );
     let next = all_at_time(&fixture.state, at + chrono::Duration::seconds(60));
     assert_ne!(first, next);
-    assert!(first.len() <= MAX_BRANCHES_PER_REPO && next.len() <= MAX_BRANCHES_PER_REPO);
+    assert_eq!(first.len(), MAX_BRANCHES_PER_REPO);
+    // Rows from the earlier window stay until their branch is looked at again.
+    assert!(
+        first
+            .iter()
+            .all(|row| next.iter().any(|n| n.branch == row.branch))
+    );
+    assert!(next.len() > first.len());
+    let stamps: std::collections::BTreeSet<_> = next.iter().map(|row| row.scanned_at).collect();
+    assert_eq!(stamps.len(), 2, "each row carries its own pass's time");
 }
 
 // ---- Landed work and custody refs -------------------------------------
@@ -656,4 +666,88 @@ async fn the_branch_list_route_answers_readers_and_hides_private_repositories() 
         "a non-member learns nothing of a private repo"
     );
     assert_eq!(private, missing);
+}
+
+fn seeded_row(repo: &str, branch: &str) -> StrandedBranch {
+    StrandedBranch {
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+        default_branch: "main".to_string(),
+        commit_count: 1,
+        newest_sha: "abc1234".to_string(),
+        newest_subject: "kept work".to_string(),
+        newest_at: None,
+        closed_pr: None,
+        scanned_at: Some(
+            chrono::DateTime::parse_from_rfc3339("2026-10-13T17:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        ),
+    }
+}
+
+#[test]
+fn a_repository_outside_this_pass_keeps_its_rows_with_their_scan_time() {
+    let fixture = Fixture::new();
+    let state = &fixture.state;
+    state
+        .core
+        .create_repository(
+            "alice",
+            CreateRepositoryRequest {
+                name: "unreached".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    // This repository has no storage, so the pass cannot reach it, as when a
+    // pass runs out of budget before getting to a repository.
+    let kept = seeded_row("alice/unreached", "kept/branch");
+    state.stranded_scans.lock().unwrap().insert(
+        "alice/unreached".to_string(),
+        RepoScan {
+            rows: BTreeMap::from([("kept/branch".to_string(), kept.clone())]),
+        },
+    );
+    let at = chrono::DateTime::parse_from_rfc3339("2026-10-13T18:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    for step in 0..3 {
+        let rows = all_at_time(state, at + chrono::Duration::seconds(60 * step));
+        assert!(rows.contains(&kept), "pass {step}: {rows:?}");
+        assert!(rows.iter().any(|row| row.repo == "alice/jeryu"));
+    }
+}
+
+#[test]
+fn a_rescanned_repository_replaces_only_what_it_assessed() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-13T18:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let mut cache = ScanCache::new();
+    cache.insert(
+        "a/r".to_string(),
+        RepoScan {
+            rows: BTreeMap::from([
+                ("one".to_string(), seeded_row("a/r", "one")),
+                ("two".to_string(), seeded_row("a/r", "two")),
+                ("gone".to_string(), seeded_row("a/r", "gone")),
+            ]),
+        },
+    );
+    merge_passes(
+        &mut cache,
+        vec![RepoPass {
+            full_name: "a/r".to_string(),
+            candidates: ["one", "two"].map(String::from).into(),
+            assessed: vec![("one".to_string(), None)],
+        }],
+        now,
+    );
+    let rows = &cache["a/r"].rows;
+    assert!(!rows.contains_key("one"), "landed branch clears");
+    assert!(rows.contains_key("two"), "unassessed branch keeps its row");
+    assert!(!rows.contains_key("gone"), "deleted branch clears");
 }

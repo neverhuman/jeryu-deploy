@@ -3844,6 +3844,7 @@ fn stranded_branch(repo: &str, closed_pr: Option<u64>) -> StrandedBranchFacts {
         newest_subject: "finish invoice export".to_string(),
         newest_at: Some(now() - Duration::hours(2)),
         closed_pr,
+        scanned_at: None,
     }
 }
 
@@ -3983,7 +3984,7 @@ fn old_stranded_branches_arrive_as_one_row_per_repository() {
         [("acme/widget-shop", "fresh/d"), ("acme/lone", "old/only")],
         "fresh branches and a lone old one stay individual"
     );
-    let items = stranded_backlog_items(&backlogs);
+    let items = stranded_backlog_items(&backlogs, now());
     assert_eq!(items.len(), 2, "{items:?}");
     let shop = items
         .iter()
@@ -4001,8 +4002,28 @@ fn old_stranded_branches_arrive_as_one_row_per_repository() {
         "/api/v1/repos/acme/widget-shop/stranded-branches"
     );
     assert_eq!(shop.since.as_deref(), Some("2026-06-21T13:00:00Z"));
+    assert!(!shop.reason.contains("Scanned"), "{}", shop.reason);
     assert!(shop.reason.contains("old/a"), "{}", shop.reason);
     assert_ne!(items[0].id, items[1].id);
+}
+
+#[test]
+fn the_backlog_row_says_how_long_ago_it_was_scanned() {
+    let facts: Vec<_> = ["old/a", "old/b"]
+        .iter()
+        .map(|branch| {
+            let mut fact = aged_branch("acme/widget-shop", branch, 30);
+            fact.scanned_at = Some(now() - Duration::minutes(25));
+            fact
+        })
+        .collect();
+    let (_, backlogs) = split_backlog(facts, now());
+    let items = stranded_backlog_items(&backlogs, now());
+    assert!(
+        items[0].reason.contains("Scanned 25 min ago."),
+        "{}",
+        items[0].reason
+    );
 }
 
 #[test]
@@ -4012,7 +4033,7 @@ fn the_backlog_row_names_a_bounded_number_of_branches() {
         .collect();
     let (rest, backlogs) = split_backlog(facts, now());
     assert!(rest.is_empty());
-    let items = stranded_backlog_items(&backlogs);
+    let items = stranded_backlog_items(&backlogs, now());
     assert_eq!(items.len(), 1);
     assert!(
         items[0].title.contains("40 old branches"),

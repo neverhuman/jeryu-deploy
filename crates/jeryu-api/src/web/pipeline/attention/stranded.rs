@@ -17,6 +17,8 @@ pub(crate) struct StrandedBranchFacts {
     pub newest_subject: String,
     pub newest_at: Option<DateTime<Utc>>,
     pub closed_pr: Option<u64>,
+    /// When the scan behind this row last looked at the branch.
+    pub scanned_at: Option<DateTime<Utc>>,
 }
 
 pub(crate) fn stranded_branch_items(facts: &[StrandedBranchFacts]) -> Vec<Item> {
@@ -84,7 +86,7 @@ pub(crate) const BACKLOG_AGE_DAYS: i64 = 7;
 /// Branches named in a backlog row; the list route has the rest.
 const BACKLOG_NAMED: usize = 5;
 
-type OldBranch = (String, Option<DateTime<Utc>>);
+type OldBranch = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 /// One repository's old branches that hold commits not on its default branch.
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +97,8 @@ pub(crate) struct StrandedBacklog {
     /// The first few branch names, sorted.
     pub branches: Vec<String>,
     pub oldest_at: Option<DateTime<Utc>>,
+    /// The stalest scan among the branches counted.
+    pub scanned_at: Option<DateTime<Utc>>,
 }
 
 /// Split off each repository's old branches. A repository with two or more of
@@ -109,22 +113,27 @@ pub(crate) fn split_backlog(
     let is_old = |fact: &StrandedBranchFacts| fact.newest_at.is_some_and(|at| at < cutoff);
     let mut old: BTreeMap<String, Vec<OldBranch>> = BTreeMap::new();
     for fact in facts.iter().filter(|fact| is_old(fact)) {
-        old.entry(fact.repo.clone())
-            .or_default()
-            .push((fact.branch.clone(), fact.newest_at));
+        old.entry(fact.repo.clone()).or_default().push((
+            fact.branch.clone(),
+            fact.newest_at,
+            fact.scanned_at,
+        ));
     }
     old.retain(|_, branches| branches.len() >= 2);
     let backlogs: Vec<StrandedBacklog> = old
         .iter()
         .map(|(repo, branches)| {
-            let mut names: Vec<String> =
-                branches.iter().map(|(branch, _)| branch.clone()).collect();
+            let mut names: Vec<String> = branches
+                .iter()
+                .map(|(branch, _, _)| branch.clone())
+                .collect();
             names.sort_unstable();
             StrandedBacklog {
                 repo: repo.clone(),
                 count: names.len(),
                 branches: names.into_iter().take(BACKLOG_NAMED).collect(),
-                oldest_at: branches.iter().filter_map(|(_, at)| *at).min(),
+                oldest_at: branches.iter().filter_map(|(_, at, _)| *at).min(),
+                scanned_at: branches.iter().filter_map(|(_, _, at)| *at).min(),
             }
         })
         .collect();
@@ -140,7 +149,28 @@ pub(crate) fn backlog_list_href(repo: &str) -> String {
     format!("/api/v1/repos/{repo}/stranded-branches")
 }
 
-pub(crate) fn stranded_backlog_items(backlogs: &[StrandedBacklog]) -> Vec<Item> {
+/// How long ago a scan looked, for a row that may show an earlier pass.
+fn scanned_ago(at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    let Some(at) = at else {
+        return String::new();
+    };
+    let secs = (now - at).num_seconds().max(0);
+    let age = if secs < 60 {
+        "under a minute".to_string()
+    } else if secs < 3600 {
+        format!("{} min", secs / 60)
+    } else if secs < 86_400 {
+        format!("{} h", secs / 3600)
+    } else {
+        format!("{} d", secs / 86_400)
+    };
+    format!(" Scanned {age} ago.")
+}
+
+pub(crate) fn stranded_backlog_items(
+    backlogs: &[StrandedBacklog],
+    now: DateTime<Utc>,
+) -> Vec<Item> {
     backlogs
         .iter()
         .map(|backlog| {
@@ -158,7 +188,7 @@ pub(crate) fn stranded_backlog_items(backlogs: &[StrandedBacklog]) -> Vec<Item> 
                     "{} has {} branches older than {BACKLOG_AGE_DAYS} days whose commits are not \
                      on the default branch and that no open pull request carries, such as {named}{}. \
                      Review each and delete the ones that are not wanted, or open a pull request \
-                     for the ones that are. The full list is at {}.",
+                     for the ones that are. The full list is at {}.{}",
                     backlog.repo,
                     backlog.count,
                     if more == 0 {
@@ -167,6 +197,7 @@ pub(crate) fn stranded_backlog_items(backlogs: &[StrandedBacklog]) -> Vec<Item> 
                         format!(" and {more} more")
                     },
                     backlog_list_href(&backlog.repo),
+                    scanned_ago(backlog.scanned_at, now),
                 ),
                 href: backlog_list_href(&backlog.repo),
                 label: "Review the old branches, delete the ones not wanted",
