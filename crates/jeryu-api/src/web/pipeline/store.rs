@@ -21,6 +21,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use super::super::flow::{Station, Visit, project};
+use super::super::line_survival;
 use super::super::outcomes;
 use super::super::shift::{migrate_shift_store, rfc3339_ms};
 use super::types::{Event, EventsQuery, NewEvent};
@@ -403,6 +404,84 @@ impl EventStore {
     ) -> Result<Vec<outcomes::project::Change>, String> {
         let inner = self.inner.lock().expect("pipeline event mutex poisoned");
         outcomes::project::read(&inner.conn, family, repo)
+    }
+
+    /// Merged legs whose 14 or 30 day mark has passed at `now_ms` and that
+    /// still lack that measurement, oldest merge first, at most `limit`.
+    pub(crate) fn line_survival_due(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<line_survival::DueLeg>, String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let mut stmt = inner
+            .conn
+            .prepare(
+                "SELECT lot_id, repo, sha, merged_ms, surviving_14d IS NULL, surviving_30d IS NULL
+                   FROM outcome_ledger_repos
+                  WHERE sha IS NOT NULL AND sha <> '' AND repo <> '' AND merged_ms IS NOT NULL
+                    AND ((surviving_14d IS NULL AND merged_ms <= ?1 - ?2)
+                      OR (surviving_30d IS NULL AND merged_ms <= ?1 - ?3))
+                  ORDER BY merged_ms, lot_id, repo
+                  LIMIT ?4",
+            )
+            .map_err(|err| err.to_string())?;
+        stmt.query_map(
+            params![
+                now_ms,
+                line_survival::WINDOWS_DAYS[0] * line_survival::DAY_MS,
+                line_survival::WINDOWS_DAYS[1] * line_survival::DAY_MS,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+            ],
+            |row| {
+                let merged_ms: i64 = row.get(3)?;
+                let needs_14: bool = row.get(4)?;
+                let needs_30: bool = row.get(5)?;
+                Ok(line_survival::DueLeg {
+                    lot_id: row.get(0)?,
+                    repo: row.get(1)?,
+                    sha: row.get(2)?,
+                    merged_ms,
+                    needs_14d: needs_14 && merged_ms <= now_ms - 14 * line_survival::DAY_MS,
+                    needs_30d: needs_30 && merged_ms <= now_ms - 30 * line_survival::DAY_MS,
+                })
+            },
+        )
+        .map_err(|err| err.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|err| err.to_string())
+    }
+
+    /// Store one measurement. A column already set is kept (the first
+    /// measurement of a window stands), and only a measured window is
+    /// written, so a crash before this call leaves the leg due.
+    pub(crate) fn record_line_survival(
+        &self,
+        lot_id: &str,
+        repo: &str,
+        measured: &line_survival::Measured,
+    ) -> Result<(), String> {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        inner
+            .conn
+            .execute(
+                "UPDATE outcome_ledger_repos SET
+                     lines_added = COALESCE(lines_added, ?3),
+                     lines_deleted = COALESCE(lines_deleted, ?4),
+                     surviving_14d = COALESCE(surviving_14d, ?5),
+                     surviving_30d = COALESCE(surviving_30d, ?6)
+                  WHERE lot_id = ?1 AND repo = ?2",
+                params![
+                    lot_id,
+                    repo,
+                    measured.added,
+                    measured.deleted,
+                    measured.surviving_14d,
+                    measured.surviving_30d,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|err| err.to_string())
     }
 
     /// The ledger rows and retained events `GET /api/v1/scorecard` computes

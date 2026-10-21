@@ -1,0 +1,16 @@
+migration = "0027_line_survival"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/line_survival.rs"
+apply = "migrate_shift_store, one transaction; four nullable ALTER TABLE ADD COLUMN, no row rewritten"
+[lock_timeout]
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+[statement_timeout]
+mechanism = "four metadata-only ALTER TABLE statements"
+value = "constant time"
+[rollback]
+plan = "restore pre-release shift.sqlite backup and previous binary"
+backup = "release switch SQLite backup"
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::line_survival"

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use super::compute::{CostRow, Ctx, DAY_MS, EventRow, FlowRow, Raw, metrics};
 use super::{ScorecardQuery, StrictFields};
 use crate::web::flow::Station;
-use crate::web::outcomes::project::{Change, Leg};
+use crate::web::outcomes::project::{Change, Leg, LegLines};
 use crate::web::pipeline::{EventStore, NewEvent};
 
 const NOW: i64 = 1_760_000_000_000;
@@ -280,6 +280,7 @@ fn leg(repo: &str, pr: i64, merged: i64, shipped: Option<i64>, release: &str) ->
         released_ms: None,
         deployed_ms: shipped,
         release: shipped.map(|_| release.to_string()),
+        ..Leg::default()
     }
 }
 
@@ -800,4 +801,81 @@ fn read_from_the_event_store_end_to_end() {
     assert_eq!(r["completed_work_items_per_day"]["sample_size"], 1);
     let other = store.scorecard_raw(Some("globex"), NOW, 7).unwrap();
     assert!(other.flow.is_empty() && other.events.is_empty());
+}
+
+fn measured_change(todo: &str, merged_ms: i64, lines: LegLines) -> Change {
+    Change {
+        lot_id: todo.to_string(),
+        todo_id: Some(todo.to_string()),
+        family: Some("acme".to_string()),
+        legs: vec![Leg {
+            repo: "acme/widget".to_string(),
+            pr: Some(1),
+            sha: Some("abc1234def".to_string()),
+            merged_ms: Some(merged_ms),
+            lines,
+            ..Leg::default()
+        }],
+        ..Change::default()
+    }
+}
+
+#[test]
+fn surviving_lines_count_measured_changes_and_show_young_ones_as_pending() {
+    let measured = LegLines {
+        added: Some(120),
+        deleted: Some(10),
+        surviving_14d: Some(100),
+        surviving_30d: Some(60),
+    };
+    let changes = vec![
+        measured_change("20260901-000001-aaaaaa", NOW - 40 * DAY_MS, measured),
+        // Merged 5 days ago: pending, however many lines it added.
+        measured_change(
+            "20260901-000002-bbbbbb",
+            NOW - 5 * DAY_MS,
+            LegLines::default(),
+        ),
+        // Old enough, but the job has not measured it yet: pending too.
+        measured_change(
+            "20260901-000003-cccccc",
+            NOW - 35 * DAY_MS,
+            LegLines::default(),
+        ),
+    ];
+    let r = report(&Raw::default(), &changes, 90);
+    let tile = &r["surviving_net_lines_per_day"];
+    assert_eq!(tile["value"], serde_json::json!(0.667));
+    assert_eq!(tile["detail"]["measured"], 1);
+    assert_eq!(tile["detail"]["pending"], 2);
+    assert_eq!(tile["detail"]["surviving_30d_lines"], 60);
+    assert!(tile["unknown"].is_null());
+}
+
+#[test]
+fn a_window_with_only_pending_changes_is_unknown_not_zero() {
+    let changes = vec![measured_change(
+        "20260901-000002-bbbbbb",
+        NOW - 5 * DAY_MS,
+        LegLines::default(),
+    )];
+    let r = report(&Raw::default(), &changes, 30);
+    let tile = &r["surviving_net_lines_per_day"];
+    assert!(tile["value"].is_null());
+    assert_eq!(tile["unknown"]["reason"], "pending_30_day_observation");
+    assert_eq!(tile["detail"]["pending"], 1);
+}
+
+#[test]
+fn a_change_with_no_recorded_commit_is_unmeasured() {
+    let mut change = measured_change(
+        "20260901-000004-dddddd",
+        NOW - 40 * DAY_MS,
+        LegLines::default(),
+    );
+    change.legs[0].sha = None;
+    let r = report(&Raw::default(), &[change], 90);
+    let tile = &r["surviving_net_lines_per_day"];
+    assert!(tile["value"].is_null());
+    assert_eq!(tile["detail"]["unmeasured"], 1);
 }

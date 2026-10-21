@@ -233,8 +233,21 @@ covered).
 Rates exclude changes still inside the 14-day observation and report them as
 `detail.pending`.
 
-Still unknown, with the reason in `unknown.reason`: `surviving_net_lines_per_day`,
-`raw_net_lines_per_day`, `escaped_defects_to_main`, `escaped_defects_to_prod`,
+`surviving_net_lines_per_day` is the sum of `surviving_30d` of the changes
+merged in the interval over its days. A background job
+(`web/line_survival.rs`, one repository at a time, niced, never on a request)
+runs `git blame` on the default branch's last first-parent commit 14 and 30
+days after each merge and stores `lines_added`, `lines_deleted`,
+`surviving_14d` and `surviving_30d` on the change's `outcome_ledger_repos`
+row (migration 0027); lines of generated, vendored and lock files
+(`linguist-generated`, `linguist-vendored`, and a default list of lock files
+and `node_modules`/`vendor`/`dist` paths) are left out. A change younger than
+30 days, or not measured yet, is `detail.pending` and adds nothing; when every
+change of an interval is pending the tile is unknown with reason
+`pending_30_day_observation`, never zero. `JERYU_LINE_SURVIVAL=0` turns the job
+off.
+
+Still unknown, with the reason in `unknown.reason`: `raw_net_lines_per_day`, `escaped_defects_to_main`, `escaped_defects_to_prod`,
 `review_catch_rate`, `main_red_time_per_repo`, `time_to_detect`,
 `time_to_restore`, `human_minutes_per_successful_change`,
 `worker_slot_utilisation`, `runner_utilisation`, `hypotheses_checked_and_met`

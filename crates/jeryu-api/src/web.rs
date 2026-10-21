@@ -39,6 +39,7 @@ mod organizations;
 mod paging;
 mod people;
 pub(crate) use merge_queue::{building_on_base, gate_verdict, is_queue_owned_ref, rebase_onto};
+pub(crate) mod line_survival;
 mod mcp_backend;
 mod outcomes;
 mod permissions;
@@ -876,6 +877,7 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     let state = shared_state(state, &config.spa_dir);
     tool_finder_schedule::spawn(state.clone());
     codegraph_schedule::spawn(state.clone());
+    line_survival::spawn(state.clone());
     scorecard::weekly::spawn(state.clone());
     merge_queue::spawn_worker(state.clone(), std::time::Duration::from_secs(10));
     mirror_reconcile::spawn(state.clone());

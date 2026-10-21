@@ -67,6 +67,17 @@ pub(crate) struct Leg {
     pub released_ms: Option<i64>,
     pub deployed_ms: Option<i64>,
     pub release: Option<String>,
+    pub lines: LegLines,
+}
+
+/// What the line-survival job measured for a leg (`web/line_survival.rs`).
+/// Each field is `None` until measured, which is "pending", never zero.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LegLines {
+    pub added: Option<i64>,
+    pub deleted: Option<i64>,
+    pub surviving_14d: Option<i64>,
+    pub surviving_30d: Option<i64>,
 }
 
 fn min_into(slot: &mut Option<i64>, value: i64) {
@@ -677,7 +688,8 @@ fn change_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
 fn legs_of(conn: &Connection, lot_id: &str) -> Result<Vec<Leg>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT repo, pr, sha, merged_ms, released_ms, deployed_ms, release
+            "SELECT repo, pr, sha, merged_ms, released_ms, deployed_ms, release,
+                    lines_added, lines_deleted, surviving_14d, surviving_30d
                FROM outcome_ledger_repos WHERE lot_id = ?1 ORDER BY repo",
         )
         .map_err(|err| err.to_string())?;
@@ -690,6 +702,12 @@ fn legs_of(conn: &Connection, lot_id: &str) -> Result<Vec<Leg>, String> {
             released_ms: row.get(4)?,
             deployed_ms: row.get(5)?,
             release: row.get(6)?,
+            lines: LegLines {
+                added: row.get(7)?,
+                deleted: row.get(8)?,
+                surviving_14d: row.get(9)?,
+                surviving_30d: row.get(10)?,
+            },
         })
     })
     .map_err(|err| err.to_string())?

@@ -338,6 +338,30 @@ fn run(
     }
 }
 
+/// Line survival of the changes merged in an interval.
+#[derive(Default)]
+struct Survival {
+    measured: usize,
+    pending: usize,
+    unmeasured: usize,
+    added: i64,
+    surviving_14d: i64,
+    surviving_30d: i64,
+}
+
+impl Survival {
+    fn detail(&self) -> Value {
+        json!({
+            "measured": self.measured,
+            "pending": self.pending,
+            "unmeasured": self.unmeasured,
+            "added_lines": self.added,
+            "surviving_14d_lines": self.surviving_14d,
+            "surviving_30d_lines": self.surviving_30d,
+        })
+    }
+}
+
 const NO_SAMPLES: &str = "no_samples_in_window";
 const NO_COVERAGE: &str = "source_not_recording_in_window";
 
@@ -730,6 +754,60 @@ impl Ctx<'_> {
         out(json!(per_day(n, days)), n)
     }
 
+    /// Where each change merged in `[a, b)` stands on line survival: measured
+    /// 30 days on, pending (younger than 30 days, or its measurement has not
+    /// run), or unmeasured (no recorded commit to blame).
+    fn survival_counts(&self, a: i64, b: i64) -> Survival {
+        let mut t = Survival::default();
+        for change in self.changes {
+            if !completed_ms(change).is_some_and(|at| within(at, a, b)) {
+                continue;
+            }
+            let legs: Vec<&Leg> = change
+                .legs
+                .iter()
+                .filter(|l| l.merged_ms.is_some())
+                .filter(|l| l.sha.as_deref().is_some_and(|s| !s.is_empty()))
+                .collect();
+            let young = |l: &&Leg| l.merged_ms.is_some_and(|at| self.now_ms - at < 30 * DAY_MS);
+            if legs.is_empty() {
+                t.unmeasured += 1;
+            } else if legs
+                .iter()
+                .any(|l| young(l) || l.lines.surviving_30d.is_none())
+            {
+                t.pending += 1;
+            } else {
+                t.measured += 1;
+                t.added += legs.iter().filter_map(|l| l.lines.added).sum::<i64>();
+                t.surviving_14d += legs
+                    .iter()
+                    .filter_map(|l| l.lines.surviving_14d)
+                    .sum::<i64>();
+                t.surviving_30d += legs
+                    .iter()
+                    .filter_map(|l| l.lines.surviving_30d)
+                    .sum::<i64>();
+            }
+        }
+        t
+    }
+
+    /// Surviving lines per day: the lines each change merged in the interval
+    /// added that `git blame` still attributes to it 30 days after the merge
+    /// (`web/line_survival.rs`), over the interval's days. Pending and
+    /// unmeasured changes add nothing and are counted in `detail`; they are
+    /// never read as zero.
+    fn surviving_net_lines(&self, a: i64, b: i64) -> Option<Out> {
+        let days = covered_days(self.outcome_from, a, b)?;
+        let t = self.survival_counts(a, b);
+        (t.measured > 0).then(|| Out {
+            value: json!(round3(t.surviving_30d as f64 / days)),
+            n: t.measured,
+            detail: Some(t.detail()),
+        })
+    }
+
     fn prs_merged_per_day(&self, a: i64, b: i64) -> Option<Out> {
         let days = covered_days(self.outcome_from, a, b)?;
         let prs: BTreeSet<(&str, i64)> = self
@@ -1044,11 +1122,6 @@ impl Ctx<'_> {
 /// `(name, source note)` of every tile, in contract order, with the reason a
 /// tile whose source todo has not landed stays unknown.
 pub(crate) const UNRECORDED: &[(&str, &str, &str)] = &[
-    (
-        "surviving_net_lines_per_day",
-        "line survival ledger",
-        "source_not_landed: line survival ledger",
-    ),
     (
         "raw_net_lines_per_day",
         "durable pull request diff statistics",
@@ -1372,6 +1445,22 @@ pub(crate) fn metrics(ctx: &Ctx) -> Vec<(&'static str, Metric)> {
             });
         }
     }
+    let mut surviving = run(
+        ctx,
+        "outcome_ledger: lines added by changes merged in the interval that git blame still attributes to them 30 days after the merge, per day",
+        NO_SAMPLES,
+        |a, b| ctx.surviving_net_lines(a, b),
+    );
+    if surviving.value.is_none() {
+        let t = ctx.survival_counts(ctx.start(), ctx.now_ms);
+        surviving.detail = Some(t.detail());
+        if t.pending > 0 {
+            surviving.unknown = Some(Unknown {
+                reason: "pending_30_day_observation",
+            });
+        }
+    }
+    all.push(("surviving_net_lines_per_day", surviving));
     for (name, source, reason) in UNRECORDED {
         all.push((name, unrecorded(source, ctx.days, reason)));
     }
