@@ -19,6 +19,8 @@
 #      opens in the same tick (`pin.bump_superseded`). A queued bump is never closed; a bump pinning a
 #      commit that is not an ancestor of the head is left alone with a `pin.bump_diverged` event, and
 #      so is one this script did not open.
+#      An owned same-head bump with a finished failing required gate is refreshed
+#      with current deploy main when behind, without rewriting its branch history.
 #   3. Build the dist with build-web-dist.sh taken from jeryu-deploy main itself (git archive), so
 #      the recipe is always the reviewed one. It prints "<commit> <web_dist_sha256>".
 #   4. On branch auto/pin-web-<sha12> cut from main: set exactly the two lock fields, commit as
@@ -318,7 +320,7 @@ pin="$(git -C "$cache" show "$main:$lock_file" | awk '
   /^name = "jeryu-web"$/ { inweb = 1 }
   inweb && $1 == "commit" && $2 == "=" { gsub(/"/, "", $3); print $3; exit }')"
 [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || { say "$lock_file at main ${main:0:12} has no 40-hex jeryu-web commit ($pin)"; exit 1; }
-[ "$pin" != "$head" ] || exit 0
+[ "$pin" != "$head" ] || { say "jeryu-web ${head:0:12} is already pinned on main; nothing to do"; exit 0; }
 
 web_cache="$state/jeryu-web.git"
 [ -d "$web_cache" ] || git clone -q --bare "$web_remote" "$web_cache"
@@ -356,7 +358,6 @@ branch="auto/pin-web-${head:0:12}"
 title="release: pin jeryu-web ${head:0:7}"
 list_pulls || exit 1
 mine="$(jq -r --arg b "$branch" '[.[] | select(.head.ref == $b)][0].number // empty' <<<"$pulls")"
-if [ -n "$mine" ]; then exit 0; fi # this head already has its pull request, open or decided
 other="$(jq -r '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))][0].number // empty' <<<"$pulls")"
 other_count="$(jq '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))] | length' <<<"$pulls")"
 if (( other_count > 1 )); then
@@ -438,6 +439,80 @@ required_failed() {
   jq -e --arg sha "$sha" '.summary.state == "open" and .summary.base_ref == "main"
     and .summary.head_sha == $sha' <<<"$current" >/dev/null || return 1
 }
+# Refresh only an owned, unqueued bump with finished failing required checks. The new
+# commit has both the previous bump and main as parents: a normal push preserves
+# history and the PR/ownership record, while its tree replays only the pin onto main.
+refresh_unqueued() {
+  local n="$1" detail="$2" queue
+  queue="$(api GET "/api/v1/repos/$repo_path/merge-queue?per_page=100")" \
+    && jq -e --argjson n "$n" '.page.has_more == false and (.entries | type == "array")
+      and all(.entries[]; .number != $n or (.state | IN("landed", "failed", "dequeued")))' <<<"$queue" >/dev/null \
+    || { say "bump #$n is queued or queue evidence is unavailable; skipping"; return 1; }
+  jq -e 'all((.reviews // [])[]; .effective != true or .state != "CHANGES_REQUESTED")' <<<"$detail" >/dev/null \
+    || { say "bump #$n has requested changes; skipping"; return 1; }
+}
+refresh_bump() {
+  local n="$1" row sha detail base_sha co hash expected actual current
+  row="$(jq -ce --argjson n "$n" --arg repo "$repo_path" --arg branch "$branch" '
+    .[] | select(.number == $n and .state == "open" and .head.ref == $branch
+      and .head.repo.full_name == $repo and .base.ref == "main"
+      and .base.repo.full_name == $repo)' <<<"$pulls")" \
+    || { say "bump #$n is decided or not an open same-repository main bump; skipping"; return 0; }
+  awk -F '\t' -v sha="$head" -v n="$n" '$1 == sha && $2 == n {found=1} END {exit !found}' "$state/opened.tsv" \
+    || { say "bump #$n has no auto-pin ownership record; skipping"; return 0; }
+  sha="$(jq -r '.head.sha' <<<"$row")"
+  detail="$(api GET "/api/v1/repos/$repo_path/pulls/$n")" && required_failed "$n" "$row" "$detail" \
+    || { say "bump #$n has no finished failing exact-head required gate; skipping"; return 0; }
+  refresh_unqueued "$n" "$detail" || return 0
+  git -C "$cache" fetch -q "$remote" "+refs/heads/$branch:refs/auto-pin/refresh" \
+    && [ "$(git -C "$cache" rev-parse refs/auto-pin/refresh)" = "$sha" ] \
+    || { say "bump #$n moved or could not be fetched; skipping"; return 0; }
+  base_sha="$(git -C "$cache" merge-base "$main" "$sha")" \
+    || { say "bump #$n has no common base with main; skipping"; return 0; }
+  [ "$base_sha" != "$main" ] \
+    || { say "bump #$n already includes current main; skipping"; return 0; }
+  # Reconstruct the sole allowed edit from the common base. Do not replay any
+  # unrelated file or lock-field changes, even on a branch this timer opened.
+  hash="$(git -C "$cache" show "$sha:$lock_file" | awk '
+    /^\[\[repo\]\]/ { inweb = 0 }
+    /^name = "jeryu-web"$/ { inweb = 1 }
+    inweb && $1 == "web_dist_sha256" { gsub(/"/, "", $3); print $3 }')"
+  [[ "$hash" =~ ^[0-9a-f]{64}$ ]] \
+    || { say "bump #$n has no valid bundle hash; skipping"; return 0; }
+  git -C "$cache" show "$base_sha:$lock_file" | awk -v commit="$head" -v hash="$hash" '
+    /^\[\[repo\]\]/ { inweb = 0 }
+    /^name = "jeryu-web"$/ { inweb = 1 }
+    inweb && $1 == "commit" { print "commit = \"" commit "\""; next }
+    inweb && $1 == "web_dist_sha256" { print "web_dist_sha256 = \"" hash "\""; next }
+    { print }' >"$work/refresh.lock"
+  expected="$(git hash-object "$work/refresh.lock")"
+  actual="$(git -C "$cache" rev-parse "$sha:$lock_file")"
+  [ "$expected" = "$actual" ] && [ "$(git -C "$cache" diff --name-only "$base_sha" "$sha")" = "$lock_file" ] \
+    || { say "bump #$n is not solely the current web pin edit; skipping"; return 0; }
+  co="$work/refresh"
+  git clone -q --no-hardlinks "$cache" "$co" \
+    && git -C "$co" checkout -q --detach "$sha" \
+    && git -C "$co" -c user.name="$git_name" -c user.email="$git_email" merge --no-ff -m "release: refresh web pin on current main" "$main" \
+    || { say "bump #$n could not replay cleanly onto main; skipping"; return 0; }
+  # Re-read both identities and required posture after preparing the commit.
+  current="$(api GET "/api/v3/repos/$repo_path/pulls/$n")" \
+    && jq -e --argjson row "$row" '.state == "open" and .head == $row.head and .base == $row.base' <<<"$current" >/dev/null \
+    && detail="$(api GET "/api/v1/repos/$repo_path/pulls/$n")" \
+    && required_failed "$n" "$row" "$detail" \
+    && refresh_unqueued "$n" "$detail" \
+    && [ "$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)" = "$sha" ] \
+    && [ "$(git ls-remote "$remote" refs/heads/main | cut -f1)" = "$main" ] \
+    || { say "bump #$n or main changed during refresh; skipping"; return 0; }
+  git -C "$co" push -q "$remote" "HEAD:refs/heads/$branch" \
+    || { say "bump #$n refresh push refused; will reconsider next tick"; return 1; }
+  say "refreshed bump #$n onto main ${main:0:12}; its new head requires fresh checks"
+}
+if [ -n "$mine" ]; then
+  waiting_for "$mine"
+  refresh_bump "$mine"
+  exit $?
+fi
+
 # duration_seconds 6h|90m|3600 -> seconds; prints nothing for a malformed value.
 duration_seconds() {
   case "$1" in

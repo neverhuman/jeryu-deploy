@@ -546,6 +546,7 @@ pin_real_git="$(command -v git)"
 cat >"$P/bin/git" <<EOF
 #!/usr/bin/env bash
 case " \$* " in
+  *" push "*) [ ! -e "$P/refuse-refresh-push" ] || exit 42 ;;
   *" diff-tree "*) [ ! -e "$P/fail-review-detail" ] || exit 42 ;;
 esac
 exec "$pin_real_git" "\$@"
@@ -723,6 +724,7 @@ jq -es 'any(.[]; .kind == "pin.bump_failed" and .needs_human == true)
   and all(.[]; .kind != "pin.bump_superseded")' "$P/events.jsonl" >/dev/null || fail "recovered bump has no cleanup signal"
 mv "$P/post-create-checks.json" "$P/post-create-checks.saved"; undo_bump
 ok "approved stale bumps are replaced only for finished exact-head required failures, rechecked before close"
+source "$here/test-pin-refresh.inc"
 
 stale_pr 60 "$b1" "$now_iso"; echo '{"entries":[{"number":60,"state":"building"}],"page":{"has_more":false}}' >"$P/queue.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick behind a queued bump failed"
@@ -852,13 +854,15 @@ b2="auto/pin-web-${h2:0:12}"
 git -C "$P/deploy.git" update-ref refs/heads/main "refs/heads/$b2" # the bump lands
 : >"$P/curl-args"; : >"$P/beats.jsonl"
 JERYU_AUTO_PIN_BEAT=0 auto_pin >"$P/run.log" 2>&1 || fail "an up-to-date tick failed with the heartbeat off"
-[[ ! -s "$P/curl-args" && ! -s "$P/run.log" ]] || fail "JERYU_AUTO_PIN_BEAT=0 still sent a request"
+[[ ! -s "$P/curl-args" ]] || fail "JERYU_AUTO_PIN_BEAT=0 still sent a request"
+grep -q "already pinned on main; nothing to do" "$P/run.log" || fail "up-to-date skip was not logged"
 PIN_STATE="$P/state-fresh" auto_pin >"$P/run.log" 2>&1 || fail "a first-ever tick failed"
 beat_is '.runnerId == $id and (has("last") | not)' --arg id "$me/auto-pin" || fail "a timer with no history must beat without a last"
 : >"$P/curl-args"; builds="$(lines "$P/builds")"
 auto_pin >"$P/run.log" 2>&1 || fail "an up-to-date tick failed"
-[[ "$(cat "$P/curl-args")" == *"/api/v1/runners/heartbeat" && "$(lines "$P/curl-args")" == 1 && ! -s "$P/run.log" && "$(lines "$P/builds")" == "$builds" ]] || fail "an up-to-date pin is not a silent no-op"
-ok "auto-pin is a silent no-op once the pin is the web head"
+[[ "$(cat "$P/curl-args")" == *"/api/v1/runners/heartbeat" && "$(lines "$P/curl-args")" == 1 && "$(lines "$P/builds")" == "$builds" ]] || fail "an up-to-date pin made extra requests or built"
+grep -q "already pinned on main; nothing to do" "$P/run.log" || fail "up-to-date skip was silent"
+ok "auto-pin logs why it skips once the pin is the web head"
 
 # Closed bumps leave their branches behind; a tick deletes them. What stays: a branch that moved
 # past its closed pull request's head, one an open pull request uses (also when an older closed
@@ -884,7 +888,8 @@ grep -qx "\[auto-pin [0-9:]*\] deleted $b1 (#7 is closed)" "$P/run.log" || { cat
   || fail "auto-pin deleted a branch that must stay: $(branches | tr '\n' ' ')"
 : >"$P/curl-args"
 auto_pin >"$P/run.log" 2>&1 || fail "an idle tick after pruning failed"
-[[ "$(lines "$P/curl-args")" == 1 && ! -s "$P/run.log" ]] || fail "an idle tick listed the pull requests again with no new bump branch"
+[[ "$(lines "$P/curl-args")" == 1 ]] || fail "an idle tick listed the pull requests again with no new bump branch"
+grep -q "already pinned on main; nothing to do" "$P/run.log" || fail "idle skip after pruning was silent"
 # A refused delete logs git's reason, never fails the tick, and is tried (and logged) again next tick.
 # The stand-in git refuses only the delete, as a forge that protects the branch would.
 git -C "$P/deploy.git" update-ref "refs/heads/$b1" "$s1"
