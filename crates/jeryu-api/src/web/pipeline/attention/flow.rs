@@ -524,6 +524,7 @@ pub(crate) fn pull_items(
             ))
         } else if posture.can_merge
             && building.is_none()
+            && !queue_refused_for_head(entries, pull, now)
             && (now - pull.updated_at).num_minutes() >= READY_TO_MERGE_MINUTES
         {
             Some((
@@ -823,6 +824,26 @@ pub(crate) fn drop_shadowed_pull_rows(items: &mut Vec<Item>) {
     items.retain(|item| {
         item.kind != "pr_changes_requested" || !stuck.contains(&(item.repo.clone(), item.pr))
     });
+}
+
+/// The merge queue refused this pull request's current head and
+/// `queue_items` still shows it: that row owns the pull request, so it is not
+/// also ready to merge (and cannot count toward a stalled merger).
+fn queue_refused_for_head(entries: &[QueueEntry], pull: &PullFacts, now: DateTime<Utc>) -> bool {
+    entries.iter().any(|entry| {
+        matches!(entry.state, QueueState::Failed | QueueState::Dequeued)
+            && entry.refusal_code.is_some()
+            && entry.repo == pull.repo
+            && entry.number == pull.number
+            && entry.pr_head_sha == pull.head_sha
+            && parse_time(
+                entry
+                    .attempts
+                    .last()
+                    .map_or(entry.enqueued_at.as_str(), |attempt| attempt.at.as_str()),
+            )
+            .is_some_and(|at| (now - at).num_hours() < QUEUE_LOOKBACK_HOURS)
+    })
 }
 
 /// Merge-queue entries that failed, were dropped, or were never admitted in

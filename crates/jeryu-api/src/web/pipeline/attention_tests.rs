@@ -4738,3 +4738,31 @@ fn hypothesis_reminder_is_due_only_after_deployment_and_clears_after_a_check() {
         assert!(todo_items("acme", &[todo.clone()], true, now).is_empty());
     }
 }
+
+/// The queue refused this head: `queue_refused` owns the pull request, so it
+/// is neither ready to merge nor part of a stalled merger. A new head is not
+/// covered by the refusal.
+#[test]
+fn a_pull_request_the_queue_refused_is_not_ready_to_merge() {
+    let posture = PullPosture {
+        checks_green: true,
+        can_merge: true,
+        approvals: 1,
+        required_approvals: 1,
+        ..PullPosture::default()
+    };
+    let mut refused = queue_entry(7, QueueState::Dequeued, 1);
+    refused.repo = "jeryu/jeryu-web".to_string();
+    refused.refusal_code = Some("queue_conflict".to_string());
+    refused.pr_head_sha = pull(7, 45, posture.clone()).head_sha;
+    let pulls = [pull(7, 45, posture.clone()), pull(8, 45, posture.clone())];
+
+    let items = pull_items(&pulls, &[refused.clone()], now(), &hosts());
+    assert_eq!(kinds(&items), ["pr_ready_to_merge"]);
+    assert_eq!(items[0].pr, Some(8));
+
+    let mut moved = refused;
+    moved.pr_head_sha = "0000000000000000000000000000000000000000".to_string();
+    let items = pull_items(&pulls[..1], &[moved], now(), &hosts());
+    assert_eq!(kinds(&items), ["pr_ready_to_merge"]);
+}
