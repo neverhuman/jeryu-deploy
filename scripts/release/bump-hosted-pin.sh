@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# bump-hosted-pin.sh REPO TAG COMMIT — move one hosted crate pin of this jeryu-deploy checkout
+# from the tag it pins now to TAG at COMMIT. It edits files and nothing else: no commit, no push,
+# no network, no forge request. auto-tag.sh runs it from jeryu-deploy main (git archive), so the
+# recipe a bump pull request is built with is always the reviewed one, and a person can run it by
+# hand in a checkout to prepare the same bump.
+#
+# A hosted crate pin lives in three places, and all three move together:
+#   1. `.cargo/hosted-pin-refs.tsv`: the row ops/ci/dependency-sources.sh reads back from the
+#      forge (tag, commit, and the preserve/hosted-cargo support branch of that tag);
+#   2. the manifests (`Cargo.toml`, `crates/*/Cargo.toml`): every `tag = "<pinned>"` on a line
+#      whose `git` URL names this repository;
+#   3. `Cargo.lock`: the `source = "git+…/<repo>.git?tag=<pinned>#<commit>"` lines.
+# `jeryu-split.lock.toml` is not touched: its crate `tag`/`commit` fields are not read by cargo
+# and are not the pin (docs/pipeline-events.md, Pins).
+#
+# The manifests keep deliberately frozen `-split.0` pins that `[patch]` redirects, so only the
+# exact tag string this repository pins today is replaced, and a pin that is itself `-split.0` is
+# refused rather than guessed about. Every edit is read back: the old tag must be gone from the
+# pin's lines, the new one must appear exactly as often as the old one did, and no file outside
+# the three may differ. Any mismatch leaves the checkout for a person and exits nonzero.
+#
+# Exit: 0 and `bumped <repo> <old tag> -> <tag>` on stdout; 64 on a usage error; 1 on anything else.
+# -h|--help prints this header and exits, before anything else runs.
+case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
+set -euo pipefail
+say() { echo "[bump-hosted-pin] $*" >&2; }
+die() { say "$*"; exit 1; }
+
+[[ $# == 3 ]] || { echo "usage: bump-hosted-pin.sh REPO TAG COMMIT" >&2; exit 64; }
+repo="$1" tag="$2" commit="$3"
+[[ "$repo" =~ ^jeryu-[a-z0-9-]+$ ]] || { echo "not a hosted crate repository: $repo" >&2; exit 64; }
+[[ "$tag" =~ ^${repo}-v[0-9]+\.[0-9]+\.[0-9]+-split\.[0-9]+$ ]] \
+  || { echo "not a $repo split tag: $tag" >&2; exit 64; }
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "not a 40-hex commit: $commit" >&2; exit 64; }
+
+root="$(git rev-parse --show-toplevel)" || die "not inside a git checkout"
+cd "$root"
+pin_policy=.cargo/hosted-pin-refs.tsv
+[[ -f "$pin_policy" && ! -L "$pin_policy" ]] || die "$pin_policy is not a regular file"
+[[ -f Cargo.lock && ! -L Cargo.lock ]] || die "Cargo.lock is not a regular file"
+
+rows="$(awk -F '|' -v repo="$repo" '!/^[[:space:]]*(#|$)/ && $1 == repo { print }' "$pin_policy")"
+[[ "$(grep -c . <<<"$rows")" == 1 && -n "$rows" ]] || die "$pin_policy has no single $repo row"
+IFS='|' read -r _ old_tag old_commit old_ref extra <<<"$rows"
+[[ -z "${extra:-}" ]] || die "the $repo pin row has more fields than the policy's four"
+[[ "$old_tag" =~ ^${repo}-v[0-9]+\.[0-9]+\.[0-9]+-split\.[0-9]+$ ]] || die "the pinned tag is malformed: $old_tag"
+[[ "$old_commit" =~ ^[0-9a-f]{40}$ ]] || die "the pinned commit is not 40-hex: $old_commit"
+[[ "$old_ref" == "refs/heads/preserve/hosted-cargo/$old_tag" ]] || die "the pinned support ref is not the convention: $old_ref"
+[[ "$old_tag" != *-split.0 ]] \
+  || die "$repo pins $old_tag: a -split.0 pin is also what [patch] redirects, so this bump is a person's"
+[[ "$tag" != "$old_tag" ]] || die "$repo already pins $tag"
+[[ "$commit" != "$old_commit" ]] || die "$repo already pins ${commit:0:12}"
+# Same version line, strictly forward: split.N increments, and a bump never walks back.
+old_version="${old_tag#"$repo"-v}"; old_version="${old_version%-split.*}"
+version="${tag#"$repo"-v}"; version="${version%-split.*}"
+[[ "$version" == "$old_version" ]] || die "$tag changes the version line of $old_tag; that is a person's release"
+(( ${tag##*-split.} > ${old_tag##*-split.} )) || die "$tag is not after $old_tag"
+
+# The manifests that pin this repository by its current tag. `git ls-files` so an untracked or
+# generated manifest is never edited, and the pin's own lines are the only ones matched.
+mapfile -t manifests < <(git ls-files -- Cargo.toml 'crates/*/Cargo.toml' | LC_ALL=C sort)
+[[ "${#manifests[@]}" -gt 0 ]] || die "this checkout has no tracked manifests"
+pin_lines() { # FILE -> the lines pinning this repository at TAG_ARG
+  awk -v repo="$repo" -v want="$2" '
+    index($0, "/" repo ".git\"") > 0 && index($0, "tag = \"" want "\"") > 0 { n++ }
+    END { print n + 0 }' "$1"
+}
+expected_total=0 changed=()
+for manifest in "${manifests[@]}"; do
+  count="$(pin_lines "$manifest" "$old_tag")"
+  (( count > 0 )) || continue
+  awk -v repo="$repo" -v old="$old_tag" -v new="$tag" '
+    index($0, "/" repo ".git\"") > 0 {
+      before = "tag = \"" old "\""
+      i = index($0, before)
+      if (i > 0) {
+        $0 = substr($0, 1, i - 1) "tag = \"" new "\"" substr($0, i + length(before))
+      }
+    }
+    { print }' "$manifest" >"$manifest.bump"
+  cat "$manifest.bump" >"$manifest"; rm -f "$manifest.bump"
+  [[ "$(pin_lines "$manifest" "$old_tag")" == 0 ]] || die "$manifest still pins $old_tag"
+  [[ "$(pin_lines "$manifest" "$tag")" == "$count" ]] || die "$manifest did not take $tag on all $count lines"
+  expected_total=$((expected_total + count))
+  changed+=("$manifest")
+done
+(( expected_total > 0 )) || die "no manifest pins $repo at $old_tag"
+
+# Cargo.lock: the git source identity of this repository, tag and commit together.
+lock_lines() { # TAG COMMIT -> how many lock sources name this repository at that identity
+  awk -v repo="$repo" -v want="$1" -v sha="$2" '
+    /^source = "git\+/ && index($0, "/" repo ".git?tag=" want "#" sha "\"") > 0 { n++ }
+    END { print n + 0 }' Cargo.lock
+}
+lock_count="$(lock_lines "$old_tag" "$old_commit")"
+(( lock_count > 0 )) || die "Cargo.lock has no $repo source at $old_tag#${old_commit:0:12}"
+awk -v repo="$repo" -v old="$old_tag" -v oldsha="$old_commit" -v new="$tag" -v sha="$commit" '
+  /^source = "git\+/ {
+    before = "/" repo ".git?tag=" old "#" oldsha "\""
+    if (index($0, before) > 0) {
+      i = index($0, before)
+      $0 = substr($0, 1, i - 1) "/" repo ".git?tag=" new "#" sha "\"" substr($0, i + length(before))
+    }
+  }
+  { print }' Cargo.lock >Cargo.lock.bump
+cat Cargo.lock.bump >Cargo.lock; rm -f Cargo.lock.bump
+[[ "$(lock_lines "$old_tag" "$old_commit")" == 0 ]] || die "Cargo.lock still names $repo at $old_tag"
+[[ "$(lock_lines "$tag" "$commit")" == "$lock_count" ]] || die "Cargo.lock did not take $tag on all $lock_count sources"
+changed+=(Cargo.lock)
+
+# The pin policy row the gate reads back from the forge.
+awk -F '|' -v OFS='|' -v repo="$repo" -v tag="$tag" -v sha="$commit" '
+  !/^[[:space:]]*(#|$)/ && $1 == repo { print repo, tag, sha, "refs/heads/preserve/hosted-cargo/" tag; next }
+  { print }' "$pin_policy" >"$pin_policy.bump"
+cat "$pin_policy.bump" >"$pin_policy"; rm -f "$pin_policy.bump"
+[[ "$(awk -F '|' -v repo="$repo" -v tag="$tag" -v sha="$commit" \
+    '$1 == repo && $2 == tag && $3 == sha && $4 == "refs/heads/preserve/hosted-cargo/" tag { n++ } END { print n + 0 }' \
+    "$pin_policy")" == 1 ]] || die "$pin_policy did not take the $repo row"
+changed+=("$pin_policy")
+
+# Nothing outside the pin's own files may differ, and each of them must actually have changed.
+mapfile -t differs < <(git diff --name-only -- . | LC_ALL=C sort -u)
+mapfile -t expected < <(printf '%s\n' "${changed[@]}" | LC_ALL=C sort -u)
+[[ "$(printf '%s\n' "${differs[@]}")" == "$(printf '%s\n' "${expected[@]}")" ]] \
+  || die "the bump changed $(printf '%s ' "${differs[@]}"), not exactly $(printf '%s ' "${expected[@]}")"
+printf 'bumped %s %s -> %s (%s manifest lines, %s lock sources)\n' \
+  "$repo" "$old_tag" "$tag" "$expected_total" "$lock_count"

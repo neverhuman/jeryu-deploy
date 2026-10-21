@@ -58,7 +58,9 @@ scripts/release/deploy-release.sh "$rel"       # switch, and record the deployme
   `~/.jeryu/backups/post-<release>-<time>/`.
 
 `test-release-scripts.sh` runs the real `switch.sh`, `install-forge-unit.sh` and `rollback.sh` against a
-throwaway forge home and is part of `ops/ci/pr-ci.sh`.
+throwaway forge home, and the real timers (`auto-stage.sh`, `auto-pin.sh`, `auto-tag.sh`,
+`bump-hosted-pin.sh`) against local bare repositories and a stand-in forge. It is part of
+`ops/ci/pr-ci.sh`.
 
 Before a release that adds a database migration, run the staged binary against a
 backup copy of the databases on a spare loopback port and check the new schema and
@@ -234,6 +236,58 @@ scripts/release/build-web-dist.sh --commit <jeryu-web sha> /tmp/web-dist   # pri
 
 jeryu-web keeps its build reproducible (same commit, same hash) and checks it
 with its `scripts/check-reproducible-web-build.sh`.
+
+## Tagging hosted crates
+
+`auto-tag.sh` runs on the release host from `jeryu-auto-tag.timer`, beside auto-pin and
+auto-stage, and never on a gate host: pull request code runs there and must not be near this
+token. Crate tags used to be cut in batches, so merged crate work waited a median of 108 hours for
+its first tag while server work reached production 2.5 hours after merge.
+
+Per repository, in the dependency order of `hosted-crates.tsv` (which must name exactly the
+repositories `.cargo/hosted-pin-refs.tsv` pins):
+
+1. the next tag is `split.<n+1>` after the newest `<repo>-v<x.y.z>-split.<n>` tag the forge
+   advertises; a new version line is a person's release, and a repository with no split tag is left
+   alone;
+2. a newest tag whose `refs/heads/preserve/hosted-cargo/<tag>` branch is missing or moved is
+   repaired first. That branch is what keeps a tagged commit fetchable for cargo, and
+   `ops/ci/dependency-sources.sh` reads it back, so a tag without it breaks the consumer's gate;
+3. nothing is cut when main is already the tagged commit, when main does not descend from it
+   (`tag.diverged` asks for a person), when every commit since the tag only moved documentation or
+   was a Jeryu Split Bot re-render, when the newest tag is younger than
+   `JERYU_AUTO_TAG_COALESCE` (1h: at most one tag per repository per hour), or when the forge's
+   latest `<repo>/required` status on main's head is not `success`;
+4. the annotated tag and its preserve branch are pushed in one atomic push, so neither can exist
+   without the other, and `tagged.tsv` records the tag only after the forge has it;
+5. there is no VERSION stamp commit. The version is the tag; a stamp would add an ungated commit to
+   main for every tag.
+
+The decision is made in the timer, from the forge's answers, never in the tree being tagged.
+
+Then one bump stack: for every repository whose newest tag is ahead of the pin in jeryu-deploy
+main, `release: pin <repo> <tag>` from `auto/pin-<repo>-<n>-<sha12>`, in dependency order and each
+based on the previous branch, so the merge queue cannot land a mismatched pair. A stack is built
+only when none of its pull requests is already open. The edit itself is `bump-hosted-pin.sh` taken
+from jeryu-deploy main (`git archive`), so the recipe is always the reviewed one; it moves the
+`tag =` lines whose `git` URL names the repository, the `Cargo.lock` git source identity and the
+`.cargo/hosted-pin-refs.tsv` row, reads every edit back, and refuses anything else — including a
+`-split.0` pin, which is also what `[patch]` redirects. `jeryu-split.lock.toml` is not a cargo pin
+and is not touched. auto-tag only proposes: review, pr-redteam and the merge queue land the bump,
+and deploying stays a person's release.
+
+```sh
+scripts/release/auto-tag.sh --dry-run        # what it would tag and bump; writes nothing
+scripts/release/install-auto-tag.sh          # install and enable the timer on the release host
+cd <a jeryu-deploy checkout> && scripts/release/bump-hosted-pin.sh <repo> <tag> <commit>
+```
+
+Settings are an installation's, so none has a default: `JERYU_TAG_TOKEN_FILE` (releasebot's agent
+token, a regular mode-0600 file), `JERYU_TAG_GIT_NAME` and `JERYU_TAG_GIT_EMAIL`. The unit reads
+them from `~/.config/jeryu/auto-tag.env`. Each tick ends with one runner heartbeat
+(`<host>/auto-tag`, label `automation`) and posts `tag.*` and `pin.bump_opened` events; both are
+best-effort and never fail a tick, and a dry run sends neither. Contract:
+[`docs/pipeline-events.md`](../../docs/pipeline-events.md).
 
 ## Machine-readable output
 

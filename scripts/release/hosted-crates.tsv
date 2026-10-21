@@ -1,0 +1,12 @@
+# The hosted crate repositories auto-tag.sh may tag, in dependency order: a
+# repository is listed after everything it depends on, so the pin bumps stack in
+# this order and main never pins a mismatched pair. The set must match
+# .cargo/hosted-pin-refs.tsv exactly; adding a hosted crate is a deliberate edit
+# of both files, reviewed like any other change.
+#
+# repository	rank (lower is tagged and bumped first)
+jeryu-core	1
+jeryu-release-ops	2
+jeryu-ci-runner	3
+jeryu-intelligence	4
+jeryu-jira	5

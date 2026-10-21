@@ -1,0 +1,11 @@
+[Unit]
+Description=Cut the next split tag of every hosted crate repository whose green main is ahead, and open the pin bumps (never merges)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The installer points this at an installed copy of auto-tag.sh. The credential path and the
+# tagging identity belong to this installation, so they come from a file outside the repository.
+EnvironmentFile=-%h/.config/jeryu/auto-tag.env
+ExecStart=%h/.local/share/jeryu-auto-tag/auto-tag.sh
+TimeoutStartSec=30min

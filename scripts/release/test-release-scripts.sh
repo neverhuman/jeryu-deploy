@@ -3,7 +3,9 @@
 # throwaway forge home: real SQLite databases, a "binary" that is a copy of sleep
 # (so /proc/<pid>/exe resolves to the installed release), a stand-in systemctl
 # that runs it, and a file:// health URL. Then auto-stage.sh against a local bare
-# repo with stand-in ssh and curl, and auto-pin.sh against two, and verify-pin-bump.sh against a stand-in forge. No service, network or credential.
+# repo with stand-in ssh and curl, and auto-pin.sh against two, verify-pin-bump.sh against a
+# stand-in forge, and auto-tag.sh against crate remotes and a stand-in forge. No service,
+# network or credential.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
@@ -1512,6 +1514,352 @@ jq -n '{actions: [{id: "ra-20261012T181000Z-3", action: "shell", repo: "acme/for
 action poll >/dev/null 2>&1 || fail "poll failed on an unknown action"
 [[ "$(jq -r '.ok' "$R/results.jsonl" | tail -1)" == false ]] || fail "an unknown action was reported as done"
 ok "release-action poll runs an ask once, and reports a failed or unknown step as failed"
+
+# --- auto-tag.sh: cut the next split tag from a green main, then the pin bump stack ---
+# Stand-ins: local bare repos as the jeryu-deploy and crate remotes, and a curl that answers the
+# status API, the pull request list, the pull request POST, the events route and the heartbeat,
+# recording every body. No network, no real token, and the real bump-hosted-pin.sh on main.
+G="$T/tag"; mkdir -p "$G/bin" "$G/remotes"
+gt() { git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
+crate_commit() { # REPO SUBJECT [AUTHOR_EMAIL] [PATH]: one commit on the crate's main, pushed
+  local repo="$1" subject="$2" email="${3:-dev@forge.invalid}" path="${4:-src/lib.rs}"
+  mkdir -p "$(dirname "$G/$repo/$path")"
+  printf '%s\n' "$subject" >>"$G/$repo/$path"
+  git -C "$G/$repo" add -A
+  GIT_AUTHOR_NAME=author GIT_AUTHOR_EMAIL="$email" GIT_COMMITTER_NAME=author \
+    GIT_COMMITTER_EMAIL="$email" git -C "$G/$repo" commit -q -m "$subject"
+  git -C "$G/$repo" push -q "$G/remotes/$repo.git" main
+  git -C "$G/$repo" rev-parse HEAD
+}
+mk_crate() { # REPO: a crate repository tagged <repo>-v5.0.0-split.1, with that tag's support branch
+  local repo="$1" d="$G/$1"
+  mkdir -p "$d/src" "$d/docs"
+  gt "$d" init -q -b main
+  printf 'initial\n' >"$d/src/lib.rs"; printf '# %s\n' "$repo" >"$d/docs/readme.md"
+  gt "$d" add -A; gt "$d" commit -q -m "initial $repo"
+  gt "$d" tag -a -m "$repo-v5.0.0-split.1" "$repo-v5.0.0-split.1"
+  git clone -q --bare "$d" "$G/remotes/$repo.git"
+  git -C "$G/remotes/$repo.git" update-ref \
+    "refs/heads/preserve/hosted-cargo/$repo-v5.0.0-split.1" "$(git -C "$d" rev-parse HEAD)"
+  git -C "$d" rev-parse HEAD
+}
+core_c1="$(mk_crate jeryu-core)"
+runner_c1="$(mk_crate jeryu-ci-runner)"
+
+D="$G/deploy"; mkdir -p "$D/.cargo" "$D/crates/jeryu-api" "$D/scripts/release"
+cat >"$D/.cargo/hosted-pin-refs.tsv" <<EOF
+# repository|immutable tag|commit|hosted support ref
+jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.1|$runner_c1|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.1
+jeryu-core|jeryu-core-v5.0.0-split.1|$core_c1|refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.1
+EOF
+printf 'jeryu-core\t1\njeryu-ci-runner\t2\n' >"$D/scripts/release/hosted-crates.tsv"
+cat >"$D/Cargo.toml" <<'EOF'
+[workspace]
+members = ["crates/jeryu-api"]
+
+# A deliberately frozen source that [patch] redirects: a bump must never move it.
+[patch."https://github.com/neverhuman/jeryu-core.git"]
+jeryu-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1" }
+jeryu-proof = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1" }
+
+[patch."https://github.com/neverhuman/jeryu-ci-runner.git"]
+jeryu-runnerd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.1" }
+EOF
+cat >"$D/crates/jeryu-api/Cargo.toml" <<'EOF'
+[dependencies]
+jeryu-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1", package = "jeryu-core" }
+jeryu-frozen = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.0", package = "jeryu-frozen" }
+EOF
+cat >"$D/Cargo.lock" <<EOF
+[[package]]
+name = "jeryu-core"
+version = "5.0.0"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.1#$core_c1"
+
+[[package]]
+name = "jeryu-runnerd"
+version = "5.0.0"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.1#$runner_c1"
+EOF
+cp "$here/bump-hosted-pin.sh" "$D/scripts/release/bump-hosted-pin.sh"
+chmod +x "$D/scripts/release/bump-hosted-pin.sh"
+gt "$D" init -q -b main; gt "$D" add -A; gt "$D" commit -q -m deploy
+git clone -q --bare "$D" "$G/remotes/jeryu-deploy.git"
+
+echo 1 >"$G/pr-number"; echo '[]' >"$G/pulls.json"; echo success >"$G/gate"
+: >"$G/events.jsonl"; : >"$G/beats.jsonl"; : >"$G/prs.jsonl"; : >"$G/curl-args"
+echo "not-a-real-tag-token" >"$G/token"; chmod 600 "$G/token"
+cat >"$G/bin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$G/curl-args"
+url="\${!#}"; method=GET; prev=""
+for arg in "\$@"; do [ "\$prev" = -X ] && method="\$arg"; prev="\$arg"; done
+case "\$method \$url" in
+  "POST https://git.neverhuman.org/api/v1/events") cat >>"$G/events.jsonl"; echo >>"$G/events.jsonl"; echo '{"ok":true}' ;;
+  "POST https://git.neverhuman.org/api/v1/runners/heartbeat")
+    cat >>"$G/beats.jsonl"; echo >>"$G/beats.jsonl"; echo '{"accepted":true}' ;;
+  "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls")
+    n="\$(cat "$G/pr-number")"; echo \$(( n + 1 )) >"$G/pr-number"
+    cat >>"$G/prs.jsonl"; echo >>"$G/prs.jsonl"
+    jq -cn --argjson n "\$n" '{number: \$n}' ;;
+  "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls?"*)
+    page="\${url##*page=}"; page="\${page%%&*}"
+    if [ "\$page" = 1 ]; then cat "$G/pulls.json"; else echo '[]'; fi ;;
+  "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-"*"/commits/"*"/status")
+    state="\$(cat "$G/gate")"; repo="\${url#*/repos/jeryu/}"; repo="\${repo%%/*}"
+    jq -n --arg state "\$state" --arg context "\$repo/required" '{state: \$state, statuses: [
+      {context: \$context, state: \$state, updated_at: "2026-10-21T10:00:00Z"},
+      {context: \$context, state: "pending", updated_at: "2026-10-21T09:00:00Z"}]}' ;;
+  *) echo "unexpected curl: \$method \$url" >&2; exit 22 ;;
+esac
+EOF
+chmod +x "$G/bin/curl"
+# The tagging identity and the credential path are site settings with no default, so every
+# invocation names them. The identity below is this test's, not a site's. It starts in / as the
+# timer starts outside any repository.
+auto_tag() ( # [--dry-run]
+  cd / && PATH="$G/bin:$PATH" JERYU_DEPLOY_REMOTE="$G/remotes/jeryu-deploy.git" \
+    JERYU_CRATE_REMOTE_PREFIX="$G/remotes" JERYU_DEPLOY_REPO=jeryu/jeryu-deploy \
+    JERYU_AUTO_TAG_STATE="$G/state" JERYU_AUTO_TAG_COALESCE="${TAG_COALESCE-0}" \
+    JERYU_TAG_GIT_NAME="${TAG_GIT_NAME-releasebot}" JERYU_TAG_GIT_EMAIL="${TAG_GIT_EMAIL-releasebot@forge.invalid}" \
+    JERYU_TAG_TOKEN_FILE="${TAG_TOKEN_FILE-$G/token}" JERYU_BASE="${TAG_BASE:-https://git.neverhuman.org}" \
+    bash "$here/auto-tag.sh" "$@"
+)
+crate_tags() { git -C "$G/remotes/$1.git" for-each-ref --format='%(refname:short)' refs/tags; }
+support_ref() { git -C "$G/remotes/$1.git" rev-parse --verify -q "refs/heads/preserve/hosted-cargo/$2" || true; }
+deploy_branches() { git -C "$G/remotes/jeryu-deploy.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/*'; }
+newest_event() { tail -n 2 "$G/events.jsonl" | grep . | tail -n 1; }
+
+rc=0; TAG_BASE=https://git.neverhuman.org.evil.invalid auto_tag >"$G/run.log" 2>&1 || rc=$?
+[[ $rc == 2 && ! -s "$G/curl-args" ]] || fail "auto-tag sent a request to a noncanonical origin"
+chmod 644 "$G/token"; rc=0; auto_tag >"$G/run.log" 2>&1 || rc=$?
+[[ $rc == 2 && ! -s "$G/curl-args" ]] || fail "auto-tag accepted a group-readable token file"
+chmod 600 "$G/token"
+rc=0; TAG_TOKEN_FILE= auto_tag >"$G/run.log" 2>&1 || rc=$?
+[[ $rc == 2 ]] || fail "auto-tag ran without JERYU_TAG_TOKEN_FILE"
+grep -q "JERYU_TAG_TOKEN_FILE is unset" "$G/run.log" || fail "the refusal does not name the credential path"
+rc=0; TAG_GIT_NAME= auto_tag >"$G/run.log" 2>&1 || rc=$?
+[[ $rc == 2 ]] || fail "auto-tag ran without a tagging identity"
+grep -q "JERYU_TAG_GIT_NAME" "$G/run.log" || fail "the refusal does not name the identity"
+[[ ! -s "$G/curl-args" && -z "$(deploy_branches)" ]] || fail "a refused tick acted anyway"
+ok "auto-tag refuses a foreign origin, a loose token file and unset site settings before any request"
+
+# Documentation only, and a Jeryu Split Bot re-render, earn no tag.
+crate_commit jeryu-core "docs: say more" dev@forge.invalid docs/readme.md >/dev/null
+crate_commit jeryu-core "chore(jankurai): re-render from jeryu-tool main abc1234" split-bot@localhost \
+  rendered/jankurai.txt >/dev/null
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed on a documentation-only main"; }
+[[ "$(crate_tags jeryu-core)" == jeryu-core-v5.0.0-split.1 ]] || fail "auto-tag tagged a documentation-only main"
+grep -q "nothing but documentation or a re-render" "$G/run.log" || fail "auto-tag did not say why it cut no tag"
+[[ -z "$(deploy_branches)" ]] || fail "auto-tag opened a bump with no new tag"
+ok "auto-tag cuts no tag for documentation-only and re-render commits since the tag"
+
+# A source change that main's required gate has not passed waits.
+core_c2="$(crate_commit jeryu-core "add a function")"
+echo pending >"$G/gate"
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed while a gate was pending"; }
+[[ "$(crate_tags jeryu-core)" == jeryu-core-v5.0.0-split.1 ]] || fail "auto-tag tagged a main that is not green"
+grep -q "does not have jeryu-core/required success" "$G/run.log" || fail "auto-tag did not say it waits for the gate"
+echo success >"$G/gate"
+ok "auto-tag waits while the crate's main head has no required success"
+
+# A dry run says what it would do and changes nothing.
+: >"$G/events.jsonl"; : >"$G/beats.jsonl"
+auto_tag --dry-run >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "the dry run failed"; }
+grep -q "would tag ${core_c2:0:12} as jeryu-core-v5.0.0-split.2" "$G/run.log" || { cat "$G/run.log" >&2; fail "the dry run did not name the tag it would cut"; }
+grep -q "would open a bump pull request: jeryu-core jeryu-core-v5.0.0-split.1 -> jeryu-core-v5.0.0-split.2" "$G/run.log" \
+  || fail "the dry run did not name the bump it would open"
+[[ "$(crate_tags jeryu-core)" == jeryu-core-v5.0.0-split.1 ]] || fail "the dry run cut a tag"
+[[ -z "$(deploy_branches)" && ! -s "$G/prs.jsonl" && ! -s "$G/events.jsonl" && ! -s "$G/beats.jsonl" ]] \
+  || fail "the dry run pushed, posted or beat"
+ok "auto-tag --dry-run prints the tag and the bump it would make, and writes nothing anywhere"
+
+# The live tick: the tag and its preserve branch land together, main gains no commit, and the
+# bump pull request follows.
+deploy_main_before="$(git -C "$G/remotes/jeryu-deploy.git" rev-parse refs/heads/main)"
+core_main_before="$(git -C "$G/remotes/jeryu-core.git" rev-parse refs/heads/main)"
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed on the happy path"; }
+[[ "$(crate_tags jeryu-core | LC_ALL=C sort | tr '\n' ' ')" == "jeryu-core-v5.0.0-split.1 jeryu-core-v5.0.0-split.2 " ]] \
+  || fail "auto-tag did not cut split.2: $(crate_tags jeryu-core | tr '\n' ' ')"
+[[ "$(git -C "$G/remotes/jeryu-core.git" rev-list -n 1 jeryu-core-v5.0.0-split.2)" == "$core_c2" ]] \
+  || fail "split.2 does not name the green head"
+[[ "$(git -C "$G/remotes/jeryu-core.git" cat-file -t jeryu-core-v5.0.0-split.2)" == tag ]] \
+  || fail "split.2 is not an annotated tag"
+[[ "$(support_ref jeryu-core jeryu-core-v5.0.0-split.2)" == "$core_c2" ]] \
+  || fail "split.2 has no preserve/hosted-cargo branch at its commit"
+[[ "$(git -C "$G/remotes/jeryu-core.git" rev-parse refs/heads/main)" == "$core_main_before" ]] \
+  || fail "tagging added a commit to the crate's main (a VERSION stamp)"
+[[ "$(git -C "$G/remotes/jeryu-deploy.git" rev-parse refs/heads/main)" == "$deploy_main_before" ]] \
+  || fail "auto-tag pushed to jeryu-deploy main"
+[[ "$(awk -F'\t' 'END { print $1, $2, $3 }' "$G/state/tagged.tsv")" == "jeryu-core jeryu-core-v5.0.0-split.2 $core_c2" ]] \
+  || fail "the tag was not recorded"
+jq -es '[.[] | select(.kind == "tag.cut")] | length == 1' "$G/events.jsonl" >/dev/null || fail "no single tag.cut event"
+jq -es --arg tag jeryu-core-v5.0.0-split.2 '[.[] | select(.kind == "tag.cut")][0]
+  | .repo == "jeryu/jeryu-core" and .source == "auto-tag" and .needs_human == false
+    and .detail.tag == $tag and .detail.from_tag == "jeryu-core-v5.0.0-split.1"
+    and .detail.support_ref == ("refs/heads/preserve/hosted-cargo/" + $tag)' "$G/events.jsonl" >/dev/null \
+  || fail "the tag.cut event is not the contract's"
+ok "auto-tag cuts the next annotated split tag with its preserve branch, records it, and stamps no VERSION commit"
+
+# The bump that follows: exactly the pin's files, the frozen split.0 line untouched, one PR.
+bump_branch="$(deploy_branches)"
+[[ "$bump_branch" == "auto/pin-jeryu-core-2-${core_c2:0:12}" ]] || fail "unexpected bump branch: $bump_branch"
+git -C "$G/remotes/jeryu-deploy.git" diff --name-only main "$bump_branch" >"$G/bump-files"
+[[ "$(LC_ALL=C sort "$G/bump-files" | tr '\n' ' ')" == ".cargo/hosted-pin-refs.tsv Cargo.lock Cargo.toml crates/jeryu-api/Cargo.toml " ]] \
+  || fail "the bump changed $(tr '\n' ' ' <"$G/bump-files")"
+git -C "$G/remotes/jeryu-deploy.git" show "$bump_branch:crates/jeryu-api/Cargo.toml" >"$G/bumped-api-manifest"
+grep -q 'jeryu-core-v5.0.0-split.2", package = "jeryu-core"' "$G/bumped-api-manifest" || fail "the bump did not move the pin line"
+grep -q 'jeryu-core-v5.0.0-split.0", package = "jeryu-frozen"' "$G/bumped-api-manifest" || fail "the bump moved a frozen [patch] source"
+git -C "$G/remotes/jeryu-deploy.git" show "$bump_branch:Cargo.lock" \
+  | grep -q "jeryu-core.git?tag=jeryu-core-v5.0.0-split.2#$core_c2" || fail "Cargo.lock does not name the new tag and commit"
+git -C "$G/remotes/jeryu-deploy.git" show "$bump_branch:.cargo/hosted-pin-refs.tsv" \
+  | grep -qx "jeryu-core|jeryu-core-v5.0.0-split.2|$core_c2|refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.2" \
+  || fail "the pin policy row was not bumped"
+[[ "$(jq -s length "$G/prs.jsonl")" == 1 ]] || fail "auto-tag did not open exactly one bump"
+jq -e '.title == "release: pin jeryu-core jeryu-core-v5.0.0-split.2" and .base == "main"
+  and (.body | contains("preserve/hosted-cargo")) and (.body | contains("dependency-sources.sh"))' \
+  "$G/prs.jsonl" >/dev/null || fail "the bump pull request is not the contract's"
+jq -es '[.[] | select(.kind == "pin.bump_opened")][0] | .pr == 1 and .repo == "jeryu/jeryu-deploy"
+  and .detail.dependency == "jeryu/jeryu-core" and .detail.to == "jeryu-core-v5.0.0-split.2"' \
+  "$G/events.jsonl" >/dev/null || fail "no pin.bump_opened event for the crate bump"
+jq -es '.[-1] | .runnerId == "'"$(hostname -s)"'/auto-tag" and .labels == ["automation"]
+  and .last.recipe == "auto-tag"' "$G/beats.jsonl" >/dev/null || fail "the heartbeat is not the contract's"
+ok "auto-tag opens one pin bump pull request that moves only the pin's three places, never a frozen source"
+
+# A bump already open: no second stack, and no tag is held up by it.
+jq -n --arg b "$bump_branch" '[{number: 1, state: "open", title: "release: pin jeryu-core jeryu-core-v5.0.0-split.2",
+  head: {ref: $b, sha: "0000000000000000000000000000000000000000", repo: {full_name: "jeryu/jeryu-deploy"}},
+  base: {ref: "main", repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$G/pulls.json"
+prs_before="$(jq -s length "$G/prs.jsonl")"
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed with a bump open"; }
+grep -q "crate pin bump pull requests are open" "$G/run.log" || fail "auto-tag did not say it waits for the open bump"
+[[ "$(jq -s length "$G/prs.jsonl")" == "$prs_before" ]] || fail "auto-tag opened a second stack beside an open bump"
+ok "auto-tag builds no second stack while a crate pin bump is open"
+
+# Coalescing: a new green source commit right after a tag waits for the window.
+core_c3="$(crate_commit jeryu-core "another function")"
+TAG_COALESCE=3600 auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed while coalescing"; }
+grep -q "coalescing until the window" "$G/run.log" || fail "auto-tag did not coalesce inside the window"
+[[ "$(crate_tags jeryu-core | grep -c .)" == 2 ]] || fail "auto-tag cut a second tag inside the coalescing window"
+ok "auto-tag cuts at most one tag per repository per window"
+
+# A tag that lost its preserve branch is repaired before anything new is cut: the consumer's
+# dependency-source gate reads that branch back, and a tag without it breaks the gate.
+git -C "$G/remotes/jeryu-core.git" update-ref -d refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.2
+TAG_COALESCE=3600 auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed on a missing preserve branch"; }
+[[ "$(support_ref jeryu-core jeryu-core-v5.0.0-split.2)" == "$core_c2" ]] || fail "the missing preserve branch was not repaired"
+grep -q "pushed the missing refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.2" "$G/run.log" \
+  || fail "the repair was not reported"
+jq -es 'any(.[]; .kind == "tag.preserve_repaired")' "$G/events.jsonl" >/dev/null || fail "no tag.preserve_repaired event"
+ok "auto-tag repairs a tag whose preserve/hosted-cargo branch is missing, before cutting anything new"
+
+# A push the forge refuses must leave neither the tag nor its preserve branch: a tag whose
+# preserve branch never landed is exactly what breaks the consumer's dependency-source gate.
+# The stand-in git refuses only a push that carries a tag, as a protected ref would.
+tag_real_git="$(command -v git)"
+cat >"$G/bin/git" <<EOF
+#!/usr/bin/env bash
+if [ -e "$G/refuse-tag-push" ]; then
+  case " \$* " in *" push "*refs/tags/*) echo "remote: refusing to create a tag" >&2; exit 1 ;; esac
+fi
+exec "$tag_real_git" "\$@"
+EOF
+chmod +x "$G/bin/git"
+: >"$G/refuse-tag-push"; : >"$G/events.jsonl"
+tags_before="$(crate_tags jeryu-core | grep -c .)"
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "a refused tag push failed the tick"; }
+[[ "$(crate_tags jeryu-core | grep -c .)" == "$tags_before" ]] || fail "a refused push left a tag behind"
+[[ -z "$(support_ref jeryu-core jeryu-core-v5.0.0-split.3)" ]] \
+  || fail "a refused push left the preserve branch without its tag"
+[[ -z "$(git -C "$G/state/jeryu-core.git" tag -l jeryu-core-v5.0.0-split.3)" ]] \
+  || fail "a refused push left the tag in the timer's cache, so a retry would skip it"
+jq -es '[.[] | select(.kind == "tag.failed")][0] | .needs_human == true' "$G/events.jsonl" >/dev/null \
+  || fail "a refused push did not ask for a person"
+rm -f "$G/refuse-tag-push"
+ok "a tag push the forge refuses leaves neither the tag nor its preserve branch, and asks for a person"
+
+# A main that no longer descends from the tag is left for a person, with an event that asks.
+git -C "$G/remotes/jeryu-core.git" update-ref refs/heads/main "$core_c1"
+git -C "$G/jeryu-core" reset -q --hard "$core_c1"
+: >"$G/events.jsonl"
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed on a rewritten main"; }
+grep -q "does not descend from jeryu-core-v5.0.0-split." "$G/run.log" || fail "auto-tag did not report the rewritten history"
+jq -es '[.[] | select(.kind == "tag.diverged")][0] | .needs_human == true' "$G/events.jsonl" >/dev/null \
+  || fail "a rewritten main did not ask for a person"
+[[ "$(crate_tags jeryu-core | grep -c .)" == 2 ]] || fail "auto-tag tagged a rewritten main"
+ok "auto-tag leaves a main that no longer descends from its tag for a person"
+
+# The stack: two crates behind, in dependency order, each bump based on the one before it.
+git -C "$G/remotes/jeryu-core.git" update-ref refs/heads/main "$core_c3"
+git -C "$G/jeryu-core" reset -q --hard "$core_c3"
+runner_c2="$(crate_commit jeryu-ci-runner "runner change")"
+echo '[]' >"$G/pulls.json"; : >"$G/prs.jsonl"; : >"$G/events.jsonl"
+rm -rf "$G/state/jeryu-core.git"
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed on the two-crate stack"; }
+[[ "$(crate_tags jeryu-core | grep -c .)" == 3 && "$(crate_tags jeryu-ci-runner | grep -c .)" == 2 ]] \
+  || fail "auto-tag did not tag both crates"
+[[ "$(support_ref jeryu-ci-runner jeryu-ci-runner-v5.0.0-split.2)" == "$runner_c2" ]] \
+  || fail "the runner tag has no preserve branch"
+[[ "$(jq -s length "$G/prs.jsonl")" == 2 ]] || fail "auto-tag did not open two bumps"
+jq -es '.[0].title == "release: pin jeryu-core jeryu-core-v5.0.0-split.3" and .[0].base == "main"
+  and .[1].title == "release: pin jeryu-ci-runner jeryu-ci-runner-v5.0.0-split.2"
+  and .[1].base == .[0].head' "$G/prs.jsonl" >/dev/null \
+  || { cat "$G/prs.jsonl" >&2; fail "the stack is not in dependency order, based on the bump before it"; }
+runner_branch="$(jq -rs '.[1].head' "$G/prs.jsonl")"
+git -C "$G/remotes/jeryu-deploy.git" show "$runner_branch:.cargo/hosted-pin-refs.tsv" >"$G/stacked-policy"
+grep -q "jeryu-core|jeryu-core-v5.0.0-split.3|$core_c3|" "$G/stacked-policy" \
+  || fail "the stacked bump lost the core pin it is based on"
+grep -q "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.2|$runner_c2|" "$G/stacked-policy" \
+  || fail "the stacked bump does not carry the runner pin"
+ok "auto-tag bumps dependent crates in dependency order as one stack, so main never pins a mismatched pair"
+
+# A bump somebody already decided is never reopened, and the rest of the stack waits with it:
+# stacking the next bump on a branch that will not land is how main ends up pinning a mismatched
+# pair. The tick ends nonzero, so the timer's status says a person is needed.
+core_bump_branch="$(jq -rs '.[0].head' "$G/prs.jsonl")"
+jq -n --arg b "$core_bump_branch" '[{number: 9, state: "closed", title: "release: pin jeryu-core jeryu-core-v5.0.0-split.3",
+  head: {ref: $b, sha: "0000000000000000000000000000000000000000", repo: {full_name: "jeryu/jeryu-deploy"}},
+  base: {ref: "main", repo: {full_name: "jeryu/jeryu-deploy"}}}]' >"$G/pulls.json"
+prs_before="$(jq -s length "$G/prs.jsonl")"
+rc=0; auto_tag >"$G/run.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] || { cat "$G/run.log" >&2; fail "a decided bump did not end the tick nonzero"; }
+grep -q "#9 already decided the bump" "$G/run.log" || fail "auto-tag did not name the decided bump"
+[[ "$(jq -s length "$G/prs.jsonl")" == "$prs_before" ]] || fail "auto-tag reopened a decided bump or stacked past it"
+echo '[]' >"$G/pulls.json"
+ok "auto-tag never reopens a bump a person decided, and stops the stack behind it"
+
+# Once the stack has landed, every pin is current and the tick is a silent no-op that still beats.
+git -C "$G/remotes/jeryu-deploy.git" update-ref refs/heads/main "$runner_branch"
+for stale in $(deploy_branches); do git -C "$G/remotes/jeryu-deploy.git" update-ref -d "refs/heads/$stale"; done
+: >"$G/beats.jsonl"
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "an idle tick failed"; }
+grep -q "no tag was cut this tick" "$G/run.log" || fail "an idle tick did not say so"
+[[ "$(jq -s length "$G/beats.jsonl")" == 1 ]] || fail "an idle tick did not beat exactly once"
+ok "an idle auto-tag tick cuts nothing and beats once"
+
+# bump-hosted-pin.sh on its own: every refusal, and nothing half-edited.
+BP="$G/bumpcheck"; git clone -q "$G/remotes/jeryu-deploy.git" "$BP" 2>/dev/null
+# From the commit whose pin is still split.1, so these cases are about the recipe alone.
+git -C "$BP" checkout -q "$deploy_main_before"
+bump() ( cd "$BP" && bash "$here/bump-hosted-pin.sh" "$@" )
+rc=0; bump ../evil jeryu-core-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 64 ]] || fail "bump-hosted-pin accepted a path as a repository"
+rc=0; bump jeryu-core jeryu-core-v5.0.0-split.9 deadbeef >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 64 ]] || fail "bump-hosted-pin accepted a short commit"
+rc=0; bump jeryu-core jeryu-ci-runner-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 64 ]] || fail "bump-hosted-pin accepted another repository's tag"
+rc=0; bump jeryu-core jeryu-core-v5.0.0-split.0 "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "is not after" "$G/bump.log" || fail "bump-hosted-pin walked a pin backwards"
+rc=0; bump jeryu-core jeryu-core-v5.1.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "version line" "$G/bump.log" || fail "bump-hosted-pin changed a version line"
+[[ -z "$(git -C "$BP" status --porcelain)" ]] || fail "a refused bump left the checkout edited"
+bump jeryu-core jeryu-core-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 \
+  || { cat "$G/bump.log" >&2; fail "bump-hosted-pin refused a forward bump"; }
+grep -q "bumped jeryu-core jeryu-core-v5.0.0-split.1 -> jeryu-core-v5.0.0-split.9" "$G/bump.log" \
+  || fail "bump-hosted-pin did not report what it moved"
+rc=0; bump jeryu-core jeryu-core-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] || fail "bump-hosted-pin bumped a pin that was already there"
+ok "bump-hosted-pin refuses a foreign tag, a malformed commit, a backward or version-line move, and leaves nothing half-edited"
 
 mkdir -p "$T/tripwire"
 for c in ssh scp curl git mkdir install docker systemctl; do

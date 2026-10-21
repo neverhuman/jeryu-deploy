@@ -215,6 +215,7 @@ Posted by producers:
 | `todoq` | `todo.claimed`, `todo.attempt_finished` (`outcome` `done`, `retry`, `blocked`, `ratelimit`, `retarget` or `killed`; `cost_usd`, `seconds`, `log_tail`; `detail` has `usage` (per model; its totals are also the slot's last usage sample, see [Token usage](#token-usage)), `model`, `agent`, `experiment`, `session`, `factory`), `todo.merged`, `todo.waiting_on_unmerged`, `shift.exhausted` (`shift` is the shift branch, `needs_human` when claimable todos are left waiting; `detail` has `spent_usd`, `budget_usd` and `waiting`), `worker.error` |
 | `auto-stage` | `release.staged` (`sha` is the staged commit; `detail` has `release`, `previous_release`, `deploy_command`), `release.stage_failed` (`log_tail`; `needs_human` on the final attempt) |
 | `auto-pin` | `pin.bump_opened` (`repo` is the consumer, `pr` the bump, `sha` the dependency commit; `detail` has `dependency`, `from`, `to`, `web_dist_sha256`), `pin.bump_failed` (`log_tail`; `needs_human` on the second failure for the same commit), `pin.bump_superseded` (a stale, unqueued bump closed for a newer head; `pr` is the new bump, `detail.superseded_pr` the closed one), `pin.bump_diverged` (`needs_human`; an open bump pins a commit that is not an ancestor of the dependency head, so it is left open) |
+| `auto-tag` | `tag.cut` (`repo` is the crate repository, `sha` the tagged commit; `detail` has `tag`, `from_tag`, `support_ref`), `tag.preserve_repaired` and `tag.preserve_missing` (`needs_human` on the second: a tag whose `preserve/hosted-cargo` branch is missing could not be pushed, and the consumer's dependency-source gate reads that branch back), `tag.diverged` (`needs_human`; a crate main no longer descends from its newest tag, so nothing was cut), `tag.failed` (`needs_human`; the tag and its preserve branch are pushed together and neither landed), and `pin.bump_opened` for each crate bump it opens (`detail.dependency` is the crate repository, `detail.base` the bump it stacks on) |
 | the pull request reviewer | `pr.reviewed` (`repo`, `pr`, `sha`, `outcome` is the review decision, `cost_usd`, `seconds`; `detail` has `usage`, `model`, `decision`). The yield report reads the kind, not the source name |
 | `pr-gate` | `gate.log` (`outcome` including `timed_out` and `inputs_changed`, `seconds`, `log_tail`, a receipt subset in `detail`) |
 | an agent session reporter | `session.costed`: one increase of a hand-run agent session's spend (not a queue worker, not a reviewer) on one repository. `cost_usd` is the delta since the session's previous event for that repository, never the running total; `event_id` is stable per delta, so a re-post is dropped. `repo` is `owner/name`, left out when the spend touched no forge repository; `family` only then, when the session declared one family. `actor` is `<login>@<host>`. `seconds` is the optional delta of active time. `detail` has `session` (`<agent>:<id>`), `agent`, `model` (the delta's dominant model), `seq`, `cumulative_usd` (display only) and `tokens` (per model `input`, `output`, `cache_read`, `cache_write`, `cost_usd`; not `usage`, which is a todo attempt's). The yield report sums the kind as `adhoc` |
@@ -539,7 +540,7 @@ pushes leave from there).
 | `release_stage_failed` | critical | a repository's newest `release.stage_failed` with `needs_human` is newer than that repository's newest `release.staged` |
 | `deploy_failed` | critical or watch | a repository's newest production deployment ended in `failure` or `error`. `watch` when the attempt left production as it was, because the live deployment is a successful one of the very release the attempt tried to deploy (release names decide it when both payloads name one, else the commits): production runs that release and needs no deploy |
 | `release_board_problem` | action or watch | what a family's release board (`/releases`, `docs/release-board.md`) is showing and nothing else notices. `action` per lane with a stage in state `bad`, whose `href` is that lane on the board (`#lane-<id>`), and `action` once per family for the sources its collector could not read on its newest run. `watch` when the newest snapshot was observed 15 minutes ago or more, or carries no readable `observed_at`: the collector posts every five minutes, so the page is showing something older than now. Items of one board have ids of their own, so acknowledging a red lane leaves the others |
-| `pin_behind` | action or watch | a deploy repo's pin misses green, merged work of a dependency (see [Pins](#pins)). A `commit` pin with no bump open is `watch` with no command while the dependency's newest commit (`latest_at`) is younger than 20 minutes, because auto-pin is about to open the bump; after that, or when `latest_at` is missing or unreadable, it is `action` and the command starts auto-pin (`systemctl --user start jeryu-auto-pin.service`), which builds the web bundle, changes the two lock fields and opens the pull request. The id is the same on both sides of the line. When auto-pin has given up on the dependency's current head (the newest `pin.bump_failed` with `needs_human` whose `sha` is `latest_sha`) it is `action` at once, grace or not: the title says auto-pin gave up on `<sha7>`, the reason leads with the event's `reason` (else a `reason` in `detail`, else the last line of `log_tail`) on one trimmed line, and the command clears the give-up marker and retries (`rm -f ~/.local/state/jeryu-auto-pin/failures/<sha> && systemctl --user start jeryu-auto-pin.service`); a give-up for an older head is ignored. With a bump pull request open it is `watch` and `href` is that pull request; a `tag` pin is `watch`, because nothing cuts tags. Gone when the pin is current |
+| `pin_behind` | action or watch | a deploy repo's pin misses green, merged work of a dependency (see [Pins](#pins)). A `commit` pin with no bump open is `watch` with no command while the dependency's newest commit (`latest_at`) is younger than 20 minutes, because auto-pin is about to open the bump; after that, or when `latest_at` is missing or unreadable, it is `action` and the command starts auto-pin (`systemctl --user start jeryu-auto-pin.service`), which builds the web bundle, changes the two lock fields and opens the pull request. The id is the same on both sides of the line. When auto-pin has given up on the dependency's current head (the newest `pin.bump_failed` with `needs_human` whose `sha` is `latest_sha`) it is `action` at once, grace or not: the title says auto-pin gave up on `<sha7>`, the reason leads with the event's `reason` (else a `reason` in `detail`, else the last line of `log_tail`) on one trimmed line, and the command clears the give-up marker and retries (`rm -f ~/.local/state/jeryu-auto-pin/failures/<sha> && systemctl --user start jeryu-auto-pin.service`); a give-up for an older head is ignored. With a bump pull request open it is `watch` and `href` is that pull request; a `tag` pin is `watch`, because auto-tag cuts the tag and opens its bump without a person. Gone when the pin is current |
 
 ### Block kinds
 
@@ -668,8 +669,18 @@ pull request once jeryu-web main is green: `release: pin jeryu-web <sha7>` from
 ships. It only proposes; review, the merge queue, auto-stage and a person's
 deploy follow as for any change. A build takes about three minutes, so the
 inbox gives it 20 minutes from the dependency's newest commit before it asks a
-person to start `jeryu-auto-pin.service` by hand. Tag pins have no automation: the item tells a
-person that work is waiting for a tag.
+person to start `jeryu-auto-pin.service` by hand.
+
+**Crate tags are cut continuously.** `scripts/release/auto-tag.sh` (timer
+`jeryu-auto-tag.timer` on the release host) cuts the next
+`<repo>-v<x.y.z>-split.<n+1>` tag of every hosted crate repository whose main
+head has `<repo>/required` success and whose commits since the last tag changed
+a crate source, at most one tag per repository per hour, and pushes the tag with
+its `preserve/hosted-cargo/<tag>` branch in one atomic push. It then opens the
+`release: pin <repo> <tag>` bump pull requests in dependency order, each based on
+the one before it, so the queue can never land a mismatched pair; the version is
+the tag, so no bump adds a VERSION stamp commit to main. A `tag` pin is still
+`watch` in the inbox: the timer, not a person, moves it.
 
 ## Todo truth
 
@@ -1413,6 +1424,14 @@ may be older than the client.
   jeryu-deploy, and the admin token file named by `JERYU_PIN_TOKEN_FILE`, mode 0600). Disable with
   `systemctl --user disable --now jeryu-auto-pin.timer`. State and build logs
   are under `~/.local/state/jeryu-auto-pin/`.
+- **auto-tag.** Not enabled by a deploy. Install it once on the release host with
+  `scripts/release/install-auto-tag.sh` (it needs a git credential that may push
+  tags, preserve branches and bump branches, and releasebot's agent token file
+  named by `JERYU_TAG_TOKEN_FILE`, mode 0600, set with the tagging identity in
+  `~/.config/jeryu/auto-tag.env`). Never on a gate host: pull request code runs
+  there. `auto-tag.sh --dry-run` prints what it would tag and bump and writes
+  nothing. Turn it off again by disabling `jeryu-auto-tag.timer`. State and bump
+  logs are under `~/.local/state/jeryu-auto-tag/`.
 - **Deployment logs.** The switch log itself lives on the release host
   (`~/.local/state/jeryu-release/logs/`, named by the status's `log_path`) and
   its last 20 lines travel in the status's `log_tail`. `deploy-release.sh` sets
