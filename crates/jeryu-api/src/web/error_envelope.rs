@@ -97,12 +97,12 @@ pub(super) async fn normalize(request: Request, next: Next) -> Response {
     Response::from_parts(parts, Body::from(body))
 }
 
-/// Every API version except the GitHub-shaped `/api/v3` edge, case-blind like
-/// the unknown-route fallback.
+/// Every API version except the GitHub-shaped `/api/v3` and `/api/graphql`
+/// edges, case-blind like the unknown-route fallback.
 fn applies(path: &str) -> bool {
     let path = path.to_ascii_lowercase();
     (path == "/api" || path.starts_with("/api/"))
-        && !(path == "/api/v3" || path.starts_with("/api/v3/"))
+        && !(path == "/api/v3" || path.starts_with("/api/v3/") || path == "/api/graphql")
 }
 
 fn envelope_for(status: StatusCode, method: &Method, bytes: &[u8]) -> Value {
@@ -283,6 +283,8 @@ mod tests {
         assert!(applies("/API/V1/work"));
         assert!(applies("/api/nope"));
         assert!(!applies("/api/v3/repos"));
+        assert!(!applies("/api/graphql"));
+        assert!(!applies("/API/GRAPHQL"));
         assert!(!applies("/repos/a/b"));
     }
 

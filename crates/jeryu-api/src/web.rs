@@ -945,6 +945,7 @@ fn routes(state: Arc<WebState>) -> AxumRouter {
         .route("/api/v1", get(route_index::api_v1))
         .route("/api/v1/", get(route_index::api_v1))
         .route("/graphql", post(graphql))
+        .route("/api/graphql", post(graphql))
         // GitHub-compatible REST edge — every request is forwarded to the
         // in-process `GithubRouter`, so the real `gh` CLI and any GitHub client
         // work against this live server (was built but never mounted).
@@ -1762,6 +1763,10 @@ fn capabilities_payload(
             "If status fails for the Jeryu host, do not start a login flow; rerun {GH_SETUP_REPAIR_COMMAND} and inspect {}.",
             discovery::CAPABILITIES_PATH
         ),
+    );
+    map_rest(
+        "gh pr view <number> --repo <forge>/<owner>/<repo> --json number,title,state,isDraft,headRefOid,url",
+        "POST /api/graphql (GitHub CLI 2.45.0 tested; bounded read only)",
     );
     map_rest("gh pr list", "GET /repos/{owner}/{repo}/pulls");
     map_rest(

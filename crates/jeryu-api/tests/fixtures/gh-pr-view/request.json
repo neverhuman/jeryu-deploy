@@ -1,0 +1,11 @@
+{
+  "path": "/api/graphql",
+  "body": {
+    "query": "\n\tquery PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequest(number: $pr_number) {number,title,state,isDraft,headRefOid,url,id}\n\t\t}\n\t}",
+    "variables": {
+      "owner": "ada",
+      "pr_number": 1,
+      "repo": "widgets"
+    }
+  }
+}

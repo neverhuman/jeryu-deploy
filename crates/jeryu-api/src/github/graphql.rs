@@ -1,15 +1,15 @@
 //! Guided GraphQL compatibility endpoint.
 //!
 //! Jeryu does not execute arbitrary GitHub GraphQL. The endpoint serves the
-//! small read-only subset in [`SUPPORTED_OPERATIONS`] — the discovery probes
-//! GitHub clients open with — and answers anything else with a GitHub-shaped
+//! small read-only subset in [`SUPPORTED_OPERATIONS`] — discovery probes
+//! and one captured GitHub CLI PR read — and answers anything else with a GitHub-shaped
 //! error naming the REST route that serves the same intent.
 //!
 //! [`SUPPORTED_OPERATIONS`] is what the capability manifest, the REST document
 //! and `docs/graphql.md` all describe, so no surface can claim more or less
 //! GraphQL than this module answers.
 
-use jeryu_core::{AccountSummary, UserRole};
+use jeryu_core::{AccountSummary, PullRequestState, UserRole};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -17,27 +17,56 @@ use super::GithubRouter;
 use super::support::{docs_url, json_response, mcp_guidance_tools, parse_body};
 use crate::routes::Response;
 
+/// Request captured from GitHub CLI 2.45.0 for the bounded `gh pr view` command.
+pub(crate) const GH_PR_VIEW_QUERY: &str = "query PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $pr_number) {number,title,state,isDraft,headRefOid,url,id} } }";
+
+/// Match the entire captured query, including its variable types and fields.
+/// This is a command adapter, not a GraphQL evaluator.
+pub(crate) fn gh_pr_view_target(body: &str) -> Option<(String, String, u64)> {
+    let request: GraphqlRequest = serde_json::from_str(body).ok()?;
+    if compact(&request.query) != compact(GH_PR_VIEW_QUERY)
+        || request
+            .operation_name
+            .as_deref()
+            .is_some_and(|name| name != "PullRequestByNumber")
+    {
+        return None;
+    }
+    let owner = request.variables.get("owner")?.as_str()?;
+    let repo = request.variables.get("repo")?.as_str()?;
+    let number = request.variables.get("pr_number")?.as_u64()?;
+    let segment = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|ch| ch.is_ascii_alphanumeric() || b"-_.".contains(&ch))
+            && value != "."
+            && value != ".."
+    };
+    if !segment(owner) || !segment(repo) || number == 0 || number > i32::MAX as u64 {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string(), number))
+}
+
+fn compact(query: &str) -> String {
+    query.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
 /// Every GraphQL operation this endpoint answers. Each entry is the query as a
 /// caller writes it; [`is_typename_probe`], [`is_viewer_login_query`] and
 /// [`is_repository_read_query`] are what actually match, and
 /// `the_supported_operations_are_the_ones_served` holds the list to them.
 pub(crate) const SUPPORTED_OPERATIONS: &[&str] = &[
+    GH_PR_VIEW_QUERY,
     "query { __typename }",
     "query { viewer { login } }",
     "query { repository(owner: \"...\", name: \"...\") { name nameWithOwner isPrivate \
      defaultBranchRef { name } url } }",
 ];
 
-/// What a caller has to send. The endpoint answers for the credential that
-/// asks: an account credential (a session, or a personal access token as
-/// `Authorization: Bearer`). A scoped agent token is refused with 403
-/// `insufficient_scope` on this endpoint — an agent uses the REST subset or
-/// `/mcp` instead — and an unauthenticated caller is refused before this
-/// module runs.
-pub(crate) const AUTH_NOTE: &str = "Authenticate as an account: a web session, or a personal \
-     access token as Authorization: Bearer. A scoped agent token (jat_) is refused here with 403 \
-     insufficient_scope; agents use the GitHub-compatible REST subset or /mcp. The viewer is the \
-     authenticated account, and a repository it may not read reads as absent.";
+/// Authentication guidance shared by all discovery surfaces.
+pub(crate) const AUTH_NOTE: &str = "Authenticate with a web session or personal access token as Authorization: Bearer. Scoped agent tokens (jat_) may run only the captured gh 2.45.0 pr view query, subject to repository and task reach; other GraphQL returns 403 insufficient_scope. The viewer is the authenticated account; an unreadable repository reads as absent.";
 
 #[derive(Debug, Deserialize)]
 struct GraphqlRequest {
@@ -60,7 +89,8 @@ impl GithubRouter {
     }
 
     /// `account` is `None` for the trusted in-process edge, which is already
-    /// past authorization; the web edge always passes the caller.
+    /// past authorization; the web edge passes the account or first authorizes
+    /// the exact scoped PR read through the REST repository/task checks.
     fn graphql_scoped(&self, body: &str, account: Option<&AccountSummary>) -> Response {
         let request = match parse_body::<GraphqlRequest>(body) {
             Ok(request) => request,
@@ -78,6 +108,29 @@ impl GithubRouter {
             );
         }
 
+        if let Some((owner, repo, number)) = gh_pr_view_target(body) {
+            if !self.account_can_read(account, &owner, &repo) {
+                return json_response(200, &json!({"data": {"repository": null}}));
+            }
+            let repository = self.core().get_repository(&owner, &repo).ok().map(|_| {
+                let pr = self.core().get_pull_request(&owner, &repo, number).ok();
+                json!({"pullRequest": pr.map(|pr| json!({
+                    "number": pr.number,
+                    "title": pr.title,
+                    "state": if pr.merged || pr.state == PullRequestState::Merged { "MERGED" }
+                        else if pr.state == PullRequestState::Closed { "CLOSED" } else { "OPEN" },
+                    "isDraft": pr.draft,
+                    "headRefOid": pr.head.sha,
+                    "url": super::support::web_url(&super::pulls::pull_request_web_path(&owner, &repo, number)),
+                    "id": pr.id.to_string(),
+                }))})
+            });
+            return json_response(200, &json!({"data": {"repository": repository}}));
+        }
+        // A modified command query must never fall through to a discovery matcher.
+        if query.contains("pullRequest") || query.contains("PullRequest") {
+            return unsupported_response(query, request.operation_name.as_deref());
+        }
         if is_typename_probe(query) {
             return json_response(200, &json!({ "data": { "__typename": "Query" } }));
         }
@@ -196,7 +249,7 @@ fn unsupported_response(query: &str, operation_name: Option<&str>) -> Response {
                 "reason": "Jeryu serves a small read-only GraphQL subset and the GitHub-compatible REST routes; it does not execute arbitrary GraphQL.",
                 "common_fixes": [
                     "Use the GitHub-compatible REST route for repository, PR, issue, check, release, or hook workflows.",
-                    "Send one of the supported GraphQL operations listed here if you only need discovery.",
+                    "Send one of the supported discovery operations or the exact captured gh 2.45.0 PR read listed here.",
                     "Run the jeryu-api conformance tests before widening the GraphQL subset."
                 ],
                 "docs_url": graphql_docs_url(),
@@ -240,11 +293,12 @@ mod tests {
     /// REST document and the docs page all quote this list.
     #[test]
     fn the_supported_operations_are_the_ones_served() {
-        assert_eq!(SUPPORTED_OPERATIONS.len(), 3);
+        assert_eq!(SUPPORTED_OPERATIONS.len(), 4);
         let matched = |query: &str| {
             is_typename_probe(query)
                 || is_viewer_login_query(query)
                 || is_repository_read_query(query)
+                || gh_pr_view_target(&json!({"query": query, "variables": {"owner": "alice", "repo": "demo", "pr_number": 1}}).to_string()).is_some()
         };
         for operation in SUPPORTED_OPERATIONS {
             assert!(matched(operation), "the subset lists {operation}, unserved");

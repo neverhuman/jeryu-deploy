@@ -45,6 +45,7 @@ mod evidence_independence_tests;
 mod family_key_tests;
 mod flow_tests;
 mod gate_wanted_tests;
+mod gh_pr_view_tests;
 mod git_authorization;
 mod github_rest_tests;
 mod human_time_tests;

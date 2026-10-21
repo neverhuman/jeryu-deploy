@@ -76,9 +76,10 @@ with the header `Authorization: Bearer <token>`. No proxy or helper is needed.
   only a small read-only subset (`__typename`, `viewer { login }`, a
   `repository` read; see `FORGE/api/v1/docs/graphql.md` and
   `graphql_support.supported_operations` in the capability manifest), and
-  `FORGE/graphql` refuses your agent token with `403 insufficient_scope`: it
-  takes an account credential, not a `jat_`. So a `gh` command that needs
-  GraphQL fails for you — use the REST routes or the MCP tools instead.
+  the captured `gh` 2.45.0 command
+  `gh pr view <number> --repo <forge>/<owner>/<repo> --json number,title,state,isDraft,headRefOid,url`
+  accepts your scoped token subject to repository and task reach. Other GraphQL
+  returns `403 insufficient_scope` for agent tokens; use REST or MCP instead.
 
 ## 4. Check that it works
 

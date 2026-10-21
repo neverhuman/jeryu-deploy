@@ -47,6 +47,7 @@ use crate::routes::Response;
 
 pub(crate) use graphql::{
     AUTH_NOTE as GRAPHQL_AUTH_NOTE, SUPPORTED_OPERATIONS as GRAPHQL_SUPPORTED_OPERATIONS,
+    gh_pr_view_target,
 };
 use listing::{CommitListQuery, IssueListQuery, PullListQuery};
 pub use support::V3_ROUTES;

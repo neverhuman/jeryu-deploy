@@ -1,8 +1,8 @@
 # GraphQL on this forge
 
-The forge answers `POST /graphql`, and `POST /api/v3/graphql` identically, for
-a small read-only subset of GitHub's GraphQL API — the discovery probes GitHub
-clients open a connection with. Anything else is refused with a `501` that
+The forge answers `POST /graphql`, `POST /api/graphql`, and `POST /api/v3/graphql` identically, for
+a small read-only subset of GitHub's GraphQL API: discovery probes and one
+captured GitHub CLI PR read. Anything else is refused with a `501` that
 names the REST route serving the same intent. The forge never executes
 arbitrary GraphQL.
 
@@ -36,12 +36,37 @@ The arguments of `repository` may be inline strings or GraphQL variables
 Authenticate as an account: a web session, or a personal access token
 (`jpat_`) as `Authorization: Bearer <token>`.
 
-A **scoped agent token (`jat_`) is refused here** with `403 insufficient_scope`.
-Agents use the GitHub-compatible REST subset or `/mcp`, which is where their
-scoping is enforced; `connect-an-agent.md` says the same. `viewer` is the
-authenticated account, and a repository that account may not read reads as
-`null` — GraphQL's shape for "no such node", which tells a caller nothing about
-whether the repository exists.
+Scoped agent tokens (`jat_`) may run the bounded PR query below. Repository
+reach is checked by the same authorization service as the REST PR read.
+As with REST, task-scoped credentials may read throughout their task's repository. Other GraphQL queries return `403 insufficient_scope` for scoped tokens.
+Account repository reads honor the authenticated principal; unreadable
+repositories appear as `null`.
+
+## Tested GitHub CLI command
+
+GitHub CLI **2.45.0** is tested with this exact command:
+
+```sh
+gh pr view <number> --repo <forge>/<owner>/<repo> --json number,title,state,isDraft,headRefOid,url
+```
+
+It sends one `PullRequestByNumber` query to `/api/graphql`, adding `id` to the
+selection internally. Only the captured selection and variable types are
+accepted (whitespace may vary). Extra fields, aliases, other selections and
+mutations receive guided errors. PR state is `OPEN`, `CLOSED` or `MERGED`;
+`isDraft` and `headRefOid` come from the stored PR. URLs use the configured
+public origin, as REST PR URLs do.
+
+The required API test `actual_gh_245_pr_view_reads_four_lifecycle_fixtures`
+runs the real binary through an ephemeral loopback TLS recorder into the
+authenticated Axum router, checking draft, ready, closed and merged data and
+the captured request in `crates/jeryu-api/tests/fixtures/gh-pr-view/request.json`.
+It requires `gh` 2.45.0, Python 3 and OpenSSL on PATH; missing or different tools
+fail the fixture. Run it with:
+
+```sh
+cargo test --offline -p jeryu-api --features web gh_pr_view
+```
 
 ## What is not served, and what to send instead
 

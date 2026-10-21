@@ -49,12 +49,35 @@ pub(super) async fn graphql(
         Ok(auth) => auth,
         Err(response) => return *response,
     };
-    if auth.bot.is_some() {
-        return github_forbidden("insufficient_scope");
-    }
     let body = std::str::from_utf8(&body).unwrap_or_default();
-    let body = bind_authenticated_actor(body, &auth.account.login);
-    github_response(state.github.graphql_for_account(&body, &auth.account))
+    authorized_graphql(&state, body, &auth)
+}
+
+/// Only the captured PR read may use scoped credentials. Reuse the REST read
+/// authorization (including task reach) before the trusted adapter executes.
+fn authorized_graphql(
+    state: &super::WebState,
+    body: &str,
+    auth: &super::auth::HeaderAuth,
+) -> AxumResponse {
+    if let Some(bot) = &auth.bot {
+        let Some((owner, repo, number)) = crate::github::gh_pr_view_target(body) else {
+            return github_forbidden(
+                "insufficient_scope: scoped GraphQL supports only gh 2.45.0 pr view --json number,title,state,isDraft,headRefOid,url; use REST for other reads",
+            );
+        };
+        let number = number.to_string();
+        if let Some(response) = authorize_bot_on_github(
+            state,
+            Method::Get,
+            &["repos", &owner, &repo, "pulls", &number],
+            bot,
+        ) {
+            return response;
+        }
+        return github_response(state.github.handle(Method::Post, "/graphql", body));
+    }
+    github_response(state.github.graphql_for_account(body, &auth.account))
 }
 
 /// Accept-aware `/repos` entrypoint that serves the SPA shell to browser
@@ -198,6 +221,13 @@ async fn github_forward_request(
     let path_and_query = uri
         .path_and_query()
         .map_or_else(|| uri.path().to_string(), ToString::to_string);
+    if method == Method::Post && normalize_github_edge_path(&path_and_query) == "/graphql" {
+        return authorized_graphql(
+            &state,
+            std::str::from_utf8(&body).unwrap_or_default(),
+            &auth,
+        );
+    }
     if let Some(response) = authorize_github_repo_request(&state, method, &path_and_query, &auth) {
         super::merge_attempts::record_edge(
             &state,
@@ -229,17 +259,6 @@ async fn github_forward_request(
         .next()
         .unwrap_or_default();
     let segments: Vec<_> = route.trim_matches('/').split('/').collect();
-    // GraphQL on the compatibility edge answers for the caller, exactly as
-    // `/graphql` does: the router's own entry point is unscoped (it is also
-    // used in-process, past authorization), so reading a repository through
-    // this path without the caller would show any account the metadata of a
-    // repository it may not read. Agent tokens are refused here too.
-    if method == Method::Post && segments.as_slice() == ["graphql"] {
-        if auth.bot.is_some() {
-            return github_forbidden("insufficient_scope");
-        }
-        return github_response(state.github.graphql_for_account(&body, &account));
-    }
     if method == Method::Put
         && let ["repos", owner, repo, "pulls", number, "merge"] = segments.as_slice()
         && let Ok(number) = number.parse::<u64>()
@@ -431,7 +450,20 @@ fn github_account_from_headers(
             bot: None,
         });
     }
-    super::auth::authenticate_headers(state, headers)
+    // gh 2.45.0 uses GitHub's `token` scheme for its GraphQL transport.
+    // Translate only the scheme; credential classification and all account
+    // and bot checks remain in the existing authentication service.
+    let mut credential_headers = headers.clone();
+    if let Some(raw) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        && let Some((scheme, token)) = raw.split_once(' ')
+        && scheme.eq_ignore_ascii_case("token")
+        && let Ok(value) = HeaderValue::from_str(&format!("Bearer {}", token.trim()))
+    {
+        credential_headers.insert(header::AUTHORIZATION, value);
+    }
+    super::auth::authenticate_headers(state, &credential_headers)
         .map(|auth| {
             // The edge is outside the `/api/v1` gate, so it applies the same
             // password-change and CSRF policies itself.
