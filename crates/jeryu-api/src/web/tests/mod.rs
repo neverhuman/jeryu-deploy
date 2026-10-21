@@ -52,6 +52,7 @@ mod jankurai_audit_tests;
 mod pull_import_tests;
 mod pull_origin_tests;
 mod pull_replacement_tests;
+mod pull_workflow_status_tests;
 mod pulls_tests;
 mod raw_path_tests;
 mod regate_tests;

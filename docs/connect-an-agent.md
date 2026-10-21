@@ -89,7 +89,10 @@ with the header `Authorization: Bearer <token>`. No proxy or helper is needed.
    meaning `acme/*`), `repositories` (an explicit list), or `task` (one issue,
    pull request or branch).
 2. Through MCP, `initialize` and then `tools/list`. Expect a handful of
-   tools: code navigation and search, codegraph queries, and the tool
+   tools: code navigation and search, codegraph queries, the pull request
+   workflow status read (`jeryu.pull.workflow_status`, taking `repo` and
+   `number`, answering the same head-bound `workflow` block as
+   `GET FORGE/api/v1/repos/{owner}/{repo}/pulls/{number}`), and the tool
    registry summary. Tools that name a repository work only inside your
    reach. The admin-only tools are not offered to an agent token and are
    refused if you call one by name.

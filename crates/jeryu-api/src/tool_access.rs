@@ -100,6 +100,9 @@ pub const IMPLEMENTED: &[(&str, ToolAccess)] = &[
     ("tool_finder.dashboard", ToolAccess::Admin),
     // `/api/v1/tools/registry/summary`, open to any authenticated account.
     ("tool_registry.summary", ToolAccess::Account),
+    // The head-bound pull request workflow read: the `workflow` block of
+    // `/api/v1/repos/:id/pulls/:number`, so it asks what that route asks for.
+    ("pull.workflow_status", ToolAccess::RepoRead),
     // Code navigation names a repository, so it asks what that repository's
     // routes ask for.
     ("code.symbols.search", ToolAccess::RepoRead),

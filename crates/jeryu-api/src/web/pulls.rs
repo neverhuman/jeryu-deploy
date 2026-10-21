@@ -1263,18 +1263,9 @@ fn detail_response(
     pr: &PullRequest,
     authenticated_login: Option<&str>,
 ) -> AxumResponse {
-    let required = required_contexts(state, pr);
-    let detail = detail_for_pr_with_required_contexts(state, pr, &required, authenticated_login);
-    let checks = checks_for_pr(state, pr);
-    // Read the head again after everything above was built from `pr`: a push
-    // in between makes this observation about a head that is no longer current.
-    let current_head = state
-        .github
-        .core()
-        .get_pull_request(&pr.owner, &pr.repo, pr.number)
-        .ok()
-        .map(|current| current.head.sha);
-    let workflow = workflow::view(pr, &detail, &checks, &required, current_head.as_deref());
+    let read = workflow_read(state, pr, authenticated_login);
+    let workflow = read.workflow(pr, current_head(state, pr).as_deref());
+    let WorkflowRead { detail, .. } = read;
     let mut value = serde_json::to_value(detail).expect("pull detail serializes");
     with_replacement(state, pr, &mut value);
     with_canonical_links(pr, &mut value);
@@ -1303,10 +1294,88 @@ pub(super) fn workflow_observed_against(
     pr: &PullRequest,
     current_head: &str,
 ) -> Value {
+    workflow_read(state, pr, None).workflow(pr, Some(current_head))
+}
+
+/// Everything the head-bound `workflow` block is read from: the required
+/// contexts, the aggregate pull detail and the checks recorded on the head.
+///
+/// Gathered in one place so the pull detail route and the
+/// `jeryu.pull.workflow_status` MCP tool answer from the same read, and
+/// neither has to reach the other's transport to do it. Authorization stays
+/// with each transport's own gate; this read assumes it already passed.
+struct WorkflowRead {
+    required: Vec<RequiredContextPosture>,
+    detail: PullRequestDetail,
+    checks: PullRequestChecks,
+}
+
+impl WorkflowRead {
+    /// The block as observed against `current_head`, the head read again after
+    /// this read was built; a different one voids the observation.
+    fn workflow(&self, pr: &PullRequest, current_head: Option<&str>) -> Value {
+        workflow::view(pr, &self.detail, &self.checks, &self.required, current_head)
+    }
+}
+
+fn workflow_read(
+    state: &WebState,
+    pr: &PullRequest,
+    authenticated_login: Option<&str>,
+) -> WorkflowRead {
     let required = required_contexts(state, pr);
-    let detail = detail_for_pr_with_required_contexts(state, pr, &required, None);
+    let detail = detail_for_pr_with_required_contexts(state, pr, &required, authenticated_login);
     let checks = checks_for_pr(state, pr);
-    workflow::view(pr, &detail, &checks, &required, Some(current_head))
+    WorkflowRead {
+        required,
+        detail,
+        checks,
+    }
+}
+
+/// The head this pull request carries right now, read after a block was built
+/// from an earlier snapshot: a push in between makes the observation one about
+/// a head that is no longer current.
+fn current_head(state: &WebState, pr: &PullRequest) -> Option<String> {
+    state
+        .github
+        .core()
+        .get_pull_request(&pr.owner, &pr.repo, pr.number)
+        .ok()
+        .map(|current| current.head.sha)
+}
+
+/// `jeryu.pull.workflow_status`: the same head-bound `workflow` block the pull
+/// detail route serves, for the pull request named by `repo` and `number`.
+///
+/// The caller's repository grant is checked by the `/mcp` backend before this
+/// runs, exactly as the request gate checks it for the route, so this adapter
+/// adds no policy of its own and reads nothing outside the named repository.
+/// A pull request this repository does not have is an error, never an empty
+/// block.
+pub(in crate::web) fn mcp_workflow_status(
+    state: &WebState,
+    args: &Value,
+    caller_login: Option<&str>,
+) -> std::result::Result<Value, String> {
+    let repo = args
+        .get("repo")
+        .and_then(Value::as_str)
+        .filter(|repo| !repo.is_empty())
+        .ok_or_else(|| "pull.workflow_status requires repo".to_string())?;
+    let number = args
+        .get("number")
+        .and_then(Value::as_u64)
+        .filter(|number| *number > 0)
+        .ok_or_else(|| "pull.workflow_status requires number".to_string())?;
+    let (found, pr) = resolve_pr(state, repo, number)
+        .ok_or_else(|| format!("pull.workflow_status: {repo}#{number} not found"))?;
+    let read = workflow_read(state, &pr, caller_login);
+    Ok(json!({
+        "repo": found.full_name,
+        "number": pr.number,
+        "workflow": read.workflow(&pr, current_head(state, &pr).as_deref()),
+    }))
 }
 
 /// Adds the two links a client needs to the payload, so nobody has to build a

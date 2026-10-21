@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::bot_token::{BotMcpMount, BotPrincipal};
 use super::bots;
 use super::repositories::find_repo;
-use super::{WebState, agent_runs, codegraph, control_plane};
+use super::{WebState, agent_runs, codegraph, control_plane, pulls};
 // The grant each web-dispatched tool requires comes from the one registry every
 // guidance surface reads: `control_plane.*`, `agent_work.*`, `tool_finder.*`
 // and the live-status reads mirror the admin-only `/api/v1` routes that serve
@@ -92,6 +92,9 @@ impl jeryu_mcp::ToolBackend for WebMcpBackend {
     ) -> anyhow::Result<jeryu_mcp::ToolResponse> {
         if let Some(denial) = self.permission_denial(tool, &args) {
             return Ok(jeryu_mcp::ToolResponse::error(denial));
+        }
+        if let Some(response) = self.call_pull_workflow_status(tool, &args) {
+            return Ok(response);
         }
         if let Some(response) = self.call_agent_work(tool, args.clone())? {
             return Ok(response);
@@ -190,6 +193,30 @@ impl WebMcpBackend {
         } else {
             Some(format!("{tool} requires read access to {repo}"))
         }
+    }
+
+    /// The head-bound pull request workflow read, answered by the same
+    /// service the native pull detail route reads it from.
+    ///
+    /// The caller's repository grant was already checked by
+    /// [`Self::permission_denial`]; the login passed on is the authenticated
+    /// account the request gate resolved, so the read is the one that
+    /// account's own `GET /api/v1/repos/:id/pulls/:number` returns.
+    fn call_pull_workflow_status(
+        &self,
+        tool: &str,
+        args: &Value,
+    ) -> Option<jeryu_mcp::ToolResponse> {
+        if tool != "pull.workflow_status" {
+            return None;
+        }
+        let caller = CALLER.try_with(|account| account.login.clone()).ok();
+        Some(
+            match pulls::mcp_workflow_status(&self.state, args, caller.as_deref()) {
+                Ok(value) => jeryu_mcp::ToolResponse::ok(tool, value),
+                Err(error) => jeryu_mcp::ToolResponse::error(error),
+            },
+        )
     }
 
     fn call_agent_work(
@@ -1651,6 +1678,22 @@ pub fn alpha(input: &str) -> Result<String, String> {
             role: UserRole::User,
             ..admin_account()
         };
+
+        // The pull workflow read names a repository too, and asks the same.
+        let denied = call_as(
+            &carol,
+            &backend,
+            "pull.workflow_status",
+            json!({ "repo": repo.full_name, "number": 1 }),
+        );
+        assert!(!denied.success, "{denied:?}");
+        assert_eq!(
+            denied.message,
+            format!(
+                "pull.workflow_status requires read access to {}",
+                repo.full_name
+            )
+        );
 
         let denied = call_as(
             &carol,
