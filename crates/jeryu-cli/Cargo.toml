@@ -34,7 +34,7 @@ tempfile.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros", "signal", "time"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
-rustix = { version = "1", features = ["termios", "std"] }
+rustix = { version = "1", features = ["termios", "std", "fs", "process"] }
 base64 = "0.22"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 
@@ -42,3 +42,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", 
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "jeryu-agent-forge"
+path = "src/agent_forge/main.rs"

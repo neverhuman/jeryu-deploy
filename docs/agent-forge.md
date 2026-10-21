@@ -26,14 +26,17 @@ redirects, and never prints HTTP error bodies or credentials.
 ## Talking to the forge
 
 Install this section in the operator's host rules as well as using the
-repository's [agent instructions](../AGENTS.md). From this checkout:
+repository's [agent instructions](../AGENTS.md). The script uses the Rust
+helper `jeryu-agent-forge` built offline by Cargo with the checkout's pinned
+dependencies; it requires the repository's Rust toolchain and warm Cargo cache.
+It accepts UTF-8 body files up to 1 MiB and responses up to 4 MiB. From this checkout:
 
 ```sh
-python3 scripts/agents/forge.py --repo OWNER/REPO open --head BRANCH --base main --title TITLE --body-file pr.md
-python3 scripts/agents/forge.py --repo OWNER/REPO comment 123 --head-sha HEAD_SHA --body-file comment.md
-python3 scripts/agents/forge.py --repo OWNER/REPO close-as-replaced 123 --replacement 124
-python3 scripts/agents/forge.py --repo OWNER/REPO ready 124
-python3 scripts/agents/forge.py --repo OWNER/REPO reviews 124
+sh scripts/agents/forge.sh --repo OWNER/REPO open --head BRANCH --base main --title TITLE --body-file pr.md
+sh scripts/agents/forge.sh --repo OWNER/REPO comment 123 --head-sha HEAD_SHA --body-file comment.md
+sh scripts/agents/forge.sh --repo OWNER/REPO close-as-replaced 123 --replacement 124
+sh scripts/agents/forge.sh --repo OWNER/REPO ready 124
+sh scripts/agents/forge.sh --repo OWNER/REPO reviews 124
 ```
 
 Opening creates a draft. Mark ready only within the operator's authorization.
@@ -62,10 +65,13 @@ step. The exclusive token-file create prevents replacing an existing token.
 python3 - <<'PY'
 import getpass, http.cookiejar, json, os
 from pathlib import Path
-import urllib.request
+import urllib.request, urllib.parse
 
 base = os.environ['JERYU_FORGE_URL'].rstrip('/')
-assert base.startswith('https://')
+origin = urllib.parse.urlsplit(base)
+assert (origin.scheme == 'https' and origin.hostname and not origin.username
+        and not origin.password and not origin.path and not origin.query
+        and not origin.fragment)
 login = 'agent-forge'
 repos = input('Write grants (space-separated owner/repo): ').split()
 admin = getpass.getpass('Administrator PAT: ')

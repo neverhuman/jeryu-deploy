@@ -1,4 +1,4 @@
-//! Exercise the API contracts consumed by scripts/agents/forge.py.
+//! Exercise the API contracts consumed by scripts/agents/forge.sh.
 use std::path::Path;
 
 use axum::http::{Request, StatusCode};
