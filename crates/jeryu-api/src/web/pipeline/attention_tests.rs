@@ -15,8 +15,9 @@ use super::attention::{
     StrandedBranchFacts, SupersededPullFacts, board_items, budget_items, digest_items,
     divergence_items, draft_items, drop_shadowed_pull_rows, gate_definition_paths, main_red_items,
     mirror_items, only_matching, order, pin_items, pull_items, pushed_after_merge_items,
-    queue_items, release_items, runner_items, shift_items, split_backlog, stranded_backlog_items,
-    stranded_branch_items, superseded_pull_items, todo_items, web_routes, worker_items,
+    queue_items, release_items, runner_items, shift_items, split_backlog, stamp_hold_since,
+    stranded_backlog_items, stranded_branch_items, superseded_pull_items, todo_items, web_routes,
+    worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -681,6 +682,7 @@ fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
         posture,
         changed_paths: vec!["crates/jeryu-api/src/web/pulls.rs".to_string()],
         landed: None,
+        changes_requested_since: None,
     }
 }
 
@@ -1693,6 +1695,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             head_ref: "auto/pin-web-427bebe".to_string(),
             base_ref: "main".to_string(),
             landed: None,
+            changes_requested_since: None,
             updated_at: now() - Duration::minutes(45),
             posture: PullPosture {
                 changes_requested: 1,
@@ -1760,6 +1763,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             head_ref: "auto/pin-web-427bebe".to_string(),
             base_ref: "main".to_string(),
             landed: None,
+            changes_requested_since: None,
             updated_at: now() - Duration::minutes(45),
             posture: PullPosture {
                 changes_requested: 1,
@@ -4765,4 +4769,75 @@ fn a_pull_request_the_queue_refused_is_not_ready_to_merge() {
     moved.pr_head_sha = "0000000000000000000000000000000000000000".to_string();
     let items = pull_items(&pulls[..1], &[moved], now(), &hosts());
     assert_eq!(kinds(&items), ["pr_ready_to_merge"]);
+}
+
+/// A hold row ages from the oldest changes-requested review on the head, not
+/// from the last push or the reviewer's run; the stuck row says "hold the
+/// merge" rather than naming a severity.
+#[test]
+fn a_hold_row_is_as_old_as_the_oldest_changes_requested_review() {
+    let held = now() - Duration::hours(30);
+    let facts = PullFacts {
+        changes_requested_since: Some(held),
+        ..pull(
+            35,
+            45,
+            PullPosture {
+                changes_requested: 2,
+                ..PullPosture::default()
+            },
+        )
+    };
+    let open: BTreeSet<(String, u64)> = [("jeryu/jeryu-web".to_string(), 35)].into();
+    let mut items = pull_items(std::slice::from_ref(&facts), &[], now(), &hosts());
+    assert_eq!(items[0].since.as_deref(), Some(held.to_rfc3339().as_str()));
+
+    items.extend(runner_items(
+        &[
+            runner("acme/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
+            runner("globex/slot0", &["pr-gate"], 30, None),
+        ],
+        &open,
+        0,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    ));
+    let stuck = |items: &[Item]| {
+        items
+            .iter()
+            .position(|i| i.kind == "reviewer_stuck")
+            .unwrap()
+    };
+    assert_ne!(
+        items[stuck(&items)].since.as_deref(),
+        Some(held.to_rfc3339().as_str())
+    );
+    assert!(
+        items[stuck(&items)]
+            .reason
+            .contains("serious enough to hold the merge")
+    );
+    assert!(!items[stuck(&items)].reason.contains("critical"));
+
+    stamp_hold_since(&mut items, std::slice::from_ref(&facts));
+    assert_eq!(
+        items[stuck(&items)].since.as_deref(),
+        Some(held.to_rfc3339().as_str())
+    );
+
+    // A head that moved on since the reviewer ran keeps the run's own time.
+    let moved = PullFacts {
+        head_sha: "0".repeat(40),
+        ..facts
+    };
+    let mut again = items.clone();
+    let at = stuck(&again);
+    again[at].since = Some("2026-01-01T00:00:00+00:00".to_string());
+    stamp_hold_since(&mut again, &[moved]);
+    assert_eq!(
+        again[stuck(&again)].since.as_deref(),
+        Some("2026-01-01T00:00:00+00:00")
+    );
 }

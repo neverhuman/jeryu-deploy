@@ -61,7 +61,7 @@ pub(crate) use flow::{
     DraftFacts, LatestDeployment, MainRedFacts, ProductionFacts, PullFacts,
     ReviewerOfflineThresholds, Superseded, SupersededPullFacts, draft_items,
     drop_shadowed_pull_rows, main_red_items, pull_items, queue_items, release_items,
-    review_hold_explanation, runner_items, superseded_pull_items,
+    review_hold_explanation, runner_items, stamp_hold_since, superseded_pull_items,
 };
 pub(crate) use hosts::Hosts;
 pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_items};
@@ -537,6 +537,23 @@ pub(super) fn close_landed_pull_call(repo: &str, number: u64) -> ApiCall {
     }
 }
 
+/// Submission time of the oldest changes-requested review standing on the
+/// pull request's current head.
+fn oldest_changes_requested(
+    state: &WebState,
+    pr: &jeryu_core::PullRequest,
+) -> Option<DateTime<Utc>> {
+    let reviews = state
+        .core
+        .list_reviews(&pr.owner, &pr.repo, pr.number)
+        .unwrap_or_default();
+    jeryu_core::effective_reviews_for_head(&reviews, &pr.head.sha)
+        .into_iter()
+        .filter(|review| review.state == jeryu_core::ReviewState::ChangesRequested)
+        .map(|review| review.submitted_at)
+        .min()
+}
+
 fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     let mut pulls = Vec::new();
     // An archived repository is read-only: nothing on it can be acted on, so
@@ -567,6 +584,7 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
                 posture,
                 changed_paths: super::super::pulls::diff::changed_paths(state, &pr),
                 landed: super::super::pulls::landed::already_landed(state, &pr),
+                changes_requested_since: oldest_changes_requested(state, &pr),
             });
         }
     }
@@ -1191,6 +1209,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     ));
     // A pull request the reviewer gave up on carries the review it posted:
     // one row says both, so the row the posture would add is dropped.
+    stamp_hold_since(&mut items, &pulls);
     drop_shadowed_pull_rows(&mut items);
     // Per repository, not the newest over all of them: two repositories with a
     // release staged are two things waiting on somebody.

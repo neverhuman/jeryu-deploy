@@ -20,7 +20,9 @@ use crate::web::pulls::landed::Landed;
 /// The verdicts that leave a review waiting on a person. Shared with Flow.
 pub(crate) fn review_hold_explanation(verdict: &str) -> Option<&'static str> {
     match verdict {
-        "hold" | "request_changes" => Some("it found a problem and requested changes"),
+        "hold" | "request_changes" => {
+            Some("it found a problem serious enough to hold the merge and requested changes")
+        }
         "too_large" => Some("the diff is larger than the reviewer accepts, so nothing was posted"),
         "publication_rejected" => Some("the forge refused the review it tried to post"),
         "failed" => Some("the review run ended without a usable verdict"),
@@ -49,6 +51,9 @@ pub(crate) struct PullFacts {
     /// Set when the change is already on the base branch, so the only step
     /// left is to close the pull request ([`landed_item`]).
     pub landed: Option<Landed>,
+    /// When the oldest changes-requested review on the current head was
+    /// submitted: how long the hold has stood. `None` when none stands.
+    pub changes_requested_since: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug)]
@@ -596,7 +601,13 @@ pub(crate) fn pull_items(
                 command: None,
             }
             .build();
-            item.since = Some(pull.updated_at.to_rfc3339());
+            item.since = Some(
+                match (kind, pull.changes_requested_since) {
+                    ("pr_changes_requested", Some(held)) => held,
+                    _ => pull.updated_at,
+                }
+                .to_rfc3339(),
+            );
             item.repo = Some(pull.repo.clone());
             item.pr = Some(pull.number);
             item.sha = Some(pull.head_sha.clone());
@@ -808,6 +819,29 @@ fn fold_merger_stalled(items: &mut Vec<Item>, now: DateTime<Utc>) {
     .build();
     item.since = Some((now - chrono::Duration::minutes(oldest)).to_rfc3339());
     items.push(item);
+}
+
+/// A `reviewer_stuck` row ages from the oldest changes-requested review on the
+/// head it names, like the `pr_changes_requested` row it shadows: the hold's
+/// age, not when the reviewer's run ended. A row for a head that has since
+/// moved on, or a pull request with no such review, keeps its own time.
+pub(crate) fn stamp_hold_since(items: &mut [Item], pulls: &[PullFacts]) {
+    for item in items
+        .iter_mut()
+        .filter(|item| item.kind == "reviewer_stuck")
+    {
+        let held = pulls
+            .iter()
+            .find(|pull| {
+                item.repo.as_deref() == Some(pull.repo.as_str())
+                    && item.pr == Some(pull.number)
+                    && item.sha.as_deref() == Some(pull.head_sha.as_str())
+            })
+            .and_then(|pull| pull.changes_requested_since);
+        if let Some(held) = held {
+            item.since = Some(held.to_rfc3339());
+        }
+    }
 }
 
 /// A pull request the automated reviewer gave up on, where it requested the
