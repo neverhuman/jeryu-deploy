@@ -2120,6 +2120,8 @@ mod operator_resources_tests;
 #[cfg(test)]
 mod admin_users_tests;
 #[cfg(test)]
+mod agent_forge_tests;
+#[cfg(test)]
 mod anonymous_read_tests;
 #[cfg(test)]
 mod repo_address_tests;

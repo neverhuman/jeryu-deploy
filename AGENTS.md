@@ -106,3 +106,14 @@ Whose branch it is matters less than whether its writer is still working on it.
   `crates/jeryu-api/tests/adr_records.rs` fail on a shared or skipped number.
   A landed file is never deleted: supersede an ADR, or land a migration that
   undoes an old one.
+
+## Talking to the forge
+
+Agents use the dedicated `agent-forge` service identity and its single
+mode-0600 `$JERYU_CREDENTIALS_DIR/agent-forge.token`, never a human or reviewer
+account. Use `python3 scripts/agents/forge.py` for draft PR creation, comments,
+closing as replaced, marking ready and reading reviews. Set the HTTPS origin
+with `JERYU_FORGE_URL`; see [custody, commands and owner setup](docs/agent-forge.md).
+Agents never auto-approve, including as `alton2`. Do not send credentials in
+prompts, logs or repositories. After an ambiguous failure, inspect live state
+before retrying a mutation. The operator installs this section in host rules.
