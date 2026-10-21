@@ -3,10 +3,15 @@
 //! reads, the report form and the alert-webhook route built on them. Contract:
 //! `docs/pipeline-events.md`, "Incidents".
 //!
-//! Any reporter may post the four kinds through `POST /api/v1/events`: an
-//! alert webhook, a person, an agent. A person reaches the same fold through
+//! Any reporter may post `incident.opened`, `incident.restored` and
+//! `incident.closed` through `POST /api/v1/events`: an alert webhook, a
+//! person, an agent. Blaming a change (`incident.caused_by`) takes the
+//! installation's incident tooling, because the cause row is never pruned and
+//! charges a defect against the change
+//! (`super::pipeline::trust`). A person reaches the same fold through
 //! the "Report incident" form ([`report_incident`]) and an alert through
-//! [`webhook`], both of which only build the events above.
+//! [`webhook`], both of which only build the events above and ask the same
+//! question of the account before they store anything.
 //! Every event names its incident in
 //! `detail.incident_id`. The fold is order-free: a restore posted before the
 //! opening, or a cause posted after the incident was closed, lands on the
@@ -560,6 +565,7 @@ fn refuse(status: StatusCode, code: &str, reason: &str, hint: &str) -> AxumRespo
         common_fixes: &[
             "send detail.incident_id on every incident event",
             "post as a global admin or a JERYU_EVENT_REPORTERS identity",
+            "blame a change from a global admin or a JERYU_INCIDENT_REPORTERS identity",
         ],
         docs_url: DOCS,
         repair_hint: hint,
@@ -623,6 +629,20 @@ pub(crate) async fn webhook(
                 );
             }
         }
+    }
+    // Blaming a change is the incident tooling's write, not every reporter's
+    // (`super::pipeline::trust`): an alert body that names changes needs that
+    // identity, and the whole alert is refused before anything is stored.
+    if let Some(refused) = events
+        .iter()
+        .find_map(|event| super::pipeline::trust::refusal(&account, &event.kind))
+    {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            refused.code,
+            &refused.reason,
+            refused.hint,
+        );
     }
     // Each insert takes the event-store lock: off the async runtime.
     let worker = state.clone();
@@ -703,6 +723,17 @@ pub(crate) async fn report_incident(
             );
         }
     };
+    if let Some(refused) = events
+        .iter()
+        .find_map(|event| super::pipeline::trust::refusal(&account, &event.kind))
+    {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            refused.code,
+            &refused.reason,
+            refused.hint,
+        );
+    }
     let id = text(&value, "incident_id").unwrap_or_default().to_string();
     // Each insert takes the event-store lock: off the async runtime.
     let worker = state.clone();

@@ -205,14 +205,46 @@ pub(crate) fn verdict_for(
     }
 }
 
+/// Rows per page of [`pr_events`], and the most pages it walks: a pull
+/// request with more findings than that resolves the newest
+/// `PR_EVENT_PAGE * PR_EVENT_PAGES` of them, which is already far past what a
+/// reviewer leaves, and the walk stays bounded.
+const PR_EVENT_PAGE: i64 = 500;
+const PR_EVENT_PAGES: usize = 20;
+
+/// Every event of `kind` the log keeps for one pull request, newest first.
+///
+/// The store's default page is 100 rows (`pipeline::store`), so a single
+/// query would silently resolve only the newest 100 findings of a pull
+/// request the agent reviewer posted more on; this walks the pages.
 fn pr_events(store: &EventStore, kind: &str, repo: &str, pr: u64) -> Result<Vec<Event>, String> {
-    let query = EventsQuery {
-        kind: Some(kind.to_string()),
-        repo: Some(repo.to_string()),
-        pr: Some(i64::try_from(pr).map_err(|err| err.to_string())?),
-        ..Default::default()
-    };
-    store.query(&query)
+    let number = i64::try_from(pr).map_err(|err| err.to_string())?;
+    let mut out = Vec::new();
+    let mut before: Option<i64> = None;
+    for page_number in 0..PR_EVENT_PAGES {
+        let page = store.query(&EventsQuery {
+            kind: Some(kind.to_string()),
+            repo: Some(repo.to_string()),
+            pr: Some(number),
+            before_seq: before,
+            limit: Some(PR_EVENT_PAGE),
+            ..Default::default()
+        })?;
+        let Some(last) = page.last() else { break };
+        before = Some(last.seq);
+        let full = i64::try_from(page.len()).unwrap_or(i64::MAX) >= PR_EVENT_PAGE;
+        out.extend(page);
+        if !full {
+            break;
+        }
+        if page_number + 1 == PR_EVENT_PAGES {
+            eprintln!(
+                "jeryu-api review catch: {repo}#{pr}: more than {} {kind} events; older ones are left as they are",
+                PR_EVENT_PAGE * i64::try_from(PR_EVENT_PAGES).unwrap_or(1)
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// The resolution step: on merge, every finding of the pull request that no
@@ -262,6 +294,10 @@ pub(crate) fn resolve_at_merge(state: &WebState, pr: &PullRequest) {
         emit(
             state,
             NewEvent {
+                // One resolution per finding: a merge emitted twice (a replay,
+                // a restart) records the first verdict once instead of a
+                // second row the catch report would count again.
+                event_id: Some(resolution_id(&repo, pr.number, &finding.key)),
                 actor: Some("forge".to_string()),
                 repo: Some(repo.clone()),
                 pr: i64::try_from(pr.number).ok(),
@@ -279,6 +315,12 @@ pub(crate) fn resolve_at_merge(state: &WebState, pr: &PullRequest) {
             },
         );
     }
+}
+
+/// The `event_id` of the forge's merge-time resolution of one finding.
+fn resolution_id(repo: &str, pr: u64, finding: &str) -> String {
+    let digest = Sha256::digest(format!("{repo}\n{pr}\n{finding}").as_bytes());
+    format!("resolved-{}", &hex::encode(digest)[..24])
 }
 
 /// Only a dedicated `Reverts #N` body line names a reverted change. Arbitrary

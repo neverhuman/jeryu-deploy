@@ -652,3 +652,17 @@ fn a_gate_verdict_on_a_main_head_posts_the_status_and_the_escaped_defect() {
     emit::runner_heartbeat(&state, Some(&green), &second_red);
     assert_eq!(kinds("main.escaped").len(), 2, "replay is idempotent");
 }
+
+/// The escape decision reads the previous verdict, and an unreadable event
+/// store is not a verdict: only "main was green" turns a red verdict into an
+/// escaped-to-main defect charged to the merged change.
+#[test]
+fn only_a_green_previous_verdict_turns_a_red_into_an_escape() {
+    assert!(super::emit::turned_main_red("red", Some(false)));
+    assert!(
+        !super::emit::turned_main_red("red", None),
+        "an unreadable previous verdict charges no defect"
+    );
+    assert!(!super::emit::turned_main_red("red", Some(true)));
+    assert!(!super::emit::turned_main_red("green", Some(false)));
+}

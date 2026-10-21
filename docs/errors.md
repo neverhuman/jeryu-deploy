@@ -106,6 +106,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `email_required` | 422 | sign-up needs a verified email address, or the account has none to send to |
 | `events_invalid_query` | 422 | the pipeline event query failed validation |
 | `events_invalid_request` | 422 | the pipeline event body failed validation |
+| `events_kind_reserved` | 403 | this event kind is the forge's own record and cannot be posted |
 | `events_reporter_required` | 403 | only an admin or a JERYU_EVENT_REPORTERS login may post events |
 | `events_store_failed` | 500 | the pipeline event store failed |
 | `family_unknown` | 422 | no product family of that name: the filter would have matched nothing |
@@ -129,6 +130,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `idempotency_key_reused` | 422 | the Idempotency-Key was already used for a different request |
 | `idempotency_store_failed` | 500 | the Idempotency-Key store could not be read |
 | `idempotent_secret_withheld` | 409 | this request already ran; its once-shown secret is not kept |
+| `incident_blame_reserved` | 403 | only an admin or a JERYU_INCIDENT_REPORTERS login may blame a change for an incident |
 | `incident_report_invalid` | 422 | the reported incident is missing a field the ledger needs |
 | `incident_webhook_invalid` | 422 | the alert body is not an incident event the ledger can fold |
 | `incident_webhook_too_many` | 413 | the alert batch is larger than one events request may carry |

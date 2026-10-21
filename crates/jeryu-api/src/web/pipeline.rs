@@ -17,6 +17,7 @@ pub(crate) mod main_health;
 pub(crate) mod pins;
 mod store;
 pub(crate) mod trace;
+pub(crate) mod trust;
 mod types;
 
 #[cfg(test)]
@@ -178,6 +179,12 @@ pub(crate) fn record(
     event: NewEvent,
 ) -> Result<Inserted, String> {
     let mut event = normalize(event)?;
+    // The projections read some kinds as the forge's own record of what it
+    // did (`trust`). The routes refuse such an event with a 403 of their own;
+    // this keeps the invariant for every other path into the store.
+    if reporter != trust::FORGE && trust::forge_only(&event.kind) {
+        return Err(format!("{}: only the forge stores this kind", event.kind));
+    }
     derive_family(state, &mut event);
     let now_ms = Utc::now().timestamp_millis();
     let inserted = state.events.insert(reporter, &event, now_ms)?;
@@ -379,6 +386,18 @@ pub(crate) async fn post_events(
             "usage samples and session spend must name the authenticated reporter as their operator",
             "report usage for your own operator or use an administrator identity",
         );
+    }
+    // The whole batch is refused before anything is stored when it carries an
+    // event this account may not write (`trust`).
+    for (index, event) in events.iter().enumerate() {
+        if let Some(refused) = trust::refusal(&account, &event.kind) {
+            return events_write_error(
+                StatusCode::FORBIDDEN,
+                refused.code,
+                &format!("events[{index}]: {}", refused.reason),
+                refused.hint,
+            );
+        }
     }
     let mut seqs = Vec::with_capacity(events.len());
     let mut duplicates = 0;

@@ -669,6 +669,9 @@ fn configure_test_site() {
         auth::JANKURAI_SCORERS.configure_for_tests(&["ci-bot"]);
         auth::DEPLOYERS.configure_for_tests(&["operator", "rel-bot"]);
         pipeline::configure_reporters_for_tests(TEST_REPORTERS);
+        // The site's incident tooling: `ci-bot` may blame a change for an
+        // incident, `review-bot` is an event reporter that may not.
+        pipeline::trust::configure_incident_reporters_for_tests(&["ci-bot"]);
         auth::REVIEW_IDENTITY.configure_for_tests("review-bot");
         auth::MERGE_IDENTITY.configure_for_tests("merge-bot");
         auth::AUTOMATION_IDENTITIES.configure_for_tests(&["ci-bot", "review-bot", "merge-bot"]);

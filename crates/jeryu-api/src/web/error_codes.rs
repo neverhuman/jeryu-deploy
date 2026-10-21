@@ -197,6 +197,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the pipeline event body failed validation",
     ),
     entry(
+        "events_kind_reserved",
+        403,
+        "this event kind is the forge's own record and cannot be posted",
+    ),
+    entry(
         "events_reporter_required",
         403,
         "only an admin or a JERYU_EVENT_REPORTERS login may post events",
@@ -294,6 +299,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "idempotent_secret_withheld",
         409,
         "this request already ran; its once-shown secret is not kept",
+    ),
+    entry(
+        "incident_blame_reserved",
+        403,
+        "only an admin or a JERYU_INCIDENT_REPORTERS login may blame a change for an incident",
     ),
     entry(
         "incident_report_invalid",

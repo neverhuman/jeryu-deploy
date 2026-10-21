@@ -728,6 +728,7 @@ impl EventStore {
             ("repo", text(&query.repo)),
             ("todo_id", text(&query.todo_id)),
             ("source", text(&query.source)),
+            ("reporter", text(&query.reporter)),
         ] {
             if let Some(value) = value {
                 push(&format!("{column} = ?"), SqlValue::Text(value.to_string()));

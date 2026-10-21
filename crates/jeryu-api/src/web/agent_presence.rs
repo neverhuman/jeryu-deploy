@@ -322,7 +322,6 @@ pub(crate) async fn beat(
             "name a repository you can write or use an authorized presence reporter",
         );
     }
-    let store = &state.agent_presence.store;
     let row = store::PresenceRow {
         session_id: beat.session_id,
         reporter: account.login.clone(),
@@ -348,19 +347,39 @@ pub(crate) async fn beat(
         tokens: beat.tokens,
         links: beat.links,
     };
-    match store.upsert_as(&row, &account.login, admin, Utc::now().timestamp_millis()) {
-        Ok(stored) => {
-            // A session a person is driving is that person's time on the
-            // change it names (`web/human_time.rs`).
-            crate::web::human_time::session_mark(&state, &stored);
-            Json(BeatAccepted {
-                ok: true,
-                session_id: stored.session_id,
-                expires_at: stored.expires_ms,
-            })
-            .into_response()
-        }
-        Err(err) => write_failed(err, &row.session_id),
+    // The presence store and the human-time ledger are SQLite behind a mutex:
+    // the beat's writes run off the async runtime, not on this handler's
+    // thread.
+    let worker = state.clone();
+    let session_id = row.session_id.clone();
+    let actor = account.login.clone();
+    let written = tokio::task::spawn_blocking(move || {
+        let stored = worker.agent_presence.store.upsert_as(
+            &row,
+            &actor,
+            admin,
+            Utc::now().timestamp_millis(),
+        )?;
+        // A session a person is driving is that person's time on the
+        // change it names (`web/human_time.rs`).
+        crate::web::human_time::session_mark(&worker, &stored);
+        Ok::<_, store::StoreError>(stored)
+    })
+    .await;
+    match written {
+        Ok(Ok(stored)) => Json(BeatAccepted {
+            ok: true,
+            session_id: stored.session_id,
+            expires_at: stored.expires_ms,
+        })
+        .into_response(),
+        Ok(Err(err)) => write_failed(err, &session_id),
+        Err(err) => presence_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "presence_store_failed",
+            &format!("the presence beat could not be stored: {err}"),
+            "retry the beat",
+        ),
     }
 }
 

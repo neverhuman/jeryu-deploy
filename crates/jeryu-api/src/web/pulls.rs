@@ -446,21 +446,37 @@ pub(super) async fn review(
             .get_pull_request(&repo.owner, &repo.name, pr.number)
         {
             Ok(updated) => {
-                super::pipeline::emit::pull_reviewed(
-                    &state,
-                    &updated,
-                    &account.login,
-                    verdict_name,
-                    review_body.as_deref(),
-                );
-                super::review_catch::human_findings(
-                    &state,
-                    &updated,
-                    &account.login,
-                    verdict_name,
-                    finding_comments,
-                );
-                super::human_time::pull_mark(&state, &updated, &account.login);
+                // The verdict's events and the reviewer's minutes are SQLite
+                // writes behind a mutex: off the async runtime.
+                let worker = state.clone();
+                let reviewed = updated.clone();
+                let reviewer = account.login.clone();
+                let body = review_body.clone();
+                if let Err(error) = tokio::task::spawn_blocking(move || {
+                    super::pipeline::emit::pull_reviewed(
+                        &worker,
+                        &reviewed,
+                        &reviewer,
+                        verdict_name,
+                        body.as_deref(),
+                    );
+                    super::review_catch::human_findings(
+                        &worker,
+                        &reviewed,
+                        &reviewer,
+                        verdict_name,
+                        finding_comments,
+                    );
+                    super::human_time::pull_mark(&worker, &reviewed, &reviewer);
+                })
+                .await
+                {
+                    // The review itself is recorded; only its events are not.
+                    eprintln!(
+                        "jeryu-api: {}/{}#{}: review emission did not finish: {error}",
+                        repo.owner, repo.name, updated.number
+                    );
+                }
                 detail_response(&state, &updated, Some(&account.login))
             }
             Err(error) => core_error(error, "reload pull request after review"),
@@ -531,14 +547,29 @@ pub(super) async fn comment(
         },
     ) {
         Ok(_) => {
-            super::review_catch::human_findings(
-                &state,
-                &pr,
-                &account.login,
-                "comment",
-                finding_comments,
-            );
-            super::human_time::pull_mark(&state, &pr, &account.login);
+            // One finding event per comment, plus the reviewer's minutes:
+            // SQLite writes, so off the async runtime.
+            let worker = state.clone();
+            let commented = pr.clone();
+            let reviewer = account.login.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                super::review_catch::human_findings(
+                    &worker,
+                    &commented,
+                    &reviewer,
+                    "comment",
+                    finding_comments,
+                );
+                super::human_time::pull_mark(&worker, &commented, &reviewer);
+            })
+            .await
+            {
+                // The comment itself is recorded; only its events are not.
+                eprintln!(
+                    "jeryu-api: {}/{}#{}: comment emission did not finish: {error}",
+                    repo.owner, repo.name, pr.number
+                );
+            }
             Json(PullRequestThreadList {
                 threads: threads_for_pr(&state, &pr),
             })
@@ -719,7 +750,24 @@ pub(super) async fn merge(
         .get_pull_request(&repo.owner, &repo.name, pr.number)
     {
         Ok(updated) => {
-            super::pipeline::emit::pull_merged(&state, &updated, &account.login, "merge");
+            // `pull_merged` resolves the pull request's findings: event-store
+            // reads and a `git diff` per finding head. That is blocking work,
+            // so it runs off the async runtime rather than on this handler's
+            // thread (`web/review_catch.rs`).
+            let worker = state.clone();
+            let merged_pr = updated.clone();
+            let actor = account.login.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                super::pipeline::emit::pull_merged(&worker, &merged_pr, &actor, "merge");
+            })
+            .await
+            {
+                // The merge itself succeeded; only its emission did not.
+                eprintln!(
+                    "jeryu-api: {}/{}#{}: merge emission did not finish: {error}",
+                    repo.owner, repo.name, updated.number
+                );
+            }
             detail_response(&state, &updated, None)
         }
         Err(error) => core_error(error, "reload pull request after merge"),

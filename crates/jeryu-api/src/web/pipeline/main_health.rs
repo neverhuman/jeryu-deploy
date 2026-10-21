@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::WebState;
+use super::trust;
 use super::types::{Event, EventsQuery};
 
 pub(crate) const STATUS_KIND: &str = "main.status";
@@ -115,13 +116,24 @@ fn logged_tests(events: &[Event]) -> BTreeMap<(String, String), BTreeSet<String>
     out
 }
 
+/// Whether a `main.status` row is the forge's own record of a gate verdict.
+pub(crate) fn is_gate_verdict(event: &Event) -> bool {
+    event.reporter == trust::FORGE && event.source == trust::FORGE
+}
+
 /// Fold `events` (any order; `main.status`, `gate.log` and `pr.merged` are
 /// read) into one [`MainHealth`] per repository, sorted by repository.
 pub(crate) fn project(events: &[Event], now: DateTime<Utc>) -> Vec<MainHealth> {
     let merged = merged_by_sha(events);
     let logged = logged_tests(events);
     let mut by_repo: BTreeMap<&str, Vec<&Event>> = BTreeMap::new();
-    for event in events.iter().filter(|event| event.kind == STATUS_KIND) {
+    // Only the forge's own verdicts say what main did: `main.status` is a
+    // reserved kind, and a row stored under another reporter before it was
+    // reserved is not evidence (`super::trust`).
+    for event in events
+        .iter()
+        .filter(|event| event.kind == STATUS_KIND && is_gate_verdict(event))
+    {
         if let Some(repo) = event.repo.as_deref() {
             by_repo.entry(repo).or_default().push(event);
         }
@@ -250,10 +262,17 @@ fn health_of(
 /// projection reads, newest first.
 fn read_events(state: &WebState, repo: Option<&str>) -> Result<Vec<Event>, String> {
     let mut events = Vec::new();
-    for (kind, limit) in [(STATUS_KIND, 1000), ("gate.log", 1000)] {
+    // The verdicts are read as the forge's own rows: a page of rows another
+    // reporter stored can neither crowd them out nor be folded in. A runner's
+    // `gate.log` is its own reporter's by contract, so it is read as posted.
+    for (kind, reporter, limit) in [
+        (STATUS_KIND, Some(trust::FORGE.to_string()), 1000),
+        ("gate.log", None, 1000),
+    ] {
         events.extend(state.events.query(&EventsQuery {
             repo: repo.map(str::to_string),
             kind: Some(kind.to_string()),
+            reporter,
             limit: Some(limit),
             ..EventsQuery::default()
         })?);
@@ -334,7 +353,8 @@ pub(crate) async fn list(
 }
 
 /// Whether `repo`'s default branch is red right now: its newest `main.status`
-/// verdict is `red`. The verdict is chosen in SQL (a `started` event is no
+/// verdict from the forge itself is `red` (another reporter's row is no
+/// verdict, see [`super::trust`]). The verdict is chosen in SQL (a `started` event is no
 /// verdict), so any number of `started` events cannot hide it. One indexed
 /// query; a listing of many repositories asks [`red_repos`] once instead.
 pub(crate) fn red_now(state: &WebState, repo: &str) -> Result<bool, String> {
@@ -344,8 +364,9 @@ pub(crate) fn red_now(state: &WebState, repo: &str) -> Result<bool, String> {
             conn.query_row(
                 "SELECT outcome FROM pipeline_events \
                  WHERE kind = ?1 AND repo = ?2 AND outcome IN (?3, ?4) \
+                   AND reporter = ?5 AND source = ?5 \
                  ORDER BY seq DESC LIMIT 1",
-                rusqlite::params![STATUS_KIND, repo, GREEN, RED],
+                rusqlite::params![STATUS_KIND, repo, GREEN, RED, trust::FORGE],
                 |row| row.get::<_, String>(0),
             )
             .map(Some)
@@ -368,13 +389,15 @@ pub(crate) fn red_repos(state: &WebState) -> Result<BTreeSet<String>, String> {
             .prepare(
                 "SELECT repo, outcome, MAX(seq) FROM pipeline_events \
                      WHERE kind = ?1 AND outcome IN (?2, ?3) AND repo IS NOT NULL \
+                       AND reporter = ?4 AND source = ?4 \
                      GROUP BY repo",
             )
             .map_err(|err| err.to_string())?;
         let rows = statement
-            .query_map(rusqlite::params![STATUS_KIND, GREEN, RED], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
+            .query_map(
+                rusqlite::params![STATUS_KIND, GREEN, RED, trust::FORGE],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
             .map_err(|err| err.to_string())?;
         let mut red = BTreeSet::new();
         for row in rows {

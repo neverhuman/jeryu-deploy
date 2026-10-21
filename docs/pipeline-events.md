@@ -148,6 +148,30 @@ Emitted by the forge (`source = "forge"`, `reporter = "forge"`):
 | `scorecard.digest`, `scorecard.digest_undelivered` | the weekly Scorecard digest job (`JERYU_SCORECARD_DIGEST_INTERVAL_HOURS`, default 168 hours) built a digest of the `7d` Scorecard window: `detail` is the whole `jeryu.scorecard.digest/v1` payload and `event_id` is `scorecard-digest-<yyyy-mm-dd>`, so a restart cannot record the same day twice. `needs_human` is set when a guardrail got worse while its paired volume metric rose. The event is recorded before the outbound post is attempted, and a post the forge could not make is `scorecard.digest_undelivered` (`needs_human`, `reason` naming the target's answer) rather than a retry: the digest is already in the attention inbox, and retrying would post the same week twice |
 
 
+### Reserved kinds
+
+Most kinds above are telemetry: a reader sees them on the Activity page and
+nothing acts on them, so a `JERYU_EVENT_REPORTERS` login may post one (the
+family derivation and the ledgers treat it like any other row). Two are
+different, because the forge reads them back as facts about its own
+repositories, and only the forge stores them:
+
+| Kind | Read as |
+|---|---|
+| `main.status` | whether a repository's default branch is red right now (`RepositorySummary.health`, the attention inbox, `GET /api/v1/main-health`) |
+| `main.escaped` | an escaped-to-main defect charged to the merged pull request whose merge commit turned main red |
+
+`POST /api/v1/events` refuses either kind with `403 events_kind_reserved`,
+from any identity including a global admin: the only producer is the required
+gate's own runner heartbeat (`POST /api/v1/runners/heartbeat`), which makes
+the forge emit the verdict itself. The readers match the write rule: they
+count only rows whose `reporter` and `source` are `forge`, so a row another
+reporter stored before the kind was reserved is not a verdict either.
+
+`incident.caused_by` is reserved in the other direction: any reporter may open,
+restore and close an incident, and blaming a change for one takes the
+installation's incident tooling (see [Incidents](#incidents)).
+
 ### Review catch rate
 
 `GET /api/v1/yield` carries `review_catch`: `human`, `agent` and `total`
@@ -1531,14 +1555,14 @@ reporting.
 ## Incidents
 
 Four kinds, posted by any reporter (an alert webhook, a person, an agent) through
-`POST /api/v1/events`. Each names its incident in `detail.incident_id`
+`POST /api/v1/events`; `incident.caused_by` takes a narrower identity, below. Each names its incident in `detail.incident_id`
 (at most 64 characters of `[A-Za-z0-9._:-]`); a malformed one is a `422`.
 
 | Kind | `detail` |
 |---|---|
 | `incident.opened` | `incident_id`, `detected_at` (RFC 3339, default: when posted), `severity`, `service`; the event `summary` is the incident's |
 | `incident.restored` | `incident_id`, `restored_at` (default: when posted), `restoring_change` (a change lot key) |
-| `incident.caused_by` | `incident_id`, `changes`: one or more change lot keys (or `change` for one). May arrive at any time, also after `incident.closed`; repeats are counted once |
+| `incident.caused_by` | `incident_id`, `changes`: one or more change lot keys (or `change` for one). May arrive at any time, also after `incident.closed`; repeats are counted once. Blaming a change takes the installation's incident tooling: a global admin, or a login in `JERYU_INCIDENT_REPORTERS`. Any other reporter is refused with `403 incident_blame_reserved`, on this kind and on an alert body or a report form that names changes, and nothing of that request is stored. Unset, only global admins may blame a change. The reason is the weight of the row: the cause is folded into never-pruned ledgers, fails the change for the change outcomes, and charges a `defect.linked` against every pull request the key resolves to, with no event that takes it back |
 | `incident.closed` | `incident_id`, `closed_at` |
 
 They are folded, in the same transaction as the event, into `incident_ledger`

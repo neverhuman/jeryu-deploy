@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::kinds::FORGE_KINDS;
+use super::trust::FORGE_ONLY;
 
 fn src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -133,4 +134,35 @@ fn web_sources() -> Vec<PathBuf> {
         }
     }
     files
+}
+
+/// The kinds reserved to the forge at the write boundary (`super::trust`) are
+/// the ones the docs publish as reserved, and the forge emits every one of
+/// them: a kind reserved with no emit point behind it would refuse posts and
+/// then have nothing to read.
+#[test]
+fn the_reserved_kinds_are_documented_and_emitted() {
+    let docs = docs();
+    let table = docs
+        .split_once("### Reserved kinds")
+        .expect("docs/pipeline-events.md: no reserved-kinds section")
+        .1
+        .split_once("\n###")
+        .map_or_else(|| docs.clone(), |(section, _)| section.to_string());
+    let documented: BTreeSet<&str> = FORGE_KINDS
+        .iter()
+        .map(|entry| entry.kind)
+        .filter(|kind| table.contains(&format!("`{kind}`")))
+        .collect();
+    let reserved: BTreeSet<&str> = FORGE_ONLY.iter().copied().collect();
+    assert_eq!(
+        documented, reserved,
+        "docs/pipeline-events.md and trust::FORGE_ONLY disagree about the reserved kinds"
+    );
+    let emitted: BTreeSet<&str> = FORGE_KINDS.iter().map(|entry| entry.kind).collect();
+    assert!(
+        reserved.is_subset(&emitted),
+        "reserved kinds the forge does not emit: {:?}",
+        reserved.difference(&emitted).collect::<Vec<_>>()
+    );
 }

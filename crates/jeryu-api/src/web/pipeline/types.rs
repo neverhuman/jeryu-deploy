@@ -124,6 +124,10 @@ pub(crate) struct EventsQuery {
     pub pr: Option<i64>,
     pub todo_id: Option<String>,
     pub source: Option<String>,
+    /// The login that posted the event. Not a key the route takes: it is how
+    /// a projection reads only the forge's own rows of a kind it trusts
+    /// (`super::trust`).
+    pub reporter: Option<String>,
     pub kind: Option<String>,
     pub needs_human: Option<bool>,
 }

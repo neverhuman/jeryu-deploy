@@ -665,6 +665,7 @@ fn is_main_head(state: &WebState, repo: &str, sha: &str) -> bool {
         .query(&super::EventsQuery {
             repo: Some(repo.to_string()),
             kind: Some("main.status".to_string()),
+            reporter: Some(super::trust::FORGE.to_string()),
             limit: Some(200),
             ..super::EventsQuery::default()
         })
@@ -737,7 +738,8 @@ fn main_gate_finished(
     if !is_main_head(state, &result.repo, &result.sha) {
         return;
     }
-    // The previous verdict decides whether this red turns main red.
+    // The previous verdict decides whether this red turns main red; `None` is
+    // "the store could not say", not "main was green".
     let was_red = super::main_health::red_now(state, &result.repo).ok();
     let digest = Sha256::digest(
         format!(
@@ -784,9 +786,18 @@ fn main_gate_finished(
             )
         },
     );
-    if outcome == "red" && was_red != Some(true) {
+    if turned_main_red(outcome, was_red) {
         main_escaped(state, &result.repo, &result.sha, &hex::encode(digest));
     }
+}
+
+/// Whether this verdict turned main red, which charges the merged change with
+/// an escaped-to-main defect. `was_red` is the previous verdict, and `None`
+/// means the store could not say: an unreadable previous verdict is not
+/// evidence that main was green, and the defect it would charge is one no
+/// event takes back.
+pub(super) fn turned_main_red(outcome: &str, was_red: Option<bool>) -> bool {
+    outcome == "red" && was_red == Some(false)
 }
 
 /// `main.escaped`: main went red at `sha`; `pr` names the merged change whose

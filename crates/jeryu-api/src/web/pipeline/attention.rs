@@ -809,7 +809,9 @@ pub(crate) fn gate_failure(
 }
 
 /// Read the latest completed verdict for the actual head. A started event
-/// is not a verdict, and an event-store failure cannot establish red state.
+/// is not a verdict, a row from a reporter other than the forge itself is
+/// none either (`super::trust`), and an event-store failure cannot establish
+/// red state.
 fn state_head_red(state: &WebState, repo: &str, sha: &str) -> bool {
     // The newest verdict about this exact head, chosen in SQL: `started`
     // events are no verdict and cannot push it out of a fixed page.
@@ -820,8 +822,9 @@ fn state_head_red(state: &WebState, repo: &str, sha: &str) -> bool {
                 "SELECT outcome FROM pipeline_events \
                  WHERE kind = 'main.status' AND repo = ?1 AND sha = ?2 \
                    AND outcome IN ('red', 'green') \
+                   AND reporter = ?3 AND source = ?3 \
                  ORDER BY seq DESC LIMIT 1",
-                rusqlite::params![repo, sha],
+                rusqlite::params![repo, sha, super::trust::FORGE],
                 |row| row.get::<_, String>(0),
             )
             .map(Some)
