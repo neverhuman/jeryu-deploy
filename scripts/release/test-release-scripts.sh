@@ -504,15 +504,20 @@ case "\$method \$url" in
     if [ -e "$P/pulls.json.\$page" ]; then cat "$P/pulls.json.\$page"; elif [ "\$page" = 1 ]; then cat "$P/pulls.json"; else echo '[]'; fi ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/merge-queue?"*) cat "$P/queue.json" ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls?"*)
+    if [ -e "$P/readback-failure" ]; then
+      jq '{items: [.summary + {number:60, required_contexts:[{name:"required-context/check-readback", state:"failing"}]}], page:{has_more:false}}' "$P/detail.json"
+      exit 0
+    fi
     if [ -e "$P/posture-page-two" ] && [[ "\$url" == *page=1 ]]; then
       echo '{"items":[],"page":{"has_more":true}}'; exit 0
     fi
     jq -n --slurpfile d "$P/detail.json" --slurpfile c "$P/checks.json" '
       {items: [\$d[0].summary + {number: 60, required_contexts: [\$c[0].checks[] | select(.required == true)
         | {name: "required", state: (if .status == "success" then "passing"
-          elif .status == "failure" then "failing" else .status end)}]}], page: {has_more: false}}' || exit 22
+          elif (.status | IN("failure", "error", "cancelled")) then "failing" else .status end)}]}], page: {has_more: false}}' || exit 22
     [ ! -e "$P/after-checks-detail.json" ] || cp "$P/after-checks-detail.json" "$P/detail.json"
     ;;
+  "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*"/checks") cat "$P/checks.json" ;;
   "GET https://git.neverhuman.org/api/v1/repos/jeryu/jeryu-deploy/pulls/"*) cat "$P/detail.json" ;;
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls/"*)
     [ -e "$P/refuse-close-detail" ] && exit 22

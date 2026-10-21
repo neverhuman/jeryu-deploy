@@ -420,7 +420,7 @@ supersede_stale() {
 # Missing, unreadable, running or advisory-only failures never discard an approval. This runs
 # again immediately before close, after the replacement build and creation have completed.
 required_failed() {
-  local n="$1" row="$2" detail="$3" sha batch posture current page
+  local n="$1" row="$2" detail="$3" sha batch posture current page checks
   sha="$(jq -r '.head.sha // empty' <<<"$row")" || return 1
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
   jq -e --arg sha "$sha" --arg ref "$(jq -r '.head.ref' <<<"$row")" '
@@ -435,6 +435,11 @@ required_failed() {
   jq -e --arg sha "$sha" '.head_sha == $sha and (.required_contexts | type == "array")
     and any(.required_contexts[]; .state == "failing")
     and all(.required_contexts[]; .state | IN("passing", "failing"))' <<<"$posture" >/dev/null 2>&1 || return 1
+  # A failing posture may mean the forge could not read evidence. Require an
+  # actual concluded required failure too, before treating it as a failed gate.
+  checks="$(api GET "/api/v1/repos/$repo_path/pulls/$n/checks" 2>/dev/null)" || return 1
+  jq -e 'any(.checks[]; .required == true and (.status | IN("failure", "error")))' \
+    <<<"$checks" >/dev/null 2>&1 || return 1
   current="$(api GET "/api/v1/repos/$repo_path/pulls/$n" 2>/dev/null)" || return 1
   jq -e --arg sha "$sha" '.summary.state == "open" and .summary.base_ref == "main"
     and .summary.head_sha == $sha' <<<"$current" >/dev/null || return 1

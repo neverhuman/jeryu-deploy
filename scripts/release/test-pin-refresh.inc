@@ -23,6 +23,11 @@ for status in success pending missing running cancelled; do
   refresh_unchanged
 done
 refresh_fixture
+echo '{"checks":[]}' >"$P/checks.json"
+touch "$P/readback-failure"
+refresh_unchanged
+rm "$P/readback-failure"
+refresh_fixture
 cp "$P/state/opened.tsv" "$P/refresh-owned"
 : >"$P/state/opened.tsv"
 refresh_unchanged
