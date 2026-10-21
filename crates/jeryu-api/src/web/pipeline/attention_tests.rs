@@ -683,6 +683,7 @@ fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
         changed_paths: vec!["crates/jeryu-api/src/web/pulls.rs".to_string()],
         landed: None,
         changes_requested_since: None,
+        changes_review: None,
     }
 }
 
@@ -1696,6 +1697,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             base_ref: "main".to_string(),
             landed: None,
             changes_requested_since: None,
+            changes_review: None,
             updated_at: now() - Duration::minutes(45),
             posture: PullPosture {
                 changes_requested: 1,
@@ -1764,6 +1766,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             base_ref: "main".to_string(),
             landed: None,
             changes_requested_since: None,
+            changes_review: None,
             updated_at: now() - Duration::minutes(45),
             posture: PullPosture {
                 changes_requested: 1,
@@ -4783,6 +4786,7 @@ fn a_hold_row_is_as_old_as_the_oldest_changes_requested_review() {
     let held = now() - Duration::hours(30);
     let facts = PullFacts {
         changes_requested_since: Some(held),
+        changes_review: None,
         ..pull(
             35,
             45,
@@ -4844,4 +4848,82 @@ fn a_hold_row_is_as_old_as_the_oldest_changes_requested_review() {
         again[stuck(&again)].since.as_deref(),
         Some("2026-01-01T00:00:00+00:00")
     );
+}
+
+fn held_review(reviewer: &str) -> super::attention::review::ReviewFacts {
+    super::attention::review::ReviewFacts::new(
+        "b761244b76371995527bfe7795e98492703553a8".to_string(),
+        reviewer.to_string(),
+        Some(
+            "**Red team: HOLD.**\n\n| | Finding | Where |\n|---|---|---|\n\
+             | 🔴 critical | **Acme refund skips auth** — d | `a.rs:1` |",
+        ),
+    )
+}
+
+/// The row a held pull request raises says which head, which reviewer and what
+/// the findings were; other kinds carry no review.
+#[test]
+fn a_changes_requested_row_carries_the_review() {
+    let blocked = PullFacts {
+        changes_review: Some(held_review("acme-reviewer")),
+        ..pull(
+            51,
+            20,
+            PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+        )
+    };
+    let items = pull_items(&[blocked], &[], now(), &hosts());
+    assert_eq!(kinds(&items), ["pr_changes_requested"]);
+    let json = serde_json::to_value(&items[0]).unwrap();
+    assert_eq!(json["review"]["reviewer"], "acme-reviewer");
+    assert_eq!(
+        json["review"]["head_sha"],
+        "b761244b76371995527bfe7795e98492703553a8"
+    );
+    assert_eq!(json["review"]["findings"][0]["severity"], "critical");
+    assert_eq!(
+        json["review"]["findings"][0]["title"],
+        "Acme refund skips auth"
+    );
+}
+
+/// Every pull request a campaign row lists carries its own review.
+#[test]
+fn a_campaign_row_lists_each_pull_requests_review() {
+    let blocked = |repo: &str, number: u64, reviewer: &str| PullFacts {
+        repo: repo.to_string(),
+        head_ref: "dev/globex-fix".to_string(),
+        changes_review: Some(held_review(reviewer)),
+        ..pull(
+            number,
+            20,
+            PullPosture {
+                changes_requested: 1,
+                ..PullPosture::default()
+            },
+        )
+    };
+    let items = pull_items(
+        &[
+            blocked("acme/a", 1, "r-one"),
+            blocked("acme/b", 2, "r-two"),
+            blocked("globex/c", 3, "r-three"),
+        ],
+        &[],
+        now(),
+        &hosts(),
+    );
+    assert_eq!(kinds(&items), ["pr_branch_campaign"]);
+    let json = serde_json::to_value(&items[0]).unwrap();
+    let reviewers: Vec<_> = json["pulls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["review"]["reviewer"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(reviewers, ["r-one", "r-two", "r-three"]);
 }

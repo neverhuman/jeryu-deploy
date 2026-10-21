@@ -44,6 +44,7 @@ mod hosts;
 mod mirror;
 mod pins;
 mod pushed;
+pub(crate) mod review;
 mod scope;
 mod scorecard;
 mod stranded;
@@ -244,6 +245,10 @@ pub(crate) struct PullLink {
     pub repo: String,
     pub number: u64,
     pub href: String,
+    /// The changes-requested review holding this pull request, on a
+    /// `pr_changes_requested` campaign only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<review::ReviewFacts>,
 }
 
 /// The money behind a `shift_budget_spent` item, as numbers rather than
@@ -288,6 +293,11 @@ pub(crate) struct Item {
     /// absent on every other item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Set on `pr_changes_requested` only: the review holding the pull request
+    /// (its head sha, reviewer and findings), so whoever acts can file fix work
+    /// without scraping the review. The key is absent on every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<review::ReviewFacts>,
     /// The todo creator, resolved to the account store login when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_by: Option<String>,
@@ -357,6 +367,7 @@ impl Draft<'_> {
             assignee: None,
             requested_by: None,
             digest: None,
+            review: None,
             href: self.href,
             action: match self.command {
                 Some(shell) => Action {
@@ -548,7 +559,7 @@ pub(super) fn close_landed_pull_call(repo: &str, number: u64) -> ApiCall {
 fn oldest_changes_requested(
     state: &WebState,
     pr: &jeryu_core::PullRequest,
-) -> Option<DateTime<Utc>> {
+) -> Option<(DateTime<Utc>, review::ReviewFacts)> {
     let reviews = state
         .core
         .list_reviews(&pr.owner, &pr.repo, pr.number)
@@ -556,8 +567,20 @@ fn oldest_changes_requested(
     jeryu_core::effective_reviews_for_head(&reviews, &pr.head.sha)
         .into_iter()
         .filter(|review| review.state == jeryu_core::ReviewState::ChangesRequested)
-        .map(|review| review.submitted_at)
-        .min()
+        .min_by_key(|review| review.submitted_at)
+        .map(|review| {
+            (
+                review.submitted_at,
+                review::ReviewFacts::new(
+                    review
+                        .head_sha
+                        .clone()
+                        .unwrap_or_else(|| pr.head.sha.clone()),
+                    review.author.clone(),
+                    review.body.as_deref(),
+                ),
+            )
+        })
 }
 
 fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
@@ -578,6 +601,7 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
             let Some(posture) = super::super::pulls::attention_posture(state, &pr) else {
                 continue;
             };
+            let held = oldest_changes_requested(state, &pr);
             pulls.push(PullFacts {
                 repo: format!("{}/{}", pr.owner, pr.repo),
                 number: pr.number,
@@ -590,7 +614,8 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
                 posture,
                 changed_paths: super::super::pulls::diff::changed_paths(state, &pr),
                 landed: super::super::pulls::landed::already_landed(state, &pr),
-                changes_requested_since: oldest_changes_requested(state, &pr),
+                changes_requested_since: held.as_ref().map(|(at, _)| *at),
+                changes_review: held.map(|(_, facts)| facts),
             });
         }
     }

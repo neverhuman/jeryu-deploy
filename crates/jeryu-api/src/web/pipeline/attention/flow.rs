@@ -54,6 +54,8 @@ pub(crate) struct PullFacts {
     /// When the oldest changes-requested review on the current head was
     /// submitted: how long the hold has stood. `None` when none stands.
     pub changes_requested_since: Option<DateTime<Utc>>,
+    /// That review: head, reviewer and findings. `None` when none stands.
+    pub changes_review: Option<super::review::ReviewFacts>,
 }
 
 #[derive(Clone, Debug)]
@@ -611,6 +613,9 @@ pub(crate) fn pull_items(
             item.repo = Some(pull.repo.clone());
             item.pr = Some(pull.number);
             item.sha = Some(pull.head_sha.clone());
+            if kind == "pr_changes_requested" {
+                item.review = pull.changes_review.clone();
+            }
             items.push(item);
         }
     }
@@ -698,6 +703,7 @@ fn campaign_item(branch: &str, kind: &'static str, members: &[&Item]) -> Item {
             let (repo, number) = item.repo.clone().zip(item.pr)?;
             Some(PullLink {
                 href: pull_href(&repo, number),
+                review: item.review.clone(),
                 repo,
                 number,
             })
