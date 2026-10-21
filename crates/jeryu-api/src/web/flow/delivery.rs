@@ -399,6 +399,13 @@ mod tests {
             let history = state.events.flow_history(&query, now).unwrap();
             if case == "valid" {
                 assert_eq!(history.deliveries.len(), 3);
+                assert_eq!(
+                    state
+                        .events
+                        .first_pr_deployment("acme/jeryu-web", 1)
+                        .unwrap(),
+                    Some(crate::web::shift::rfc3339_ms(now - 10_000))
+                );
                 assert!(
                     history
                         .deliveries
@@ -424,6 +431,32 @@ mod tests {
                         .unwrap()
                         .0
                         .is_empty()
+                );
+                // The receipt still dates this PR after raw events expire.
+                post(
+                    "acme/jeryu-web",
+                    Some(99),
+                    &web_sha,
+                    "pr.opened",
+                    None,
+                    31 * 24 * 60 * 60 * 1000,
+                );
+                assert!(
+                    state
+                        .events
+                        .query(&crate::web::pipeline::EventsQuery {
+                            kind: Some("deploy.status".into()),
+                            ..Default::default()
+                        })
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(
+                    state
+                        .events
+                        .first_pr_deployment("acme/jeryu-web", 1)
+                        .unwrap(),
+                    Some(crate::web::shift::rfc3339_ms(now - 10_000))
                 );
             } else if case != "invalid" {
                 assert!(history.deliveries.is_empty());

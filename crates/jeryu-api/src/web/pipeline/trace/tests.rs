@@ -639,6 +639,52 @@ async fn a_pinned_repository_traces_through_the_consumer_that_releases_it() {
     assert_eq!(from_pr["subject"]["todos"], json!([TODO]));
     assert_eq!(from_pr["subject"]["family"], "acme");
     assert_eq!(state_of(&from_pr, "deployed"), "done");
+
+    // A current deployment proves membership, not when this PR first shipped.
+    assert_eq!(stage_of_body(&from_pr, "deployed")["at"], Value::Null);
+    assert_eq!(stage_of_body(&from_pr, "pinned")["at"], Value::Null);
+    let state = WebState::new_with_git_storage(core.clone(), root.to_path_buf())
+        .with_auth(true, false, false);
+    let first = Utc::now().timestamp_millis() - 86_400_000;
+    for (kind, outcome, offset) in [
+        ("pr.merged", None, 0),
+        ("deploy.created", None, 1000),
+        ("deploy.status", Some("success"), 2000),
+    ] {
+        state
+            .events
+            .insert(
+                "operator",
+                &super::super::types::NewEvent {
+                    source: "fixture".into(),
+                    kind: kind.into(),
+                    summary: kind.into(),
+                    repo: Some("acme/widgets-web".into()),
+                    pr: Some(pr.number as i64),
+                    outcome: outcome.map(str::to_string),
+                    detail: Some(json!({"environment": "production"})),
+                    ..Default::default()
+                },
+                first + offset,
+            )
+            .unwrap();
+    }
+    let router = app(state, Path::new("/tmp/jeryu-no-spa"));
+    let answer = router
+        .oneshot(request(
+            HttpMethod::GET,
+            &format!("/api/v1/trace?repo=acme/widgets-web&pr={}", pr.number),
+            &admin,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), StatusCode::OK);
+    let answer = body_json(answer).await;
+    assert_eq!(
+        stage_of_body(&answer, "deployed")["at"],
+        crate::web::shift::rfc3339_ms(first + 2000)
+    );
 }
 
 /// A request that names neither one todo nor one pull request, or names work

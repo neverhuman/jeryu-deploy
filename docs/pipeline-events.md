@@ -810,7 +810,7 @@ Anything else is `422 trace_invalid_query`; a todo no family queue holds is
              "family_label": "acme", "repo": "acme/widgets-web", "pr": 7,
              "shift": "nightshift/2026-10-03", "released_by": "acme/deploy"},
  "stages": [{"stage": "pinned", "state": "done",
-             "at": "2026-10-03T06:10:00Z",
+             "at": null,
              "source": {"from": "derived"},
              "summary": "acme/deploy pins it at 4e11f0b, which reaches the work",
              "href": "/releases?repo=acme/deploy",
@@ -844,6 +844,14 @@ Where each stage's answer comes from:
 | `pinned` | the consumer pin `/api/v1/pins` reports for the work's repository: `done` when the pinned commit reaches the work, `waiting` while it is behind, `not_applicable` when nothing pins the repository |
 | `staged` | the newest `release.staged` for whichever repository ships the work, `done` when the release it names carries the work. A deployment that carries the work also settles this: production cannot run a release that was never staged |
 | `deployed` | what production runs: for a pinned repository the consumer's production deployment, else the todo's derived `released` |
+
+For a completed `deployed` stage, `at` is the first successful production
+deployment recorded for that PR in Flow history, backed by a production event
+or verified delivery receipt. Flow's `released` transition removes a deployment
+hold when deployment starts; it does not prove success. A later deployment does
+not replace the first successful date. Missing historical evidence yields null.
+The current lock proves pin membership but does not date its first occurrence,
+so `pinned.at` is null. Staging inferred from production also has no timestamp.
 
 **A repository that ships by being pinned.** jeryu-web has no release and no
 deployment of its own: jeryu-deploy pins it and ships it, which is why

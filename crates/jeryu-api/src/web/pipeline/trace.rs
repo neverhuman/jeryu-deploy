@@ -856,7 +856,7 @@ fn staged(facts: &Facts) -> Built {
         {
             built(
                 StageState::Done,
-                facts.ship.released_at.clone(),
+                None,
                 Source::derived(),
                 format!("the {shipper} release production runs was staged first"),
             )
@@ -1123,31 +1123,6 @@ fn reaches(state: &WebState, repo: &str, commit: &str, work: &[String]) -> bool 
     })
 }
 
-/// When the lock that holds a pin last changed on the consumer's branch: the
-/// bump that pinned this work, as far as the consumer's history records it.
-fn pinned_at(state: &WebState, consumer: &str, branch: &str, lock_path: &str) -> Option<String> {
-    let (owner, name) = consumer.split_once('/')?;
-    let opened = state.repo_manager.open_parts(owner, name).ok()?;
-    let git_bin = &state.repo_manager.config().git_bin;
-    let at = super::super::shift::run_git(
-        git_bin,
-        &opened.path,
-        &[
-            "log",
-            "-1",
-            "--format=%cI",
-            &format!("refs/heads/{branch}"),
-            "--",
-            lock_path,
-        ],
-        &[],
-        None,
-    )
-    .ok()?;
-    let at = String::from_utf8_lossy(&at).trim().to_string();
-    (!at.is_empty()).then_some(at)
-}
-
 /// The production deployment a repository runs: its commit and when it was
 /// recorded.
 fn production(state: &WebState, repo: &str) -> Option<(String, String)> {
@@ -1200,7 +1175,7 @@ fn ship_facts(
             staged,
             deployed: None,
             released,
-            released_at: production(state, repo).map(|(_, at)| at),
+            released_at: None,
             href: Some(format!("/releases?repo={repo}")),
         };
     };
@@ -1224,10 +1199,10 @@ fn ship_facts(
             at: Some(event.ts.clone()),
         })
     });
-    let deployed = production(state, &consumer.repo).map(|(sha, at)| Shipped {
+    let deployed = production(state, &consumer.repo).map(|(sha, _)| Shipped {
         reaches: carried(&sha),
         sha: Some(sha),
-        at: Some(at),
+        at: None,
     });
     ShipFacts {
         consumer: Some(consumer.repo.clone()),
@@ -1240,7 +1215,8 @@ fn ship_facts(
                 .pinned_sha
                 .clone()
                 .or_else(|| Some(pin.pinned_ref.clone())),
-            at: pinned_at(state, &consumer.repo, &consumer.branch, &pin.source),
+            // The latest lock edit does not date this work's first pin.
+            at: None,
         }),
         staged,
         deployed,
@@ -1425,10 +1401,27 @@ fn collect(
         &traces.iter().map(|t| t.todo.id.clone()).collect::<Vec<_>>(),
         pr.as_ref(),
     )?;
-    let ship = match &repo {
+    let mut ship = match &repo {
         Some(repo) => ship_facts(state, repo, &work, released, &events),
         None => ShipFacts::default(),
     };
+    if let Some(pr) = &pr {
+        let at = state
+            .events
+            .first_pr_deployment(&pr.repo, pr.number)
+            .map_err(|err| {
+                trace_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "trace_events_unreadable",
+                    &format!("delivery history: {err}"),
+                    "retry; check that the activity database is readable",
+                )
+            })?;
+        if let Some(deployed) = &mut ship.deployed {
+            deployed.at = deployed.reaches.then(|| at.clone()).flatten();
+        }
+        ship.released_at = (ship.released == Some(true)).then_some(at).flatten();
+    }
     let queue = match &pr {
         Some(pr) => state.merge_queue.entries(state, |entry| {
             entry.repo == pr.repo && entry.number == pr.number
@@ -1490,3 +1483,6 @@ pub(crate) async fn trace(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod release_tests;

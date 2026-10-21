@@ -279,6 +279,36 @@ impl EventStore {
         tx.commit().map_err(|e| e.to_string())
     }
 
+    /// First successful production deployment of this PR. Verified delivery
+    /// receipts retain that evidence beyond event pruning.
+    /// `released` only removes a hold when deployment starts.
+    pub(crate) fn first_pr_deployment(
+        &self,
+        repo: &str,
+        pr: u64,
+    ) -> Result<Option<String>, String> {
+        let pr = i64::try_from(pr).map_err(|err| err.to_string())?;
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        let at: Option<i64> = inner
+            .conn
+            .query_row(
+                "SELECT MIN(a.ts_ms) FROM flow_activity a
+             WHERE a.lot_id=?1 AND a.repo=?2 AND a.pr=?3
+               AND a.station='deploy' AND a.state='passed'
+               AND (EXISTS (SELECT 1 FROM flow_delivery_receipts d
+                    WHERE d.event_seq=a.event_seq AND d.lot_id=a.lot_id
+                      AND d.kind='deploy.status')
+                 OR EXISTS (SELECT 1 FROM pipeline_events e
+                    WHERE e.seq=a.event_seq AND e.kind='deploy.status'
+                      AND e.outcome='success'
+                      AND json_extract(e.detail_json,'$.environment')='production'))",
+                params![format!("{repo}#{pr}"), repo, pr],
+                |row| row.get(0),
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(at.map(rfc3339_ms))
+    }
+
     pub(crate) fn flow_history(
         &self,
         query: &crate::web::flow::history::Query,
