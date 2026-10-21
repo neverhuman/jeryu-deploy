@@ -1,7 +1,8 @@
 # gh jeryu
 
-A read-only gh extension for the native Jeryu PR workflow on Linux/macOS. Requires Python 3.10+
-(standard library only) and gh 2.40 or newer; tested with gh 2.45.0.
+A read-only gh extension for the native Jeryu PR workflow on Linux. Requires
+Bash 4+, jq 1.6+, GNU coreutils (`timeout`), and gh 2.40 or newer; tested with
+gh 2.45.0. Linux `/proc/uptime` supplies the monotonic clock.
 It uses `gh api` authentication for the selected host. Configure that host with
 `jeryu gh-setup` as described in [the setup guide](../../docs/errors.md#reproducible-gh-api-setup); no separate token store is
 created. The native server must return `workflow.schema = pr_workflow/v1`.

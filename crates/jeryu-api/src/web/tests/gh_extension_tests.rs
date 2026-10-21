@@ -10,14 +10,27 @@ struct Fixture {
     transition: &'static str,
 }
 
-async fn aggregate(State(fixture): State<Arc<Fixture>>) -> AxumResponse {
+async fn aggregate(
+    State(fixture): State<Arc<Fixture>>,
+    headers: axum::http::HeaderMap,
+) -> AxumResponse {
+    assert_eq!(headers.get("authorization").unwrap(), "token fixture-token");
+    let call = fixture.calls.fetch_add(1, Ordering::SeqCst);
+    match fixture.transition {
+        "auth" => return StatusCode::UNAUTHORIZED.into_response(),
+        "forbidden" => return StatusCode::FORBIDDEN.into_response(),
+        "transient" | "cancel" => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        "retry" if call == 0 => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        "unsupported" => return Json(json!({})).into_response(),
+        _ => {}
+    }
     let response = crate::web::pulls::detail(
         State(fixture.state.clone()),
         authenticated_account("bob"),
         AxumPath((fixture.case.repo.id.to_string(), fixture.case.number)),
     )
     .await;
-    if fixture.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+    if call == 0 {
         match fixture.transition {
             "ready" => fixture
                 .case
@@ -53,7 +66,7 @@ async fn exercise(transition: &'static str, extra: &[&str]) -> (i32, Value, usiz
     case.check(
         WORKFLOW_HEAD,
         match transition {
-            "merged" => Some(CheckConclusion::Success),
+            "merged" | "retry" => Some(CheckConclusion::Success),
             "failed" => Some(CheckConclusion::Failure),
             _ => None,
         },
@@ -74,17 +87,36 @@ async fn exercise(transition: &'static str, extra: &[&str]) -> (i32, Value, usiz
         .with_state(fixture.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let sandbox = tempdir().unwrap();
-    std::fs::write(
-        sandbox.path().join("hosts.yml"),
-        format!(
-            "{host}:\n    oauth_token: fixture-token\n    user: bob\n    git_protocol: https\n"
-        ),
-    )
-    .unwrap();
+    if transition != "missing-auth" {
+        std::fs::write(
+            sandbox.path().join("hosts.yml"),
+            format!(
+                "{host}:\n    oauth_token: fixture-token\n    user: bob\n    git_protocol: https\n"
+            ),
+        )
+        .unwrap();
+    }
+    let extension = concat!(env!("CARGO_MANIFEST_DIR"), "/../../extensions/gh-jeryu");
+    if transition == "status-installed" {
+        let installed = Command::new("gh")
+            .args(["extension", "install", "."])
+            .current_dir(extension)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", sandbox.path())
+            .env("GH_CONFIG_DIR", sandbox.path())
+            .output()
+            .unwrap();
+        assert!(installed.status.success(), "{installed:?}");
+    }
     let mut command = Command::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../extensions/gh-jeryu/gh-jeryu"
     ));
+    if transition == "status-installed" {
+        command = Command::new("gh");
+        command.arg("jeryu");
+    }
     command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap())
@@ -120,9 +152,31 @@ async fn exercise(transition: &'static str, extra: &[&str]) -> (i32, Value, usiz
             },
         ]);
     }
-    let output = tokio::task::spawn_blocking(move || command.output().unwrap())
-        .await
-        .unwrap();
+    let observed = fixture.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        if transition != "cancel" {
+            return command.output().unwrap();
+        }
+        let child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while observed.calls.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        child.wait_with_output().unwrap()
+    })
+    .await
+    .unwrap();
     server.abort();
     let result: Value = if transition == "status-human" {
         Value::String(String::from_utf8(output.stdout).unwrap())
@@ -161,16 +215,31 @@ async fn gh_extension_status_shows_the_native_workflow_in_both_formats() {
     }
 }
 
-#[test]
-fn gh_extension_transport_and_local_install_contract() {
-    let output = Command::new("python3")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../extensions/gh-jeryu/test_extension.py"
-        ))
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
+#[tokio::test]
+async fn gh_extension_transport_and_local_install_contract() {
+    for (transition, code, result, calls) in [
+        ("auth", 4, "authentication_error", 1),
+        ("missing-auth", 4, "authentication_error", 0),
+        ("forbidden", 4, "authentication_error", 1),
+        ("unsupported", 1, "unsupported_response", 1),
+        ("retry", 0, "success", 2),
+        ("transient", 3, "timeout", 2),
+        ("cancel", 130, "cancelled", 1),
+        ("status-installed", 0, "checks_pending", 1),
+    ] {
+        let extra = if transition == "status-installed" {
+            vec![]
+        } else {
+            vec![
+                "--timeout",
+                if transition == "transient" { "3" } else { "10" },
+            ]
+        };
+        let (actual_code, value, actual_calls) = exercise(transition, &extra).await;
+        assert_eq!(actual_code, code, "{transition}: {value}");
+        assert_eq!(value["result"], result, "{transition}: {value}");
+        assert_eq!(actual_calls, calls, "{transition}");
+    }
 }
 
 #[tokio::test]
