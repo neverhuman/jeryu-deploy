@@ -684,6 +684,7 @@ fn pull(number: u64, minutes_old: i64, posture: PullPosture) -> PullFacts {
         landed: None,
         changes_requested_since: None,
         changes_review: None,
+        head_todos: Vec::new(),
     }
 }
 
@@ -1698,6 +1699,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             landed: None,
             changes_requested_since: None,
             changes_review: None,
+            head_todos: Vec::new(),
             updated_at: now() - Duration::minutes(45),
             posture: PullPosture {
                 changes_requested: 1,
@@ -1767,6 +1769,7 @@ fn a_held_web_pin_bump_replaces_the_generic_changes_requested_row() {
             landed: None,
             changes_requested_since: None,
             changes_review: None,
+            head_todos: Vec::new(),
             updated_at: now() - Duration::minutes(45),
             posture: PullPosture {
                 changes_requested: 1,
@@ -2883,7 +2886,7 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["schema_version"], "jeryu.attention/v1.7");
+    assert_eq!(body["schema_version"], "jeryu.attention/v1.8");
     let items = body["items"].as_array().unwrap();
     let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
     // Critical first (open todos and no worker has ever reported), then the

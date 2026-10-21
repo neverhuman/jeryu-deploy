@@ -56,6 +56,32 @@ pub(crate) struct PullFacts {
     pub changes_requested_since: Option<DateTime<Utc>>,
     /// That review: head, reviewer and findings. `None` when none stands.
     pub changes_review: Option<super::review::ReviewFacts>,
+    /// The `Todo:` trailers of the commits the head carries over its base
+    /// (`base..head`), at most [`MAX_HEAD_TODOS`] of them. Collected only
+    /// while a changes-requested review stands, so a fix todo can be filed
+    /// against the work that was held; empty otherwise.
+    pub head_todos: Vec<String>,
+}
+
+/// Todo ids one row carries at most: a long-lived branch accumulates them, and
+/// the pull request itself keeps the full list.
+pub(crate) const MAX_HEAD_TODOS: usize = 20;
+
+/// The branch prefixes a shift pushes its work to. A pull request merging from
+/// one of them is that shift's, and the branch name is the shift's name.
+const SHIFT_BRANCH_PREFIXES: [&str; 3] = ["nightshift/", "dayshift/", "replace/"];
+
+/// The shift a pull request belongs to, read off its head branch; `None` for
+/// any other branch, so a row for ordinary work claims no shift.
+pub(crate) fn shift_of_head(head_ref: &str) -> Option<String> {
+    SHIFT_BRANCH_PREFIXES
+        .iter()
+        .any(|prefix| {
+            head_ref
+                .strip_prefix(prefix)
+                .is_some_and(|rest| !rest.is_empty())
+        })
+        .then(|| head_ref.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -615,6 +641,8 @@ pub(crate) fn pull_items(
             item.sha = Some(pull.head_sha.clone());
             if kind == "pr_changes_requested" {
                 item.review = pull.changes_review.clone();
+                item.todos = pull.head_todos.clone();
+                item.shift = shift_of_head(&pull.head_ref);
             }
             items.push(item);
         }
@@ -704,6 +732,7 @@ fn campaign_item(branch: &str, kind: &'static str, members: &[&Item]) -> Item {
             Some(PullLink {
                 href: pull_href(&repo, number),
                 review: item.review.clone(),
+                todos: item.todos.clone(),
                 repo,
                 number,
             })
@@ -752,6 +781,17 @@ fn campaign_item(branch: &str, kind: &'static str, members: &[&Item]) -> Item {
     .build();
     // The oldest row's time: how long the campaign has been waiting.
     item.since = members.iter().filter_map(|row| row.since.clone()).min();
+    // Every pull request of a campaign merges from the one branch, so the
+    // campaign is that branch's shift; the todos are what all of them carry.
+    item.shift = shift_of_head(branch);
+    let mut todos: Vec<String> = links
+        .iter()
+        .flat_map(|link| link.todos.iter().cloned())
+        .collect();
+    todos.sort();
+    todos.dedup();
+    todos.truncate(MAX_HEAD_TODOS);
+    item.todos = todos;
     item.pulls = Some(links);
     item
 }

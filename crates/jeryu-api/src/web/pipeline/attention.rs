@@ -59,6 +59,10 @@ pub(crate) use board::{BoardFacts, BoardLane, board_items};
 /// caller outside its own tests.
 #[cfg(test)]
 pub(crate) use flow::gate_definition_paths;
+/// The pure branch-name rule behind a held row's `shift`; `pull_items` and
+/// `campaign_item` are its only callers outside its own tests.
+#[cfg(test)]
+pub(crate) use flow::shift_of_head;
 pub(crate) use flow::{
     DraftFacts, LatestDeployment, MainRedFacts, ProductionFacts, PullFacts,
     ReviewerOfflineThresholds, Superseded, SupersededPullFacts, draft_items,
@@ -80,9 +84,10 @@ pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 /// optional `pulls`, `v1.4` the optional `assignee`, `v1.5` the page's
 /// `families` summary (and a `family` read off `repo` when a collector named
 /// none) and `v1.6` the optional `digest`: every earlier field is unchanged,
-/// `v1.7` adds the optional todo `requested_by`,
-/// so a client written against `v1` reads a `v1.7` answer as it always did.
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.7";
+/// `v1.7` adds the optional todo `requested_by` and `v1.8` the optional
+/// `todos` (with `shift`) a held pull request carries,
+/// so a client written against `v1` reads a `v1.8` answer as it always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.8";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -249,6 +254,10 @@ pub(crate) struct PullLink {
     /// `pr_changes_requested` campaign only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review: Option<review::ReviewFacts>,
+    /// The todos this pull request's head carries, on a
+    /// `pr_changes_requested` campaign only; empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<String>,
 }
 
 /// The money behind a `shift_budget_spent` item, as numbers rather than
@@ -298,6 +307,12 @@ pub(crate) struct Item {
     /// without scraping the review. The key is absent on every other kind.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review: Option<review::ReviewFacts>,
+    /// Set on `pr_changes_requested`, and on a `pr_branch_campaign` row folded
+    /// from those: the `Todo:` trailers the held commits carry, so a fix todo
+    /// is filed against the right work (with `shift`, the right shift) without
+    /// reading the branch. Empty on every other kind.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<String>,
     /// The todo creator, resolved to the account store login when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_by: Option<String>,
@@ -368,6 +383,7 @@ impl Draft<'_> {
             requested_by: None,
             digest: None,
             review: None,
+            todos: Vec::new(),
             href: self.href,
             action: match self.command {
                 Some(shell) => Action {
@@ -583,6 +599,15 @@ fn oldest_changes_requested(
         })
 }
 
+/// The todos the pull request's own commits carry: the `Todo:` trailers of
+/// `base..head`, capped so one long branch cannot grow a row without bound.
+fn head_todos(state: &WebState, pr: &jeryu_core::PullRequest) -> Vec<String> {
+    let range = format!("refs/heads/{}..{}", pr.base.ref_name, pr.head.sha);
+    let mut ids = super::super::shift::trailer_todos(state, &pr.owner, &pr.repo, &range);
+    ids.truncate(flow::MAX_HEAD_TODOS);
+    ids
+}
+
 fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
     let mut pulls = Vec::new();
     // An archived repository is read-only: nothing on it can be acted on, so
@@ -602,6 +627,13 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
                 continue;
             };
             let held = oldest_changes_requested(state, &pr);
+            // Only a held pull request: one trailer scan per held head per
+            // collection, not per open pull request.
+            let head_todos = if held.is_some() {
+                head_todos(state, &pr)
+            } else {
+                Vec::new()
+            };
             pulls.push(PullFacts {
                 repo: format!("{}/{}", pr.owner, pr.repo),
                 number: pr.number,
@@ -616,6 +648,7 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
                 landed: super::super::pulls::landed::already_landed(state, &pr),
                 changes_requested_since: held.as_ref().map(|(at, _)| *at),
                 changes_review: held.map(|(_, facts)| facts),
+                head_todos,
             });
         }
     }

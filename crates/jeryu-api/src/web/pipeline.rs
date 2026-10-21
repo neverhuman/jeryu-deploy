@@ -22,6 +22,8 @@ pub(crate) mod trust;
 mod types;
 
 #[cfg(test)]
+mod attention_hold_tests;
+#[cfg(test)]
 mod attention_tests;
 #[cfg(test)]
 mod commits_tests;
