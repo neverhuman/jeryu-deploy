@@ -376,6 +376,11 @@ async fn a_conflicting_replay_is_refused_and_main_is_untouched() {
     let entry = fx.entry();
     assert_eq!(entry.state, merge_queue::QueueState::Dequeued, "{entry:?}");
     assert_eq!(entry.refusal_code.as_deref(), Some("queue_conflict"));
+    // The two facts a replacement pull request is built from, as data: the
+    // paths to resolve, and the base commit to cherry-pick onto. The refusal
+    // built no queue commit, so nothing else records the tip it was tried on.
+    assert_eq!(entry.conflict_paths, ["shared.txt"], "{entry:?}");
+    assert_eq!(entry.base_sha, moved, "{entry:?}");
     assert!(fx.has_ref("refs/queue-meta/main/1"));
     let open = [("alice/jeryu".to_string(), fx.number)].into();
     let items = crate::web::pipeline::attention::queue_items(&[entry], &open, chrono::Utc::now());
@@ -1264,10 +1269,10 @@ async fn a_conflict_with_a_queued_pr_ahead_is_refused_as_such_not_as_a_rebase() 
         message.contains(&format!("#{} queued ahead of it", fx.number)),
         "{message}"
     );
-    assert_eq!(
-        fx.entry_for(second).refusal_code.as_deref(),
-        Some("queue_conflict_queued")
-    );
+    let entry = fx.entry_for(second);
+    assert_eq!(entry.refusal_code.as_deref(), Some("queue_conflict_queued"));
+    assert_eq!(entry.conflict_paths, ["feature.txt"], "{entry:?}");
+    assert_eq!(entry.base_sha, fx.main(), "{entry:?}");
 }
 
 #[test]

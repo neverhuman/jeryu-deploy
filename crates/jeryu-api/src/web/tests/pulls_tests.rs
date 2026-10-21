@@ -1437,6 +1437,7 @@ async fn web_pull_merge_of_a_queued_pull_request_says_it_is_queued() {
             attempts: Vec::new(),
             reason: None,
             refusal_code: None,
+            conflict_paths: Vec::new(),
             landed_sha: None,
             after: None,
             landed_with: None,

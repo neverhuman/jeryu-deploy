@@ -451,6 +451,7 @@ async fn acme_fixture() -> (axum::Router, String, String) {
                 attempts: Vec::new(),
                 reason: None,
                 refusal_code: None,
+                conflict_paths: Vec::new(),
                 landed_sha: None,
                 after: None,
                 landed_with: None,

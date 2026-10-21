@@ -113,6 +113,14 @@ A setting per protected branch decides who may enqueue:
 A refusal (`queue_conflict`, `queue_merge_commits`, `queue_mismatch`,
 `queue_git_error`) builds no queue commit, so the entry is written as
 `dequeued` with `refusal_code` set to the forge code before the `409` goes out.
+The entry also carries the two facts a replacement pull request is built from: the
+base commit the replay was refused against (`base_sha`, which no attempt recorded
+because none was built) and, for a conflict, `conflict_paths` — the paths the
+replay conflicted in, the same ones the reason line names in prose, as data, so a
+reader preparing the replacement does not parse that sentence. Up to 64 paths; a
+conflict wider than that is a rebase nobody reads a path list for.
+pr-redteam reads this entry and files the replacement work as a rework task
+(`REDTEAM_QUEUE_REWORK`), so a conflict no longer waits for a person.
 The attention inbox walks stored entries, and without the record the refusal
 lived only in the response and the `queue.refused` event: ten minutes later the
 inbox called the pull request "ready to merge" and offered a merge the forge

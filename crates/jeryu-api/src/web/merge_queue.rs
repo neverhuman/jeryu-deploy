@@ -63,6 +63,11 @@ const MAX_ATTEMPTS: usize = 2;
 /// the queue below it changed. It counts against nobody's retry.
 const SUPERSEDED: &str = "superseded";
 
+/// How many conflicting paths a refused entry records. A conflict in more paths
+/// than this is a rebase nobody reads a path list for, and the entry (and every
+/// listing of it) stays bounded.
+const MAX_CONFLICT_PATHS: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum QueueState {
@@ -131,6 +136,12 @@ pub(crate) struct QueueEntry {
     /// refusal apart from an entry that was queued and then dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refusal_code: Option<String>,
+    /// The paths the replay conflicted in, on a `queue_conflict` or
+    /// `queue_conflict_queued` refusal. The reason line names them in prose for
+    /// a reader; this is the same list as data, so an agent preparing the
+    /// replacement pull request does not have to parse that sentence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) conflict_paths: Vec<String>,
     pub(crate) landed_sha: Option<String>,
     /// The queued pull request whose queue commit this one is built on, while
     /// both are queued on the same base; `None` when it is built on the base
@@ -473,6 +484,7 @@ pub(super) async fn enqueue(
         attempts: Vec::new(),
         reason: None,
         refusal_code: None,
+        conflict_paths: Vec::new(),
         landed_sha: None,
         after: None,
         landed_with: None,
@@ -517,14 +529,27 @@ pub(super) async fn enqueue(
             ReplayFailure::Git(_) => "queue_git_error",
         };
         let mut reason = failure.to_string();
+        // The base tip the replay was refused against. `build_on` records it
+        // only on a successful build, so without this a refused entry carries
+        // no commit at all, and the one step that fixes a conflict — cherry-pick
+        // onto that tip — cannot be named against a known base.
+        let tip = base_tip(&state, &repo.owner, &repo.name, &entry.base).ok();
+        if let Some(tip) = &tip
+            && is_sha(tip)
+        {
+            entry.base_sha = tip.clone();
+        }
+        if let ReplayFailure::Conflict(paths) = &failure {
+            entry.conflict_paths = paths.iter().take(MAX_CONFLICT_PATHS).cloned().collect();
+        }
         // A conflict with a pull request queued ahead of it, not with the
         // base: it may land after that one leaves, so nobody has to rebase
         // it yet. Checked by replaying onto the base tip without keeping it.
         if let (ReplayFailure::Conflict(_), Some((ahead, _))) = (&failure, &tail)
             && let Ok(resolved) = state.repo_manager.open_parts(&repo.owner, &repo.name)
-            && let Ok(tip) = base_tip(&state, &repo.owner, &repo.name, &entry.base)
+            && let Some(tip) = &tip
             && git_for(&state, &resolved.path)
-                .replay(&tip, &entry.pr_head_sha, None)
+                .replay(tip, &entry.pr_head_sha, None)
                 .is_ok()
         {
             code = "queue_conflict_queued";
