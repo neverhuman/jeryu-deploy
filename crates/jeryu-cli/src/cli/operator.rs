@@ -47,6 +47,11 @@ pub struct GhSetupArgs {
     #[arg(long, default_value = "http://localhost:8080")]
     pub host: String,
 
+    /// Extra base URLs (or host[:port]) that reach the same forge, such as
+    /// `127.0.0.1:8080` beside `localhost:8080`. Each gets the same entry.
+    #[arg(long = "alias")]
+    pub aliases: Vec<String>,
+
     /// OAuth token to record for the host. Overrides --token-file when both are provided.
     #[arg(long)]
     pub token: Option<String>,

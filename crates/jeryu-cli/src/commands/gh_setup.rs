@@ -5,6 +5,10 @@
 //! host entry is in place `gh auth status` and `gh api user` resolve against
 //! jeryu. The host key is the URL's authority (host[:port]); the rendered entry
 //! is byte-identical for identical inputs, so re-running is idempotent.
+//!
+//! The write is a merge: entries for other hosts (`github.com` above all) are
+//! kept byte for byte, only the canonical host and its explicit `--alias` hosts
+//! are replaced, and the file is replaced atomically with mode 0600.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,6 +25,7 @@ const DEFAULT_TOKEN_FILE_DISPLAY: &str = "~/.jeryu/secrets/merge-token";
 #[derive(Debug, Serialize)]
 struct GhSetupReport {
     host_key: String,
+    alias_host_keys: Vec<String>,
     base_url: String,
     config_path: String,
     token_source: String,
@@ -31,19 +36,28 @@ struct GhSetupReport {
 
 pub(crate) fn run(json: bool, args: GhSetupArgs, out: &mut dyn Write) -> ClientResult<()> {
     let host_key = host_key(&args.host)?;
+    let alias_keys = alias_host_keys(&host_key, &args.aliases)?;
     let token = resolve_token(&args)?;
-    let config = render_hosts_entry(&host_key, &token.value);
+    let mut entries = vec![(
+        host_key.clone(),
+        render_hosts_entry(&host_key, &token.value),
+    )];
+    for alias in &alias_keys {
+        entries.push((alias.clone(), render_hosts_entry(alias, &token.value)));
+    }
+    let config: String = entries.iter().map(|(_, entry)| entry.as_str()).collect();
     let path = hosts_path(args.path.as_deref())?;
 
     let written = if args.print {
         false
     } else {
-        write_hosts_file(&path, &config)?;
+        write_hosts_file(&path, &entries)?;
         true
     };
 
     let report = GhSetupReport {
         host_key: host_key.clone(),
+        alias_host_keys: alias_keys,
         base_url: args.host.clone(),
         config_path: path.display().to_string(),
         token_source: token.source.report_label(),
@@ -139,6 +153,7 @@ fn resolve_token_with_default(
                 "--token must not be empty; pass --token-file or a non-empty --token".into(),
             ));
         }
+        ensure_token_is_one_word(&token, "--token")?;
         return Ok(ResolvedToken {
             value: token,
             source: TokenSource::Argument,
@@ -150,6 +165,7 @@ fn resolve_token_with_default(
         None => (default_path, default_display.to_string(), true),
     };
     let value = read_token_file(&path, &display, defaulted)?;
+    ensure_token_is_one_word(&value, &format!("token file {display}"))?;
     Ok(ResolvedToken {
         value,
         source: TokenSource::File { display },
@@ -158,6 +174,17 @@ fn resolve_token_with_default(
 
 fn trimmed_token_value(raw: &str) -> String {
     raw.trim_end_matches(['\r', '\n']).to_string()
+}
+
+/// A token is written into YAML as a plain scalar, so whitespace or control
+/// characters would corrupt (or inject into) the file. The token is never echoed.
+fn ensure_token_is_one_word(token: &str, source: &str) -> ClientResult<()> {
+    if token.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(ClientError::Invalid(format!(
+            "gh token from {source} must be a single line without whitespace"
+        )));
+    }
+    Ok(())
 }
 
 fn read_token_file(path: &Path, display: &str, defaulted: bool) -> ClientResult<String> {
@@ -222,7 +249,25 @@ fn host_key(base_url: &str) -> ClientResult<String> {
             "cannot derive a gh host key from base url {base_url:?}"
         )));
     }
+    if authority.eq_ignore_ascii_case("github.com") {
+        return Err(ClientError::Invalid(
+            "refusing to write a jeryu entry for github.com: it would replace the GitHub.com login; pass the jeryu forge URL".into(),
+        ));
+    }
     Ok(authority.to_string())
+}
+
+/// Alias host keys, deterministic: duplicates and the canonical key dropped,
+/// the rest sorted.
+fn alias_host_keys(canonical: &str, aliases: &[String]) -> ClientResult<Vec<String>> {
+    let mut keys = std::collections::BTreeSet::new();
+    for alias in aliases {
+        let key = host_key(alias)?;
+        if key != canonical {
+            keys.insert(key);
+        }
+    }
+    Ok(keys.into_iter().collect())
 }
 
 /// Render the canonical `hosts.yml` entry. Stable field order => idempotent.
@@ -255,13 +300,84 @@ fn hosts_path(override_path: Option<&str>) -> ClientResult<PathBuf> {
     Ok(dir.join("hosts.yml"))
 }
 
-fn write_hosts_file(path: &PathBuf, config: &str) -> ClientResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| ClientError::Invalid(format!("create {}: {e}", parent.display())))?;
+/// Replace the entries for `entries`' host keys inside `existing`, keeping every
+/// other line untouched. A host already present is replaced in place (a repeated
+/// key collapses to one); new hosts are appended in order. A file that is not a
+/// plain top-level `host:` mapping is refused rather than rewritten.
+fn merge_hosts(existing: &str, entries: &[(String, String)]) -> ClientResult<String> {
+    let mut out = String::new();
+    let mut pending: Vec<&(String, String)> = entries.iter().collect();
+    let mut skipping = false;
+    for line in existing.lines() {
+        let top_level = !line.is_empty() && !line.starts_with([' ', '\t', '#']);
+        if top_level {
+            let Some(key) = line.trim_end().strip_suffix(':') else {
+                return Err(ClientError::Invalid(
+                    "existing gh hosts file is not a host mapping; fix or move it, jeryu will not overwrite it".into(),
+                ));
+            };
+            let key = key.trim_matches(['"', '\'']);
+            let wanted = entries.iter().any(|(k, _)| k == key);
+            skipping = wanted;
+            if wanted {
+                if let Some(at) = pending.iter().position(|(k, _)| k == key) {
+                    out.push_str(&pending.remove(at).1);
+                }
+                continue;
+            }
+        } else if skipping {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
     }
-    std::fs::write(path, config)
-        .map_err(|e| ClientError::Invalid(format!("write {}: {e}", path.display())))
+    for (_, entry) in pending {
+        out.push_str(entry);
+    }
+    Ok(out)
+}
+
+fn write_hosts_file(path: &Path, entries: &[(String, String)]) -> ClientResult<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            return Err(ClientError::Invalid(format!(
+                "read {}: {err}",
+                path.display()
+            )));
+        }
+    };
+    let merged = merge_hosts(&existing, entries)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|e| ClientError::Invalid(format!("create {}: {e}", parent.display())))?;
+    let temp = parent.join(format!(".hosts.yml.jeryu-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let result =
+        write_private(&temp, merged.as_bytes()).and_then(|()| std::fs::rename(&temp, path));
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(ClientError::Invalid(format!(
+            "write {}: {e}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 #[cfg(test)]
@@ -296,6 +412,7 @@ mod tests {
     fn token_resolution_prefers_explicit_token_over_missing_file() {
         let args = GhSetupArgs {
             host: "http://localhost:8080".to_string(),
+            aliases: Vec::new(),
             token: Some("explicit-token".to_string()),
             token_file: Some("/definitely/missing/token".to_string()),
             print: false,
@@ -320,6 +437,7 @@ mod tests {
         std::fs::write(&token_path, "file-token\n").expect("write token");
         let args = GhSetupArgs {
             host: "http://localhost:8080".to_string(),
+            aliases: Vec::new(),
             token: None,
             token_file: None,
             print: false,
@@ -342,6 +460,7 @@ mod tests {
     fn missing_default_token_file_guides_without_token_placeholder() {
         let args = GhSetupArgs {
             host: "http://localhost:8080".to_string(),
+            aliases: Vec::new(),
             token: None,
             token_file: None,
             print: false,
@@ -360,5 +479,64 @@ mod tests {
         assert!(message.contains("--token-file"));
         assert!(message.contains("GitHub.com auth and local Jeryu host auth are separate"));
         assert!(!message.contains("JERYU-TOKEN"));
+    }
+
+    fn entry(host: &str, token: &str) -> (String, String) {
+        (host.to_string(), render_hosts_entry(host, token))
+    }
+
+    const GITHUB_AND_OTHER: &str = "github.com:\n    oauth_token: gho_real\n    user: octo\ngit.example.com:\n    oauth_token: other\n";
+
+    #[test]
+    fn merge_keeps_unrelated_hosts_byte_for_byte_and_is_idempotent() {
+        let entries = [entry("localhost:8080", "T")];
+        let first = merge_hosts(GITHUB_AND_OTHER, &entries).unwrap();
+        assert!(first.starts_with(GITHUB_AND_OTHER));
+        assert!(first.contains("localhost:8080:\n    oauth_token: T\n"));
+        assert_eq!(merge_hosts(&first, &entries).unwrap(), first);
+    }
+
+    #[test]
+    fn merge_replaces_a_stale_entry_in_place() {
+        let stale = "github.com:\n    oauth_token: gho_real\nlocalhost:8080:\n    oauth_token: old\n    user: x\ngit.example.com:\n    oauth_token: other\n";
+        let merged = merge_hosts(stale, &[entry("localhost:8080", "new")]).unwrap();
+        assert!(!merged.contains("old"));
+        assert!(merged.contains("oauth_token: gho_real"));
+        assert!(merged.contains("git.example.com:\n    oauth_token: other\n"));
+        assert_eq!(merged.matches("localhost:8080:").count(), 1);
+    }
+
+    #[test]
+    fn merge_refuses_a_file_that_is_not_a_host_mapping() {
+        assert!(merge_hosts("just words\n", &[entry("h:1", "T")]).is_err());
+    }
+
+    #[test]
+    fn aliases_are_sorted_deduped_and_exclude_the_canonical_key() {
+        let keys = alias_host_keys(
+            "localhost:8080",
+            &[
+                "http://127.0.0.1:8080".into(),
+                "localhost:8080".into(),
+                "https://b.example".into(),
+                "127.0.0.1:8080".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(keys, vec!["127.0.0.1:8080", "b.example"]);
+    }
+
+    #[test]
+    fn github_com_is_never_a_jeryu_host() {
+        assert!(host_key("https://GitHub.com").is_err());
+        assert!(host_key("github.com").is_err());
+    }
+
+    #[test]
+    fn tokens_with_whitespace_are_refused_without_echoing_them() {
+        let err = ensure_token_is_one_word("a b", "--token")
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("a b"));
     }
 }

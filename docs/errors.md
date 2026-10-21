@@ -395,6 +395,34 @@ separate; do not run `gh auth login` for Jeryu hosts. The vault bootstrap file
 at `~/.jeryu/vault/bootstrap.json` contains vault bootstrap material and is not
 the `gh` host repair path.
 
+### Reproducible `gh api` setup
+
+`jeryu gh-setup` merges into `hosts.yml`: the `github.com` login and every other
+host entry stay byte for byte, the canonical host and each `--alias` are
+replaced in place (aliases sorted, duplicates dropped), and the file is swapped
+in atomically with mode 0600. A `github.com` host is refused. Isolate a run with
+`GH_CONFIG_DIR=<dir>` and `--path <dir>/hosts.yml`:
+
+```sh
+jeryu gh-setup --host http://localhost:8080 --alias 127.0.0.1:8080 \
+  --token-file <your-token-file> --path "$GH_CONFIG_DIR/hosts.yml"
+gh api http://localhost:8080/api/v3/user
+gh api http://localhost:8080/api/v3/repos/<owner>/<repo>
+gh api -X POST http://localhost:8080/api/v3/repos/<owner>/<repo>/pulls \
+  -f title=... -f head=<branch> -f base=main -F draft=true
+gh api http://localhost:8080/api/v3/repos/<owner>/<repo>/pulls/<n>
+```
+
+gh 2.45 rejects `--hostname host:port`, so a plain-HTTP forge is addressed by
+the full URL; gh still takes the token from the matching host entry. A missing,
+empty or unreadable token file fails before anything is written; an expired
+(401) or under-scoped (403) token makes gh fail once with its own message, and
+none of these paths print the token. Do not retry with `gh auth login`. This
+covers `gh api` only, not full `gh pr` compatibility. The test
+`crates/jeryu-cli/tests/gh_api_smoke.rs` runs this against a real forge with
+the `gh` on PATH, records its version in `target/tmp/gh-api-smoke-version.txt`,
+and skips without `gh` unless `JERYU_REQUIRE_GH` is set.
+
 Native agent credentials are separate from the GitHub-compatible host entry.
 Use `jeryu agent auth doctor <tool>` and `jeryu agent auth import --from-host
 <tool>` for portable Codex, Claude, or Jekko CLI credentials.
