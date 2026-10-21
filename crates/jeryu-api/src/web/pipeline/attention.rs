@@ -79,8 +79,9 @@ pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 /// optional `pulls`, `v1.4` the optional `assignee`, `v1.5` the page's
 /// `families` summary (and a `family` read off `repo` when a collector named
 /// none) and `v1.6` the optional `digest`: every earlier field is unchanged,
-/// so a client written against `v1` reads a `v1.6` answer as it always did.
-pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.6";
+/// `v1.7` adds the optional todo `requested_by`,
+/// so a client written against `v1` reads a `v1.7` answer as it always did.
+pub(crate) const ATTENTION_SCHEMA: &str = "jeryu.attention/v1.7";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 /// A claim whose lease died this long ago is stuck rather than between renewals.
 pub(super) const STUCK_CLAIM_MINUTES: i64 = 10;
@@ -287,6 +288,9 @@ pub(crate) struct Item {
     /// absent on every other item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// The todo creator, resolved to the account store login when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_by: Option<String>,
     /// Set on `scorecard_digest` only: the week's headline numbers as the
     /// weekly job recorded them, so a surface shows them without parsing
     /// `reason`. The key is absent on every other kind.
@@ -351,6 +355,7 @@ impl Draft<'_> {
             budget: None,
             pulls: None,
             assignee: None,
+            requested_by: None,
             digest: None,
             href: self.href,
             action: match self.command {
@@ -1291,6 +1296,13 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
                 .clone(),
             (None, None) => None,
         };
+        if let Some(login) = item.requested_by.as_deref() {
+            item.requested_by = state
+                .core
+                .get_account(login)
+                .ok()
+                .map(|account| account.login);
+        }
         item.family_label = family.as_deref().map(super::super::family::label);
         item.family = family;
     }

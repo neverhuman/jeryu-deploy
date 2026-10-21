@@ -132,6 +132,7 @@ pub(crate) fn todo_items(
             .build();
             item.family = Some(family.to_string());
             item.todo_id = Some(todo.id.clone());
+            item.requested_by = (!todo.requested_by.is_empty()).then(|| todo.requested_by.clone());
             item.assignee = todo
                 .assignee
                 .clone()
@@ -304,6 +305,7 @@ pub(crate) fn todo_items(
             };
             item.family = Some(family.to_string());
             item.todo_id = Some(todo.id.clone());
+            item.requested_by = (!todo.requested_by.is_empty()).then(|| todo.requested_by.clone());
             item.assignee = todo.assignee.clone();
             item.shift = Some(todo.shift.clone()).filter(|shift| !shift.is_empty());
             items.push(item);

@@ -149,6 +149,7 @@ async fn browser_repo_routes_serve_the_spa_shell() {
     for path in [
         "/repos",
         "/repos/family/jeryu-split",
+        "/blocked",
         "/repos/alice/jeryu",
         "/repos/alice/jeryu/pulls/99",
         "/repos/alice/jeryu/settings/danger-zone",

@@ -413,7 +413,7 @@ fn is_browser_navigation(headers: &HeaderMap) -> bool {
 }
 
 fn is_browser_repo_route(path: &str) -> bool {
-    if path == "/scorecard" {
+    if matches!(path, "/scorecard" | "/blocked") {
         return true;
     }
     let segments = path

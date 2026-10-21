@@ -436,7 +436,7 @@ for 10 seconds), never from old events, so an item disappears when its cause
 is fixed.
 
 ```json
-{"schema_version": "jeryu.attention/v1.6", "generated_at": "...",
+{"schema_version": "jeryu.attention/v1.7", "generated_at": "...",
  "items": [...], "counts": {"critical": 0, "action": 3, "watch": 1},
  "total": 4,
  "families": [{"family": "acme", "family_label": "acme",
@@ -525,14 +525,29 @@ that wants linear history, deciding a title.
 | `queue_failed` | the same: the entry is retried by queueing it again once the reason is fixed |
 | `queue_refused` (a code with no step of its own) | the same |
 
-The schema version says `v1.4` because `action.api` (`v1.1`), `budget`
-(`v1.2`), `pulls` (`v1.3`) and `assignee` (`v1.4`) are additive: every field
-of `v1` is unchanged, so a client written against `v1` reads a `v1.4` answer
+The schema version says `v1.7` because `action.api` (`v1.1`), `budget`
+(`v1.2`), `pulls` (`v1.3`), `assignee` (`v1.4`), the `families` summary
+(`v1.5`), `digest` (`v1.6`) and `requested_by` (`v1.7`) are additive: every field
+of `v1` is unchanged, so a client written against `v1` reads a `v1.7` answer
 as it always did. `assignee` is set on a todo item when a person has taken the
 todo on (see "Taking a todo on" below).
 `pulls` is set on `pr_branch_campaign` only, where one row stands for several
 pull requests, and each entry is `{"repo": "owner/name", "number": 7, "href":
 "..."}`.
+
+### Attention v1.7: personal relevance
+
+Todo attention items add optional `requested_by`, the todo front-matter creator
+resolved through the account store to its canonical login. Unknown accounts or
+empty creators omit the field. Existing fields and unfiltered API behavior stay
+unchanged, so earlier clients continue to work.
+
+Needs you keeps items whose `requested_by` equals the signed-in login, plus
+`todo_blocked`, `todo_waiting_on_blocker` and `todo_handoff` items whose
+`assignee` equals that login. Missing fields do not imply personal relevance.
+Blocked shows the full attention feed under the existing family scope, including
+PR and shift blocks and waiting-on-blocker rows.
+
 
 The machine in `run_in` is one of three roles, each named by an environment
 variable of the server (see [Operations](#operations)): the release host

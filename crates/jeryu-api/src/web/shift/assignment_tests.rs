@@ -228,6 +228,7 @@ async fn any_person_claims_hands_over_and_finishes_a_blocked_todo() {
         .find(|item| item["todo_id"] == id.as_str())
         .expect("the blocked todo is in the inbox");
     assert_eq!(row["assignee"], "ada");
+    assert_eq!(row["requested_by"], "alice");
 
     // Another user may not take it or finish it while ada has it.
     for body in [json!({"action": "claim"}), json!({"action": "done"})] {
