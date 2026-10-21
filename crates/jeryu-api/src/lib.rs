@@ -14,6 +14,8 @@ pub mod github;
 pub mod github_mirror;
 #[cfg(feature = "web")]
 pub mod github_pull_import;
+#[cfg(feature = "web")]
+pub(crate) mod green_ref;
 pub mod links;
 #[cfg(feature = "web")]
 mod read_model;

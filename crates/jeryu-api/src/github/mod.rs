@@ -21,7 +21,7 @@
 mod actions;
 mod branch_protection;
 pub(crate) mod check_runs;
-mod commit_status;
+pub(crate) mod commit_status;
 mod commits;
 mod deployments;
 mod graphql;

@@ -189,7 +189,8 @@ web_dist_sha256 = "<sha256 of that commit's dist manifest>"
 To ship a UI change, merge it to jeryu-web main. **The bump then proposes itself:**
 `auto-pin.sh` (timer `jeryu-auto-pin.timer`, every 5 minutes; install once with
 `install-auto-pin.sh`, disable with `systemctl --user disable --now jeryu-auto-pin.timer`)
-waits for jeryu-web main to be green, builds the dist with this script from jeryu-deploy main,
+reads jeryu-web's `refs/green/main` -- the green ref, the newest commit of jeryu-web main the gate
+proved green -- builds the dist with this script from jeryu-deploy main,
 changes exactly the two lock fields on `auto/pin-web-<sha12>` and opens
 `release: pin jeryu-web <sha7>` as the configured bump identity (`JERYU_PIN_GIT_NAME`). (A head that changes no shipped file, such as a
 test-only commit, builds the bundle already pinned: then only `commit` moves and the pull request
@@ -328,11 +329,29 @@ is still the last line of `stage-release.sh`'s stdout.
 the tag is missing on the build host, the script builds it there first. Change the Dockerfile only
 together with a new `-rN` tag.
 
+## The green ref
+
+The gate posts `<repo>/required` on a pull-request head and on a merge-queue commit, and
+`<repo>/main-health` on a default branch's own head. A landing that rebased leaves main's head
+with no status at all, so "the newest proven commit of main" could not be found by reading a
+status, and the release automation waited for one that was never coming.
+
+The forge answers that question with a ref instead. Each time the gate posts a green
+`<repo>/main-health` for a commit the default branch carries, the forge moves
+`refs/green/<default branch>` onto it under compare-and-swap; a verdict about a commit the branch
+has moved past never rewinds it. The decision is `crates/jeryu-api/src/green_ref.rs`, on the
+forge: nothing in the tree the gate tests takes part in it. `GET /api/v1/releases` names the ref
+and the commit it holds on every repository's row, so a lagging main is visible without reading
+statuses, and a red main is a `main_red` item in the attention inbox.
+
+Both timers below resolve that ref with one `git ls-remote` and read no commit status to decide
+anything. An absent ref means the gate has proved nothing yet, which is a wait, not a failure.
+
 ## Auto-staging
 
 `auto-stage.sh` runs every 5 minutes on the release host from
-`jeryu-auto-stage.timer`. It stages the forge's main once its combined status is `success`, using
-`stage-release.sh` from that same commit. It never deploys, so a "go" is only
+`jeryu-auto-stage.timer`. It stages the commit jeryu-deploy's `refs/green/main` names -- the green
+ref -- using `stage-release.sh` from that same commit. It never deploys, so a "go" is only
 `deploy-release.sh <rel>`. The newest staged id is in `~/.local/state/jeryu-auto-stage/latest`, and
 every staged commit is in `staged.tsv`. A commit that fails to stage twice is left for a human.
 Install or update the timer with `scripts/release/install-auto-stage.sh`, and follow it with
@@ -345,7 +364,7 @@ contract is in [`docs/pipeline-events.md`](../../docs/pipeline-events.md).
 
 Every tick, idle ones included, ends with one runner heartbeat (`<host>/auto-stage`, label
 `automation`, no `pr`), so `/runners` shows the timer alive and whether it last `staged` a commit,
-is `waiting` for main's gate, or `failed`. Best-effort like the events; `JERYU_AUTO_STAGE_BEAT=0`
+is `waiting` for the gate to prove a commit of main, or `failed`. Best-effort like the events; `JERYU_AUTO_STAGE_BEAT=0`
 turns it off.
 
 ## Deploying from the forge (release actions)

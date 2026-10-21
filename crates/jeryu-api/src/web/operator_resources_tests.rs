@@ -147,6 +147,13 @@ async fn operator_resources_follow_read_access_page_and_gate_audit() {
     let (_, releases) = get(&router, "/api/v1/releases?repo=admin/open", &admin).await;
     assert_eq!(releases["releases"][0]["branch"], "main", "{releases}");
     assert!(releases["releases"][0]["tag"].is_null());
+    // The green ref is named on every row, so a row says where the release
+    // automation reads from even before a gate has proved anything green.
+    assert_eq!(
+        releases["releases"][0]["green_ref"], "refs/green/main",
+        "{releases}"
+    );
+    assert!(releases["releases"][0]["green_sha"].is_null(), "{releases}");
 
     let (_, settings) = get(&router, "/api/v1/settings?repo=admin/vault", &reader).await;
     assert_eq!(
@@ -175,4 +182,87 @@ async fn operator_resources_follow_read_access_page_and_gate_audit() {
     assert_eq!(audit["entries"][0]["subject"], "admin/hidden");
     let (_, other) = get(&router, "/api/v1/audit?repo=admin/open", &admin).await;
     assert_eq!(other["total"], 0, "{other}");
+}
+
+/// A repository whose gate has proved a commit of main green shows that commit
+/// on its `/releases` row, read from `refs/green/main` in the bare repository.
+#[tokio::test]
+async fn a_releases_row_names_the_commit_the_green_ref_holds() {
+    use axum::extract::{Extension, Query, State};
+    use jeryu_gitd::{GitdConfig, RepoId, RepoManager};
+
+    let storage = tempfile::tempdir().unwrap();
+    let manager = RepoManager::new(GitdConfig::new(storage.path().to_path_buf()));
+    let bare = manager
+        .create_bare(&RepoId::new("acme", "widget").unwrap())
+        .unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let out = crate::test_git::git_command()
+            .args(["-c", "user.name=Ada", "-c", "user.email=ada@acme.example"])
+            .args(["-c", "init.defaultBranch=main"])
+            .args(args)
+            .current_dir(work.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    run(&["init", "-q"]);
+    std::fs::write(work.path().join("README.md"), "# seed\n").unwrap();
+    run(&["add", "README.md"]);
+    run(&["commit", "-q", "-m", "seed"]);
+    let proved = run(&["rev-parse", "HEAD"]);
+    std::fs::write(work.path().join("README.md"), "# newer\n").unwrap();
+    run(&["commit", "-q", "-a", "-m", "newer"]);
+    run(&["push", "-q", &bare.path.to_string_lossy(), "main"]);
+    // The gate has reached the first commit, not the tip: the row must show
+    // what is proved, not what main is at.
+    run(&[
+        "push",
+        "-q",
+        &bare.path.to_string_lossy(),
+        &format!("{proved}:refs/green/main"),
+    ]);
+
+    let core = ForgeCore::new();
+    core.create_account("admin", "admin-password", UserRole::Admin)
+        .unwrap();
+    core.create_repository(
+        "acme",
+        CreateRepositoryRequest {
+            name: "widget".to_string(),
+            private: false,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    let account = core.get_account("admin").unwrap();
+    let state = std::sync::Arc::new(WebState::with_repo_manager(
+        core,
+        std::sync::Arc::new(manager),
+        std::path::PathBuf::from("/tmp/jeryu-no-spa"),
+        std::env::temp_dir(),
+        crate::web::SplitCatalog::builtin(),
+    ));
+
+    let page = super::operator_resources::releases(
+        State(state),
+        Extension(account),
+        Query(super::operator_resources::ResourceQuery {
+            repo: Some("acme/widget".to_string()),
+            paging: Default::default(),
+        }),
+    )
+    .await
+    .expect("releases page");
+    let row = &page.0.releases[0];
+    assert_eq!(row.branch, "main");
+    assert_eq!(row.green_ref, "refs/green/main");
+    assert_eq!(row.green_sha.as_deref(), Some(proved.as_str()));
 }

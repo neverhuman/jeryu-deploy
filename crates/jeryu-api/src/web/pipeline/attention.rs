@@ -817,7 +817,7 @@ pub(crate) fn main_health_at(
     name: &str,
     sha: &str,
 ) -> Option<MainHealthFailure> {
-    let context = format!("{name}/main-health");
+    let context = crate::github::commit_status::main_health_context(name);
     let statuses = state.core.combined_status(owner, name, sha).ok()?.statuses;
     let mut context_statuses = statuses
         .iter()

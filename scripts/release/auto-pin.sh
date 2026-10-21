@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# auto-pin.sh — when jeryu-web main is green and newer than the pin in jeryu-deploy main's
+# auto-pin.sh — when jeryu-web's green ref is newer than the pin in jeryu-deploy main's
 # jeryu-split.lock.toml, open the pull request that bumps the pin. Run by a timer on the release
 # host (node-0). A bump is mechanical (build the dist, hash it, change two lock fields), and until
 # now it happened only when somebody remembered, so merged UI work sat unreleasable.
@@ -7,11 +7,15 @@
 # It only proposes. Review and landing belong to pr-redteam and the merge queue, staging to
 # auto-stage.sh, the deploy to a person. It never merges, approves, stages or deploys.
 #
-#   1. Resolve jeryu-deploy main and jeryu-web main. Nothing to do when the pin is the web head.
-#   2. Nothing to do when the head does not descend from the pin (a human rewrote history), when
-#      any bump pull request for jeryu-web is open (its landing moves the pin; the next tick
-#      proposes whatever is newer), when this head already has its branch and pull request, or
-#      when the head's combined status is not `success`.
+#   1. Resolve jeryu-deploy main and jeryu-web's `refs/green/main`: the newest commit of jeryu-web
+#      main the gate proved green, which the forge moves there itself (the green ref; see
+#      crates/jeryu-api/src/green_ref.rs). That commit is what this pins, and the reason no status
+#      is read here: a status is posted on a commit, and a landing that rebased leaves main's own
+#      head without one, which is what used to leave a green jeryu-web unpinned. Nothing to do
+#      when the pin already is that commit.
+#   2. Nothing to do when the green commit does not descend from the pin (a human rewrote history),
+#      when any bump pull request for jeryu-web is open (its landing moves the pin; the next tick
+#      proposes whatever is newer), or when this head already has its branch and pull request.
 #      An open bump that pins an OLDER commit on the way to this head, and is neither queued nor
 #      approved (unless its exact-head required checks finished with failure), and has no
 #      changes-requested review inside JERYU_AUTO_PIN_SUPERSEDE_AFTER,
@@ -120,13 +124,14 @@ did() {
     {repo: $repo, sha: $sha, recipe: "auto-pin", conclusion: $conclusion, seconds: 0, finishedAt: $at}
     + (if $pr != "" then {pr: ($pr | tonumber)} else {} end)'
 }
-# waiting_for PR: this head waits (behind bump #PR, or for its own gate when PR is empty). The
-# time the wait began is kept across ticks, so the row says since when and not "just now".
+# waiting_for PR: this head waits behind bump #PR. The time the wait began is kept across ticks,
+# so the row says since when and not "just now". There is no wait for a gate any more: the head
+# comes from the green ref, so it is only ever reached once its gate run has passed.
 waiting_for() {
-  local key="$head ${1:-gate}" since
+  local key="$head $1" since
   since="$(awk -F'\t' -v key="$key" '$1 == key { print $2 }' "$state/waiting" 2>/dev/null)" || since=""
   [ -n "$since" ] || { since="$(date -u +%FT%TZ)"; printf '%s\t%s\n' "$key" "$since" >"$state/waiting"; }
-  beat_last="$(did waiting "${1:-}" "$head" "$since")" || beat_last=""
+  beat_last="$(did waiting "$1" "$head" "$since")" || beat_last=""
 }
 # beat: one runner heartbeat (POST /api/v1/runners/heartbeat, docs/pipeline-events.md), sent by
 # the EXIT trap so idle ticks, early exits and finished work all report. `last` is a wait noted
@@ -311,9 +316,17 @@ close_landed_bumps() {
 }
 
 main="$(git ls-remote "$remote" refs/heads/main | cut -f1)"
-head="$(git ls-remote "$web_remote" refs/heads/main | cut -f1)"
+# The gate's verdict about jeryu-web main, as a ref: whatever this names was proved green by a
+# full gate run of that exact commit. An empty ref is "nothing proved yet", not "not green".
+head="$(git ls-remote "$web_remote" refs/green/main | cut -f1)"
 [[ "$main" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve jeryu-deploy main ($main)"; exit 1; }
-[[ "$head" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve jeryu-web main ($head)"; exit 1; }
+# No green ref at all: the gate has proved no commit of that main yet, so there is nothing to
+# pin. The heartbeat still goes out from the EXIT trap, naming the newest bump this timer opened;
+# a wait is reported per head, and here there is no head to name.
+if [ -z "$head" ]; then
+  say "$web_path has no refs/green/main yet; waiting for the gate"; exit 0
+fi
+[[ "$head" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve $web_path refs/green/main ($head)"; exit 1; }
 
 cache="$state/jeryu-deploy.git"
 [ -d "$cache" ] || git clone -q --bare "$remote" "$cache"
@@ -396,9 +409,9 @@ supersede_stale() {
       "$n" "a diverged pin is never closed automatically"
     return 1
   fi
-  # Close nothing for a head that is not green: the old bump would be gone with no new one coming.
-  [ "$(api GET "/api/v3/repos/$web_path/commits/$head/status" 2>/dev/null | jq -r '.state // "unknown"')" = success ] \
-    || { say "jeryu-web ${head:0:12} is not green; bump #$n stays"; return 1; }
+  # Nothing here asks whether the head is green: it came from refs/green/main, which only a green
+  # gate run of that commit moves, so the replacement this prepares always has a commit to pin and
+  # the old bump is never closed with no new one coming.
   queue_rows="$(api GET "/api/v1/repos/$repo_path/merge-queue?per_page=100" 2>/dev/null)" \
     || { say "bump #$n: could not read the merge queue; not superseding"; return 1; }
   queued="$(jq -r --argjson n "$n" '
@@ -615,10 +628,6 @@ if [ -n "$other" ]; then
 fi
 
 pushed="$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
-if [ -z "$pushed" ]; then
-  gate="$(api GET "/api/v3/repos/$web_path/commits/$head/status" | jq -r '.state // "unknown"')" || gate=unknown
-  if [ "$gate" != success ]; then waiting_for ""; say "jeryu-web ${head:0:12} gate is $gate; waiting"; exit 0; fi
-fi
 
 attempt=$((failures + 1))
 log="$state/logs/${head:0:12}-attempt$attempt.log"; : >"$log"
@@ -649,7 +658,7 @@ review_commit_pointers() {
 }
 shipped_detail="$(review_commit_pointers)" || give_up "could not prepare shipped commit review pointers"
 if [ -z "$pushed" ]; then
-  say "building jeryu-web ${head:0:12} (gate success; pin is ${pin:0:12})"
+  say "building jeryu-web ${head:0:12} (green ref; pin is ${pin:0:12})"
   git -C "$cache" archive "$main" scripts/release "$lock_file" | tar -x -C "$work"
   # Pipes, not 2> >(tee …): a process substitution can still be writing when give_up reads the log.
   pair="$( { JERYU_WEB_REMOTE="$web_remote" "$work/scripts/release/build-web-dist.sh" --commit "$head" "$state/web-dist" \
@@ -689,7 +698,7 @@ Ships these jeryu-web commits (${pin:0:7}..${head:0:7}):
 $shipped
 
 web_dist_sha256 $hash, from scripts/release/build-web-dist.sh --commit $head.$same_bundle
-Opened by auto-pin.sh once jeryu-web main was green; only $lock_file changes." 2>>"$log" \
+Opened by auto-pin.sh once jeryu-web's refs/green/main named this commit; only $lock_file changes." 2>>"$log" \
     || give_up "could not commit the bump"
   git -C "$co" push -q "$remote" "HEAD:refs/heads/$branch" 2>>"$log" || give_up "could not push $branch"
 else
@@ -704,18 +713,18 @@ fi
 contexts="$(api GET "/api/v3/repos/$web_path/commits/$head/status" 2>/dev/null \
   | jq -r -L "$here" 'include "latest-statuses";
       "combined: \(.state); latest contexts: " + (latest_statuses | map("\(.context): \(.state)") | join(", "))' 2>/dev/null)" || contexts="unavailable: native status could not be read or summarized"
-body="Pins jeryu-web main \`${head:0:7}\` so the next staged release ships it. Only \`$lock_file\` changes (\`commit\`, \`web_dist_sha256\`).
+body="Pins jeryu-web \`${head:0:7}\`, the commit jeryu-web's \`refs/green/main\` names, so the next staged release ships it. Only \`$lock_file\` changes (\`commit\`, \`web_dist_sha256\`).
 
 Ships (${pin:0:7}..${head:0:7}):
 $shipped_detail
 
 **Evidence for review.**
 - Verify \`$head\` against jeryu-web main and its native checks/review. The required proof is \`ops/ci/web-pin-proof.sh\` (including \`ops/ci/web-pin-on-main.sh\`), called by \`ops/ci/web.sh\`; check the exact deploy required result and any changes to those scripts or their environment. This template is a pointer, not a gate receipt.
-- jeryu-web status snapshot at that exact commit: ${contexts:-not reported}.
+- jeryu-web status snapshot at that exact commit: ${contexts:-not reported}. The commit was taken from jeryu-web's \`refs/green/main\`, which the forge moves only on a green gate run of that commit.
 - \`web_dist_sha256\` is not trusted from this diff: staging rebuilds the pinned commit with \`scripts/release/build-web-dist.sh\` and refuses a mismatch; \`crates/jeryu-api/build.rs\` validates the supplied bundle. The required web lane tests the hash guard; it does not perform this real bundle rebuild.
 
 The links above cover at most 30 shipped commits. Full messages and changed files remain on the forge; commit prose is not copied into this review body. The required proof checks forward ancestry from the Deploy base pin and the exact web commit's latest required status. Rollback uses the release rollback procedure.
-Opened by \`scripts/release/auto-pin.sh\` because jeryu-web main is green and ahead of the pin. It never merges: review and the merge queue land this, auto-stage then stages main, and a person deploys."
+Opened by \`scripts/release/auto-pin.sh\` because jeryu-web's green ref is ahead of the pin. It never merges: review and the merge queue land this, auto-stage then stages main, and a person deploys."
 # Building and pushing may take time: check every open bump again before creating.
 list_pulls fresh || give_up "could not re-read open pull requests"
 unexpected="$(jq -r --arg old "$superseded_pr" '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")) and (.number | tostring) != $old)] | length' <<<"$pulls")"

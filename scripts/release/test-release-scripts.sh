@@ -387,6 +387,25 @@ for unset_setting in JERYU_BUILD_HOST JERYU_FORGE_HOST JERYU_STATUS_TOKEN_FILE; 
 done
 ok "auto-stage refuses each unset site setting by name"
 
+# Nothing of main is proved green yet: there is no commit to stage, and no status is read to guess
+# one. staged.tsv is created by every tick, so "nothing staged" is an empty file.
+auto_stage >"$A/no-green.log" 2>&1 || fail "auto-stage failed while there was no green ref"
+grep -q "has no refs/green/main yet" "$A/no-green.log" || fail "auto-stage did not say it awaits the green ref"
+[[ ! -s "$A/state/staged.tsv" && ! -s "$A/events.jsonl" ]] || fail "auto-stage staged without a green ref"
+rm -rf "$A/state"
+ok "auto-stage stages nothing until the green ref names a commit"
+
+# The gate proves the first commit; main then moves on. Everything below asks for $sha, the commit
+# the green ref names, so each assertion is also proof that staging follows the ref and not main's
+# head -- which is the head a rebased landing leaves with no status at all.
+git -C "$A/remote.git" update-ref refs/green/main "$sha"
+echo later >"$A/src/later.txt"
+git -C "$A/src" -c user.name=t -c user.email=t@t add later.txt
+git -C "$A/src" -c user.name=t -c user.email=t@t commit -q -m later
+git -C "$A/src" push -q "$A/remote.git" main:main
+newer_main="$(git -C "$A/remote.git" rev-parse refs/heads/main)"
+[[ "$newer_main" != "$sha" ]] || fail "the fixture did not move main past the green commit"
+
 touch "$A/fail"
 if auto_stage >"$A/run1.log" 2>&1; then fail "auto-stage reported success for a failed staging"; fi
 [[ "$(jq -r '.kind' "$A/events.jsonl")" == release.stage_failed ]] || fail "no release.stage_failed event"
@@ -487,6 +506,9 @@ for n in 1 2 3; do
 done
 git clone -q --bare "$P/web" "$P/web.git"
 w1="$(git -C "$P/web" rev-parse HEAD~2)"; h1="$(git -C "$P/web" rev-parse HEAD)"
+# The gate has proved jeryu-web main's head, so the forge has moved its green ref there. auto-pin
+# reads that ref and never jeryu-web's own head, so a commit the gate has not reached is not pinned.
+git -C "$P/web.git" update-ref refs/green/main "$h1"
 dist_a="$(printf a%.0s {1..64})"; dist_b="$(printf b%.0s {1..64})"
 cat >"$P/deploy/jeryu-split.lock.toml" <<EOF
 web_artifact = "pinned"
@@ -621,15 +643,18 @@ grep -q "JERYU_PIN_GIT_NAME and JERYU_PIN_GIT_EMAIL are unset" "$P/run.log" \
 [[ -z "$(branches)" && ! -s "$P/prs.jsonl" ]] || fail "a refused tick acted on the repository"
 ok "auto-pin refuses an unset credential path or bump identity by name"
 
-auto_pin >"$P/run.log" 2>&1 || fail "a not-green tick failed"
-grep -q "gate is pending; waiting" "$P/run.log" || fail "auto-pin did not wait for the web gate"
-[[ -z "$(branches)" && ! -s "$P/prs.jsonl" && ! -s "$P/builds" && ! -s "$P/events.jsonl" ]] || fail "auto-pin acted on a web head that is not green"
+git -C "$P/web.git" update-ref -d refs/green/main # the gate has proved nothing of jeryu-web main
+auto_pin >"$P/run.log" 2>&1 || fail "a tick without a green ref failed"
+grep -q "has no refs/green/main yet" "$P/run.log" || fail "auto-pin did not wait for the web green ref"
+[[ -z "$(branches)" && ! -s "$P/prs.jsonl" && ! -s "$P/builds" && ! -s "$P/events.jsonl" ]] || fail "auto-pin acted with no proved web commit"
 [[ "$(posted "$P/beats.jsonl")" == 1 && "$(grep -c runners/heartbeat "$P/curl-args")" == 1 ]] || fail "a tick must post exactly one heartbeat"
-beat_is '.runnerId == $id and .host == $host and .slot == 0 and .labels == ["automation"] and .intervalSeconds == 300
-  and (has("current") | not) and .last.conclusion == "waiting" and .last.sha == $sha and (.last | has("pr") | not)' \
-  --arg id "$me/auto-pin" --arg host "$me" --arg sha "$h1" || fail "the auto-pin heartbeat is not the contract's"
-ok "auto-pin waits while jeryu-web main is not green, and beats once to say so"
+beat_is '.runnerId == $id and .host == $host and .slot == 0 and .labels == ["automation"]
+  and .intervalSeconds == 300 and (has("current") | not) and (has("last") | not)' \
+  --arg id "$me/auto-pin" --arg host "$me" || fail "the auto-pin heartbeat is not the contract's"
+ok "auto-pin waits while jeryu-web has no green ref, and beats once to say so"
 
+git -C "$P/web.git" update-ref refs/green/main "$h1"
+# The status API now only feeds the snapshot the review body quotes; it decides nothing.
 echo success >"$P/gate"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "auto-pin failed on the happy path"; }
 b1="auto/pin-web-${h1:0:12}"
@@ -674,6 +699,7 @@ auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "opening the pull re
 [[ "$(posted "$P/prs.jsonl")" == 2 && "$(lines "$P/builds")" == 1 ]] || fail "a pushed branch without a pull request must get one without a rebuild"
 echo 4 >"$P/web/index.html"; g "$P/web" commit -q -am "web change 4"; g "$P/web" push -q "$P/web.git" main
 h2="$(git -C "$P/web" rev-parse HEAD)"
+git -C "$P/web.git" update-ref refs/green/main "$h2" # the gate proved the new web head
 jq -n '[{number: 53, state: "open", title: "release: pin jeryu-web 427bebe (by hand)", head: {ref: "operator/pin-web"}}]' >"$P/pulls.json"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick behind an open bump failed"
 grep -q "bump #53 is open" "$P/run.log" && [[ "$(branches)" == "$b1" && "$(lines "$P/builds")" == 1 ]] || fail "auto-pin opened a second bump beside an open one"
@@ -798,10 +824,11 @@ stale_pr 60 "$b1" "$now_iso"; echo '{"reviews":[{"state":"APPROVED","effective":
 auto_pin >"$P/run.log" 2>&1 || fail "superseding a bump with requested changes failed the tick"
 [[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] || fail "a recent changes-requested review was superseded"
 undo_bump
-echo success >"$P/gate.keep"; echo pending >"$P/gate"; stale_pr 60 "$b1" "$now_iso"
-auto_pin >"$P/run.log" 2>&1 || fail "a tick with a not-green head failed"
-[[ ! -s "$P/closed.log" ]] || fail "a bump was closed for a head that is not green"
-echo success >"$P/gate"; rm "$P/gate.keep"; undo_bump
+green_keep="$(git -C "$P/web.git" rev-parse refs/green/main)"
+git -C "$P/web.git" update-ref -d refs/green/main; stale_pr 60 "$b1" "$now_iso"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick with no green ref failed"
+[[ ! -s "$P/closed.log" && ! -s "$P/prs.jsonl" ]] || fail "a bump was closed with no proved commit to replace it"
+git -C "$P/web.git" update-ref refs/green/main "$green_keep"; undo_bump
 ok "auto-pin supersedes a stale unqueued bump in one tick, and leaves approved, queued, diverged and same-head bumps alone"
 
 # Building or opening a replacement must never retire the existing review.
@@ -944,6 +971,7 @@ ok "auto-pin deletes the branches of closed bumps, keeps moved, open, fork-named
 # A web commit that changes no shipped file (tests, docs) builds the bundle that is already pinned.
 echo "a test-only change" >"$P/web/NOTES.md"; g "$P/web" add NOTES.md; g "$P/web" commit -q -m "web tests only"; g "$P/web" push -q "$P/web.git" main
 h3="$(git -C "$P/web" rev-parse HEAD)"; b3="auto/pin-web-${h3:0:12}"
+git -C "$P/web.git" update-ref refs/green/main "$h3" # the gate proved it too
 echo '[]' >"$P/pulls.json"; : >"$P/events.jsonl"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "auto-pin refused a head whose bundle is the pinned one"; }
 lock_now="$(git -C "$P/deploy.git" show "$b3:jeryu-split.lock.toml")"

@@ -68,6 +68,15 @@ pub(super) struct RepositoryRelease {
     pub(super) tag: Option<String>,
     pub(super) sha: Option<String>,
     pub(super) tagged_at: Option<String>,
+    /// The ref the gate's green verdict on this branch moves
+    /// (`refs/green/<branch>`), which the release automation releases from
+    /// instead of the branch head. Always named, so a row says where to look
+    /// even before the first green run.
+    pub(super) green_ref: String,
+    /// The commit that ref names: the newest commit of `branch` the gate has
+    /// proved green. `null` until the gate has proved one (and for a
+    /// repository with no git data).
+    pub(super) green_sha: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -101,6 +110,13 @@ pub(super) async fn releases(
                 tag: released.as_ref().map(|released| released.tag.clone()),
                 sha: released.as_ref().and_then(|released| released.sha.clone()),
                 tagged_at: released.and_then(|released| released.tagged_at),
+                green_ref: crate::green_ref::green_ref_name(&repo.default_branch),
+                green_sha: crate::green_ref::green_commit(
+                    &state.repo_manager,
+                    &repo.owner,
+                    &repo.name,
+                    &repo.default_branch,
+                ),
             }
         })
         .collect();
