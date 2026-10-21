@@ -205,7 +205,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         );
         assert_eq!(
             source.get("tag").and_then(toml::Value::as_str),
-            Some("jeryu-ci-runner-v5.0.0-split.5")
+            Some("jeryu-ci-runner-v5.0.0-split.6")
         );
         assert!(
             source.get("path").is_none(),

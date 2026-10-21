@@ -735,13 +735,16 @@ mod tests {
         workspace_root: &Path,
         repo_root: &Path,
     ) -> (String, u64) {
+        // The ledger fences a claim on the lifetime the daemon issued the
+        // runner, so the fixture takes one before it claims.
+        let admitted_epoch = state.admit_workcell_runner("mcp-runner");
         let claim = WorkcellClaimRequest {
             agent_id: "mcp-agent".to_string(),
             workspace_root: workspace_root.to_path_buf(),
             repo_roots: vec![repo_root.to_path_buf()],
             branch_budget: 1,
             runner_id: "mcp-runner".to_string(),
-            runner_epoch: 88,
+            runner_epoch: admitted_epoch,
             git_status_summary: "clean".to_string(),
             ci_snapshot_age_ms: Some(1),
             startup: StartupSync::Rebased {

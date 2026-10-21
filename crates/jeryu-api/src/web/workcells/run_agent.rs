@@ -408,6 +408,13 @@ fn driver_error_response(err: DriverError) -> AxumResponse {
             "workcell_run_supervision_failed",
             reason,
         ),
+        // The agent printed a configured token value: the capture is withheld
+        // and the run refused. The reason names no value.
+        DriverError::CapturedTokenValue(reason) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "workcell_run_capture_refused",
+            reason,
+        ),
     };
     typed_error(TypedError {
         status,

@@ -63,6 +63,7 @@ mod request_id;
 mod request_rules;
 mod review_catch;
 mod route_index;
+mod runner_epochs;
 mod scorecard;
 mod search;
 mod sessions;
@@ -183,6 +184,11 @@ pub(crate) struct WebState {
     ws: WsHub,
     /// In-memory workcell controller for claim/repair/export/release flows.
     pub(crate) workcells: Arc<Mutex<WorkcellManager>>,
+    /// Work-cell runner lifetimes this daemon issued. It is the only writer of
+    /// the ledger's claim fence, which `jeryu-runnerd` fails closed, so a
+    /// runner claims nothing until `POST /api/v1/workcells/runners` admits it
+    /// (`runner_epochs`).
+    pub(crate) runner_epochs: Arc<Mutex<runner_epochs::RunnerEpochRegistry>>,
     /// Live high-level agent-run registry and control channels, over the
     /// durable run intents in `<data_dir>/shift.sqlite` (`agent_run_intents`)
     /// that every acknowledged run id comes from.
@@ -427,6 +433,7 @@ impl WebState {
             spa_dir,
             ws: WsHub::new(),
             workcells: Arc::new(Mutex::new(WorkcellManager::new())),
+            runner_epochs: Arc::default(),
             agent_runs: agent_runs::AgentRunStore::open(&shift_path)
                 .expect("open agent run intent store"),
             agent_presence: agent_presence::AgentPresenceState::open(&shift_path),
@@ -582,6 +589,26 @@ impl WebState {
             SplitCatalog::builtin(),
         )
         .with_reporters(TEST_REPORTERS, TEST_PR_AUTHOR)
+    }
+
+    /// Test-only: issue `runner_id` a work-cell claim epoch exactly as
+    /// `POST /api/v1/workcells/runners` does, and sync the ledger's fence from
+    /// the registry, so a fixture that claims through `self.workcells` directly
+    /// is admitted the same way the route admits a runner.
+    #[cfg(test)]
+    pub(crate) fn admit_workcell_runner(&self, runner_id: &str) -> u64 {
+        let epoch = {
+            let mut registry = self
+                .runner_epochs
+                .lock()
+                .expect("runner epoch registry lock");
+            registry
+                .issue(runner_id)
+                .expect("the registry has room for a fixture runner")
+        };
+        let mut manager = workcells_support::manager(self);
+        workcells_support::sync_claim_fence(self, &mut manager);
+        epoch
     }
 
     #[cfg(test)]
@@ -1208,6 +1235,14 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         (
             "/api/v1/workcells",
             get(workcells::list).post(workcells::claim),
+        ),
+        // Runner lifetimes the daemon issues. A runner takes an epoch here
+        // before it may claim, and the claim it then sends is checked against
+        // that epoch; dropping a lifetime fences it (`runner_epochs`).
+        ("/api/v1/workcells/runners", post(workcells::admit_runner)),
+        (
+            "/api/v1/workcells/runners/:runner_id",
+            axum::routing::delete(workcells::retire_runner),
         ),
         (
             "/api/v1/workcells/repair_live",

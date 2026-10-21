@@ -68,10 +68,13 @@ identity.
 
 ## Workcells
 
-Workcell claims can only flow through the runnerd control plane. The workcell
-manager may claim a warm cell, fence stale heartbeats by epoch, freeze failed
-CI runs into immutable snapshots, and mark a cell blocked if the startup
-rebase fails. It may not merge, delete branches, or unpack tarball contents
+Workcell claims can only flow through the runnerd control plane, and only at a
+runner lifetime the daemon issued: the ledger's claim fence is written by the
+forge's own runner-epoch registry (`POST /api/v1/workcells/runners`) and fails
+closed, so a claim's epoch is checked against it but never trusted to set it.
+The workcell manager may claim a warm cell, fence stale heartbeats by epoch,
+freeze failed CI runs into immutable snapshots, and mark a cell blocked if the
+startup rebase fails. It may not merge, delete branches, or unpack tarball contents
 outside approved repo roots. Exported repair PRs are namespaced under
 `agents/{id}/workcells/{wc}/<branch>` and carry the changed-file list so the
 review path can inspect the actual edit surface instead of flattening agent

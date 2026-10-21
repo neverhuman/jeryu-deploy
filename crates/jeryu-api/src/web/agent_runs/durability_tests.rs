@@ -29,13 +29,16 @@ async fn response_json(response: AxumResponse) -> Value {
 /// A workcell in live repair over `repo_root`, the one agent-run source the
 /// start route serves without a container runtime.
 fn repairing_workcell(state: &Arc<WebState>, workspace: &Path, repo_root: &Path) -> (String, u64) {
+    // The ledger fences a claim on the lifetime the daemon issued the
+    // runner, so the fixture takes one before it claims.
+    let admitted_epoch = state.admit_workcell_runner("runner-durability");
     let claim = WorkcellClaimRequest {
         agent_id: "agent-durability".to_string(),
         workspace_root: workspace.to_path_buf(),
         repo_roots: vec![repo_root.to_path_buf()],
         branch_budget: 1,
         runner_id: "runner-durability".to_string(),
-        runner_epoch: 41,
+        runner_epoch: admitted_epoch,
         git_status_summary: "clean".to_string(),
         ci_snapshot_age_ms: Some(5),
         startup: StartupSync::Rebased {

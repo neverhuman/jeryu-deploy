@@ -15,13 +15,32 @@ use jeryu_runnerd::{HoldFailedTreeRequest, StartupSync, WorkcellClaimRequest, Wo
 use serde::{Deserialize, Serialize};
 
 use super::WebState;
+use super::runner_epochs::{MAX_ADMITTED_RUNNERS, valid_runner_id};
 use super::surface::serialize_payload;
 use super::workcells_support::{
     TypedError, default_true, forge_error, lease_to_item, manager, normalize_deprecated_host_path,
-    parse_json_body, typed_error, workcell_error, workcell_not_found,
+    parse_json_body, sync_claim_fence, typed_error, workcell_error, workcell_not_found,
 };
 
 pub(super) use run_agent::run_agent;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct AdmitRunnerRequest {
+    pub runner_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct AdmittedRunnerResponse {
+    pub runner_id: String,
+    pub runner_epoch: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct RetiredRunnerResponse {
+    pub runner_id: String,
+    /// `true` when this request dropped a lifetime the registry still held.
+    pub retired: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct WorkcellHeartbeatRequest {
@@ -100,6 +119,76 @@ pub(super) async fn status(
     }
 }
 
+/// Issue `runner_id` a work-cell claim epoch, starting a new lifetime for it.
+/// Claims from the runner's previous lifetime are fenced from this point on,
+/// so a runner asks again only when it restarts.
+pub(super) async fn admit_runner(State(state): State<Arc<WebState>>, body: Bytes) -> AxumResponse {
+    let request: AdmitRunnerRequest = match parse_json_body(
+        &body,
+        "issue a workcell runner epoch",
+        "rerun cargo test -p jeryu-api --features web --jobs 40",
+    ) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    let runner_id = request.runner_id.trim().to_string();
+    if !valid_runner_id(&runner_id) {
+        return typed_error(TypedError {
+            status: StatusCode::BAD_REQUEST,
+            code: "workcell_runner_id_invalid",
+            purpose: "issue a workcell runner epoch",
+            reason: "runner_id must be a short plain id of letters, digits and -_./",
+            common_fixes: &[
+                "name the runner as the fleet does, for example node-2/slot0",
+                "drop spaces, path traversal and anything over 128 characters",
+            ],
+            docs_url: "docs/workcell.md",
+            repair_hint: "rerun cargo test -p jeryu-api --features web --jobs 40",
+            message: "runner_id is not a valid workcell runner id",
+        });
+    }
+    let issued = state
+        .runner_epochs
+        .lock()
+        .expect("runner epoch registry lock")
+        .issue(&runner_id);
+    match issued {
+        Some(runner_epoch) => Json(AdmittedRunnerResponse {
+            runner_id,
+            runner_epoch,
+        })
+        .into_response(),
+        None => typed_error(TypedError {
+            status: StatusCode::CONFLICT,
+            code: "workcell_runner_fleet_full",
+            purpose: "issue a workcell runner epoch",
+            reason: "the daemon already admits the most runner lifetimes it holds",
+            common_fixes: &[
+                "retire the runners that have gone before admitting a new one",
+                "check the workcell list for lifetimes no runner is using",
+            ],
+            docs_url: "docs/workcell.md",
+            repair_hint: "rerun cargo test -p jeryu-api --features web --jobs 40",
+            message: &format!("at most {MAX_ADMITTED_RUNNERS} runner lifetimes are admitted"),
+        }),
+    }
+}
+
+/// Drop `runner_id`'s lifetime, fencing it from any further claim. The cells it
+/// already holds are left alone: they are released, held or repaired through
+/// their own per-cell epoch, so dropping the lifetime loses no work.
+pub(super) async fn retire_runner(
+    State(state): State<Arc<WebState>>,
+    AxumPath(runner_id): AxumPath<String>,
+) -> AxumResponse {
+    let retired = state
+        .runner_epochs
+        .lock()
+        .expect("runner epoch registry lock")
+        .retire(&runner_id);
+    Json(RetiredRunnerResponse { runner_id, retired }).into_response()
+}
+
 pub(super) async fn claim(State(state): State<Arc<WebState>>, body: Bytes) -> AxumResponse {
     let request: WorkcellClaimRequest = match parse_json_body(
         &body,
@@ -109,7 +198,14 @@ pub(super) async fn claim(State(state): State<Arc<WebState>>, body: Bytes) -> Ax
         Ok(request) => request,
         Err(response) => return *response,
     };
-    let outcome = manager(&state).claim(normalize_workcell_claim_paths(request));
+    let outcome = {
+        let mut manager = manager(&state);
+        // Fence the claim on the epoch this daemon issued the runner. The
+        // request's own epoch is compared against that table, never written
+        // into it, so a runner with no live lifetime is refused a cell.
+        sync_claim_fence(&state, &mut manager);
+        manager.claim(normalize_workcell_claim_paths(request))
+    };
     match outcome {
         Ok(lease) => Json(lease).into_response(),
         Err(err) => workcell_error(err),
@@ -156,6 +252,8 @@ pub(super) async fn repair_live(State(state): State<Arc<WebState>>, body: Bytes)
     };
     let failed_run_id = request.failed_run_id;
     let mut manager = manager(&state);
+    // A held failed tree takes a fresh cell, so it is fenced like a claim.
+    sync_claim_fence(&state, &mut manager);
     let held = match manager.hold_failed_tree(HoldFailedTreeRequest {
         claim,
         ci_run_id,

@@ -1088,6 +1088,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the workcell controller denied the request",
     ),
     entry(
+        "workcell_run_capture_refused",
+        422,
+        "a configured token value appeared in the workcell run output",
+    ),
+    entry(
         "workcell_run_join_failed",
         500,
         "the workcell run could not be joined",
@@ -1116,6 +1121,16 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "workcell_run_workspace_denied",
         422,
         "the workcell run workspace was denied",
+    ),
+    entry(
+        "workcell_runner_fleet_full",
+        409,
+        "the daemon already admits the most workcell runner lifetimes it holds",
+    ),
+    entry(
+        "workcell_runner_id_invalid",
+        400,
+        "the workcell runner id is not a short plain id",
     ),
     entry(
         "workcell_startup_rebase_failed",

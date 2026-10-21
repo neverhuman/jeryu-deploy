@@ -92,6 +92,43 @@ The driver ships a deterministic edit-bot (`jeryu-editbot`) that writes a bounde
 file inside the cell — the placeholder for a real `claude`/`codex` CLI, which
 runs through the same jailed path.
 
+## Claim Fencing — daemon-issued runner epochs
+
+`jeryu-runnerd` fences every work-cell claim on a runner lifetime the **daemon**
+admitted. `WorkcellManager::sync_runner_fence` is that fence's only writer: a
+claim's own `runner_epoch` is compared against the admitted table and never
+written into it, and the check fails closed, so a runner with no admitted
+lifetime claims nothing. The forge keeps its own work-cell ledger, so the forge
+is the daemon for it and issues those epochs itself:
+
+| Route | Does |
+| --- | --- |
+| `POST /api/v1/workcells/runners` | starts a new lifetime for `runner_id` and answers the `runner_epoch` its claims must carry |
+| `DELETE /api/v1/workcells/runners/{runner_id}` | drops a lifetime, fencing it from any further claim |
+
+A runner takes an epoch before it claims, and asks again when it restarts: the
+epoch rises, so a claim still in flight from its previous lifetime is fenced
+instead of taking a cell. Cells a dropped lifetime already holds are untouched —
+`heartbeat`, `release`, `run_agent` and `export_pr` are fenced on the cell's own
+epoch — so dropping a lifetime strands no work. Both routes are admin-only, like
+the whole `/api/v1/workcells` surface, and at most 256 lifetimes are admitted at
+once; past that an admission is refused (`workcell_runner_fleet_full`) rather
+than evicting a runner that may still hold cells.
+
+The table lives beside the in-memory ledger it fences and is lost with it when
+the forge restarts, so a restarted forge admits no lifetime and holds no cell: a
+claim from before the restart is fenced, not served a freshly minted cell.
+
+New sessions (`POST /api/v1/repos/{id}/sessions`) claim from this host's own warm
+pool, so they carry the host's own lifetime (`forge-host`), not the `runner`
+label the request names — that label is recorded on the run.
+
+Proof lane:
+
+```sh
+cargo test -p jeryu-api --features web --jobs 40 runner_epoch
+```
+
 ## Cell Surface Run Route
 
 `POST /api/v1/workcells/{id}/run_agent` is the HTTP control-plane entrypoint for

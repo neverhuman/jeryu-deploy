@@ -43,6 +43,7 @@ use super::agent_runs::{
 };
 use super::bot_token::BotPrincipal;
 use super::repositories::find_repo;
+use super::runner_epochs::HOST_RUNNER_ID;
 use super::workcells_support::{TypedError, forge_error, typed_error};
 use super::{WebState, api_error, bots};
 
@@ -542,8 +543,21 @@ fn create_session(
     // branch is the namespaced `agents/<id>/sessions/<run>` we just registered,
     // never `main`. The up-front plan above already rejected a spoofing id, so a
     // malformed request never reaches — and never consumes — a warm cell.
+    // The warm cells live in this process, so the runner lifetime that owns them
+    // is this host's, not the `runner` label the request carries (that label is
+    // recorded on the run below). The claim fence is fed from the daemon's own
+    // registry and fails closed, so the claim carries the epoch it issued this
+    // host.
+    let host_epoch = {
+        let registry = state
+            .runner_epochs
+            .lock()
+            .expect("runner epoch registry lock");
+        registry.host_epoch()
+    };
     let claimed = {
         let mut pool = state.warm_pool.lock().expect("warm pool mutex poisoned");
+        pool.sync_runner_epochs([(HOST_RUNNER_ID.to_string(), host_epoch)]);
         pool.claim(SessionClaim {
             owner,
             repo: name,
@@ -557,8 +571,8 @@ fn create_session(
                 workspace_root: workspace.clone(),
                 repo_roots: vec![workspace.clone()],
                 branch_budget: 1,
-                runner_id: runner.clone(),
-                runner_epoch: 0,
+                runner_id: HOST_RUNNER_ID.to_string(),
+                runner_epoch: host_epoch,
                 git_status_summary: "clean".to_string(),
                 ci_snapshot_age_ms: Some(0),
                 startup: StartupSync::Rebased {

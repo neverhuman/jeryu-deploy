@@ -860,6 +860,9 @@ fn driver_error_parts(err: DriverError) -> (&'static str, String) {
         DriverError::Policy(reason) => ("agent_run_policy_denied", reason),
         DriverError::SandboxUnavailable(reason) => ("agent_run_sandbox_unavailable", reason),
         DriverError::Supervision(reason) => ("agent_run_supervision_failed", reason),
+        // The agent printed a configured token value: the capture is withheld
+        // and the run refused. The reason names no value.
+        DriverError::CapturedTokenValue(reason) => ("agent_run_capture_refused", reason),
     }
 }
 

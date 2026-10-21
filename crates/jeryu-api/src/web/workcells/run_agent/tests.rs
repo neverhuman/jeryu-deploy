@@ -13,7 +13,11 @@ async fn value(response: AxumResponse, expected: u16) -> Value {
     .unwrap()
 }
 fn lease(workspace: &Path, roots: Vec<PathBuf>) -> WorkcellLease {
-    WorkcellManager::new()
+    let mut manager = WorkcellManager::new();
+    // The claim fence fails closed, so the ledger is told the epoch the daemon
+    // issued this runner before it may take a cell.
+    manager.sync_runner_epochs([("component-node".to_string(), 1)]);
+    manager
         .claim(WorkcellClaimRequest {
             agent_id: "component".into(),
             workspace_root: workspace.into(),
@@ -124,6 +128,11 @@ async fn workcell_run_driver_error_component_keeps_typed_failures() {
             DriverError::Supervision("failed".into()),
             500,
             "workcell_run_supervision_failed",
+        ),
+        (
+            DriverError::CapturedTokenValue("the run is refused".into()),
+            422,
+            "workcell_run_capture_refused",
         ),
     ] {
         let body = value(driver_error_response(error), status).await;

@@ -188,6 +188,19 @@ pub(super) fn manager(state: &WebState) -> MutexGuard<'_, WorkcellManager> {
     state.workcells.lock().expect("workcell manager lock")
 }
 
+/// Replace the ledger's claim fence with the runner lifetimes this daemon
+/// issued, which is what `jeryu-runnerd` checks a claim's epoch against. Every
+/// entry point that takes a cell calls this first; the fence fails closed, so a
+/// runner the registry no longer admits is refused instead of served.
+pub(super) fn sync_claim_fence(state: &WebState, manager: &mut WorkcellManager) {
+    let admitted = state
+        .runner_epochs
+        .lock()
+        .expect("runner epoch registry lock")
+        .admitted();
+    manager.sync_runner_epochs(admitted);
+}
+
 pub(super) fn default_true() -> bool {
     true
 }

@@ -117,6 +117,7 @@ async fn managed_launch_entrypoints_fail_before_host_paths_and_preserve_sentinel
         )
         .await;
         assert_eq!(run["code"], code);
+        let fixture_epoch = state.admit_workcell_runner("fixture-runner");
         let claimed = state
             .workcells
             .lock()
@@ -127,7 +128,7 @@ async fn managed_launch_entrypoints_fail_before_host_paths_and_preserve_sentinel
                 repo_roots: vec![temporary.path().to_path_buf()],
                 branch_budget: 1,
                 runner_id: "fixture-runner".to_string(),
-                runner_epoch: 1,
+                runner_epoch: fixture_epoch,
                 git_status_summary: "clean".to_string(),
                 ci_snapshot_age_ms: None,
                 startup: jeryu_runnerd::StartupSync::Rebased {
@@ -142,7 +143,7 @@ async fn managed_launch_entrypoints_fail_before_host_paths_and_preserve_sentinel
                 State(state.clone()),
                 Path(claimed.workcell_id.clone()),
                 Bytes::from(
-                    json!({"workcell_id":claimed.workcell_id,"runner_epoch":1,
+                    json!({"workcell_id":claimed.workcell_id,"runner_epoch":fixture_epoch,
                 "repo_root":temporary.path(),"program":"/bin/sh","args":["-c",command]})
                     .to_string(),
                 ),

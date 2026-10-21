@@ -100,18 +100,41 @@ async fn run_agent_json(
     .await
 }
 
+/// Take `runner_id` a work-cell claim epoch from the daemon through the real
+/// route, as a runner does before it may claim. The ledger's fence fails
+/// closed, so a claim carrying an epoch nobody issued takes no cell.
+async fn admit_runner_epoch(state: Arc<WebState>, runner_id: &str) -> u64 {
+    let admitted = response_json(
+        crate::web::workcells::admit_runner(
+            State(state),
+            axum::body::Bytes::from(serde_json::json!({ "runner_id": runner_id }).to_string()),
+        )
+        .await,
+    )
+    .await;
+    admitted["runner_epoch"]
+        .as_u64()
+        .expect("the daemon answers with the epoch it issued")
+}
+
+/// Claim a cell for `label`'s runner and answer its id and the epoch the claim
+/// carries. The runner is admitted twice, so it has a previous lifetime whose
+/// epoch (`epoch - 1`) the ledger must fence.
 async fn claim_run_workcell(
     state: Arc<WebState>,
     workspace_root: &std::path::Path,
     repo_roots: Vec<std::path::PathBuf>,
-    runner_epoch: u64,
-) -> String {
+    label: &str,
+) -> (String, u64) {
+    let runner_id = format!("node-run-{label}");
+    admit_runner_epoch(state.clone(), &runner_id).await;
+    let runner_epoch = admit_runner_epoch(state.clone(), &runner_id).await;
     let claim_body = serde_json::json!({
-        "agent_id": format!("agent-wrath-run-{runner_epoch}"),
+        "agent_id": format!("agent-wrath-run-{label}"),
         "workspace_root": workspace_root,
         "repo_roots": repo_roots,
         "branch_budget": 1,
-        "runner_id": format!("node-run-{runner_epoch}"),
+        "runner_id": runner_id,
         "runner_epoch": runner_epoch,
         "git_status_summary": "clean",
         "ci_snapshot_age_ms": 0,
@@ -130,10 +153,13 @@ async fn claim_run_workcell(
         .await,
     )
     .await;
-    lease["workcell_id"]
-        .as_str()
-        .expect("claimed workcell id")
-        .to_string()
+    (
+        lease["workcell_id"]
+            .as_str()
+            .expect("claimed workcell id")
+            .to_string(),
+        runner_epoch,
+    )
 }
 
 fn run_or_skip(
@@ -240,13 +266,16 @@ async fn workcell_repair_flow_holds_exports_and_releases() {
             },
         )
         .expect("seed exported head check-run");
+    // The ledger fences a claim on the lifetime the daemon issued the
+    // runner, so the runner takes one before it claims.
+    let epoch = admit_runner_epoch(state.clone(), "node-0").await;
     let repair_body = serde_json::json!({
         "agent_id": "agent-wrath-17",
         "workspace_root": workspace_root,
         "repo_roots": [workspace_root],
         "branch_budget": 2,
         "runner_id": "node-0",
-        "runner_epoch": 7,
+        "runner_epoch": epoch,
         "git_status_summary": "rebase failed",
         "ci_snapshot_age_ms": 1200,
         "startup": {
@@ -286,7 +315,7 @@ async fn workcell_repair_flow_holds_exports_and_releases() {
 
     let export_body = serde_json::json!({
         "workcell_id": workcell_id,
-        "runner_epoch": 7,
+        "runner_epoch": epoch,
         "branch_suffix": "repair-17",
         "changed_files": ["crates/jeryu-core/repaired.rs"],
         "owner": "alice",
@@ -348,7 +377,7 @@ async fn workcell_repair_flow_holds_exports_and_releases() {
             AxumPath(workcell_id.to_string()),
             axum::body::Bytes::from(
                 serde_json::to_vec(&serde_json::json!({
-                    "runner_epoch": 7
+                    "runner_epoch": epoch
                 }))
                 .unwrap(),
             ),
@@ -375,8 +404,8 @@ async fn workcell_run_agent_rejects_identity_epoch_and_inactive_cell() {
     let workspace = tempdir().expect("create workcell workspace");
     let repo_root = workspace.path().join("repo-slice");
     std::fs::create_dir_all(&repo_root).expect("create claimed repo root");
-    let workcell_id =
-        claim_run_workcell(state.clone(), workspace.path(), vec![repo_root], 31).await;
+    let (workcell_id, epoch) =
+        claim_run_workcell(state.clone(), workspace.path(), vec![repo_root], "identity").await;
 
     let invalid = response_json(
         crate::web::workcells::run_agent(
@@ -394,7 +423,7 @@ async fn workcell_run_agent_rejects_identity_epoch_and_inactive_cell() {
         "different-cell",
         serde_json::json!({
             "workcell_id": workcell_id,
-            "runner_epoch": 31,
+            "runner_epoch": epoch,
             "program": "/bin/sh",
             "require_cgroup": false
         }),
@@ -407,7 +436,7 @@ async fn workcell_run_agent_rejects_identity_epoch_and_inactive_cell() {
         "missing-cell",
         serde_json::json!({
             "workcell_id": "missing-cell",
-            "runner_epoch": 31,
+            "runner_epoch": epoch,
             "program": "/bin/sh",
             "require_cgroup": false
         }),
@@ -420,7 +449,7 @@ async fn workcell_run_agent_rejects_identity_epoch_and_inactive_cell() {
         &workcell_id,
         serde_json::json!({
             "workcell_id": workcell_id,
-            "runner_epoch": 30,
+            "runner_epoch": epoch - 1,
             "program": "/bin/sh",
             "require_cgroup": false
         }),
@@ -434,7 +463,7 @@ async fn workcell_run_agent_rejects_identity_epoch_and_inactive_cell() {
             AxumPath(workcell_id.clone()),
             axum::body::Bytes::from(
                 serde_json::to_vec(&serde_json::json!({
-                    "runner_epoch": 31
+                    "runner_epoch": epoch
                 }))
                 .unwrap(),
             ),
@@ -449,7 +478,7 @@ async fn workcell_run_agent_rejects_identity_epoch_and_inactive_cell() {
         &workcell_id,
         serde_json::json!({
             "workcell_id": workcell_id,
-            "runner_epoch": 31,
+            "runner_epoch": epoch,
             "program": "/bin/sh",
             "require_cgroup": false
         }),
@@ -492,13 +521,16 @@ async fn r5_jail_loop_exports_namespaced_branch_and_ci_evidence() {
         core.clone(),
         storage.path().to_path_buf(),
     ));
+    // The ledger fences a claim on the lifetime the daemon issued the
+    // runner, so the runner takes one before it claims.
+    let epoch = admit_runner_epoch(state.clone(), "node-0").await;
     let repair_body = serde_json::json!({
         "agent_id": "agent-wrath-17",
         "workspace_root": workspace.path(),
         "repo_roots": [workspace.path()],
         "branch_budget": 2,
         "runner_id": "node-0",
-        "runner_epoch": 17,
+        "runner_epoch": epoch,
         "git_status_summary": "rebase clean",
         "ci_snapshot_age_ms": 0,
         "startup": {
@@ -565,7 +597,7 @@ printf '%s' "$EDIT_CONTENT" > "$EDIT_TARGET"
 
     let export_body = serde_json::json!({
         "workcell_id": workcell_id,
-        "runner_epoch": 17,
+        "runner_epoch": epoch,
         "branch_suffix": "repair-17",
         "changed_files": ["src/r5.rs"],
         "owner": "alice",
@@ -692,13 +724,16 @@ async fn workcell_export_slice_denies_out_of_slice_head_and_creates_no_pr() {
 
     // repo_roots is the in-slice subdir only; the runner unions in the
     // workspace_root, so the derived prefixes are ["crates/jeryu-api"].
+    // The ledger fences a claim on the lifetime the daemon issued the
+    // runner, so the runner takes one before it claims.
+    let epoch = admit_runner_epoch(state.clone(), "node-6").await;
     let repair_body = serde_json::json!({
         "agent_id": "agent-wrath-6",
         "workspace_root": repo_root,
         "repo_roots": [allowed_subdir],
         "branch_budget": 2,
         "runner_id": "node-6",
-        "runner_epoch": 6,
+        "runner_epoch": epoch,
         "git_status_summary": "rebase failed",
         "ci_snapshot_age_ms": 1200,
         "startup": {
@@ -727,7 +762,7 @@ async fn workcell_export_slice_denies_out_of_slice_head_and_creates_no_pr() {
 
     let export_body = serde_json::json!({
         "workcell_id": workcell_id,
-        "runner_epoch": 6,
+        "runner_epoch": epoch,
         "branch_suffix": "repair-6",
         "owner": "alice",
         "repo": "jeryu",
@@ -770,13 +805,16 @@ async fn workcell_export_slice_denies_out_of_slice_head_and_creates_no_pr() {
 #[tokio::test]
 async fn workcell_repair_live_requires_ci_run_id() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
+    // The ledger fences a claim on the lifetime the daemon issued the
+    // runner, so the runner takes one before it claims.
+    let epoch = admit_runner_epoch(state.clone(), "node-0").await;
     let repair_body = serde_json::json!({
         "agent_id": "agent-wrath-17",
         "workspace_root": "/workspace/core/web",
         "repo_roots": ["/workspace/core/web"],
         "branch_budget": 1,
         "runner_id": "node-0",
-        "runner_epoch": 7,
+        "runner_epoch": epoch,
         "git_status_summary": "rebase failed",
         "startup": {
             "state": "rebased",

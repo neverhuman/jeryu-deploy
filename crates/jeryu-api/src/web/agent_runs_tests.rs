@@ -38,13 +38,16 @@ fn seed_repairing_workcell(
     workspace_root: &Path,
     repo_root: &Path,
 ) -> (String, u64) {
+    // The ledger fences a claim on the lifetime the daemon issued the
+    // runner, so the fixture takes one before it claims.
+    let admitted_epoch = state.admit_workcell_runner("runner-a");
     let claim = WorkcellClaimRequest {
         agent_id: "agent-repair".to_string(),
         workspace_root: workspace_root.to_path_buf(),
         repo_roots: vec![repo_root.to_path_buf()],
         branch_budget: 2,
         runner_id: "runner-a".to_string(),
-        runner_epoch: 77,
+        runner_epoch: admitted_epoch,
         git_status_summary: "clean".to_string(),
         ci_snapshot_age_ms: Some(123),
         startup: StartupSync::Rebased {
@@ -74,13 +77,16 @@ fn claim_workcell(
     workspace_root: &Path,
     repo_roots: Vec<PathBuf>,
 ) -> (String, u64) {
+    // The ledger fences a claim on the lifetime the daemon issued the
+    // runner, so the fixture takes one before it claims.
+    let admitted_epoch = state.admit_workcell_runner("runner-claimed");
     let claim = WorkcellClaimRequest {
         agent_id: "agent-claimed".to_string(),
         workspace_root: workspace_root.to_path_buf(),
         repo_roots,
         branch_budget: 1,
         runner_id: "runner-claimed".to_string(),
-        runner_epoch: 19,
+        runner_epoch: admitted_epoch,
         git_status_summary: "clean".to_string(),
         ci_snapshot_age_ms: None,
         startup: StartupSync::Rebased {
@@ -98,13 +104,16 @@ fn seed_held_workcell_without_repo_roots(
     state: &Arc<WebState>,
     workspace_root: &Path,
 ) -> (String, u64) {
+    // The ledger fences a claim on the lifetime the daemon issued the
+    // runner, so the fixture takes one before it claims.
+    let admitted_epoch = state.admit_workcell_runner("runner-empty");
     let claim = WorkcellClaimRequest {
         agent_id: "agent-empty".to_string(),
         workspace_root: workspace_root.to_path_buf(),
         repo_roots: Vec::new(),
         branch_budget: 1,
         runner_id: "runner-empty".to_string(),
-        runner_epoch: 31,
+        runner_epoch: admitted_epoch,
         git_status_summary: "clean".to_string(),
         ci_snapshot_age_ms: Some(9),
         startup: StartupSync::Rebased {

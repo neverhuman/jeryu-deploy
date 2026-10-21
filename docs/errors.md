@@ -301,12 +301,15 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `workcell_merge_denied` | 403 | workcells may not merge |
 | `workcell_repair_state_denied` | 409 | the workcell state does not allow repair |
 | `workcell_request_denied` | 400 | the workcell controller denied the request |
+| `workcell_run_capture_refused` | 422 | a configured token value appeared in the workcell run output |
 | `workcell_run_join_failed` | 500 | the workcell run could not be joined |
 | `workcell_run_path_denied` | 403 | the workcell run path is outside the repo slice |
 | `workcell_run_policy_denied` | 422 | the workcell run policy denied the command |
 | `workcell_run_sandbox_unavailable` | 424 | the host sandbox for the workcell run is unavailable |
 | `workcell_run_supervision_failed` | 500 | the workcell run supervision failed |
 | `workcell_run_workspace_denied` | 422 | the workcell run workspace was denied |
+| `workcell_runner_fleet_full` | 409 | the daemon already admits the most workcell runner lifetimes it holds |
+| `workcell_runner_id_invalid` | 400 | the workcell runner id is not a short plain id |
 | `workcell_startup_rebase_failed` | 409 | the workcell startup rebase failed |
 | `workcell_tar_path_denied` | 422 | the workcell archive contains a denied path |
 | `yield_read_failed` | 500 | the todo queues or the cost ledger behind the yield report could not be read |

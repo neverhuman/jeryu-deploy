@@ -53,9 +53,9 @@ const EXPECTED_MAPPINGS: [(&str, &str); 9] = [
 const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     (
         "jeryu-ci-runner",
-        "jeryu-ci-runner-v5.0.0-split.5",
-        "e7cec24b06bfad00c06c2f6ce376b365b7531631",
-        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.5",
+        "jeryu-ci-runner-v5.0.0-split.6",
+        "2906d592ed4617577096ede83cc9db2a27110386",
+        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.6",
     ),
     (
         "jeryu-core",
@@ -295,13 +295,13 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
     assert_ne!(parse_mappings(&extra), expected_mappings);
 
     let missing_pin = pin_policy.replacen(
-        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.5|e7cec24b06bfad00c06c2f6ce376b365b7531631|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.5\n",
+        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.6|2906d592ed4617577096ede83cc9db2a27110386|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.6\n",
         "",
         1,
     );
     assert_ne!(parse_pins(&missing_pin), expected_pins);
     let wrong_pin = pin_policy.replacen(
-        "e7cec24b06bfad00c06c2f6ce376b365b7531631",
+        "2906d592ed4617577096ede83cc9db2a27110386",
         "0000000000000000000000000000000000000000",
         1,
     );
