@@ -215,6 +215,11 @@
       "lane": "check",
       "purpose": "verify jeryu-deploy owned source remains build-addressable"
     },
+    "extensions/": {
+      "command": "cargo test --offline -p jeryu-api --features web gh_extension",
+      "lane": "check",
+      "purpose": "verify gh PR status, head-bound waiting, transport errors and isolated local installation"
+    },
     "images/": {
       "command": "just check",
       "lane": "check",

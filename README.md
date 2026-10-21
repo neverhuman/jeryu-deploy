@@ -76,6 +76,7 @@ standalone Deploy proof.
 - `tools/**`
 - `tests/**`
 - `examples/**`
+- `extensions/**`
 - `config/**`
 - `configs/**`
 - `policies/**`
@@ -87,6 +88,9 @@ standalone Deploy proof.
 - `Justfile`
 
 ## Local Commands
+
+The repository-owned [gh jeryu extension](extensions/gh-jeryu/README.md) reads
+native PR status and waits for a selected head with an explicit target and timeout.
 
 Run the gate locally with one command:
 

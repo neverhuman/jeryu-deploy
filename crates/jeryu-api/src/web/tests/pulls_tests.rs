@@ -3623,3 +3623,6 @@ async fn checks_follow_lanes_the_base_branch_declares_now() {
     );
     assert_eq!(names(state).await, vec!["widgets/docs"]);
 }
+
+#[path = "gh_extension_tests.rs"]
+mod gh_extension_tests;

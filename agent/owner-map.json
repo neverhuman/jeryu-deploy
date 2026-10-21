@@ -33,6 +33,7 @@
     "deny.toml": "workspace",
     "docs/": "jeryu-deploy",
     "examples/": "jeryu-deploy",
+    "extensions/": "jeryu-deploy",
     "images/": "jeryu-deploy",
     "ops/": "ops",
     "ops/ci/": "ops",
