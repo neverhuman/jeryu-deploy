@@ -316,7 +316,7 @@ async fn the_route_index_describes_params_and_who_may_call_each_route() {
         params,
         ["family", "severity", "kind", "limit", "per_page", "page"]
     );
-    assert_eq!(attention["auth"]["GET"], "admin");
+    assert_eq!(attention["auth"]["GET"], "token");
 
     let pulls = routes
         .iter()
@@ -350,7 +350,7 @@ async fn the_openapi_document_is_generated_from_the_mounted_routes() {
         names,
         ["family", "severity", "kind", "limit", "per_page", "page"]
     );
-    assert_eq!(attention["x-jeryu-credential"], "admin");
+    assert_eq!(attention["x-jeryu-credential"], "token");
     // Every described path is a path the router mounts.
     let mounted: BTreeSet<String> = api_v1_routes()
         .iter()

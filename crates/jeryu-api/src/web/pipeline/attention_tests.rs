@@ -2965,7 +2965,8 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
     assert_eq!(narrow["items"].as_array().unwrap().len(), 1, "{narrow}");
     assert_eq!(narrow["families"], families);
 
-    // An ordinary account reads neither the inbox nor its counts.
+    // An ordinary account with no write access reads an empty inbox, counts
+    // included: nothing of the administrator's inbox reaches it.
     let core = ForgeCore::new();
     core.create_account("bob", "bob-password", UserRole::User)
         .unwrap();
@@ -2982,8 +2983,11 @@ async fn attention_route_is_admin_only_and_reads_current_state() {
         .oneshot(request(HttpMethod::GET, "/api/v1/attention", &user, None))
         .await
         .unwrap();
-    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-    assert_eq!(body_json(denied).await["code"], "permission_denied");
+    assert_eq!(denied.status(), StatusCode::OK);
+    let denied = body_json(denied).await;
+    assert!(denied["items"].as_array().unwrap().is_empty(), "{denied}");
+    assert_eq!(denied["total"], 0);
+    assert_eq!(denied["counts"]["action"], 0);
     let anonymous = other
         .oneshot(
             axum::http::Request::builder()

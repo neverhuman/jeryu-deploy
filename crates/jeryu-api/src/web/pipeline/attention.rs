@@ -44,6 +44,7 @@ mod hosts;
 mod mirror;
 mod pins;
 mod pushed;
+mod scope;
 mod scorecard;
 mod stranded;
 mod summary;
@@ -1346,7 +1347,8 @@ impl AttentionCache {
     }
 }
 
-/// `GET /api/v1/attention` (admin-only by path, see `auth::admin_only_request`).
+/// `GET /api/v1/attention`: an administrator reads the whole inbox; anyone else
+/// only the blocked and handed-off todos they can write to (see `scope.rs`).
 /// `GET /api/v1/attention?family=&severity=&kind=`: the family filter takes
 /// either spelling of a family key, and `severity` and `kind` come from closed
 /// sets, so a filter that could never match is refused rather than answered
@@ -1456,6 +1458,7 @@ pub(super) fn only_matching(response: &AttentionResponse, filter: &Filter) -> At
 
 pub(crate) async fn attention(
     State(state): State<Arc<WebState>>,
+    account: Option<axum::Extension<jeryu_core::AccountSummary>>,
     super::super::strict_query::StrictQuery(query): super::super::strict_query::StrictQuery<
         AttentionQuery,
     >,
@@ -1464,9 +1467,23 @@ pub(crate) async fn attention(
         Ok(page) => page,
         Err(rejection) => return rejection.into_response(),
     };
-    let family = match super::super::family::filter(&state, query.family.as_deref()) {
-        Ok(family) => family,
-        Err(response) => return *response,
+    // Without a login layer there is no one to scope to; with one, anyone who
+    // is not an administrator sees their own families' blocked work only.
+    let person = account
+        .map(|axum::Extension(account)| account)
+        .filter(|account| account.role != jeryu_core::UserRole::Admin)
+        .map(|account| account.login);
+    let family = match (&person, query.family.as_deref()) {
+        // An unknown family key would be answered with the list of every
+        // family, which a person without that access must not learn.
+        (Some(_), raw) => raw
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .map(super::super::family::canonical),
+        (None, raw) => match super::super::family::filter(&state, raw) {
+            Ok(family) => family,
+            Err(response) => return *response,
+        },
     };
     let trimmed = |value: &Option<String>| {
         value
@@ -1493,7 +1510,14 @@ pub(crate) async fn attention(
     // The collectors run git and read every open pull request: keep them off
     // the async workers.
     let worker_state = state.clone();
-    let response = tokio::task::spawn_blocking(move || cached(&worker_state, Utc::now())).await;
+    let response = tokio::task::spawn_blocking(move || {
+        let whole = cached(&worker_state, Utc::now());
+        match person {
+            Some(login) => scope::for_person(&worker_state, whole, &login),
+            None => whole,
+        }
+    })
+    .await;
     match response {
         Ok(response) => answer(response),
         Err(error) => {

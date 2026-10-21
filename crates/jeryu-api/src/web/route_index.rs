@@ -424,7 +424,8 @@ mod tests {
             "none"
         );
         assert_eq!(credential("GET", "/api/v1/errors"), "none");
-        assert_eq!(credential("GET", "/api/v1/attention"), "admin");
+        assert_eq!(credential("GET", "/api/v1/attention"), "token");
+        assert_eq!(credential("GET", "/api/v1/attention/acks"), "admin");
         assert_eq!(credential("GET", "/api/v1/events/histogram"), "admin");
         assert_eq!(credential("GET", "/api/v1/work/x"), "token");
     }

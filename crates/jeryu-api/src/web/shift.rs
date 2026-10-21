@@ -12,7 +12,7 @@
 //! from and written to the hosted `<family>-todo` bare repos directly; see
 //! `queue.rs`. Heartbeat history is kept in `<data_dir>/shift.sqlite`.
 
-mod access;
+pub(crate) mod access;
 mod assignment;
 mod chain;
 pub(crate) mod comments;

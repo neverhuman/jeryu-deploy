@@ -505,3 +505,64 @@ async fn a_person_cannot_finish_parked_work_and_a_lapsed_holder_frees_the_todo()
     assert_eq!(status, StatusCode::OK, "{taken}");
     assert_eq!(taken["assignee"], "bea");
 }
+
+/// The attention inbox for a person who is not an administrator: only the
+/// blocked todos of a family they can write to, nothing else, and the
+/// administrator's acknowledgements stay closed to them.
+#[tokio::test]
+async fn a_person_with_write_access_reads_their_familys_blocked_todos() {
+    let dir = tempfile::tempdir().unwrap();
+    let site = site(dir.path());
+    let id = site.blocked_todo().await;
+    let inbox = "/api/v1/attention";
+    let todo_ids = |body: &Value| -> Vec<String> {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["todo_id"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+
+    let (status, body) = site.call(HttpMethod::GET, inbox, &site.ada, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(todo_ids(&body), std::slice::from_ref(&id));
+    assert!(
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["kind"] == "todo_blocked")
+    );
+    assert_eq!(body["counts"]["action"], 1);
+    assert_eq!(body["families"].as_array().unwrap().len(), 1);
+
+    // The administrator still reads the whole inbox, this row among others.
+    let (status, whole) = site.call(HttpMethod::GET, inbox, &site.admin, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(todo_ids(&whole).contains(&id));
+
+    // carl has no grant: an empty inbox, and no family names leaked by a
+    // filter that matches nothing.
+    let (status, body) = site.call(HttpMethod::GET, inbox, &site.carl, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["items"].as_array().unwrap().is_empty());
+    let (status, body) = site
+        .call(
+            HttpMethod::GET,
+            "/api/v1/attention?family=nope",
+            &site.ada,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["items"].as_array().unwrap().is_empty());
+
+    // Acknowledgements remain an administrator's.
+    for token in [&site.ada, &site.carl] {
+        let (status, _) = site
+            .call(HttpMethod::GET, "/api/v1/attention/acks", token, None)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+}

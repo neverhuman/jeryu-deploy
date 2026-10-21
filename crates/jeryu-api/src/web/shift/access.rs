@@ -52,3 +52,34 @@ pub(crate) fn may_work(state: &WebState, scope: &WorkScope, login: &str) -> bool
         WorkScope::AllOf(repos) => !repos.is_empty() && repos.iter().all(writes),
     }
 }
+
+/// Of the `(family, todo id)` pairs in `wanted`, the ones `login` may work on,
+/// read from each family's current queue. A family or todo the queue no
+/// longer holds is left out.
+pub(crate) fn workable_todos(
+    state: &WebState,
+    login: &str,
+    wanted: &std::collections::BTreeSet<(String, String)>,
+) -> std::collections::BTreeSet<(String, String)> {
+    let mut allowed = std::collections::BTreeSet::new();
+    for queue in super::queue::discover(&state.repo_manager) {
+        if !wanted
+            .iter()
+            .any(|(family, _)| *family == queue.family.name)
+        {
+            continue;
+        }
+        let Ok(todos) = super::queue_todos(state, &queue) else {
+            continue;
+        };
+        for queued in todos {
+            let key = (queue.family.name.clone(), queued.todo.id.clone());
+            if wanted.contains(&key)
+                && may_work(state, &work_scope(state, &queue, &queued.todo.repos), login)
+            {
+                allowed.insert(key);
+            }
+        }
+    }
+    allowed
+}

@@ -262,7 +262,10 @@ fn admin_allow_list_matches_the_route_table() {
         &Method::POST,
         "/api/v1/events/histogram"
     ));
-    assert!(admin_only_request(&Method::GET, "/api/v1/attention"));
+    // The inbox read is scoped in its handler; its acknowledgements are not.
+    assert!(!admin_only_request(&Method::GET, "/api/v1/attention"));
+    assert!(admin_only_request(&Method::GET, "/api/v1/attention/acks"));
+    assert!(admin_only_request(&Method::POST, "/api/v1/attention/acks/"));
     assert!(admin_only_request(&Method::GET, "/api/v1/pins/"));
     // Token usage reads with the other pipeline reads, and only there: a
     // look-alike path is not admitted.

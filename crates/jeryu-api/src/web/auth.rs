@@ -1383,11 +1383,14 @@ fn release_board_path(path: &str) -> bool {
 }
 
 /// The attention inbox names todos, notes and pull requests across every
-/// repository, so like the event log it is for global admins only. Its
-/// acknowledgements (`/api/v1/attention/acks`) decide what the inbox hides,
-/// which is an administrator's call as much as reading it is.
+/// repository, so like the event log it is for global admins. Reading it is
+/// decided in the handler: a person who is not an administrator is answered
+/// only the blocked and handed-off todos of families whose code they can write
+/// to (`pipeline/attention/scope.rs`). Its acknowledgements
+/// (`/api/v1/attention/acks`) decide what the inbox hides, which is an
+/// administrator's call and stays admin-only by path.
 fn attention_path(path: &str) -> bool {
-    path == "/api/v1/attention" || path.starts_with("/api/v1/attention/")
+    path.starts_with("/api/v1/attention/") && path.trim_end_matches('/') != "/api/v1/attention"
 }
 
 /// Pins name the unreleased commits of every dependency, private ones
