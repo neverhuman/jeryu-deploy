@@ -1502,6 +1502,14 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
             "/api/v1/release-board/:family",
             get(release_board::get_board).put(release_board::put_board),
         ),
+        (
+            "/api/v1/release-board/:family/promote",
+            post(release_board::promote),
+        ),
+        (
+            "/api/v1/release-board/:family/promote/:id",
+            get(release_board::promote_action),
+        ),
         ("/api/v1/shift/families", get(shift::families)),
         (
             "/api/v1/shift/todos",

@@ -211,7 +211,7 @@ fn invalid(message: &str) -> AxumResponse {
     api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_input", message)
 }
 
-fn is_repo_slug(repo: &str) -> bool {
+pub(crate) fn is_repo_slug(repo: &str) -> bool {
     repo.split_once('/').is_some_and(|(owner, name)| {
         let part = |s: &str| {
             !s.is_empty()
@@ -286,7 +286,7 @@ fn validate(new: &NewAction) -> Result<(), &'static str> {
 
 /// Whether the release host said it staged this release for this repository:
 /// a button can only deploy what auto-stage reported, not any well-formed id.
-fn was_staged(state: &WebState, repo: &str, release: &str) -> bool {
+pub(crate) fn was_staged(state: &WebState, repo: &str, release: &str) -> bool {
     state
         .events
         .release_precondition_reporters(repo, "release.staged", Some(release), None, false)
@@ -421,6 +421,40 @@ pub(super) async fn request(
         StatusCode::OK
     };
     (status, Json(action)).into_response()
+}
+
+/// The ask a board's Promote makes: deploy one staged release of `repo`.
+pub(crate) fn deploy_ask(repo: &str, release: &str) -> NewAction {
+    NewAction {
+        action: ActionKind::Deploy,
+        repo: repo.to_string(),
+        release: Some(release.to_string()),
+        head: None,
+    }
+}
+
+/// Records `new` for a person already checked by the caller; see
+/// [`ReleaseActionStore::record`].
+pub(crate) fn record_ask(
+    state: &WebState,
+    new: NewAction,
+    by: &str,
+) -> Result<(ReleaseAction, bool), &'static str> {
+    state.release_actions.record(new, by, server_time())
+}
+
+/// The newest ask to deploy this release, open or finished.
+pub(crate) fn latest_deploy(state: &WebState, repo: &str, release: &str) -> Option<ReleaseAction> {
+    state
+        .release_actions
+        .all_at(&server_time())
+        .into_iter()
+        .filter(|a| {
+            a.action == ActionKind::Deploy
+                && a.repo == repo
+                && a.release.as_deref() == Some(release)
+        })
+        .max_by(|a, b| a.requested_at.cmp(&b.requested_at).then(a.id.cmp(&b.id)))
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -101,7 +101,11 @@ minutes ahead of the forge's clock.
     the machine or service), `derived` (computed from git), `unverified`.
   - `parallel` marks a stage that runs beside the previous one instead of after it;
     `never_deployed` a stage that is declared but has never been deployed.
-  - `promote {command, human_only, automatic}` is shown, never run, by the page.
+  - `promote {command, human_only, automatic, deploy?}`: the command is shown and copied. A
+    collector that knows a newer release is staged adds `deploy {repo, release}` (the forge
+    repository that staged it and its `prod-<UTC stamp>-<sha>-unsigned` id); the page then also
+    offers **Promote**, which runs that deploy ("Promote runs the deploy" below). A malformed
+    `deploy` is refused with `422`; it names no host or path.
   - `forge {repo, environment}` is the live overlay binding.
 - `work {total, method, parts[{key, label, count}], unlinked?}`: every todo in the family queue
   placed at the furthest point it reached — `live`, `merged` (on main, not released), `stranded`
@@ -109,6 +113,32 @@ minutes ahead of the forge's clock.
   its trailer), `blocked`, `open`.
 - `pins {note, columns, rows[{repo, cells, behind, note?}]}` and `notes {title, items, coverage}`.
 - `problems[{source, message}]`: sources this run could not read.
+
+## Promote runs the deploy
+
+A stage whose `promote` names a `deploy` shows a **Promote** button in its detail. Pressing it
+asks for confirmation (naming the release, lane, stage and targets), then queues the same
+`deploy` release action as the Needs-you "Deploy the staged release" button
+(`docs/release-actions.md`); the release-actions poller on the repository's deploy host claims it
+and runs the deploy script for that release.
+
+| Method | Path | Who | Answer |
+|---|---|---|---|
+| POST | `/api/v1/release-board/{family}/promote` `{lane, stage}` | a deployer (an admin named in `JERYU_DEPLOYERS`) | `201 {created: true, action}`; `200 {created: false, action}` when an ask for that release is open or already succeeded; `409 promote_disabled` with the reason; `403`; `404` |
+| GET | `/api/v1/release-board/{family}/promote/{id}` | a deployer | the ask with its redacted `log_tail`; `404` unless a stage of this board names that release |
+
+- The release and repository come from the stored snapshot, never the request body.
+- Idempotent per release: one open ask at a time, shared with the inbox button; a release the
+  host already deployed is not queued again; a failed or expired ask may be promoted again.
+- `GET /api/v1/release-board/{family}` adds `promote.run` to each such stage: `available`,
+  `reason` (why it is disabled), `confirm`, and `action {id, state, requested_by, requested_at,
+  finished_at, message, log_href}` for the newest ask (`pending`, `claimed`, `succeeded`,
+  `failed`, `expired`, `cancelled`). The cell shows that state and a log link.
+- Promote is disabled, with the reason, when no deployer-authenticated poller has checked in for
+  the repository in the last 90 seconds, when the forge saw no `release.staged` for that release,
+  when the stage has nothing to ship, or while an ask is open. Nothing is queued then.
+- Every press that queues writes a `release.promote_requested` event naming who pressed it
+  (`docs/pipeline-events.md`) before the ask is queued.
 
 ## How todos are matched
 

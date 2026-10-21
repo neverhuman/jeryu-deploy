@@ -65,6 +65,11 @@ pub(super) const FORGE_KINDS: &[ForgeKind] = &[
     kind("queue.failed", "web/merge_queue.rs", "\"queue.failed\""),
     kind("queue.landed", "web/merge_queue.rs", "\"queue.landed\""),
     kind("queue.refused", "web/merge_queue.rs", "\"queue.refused\""),
+    kind(
+        "release.promote_requested",
+        "web/release_board/promote.rs",
+        "\"release.promote_requested\"",
+    ),
     kind("repo.archived", "web/pipeline/emit.rs", "\"repo.archived\""),
     kind("repo.renamed", "web/pipeline/emit.rs", "\"repo.renamed\""),
     kind(

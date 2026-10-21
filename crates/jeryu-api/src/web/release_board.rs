@@ -264,6 +264,22 @@ pub(crate) struct Promote {
     pub command: String,
     pub human_only: bool,
     pub automatic: bool,
+    /// What the Promote button runs: the deploy of a staged release through
+    /// the release-actions poller. Absent when the collector knows of no
+    /// newer staged release; the page then shows only the command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy: Option<PromoteDeploy>,
+}
+
+/// The staged release a stage's Promote deploys, and the repository whose
+/// release poller runs it. The forge checks both again when the button is
+/// pressed (`promote.rs`); the collector only names them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PromoteDeploy {
+    /// Forge repository, `owner/name`, that staged the release.
+    pub repo: String,
+    /// The staged release id, `prod-<UTC stamp>-<sha>-unsigned`.
+    pub release: String,
 }
 
 /// Where the page can read this stage live: the environment a deploy reports
@@ -587,6 +603,20 @@ pub(crate) fn validate(
                     return Err(format!("{move_at}.at {:?} must be RFC 3339", moved.at));
                 }
             }
+            if let Some(deploy) = stage.promote.as_ref().and_then(|p| p.deploy.as_ref()) {
+                if !crate::web::release_actions::is_repo_slug(&deploy.repo) {
+                    return Err(format!(
+                        "{at}.promote.deploy.repo {:?} must be owner/name",
+                        deploy.repo
+                    ));
+                }
+                if !crate::web::release_actions::is_release_id(&deploy.release) {
+                    return Err(format!(
+                        "{at}.promote.deploy.release {:?} is not a staged release id",
+                        deploy.release
+                    ));
+                }
+            }
             if let Some(forge) = &stage.forge
                 && forge
                     .repo
@@ -790,13 +820,17 @@ pub(crate) async fn list_boards(State(state): State<Arc<WebState>>) -> Json<Valu
     Json(json!({ "boards": state.release_boards.list() }))
 }
 
+#[path = "release_board/promote.rs"]
+mod promote;
+pub(crate) use promote::{promote, promote_action};
+
 /// `GET /api/v1/release-board/{family}`. Admin-only by path.
 pub(crate) async fn get_board(
     State(state): State<Arc<WebState>>,
     Path(family): Path<String>,
 ) -> Response {
     match state.release_boards.get(&family) {
-        Some(board) => Json(board).into_response(),
+        Some(board) => Json(promote::with_runs(&state, board)).into_response(),
         // A family the forge knows nothing about is a typo in the request.
         None if !crate::web::family::known(&state)
             .contains(&crate::web::family::canonical(&family)) =>

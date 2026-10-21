@@ -104,6 +104,7 @@ Implemented HTTP/WebSocket routes:
 - `GET /api/v1/events/histogram`, `GET /api/v1/usage` (admin only; event histogram and reported worker token/cost aggregates)
 - `GET|POST /api/v1/release-actions` (deployer only; bounded, expiring queue)
 - `POST /api/v1/release-actions/poller` (deployer-only repository check-in)
+- `POST /api/v1/release-board/{family}/promote`, `GET /api/v1/release-board/{family}/promote/{id}` (deployer only; Promote queues the stage's staged-release deploy and reads its log)
 - `POST /api/v1/release-actions/{id}/claim|cancel|result` (deployer only; cancellation requires pending state)
 - `POST /api/v1/markdown/render`
 - `GET /api/v1/codegraph/query`

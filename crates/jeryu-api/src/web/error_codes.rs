@@ -120,6 +120,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the attention inbox could not be collected",
     ),
     entry(
+        "audit_failed",
+        500,
+        "the press could not be recorded in the event log, so nothing was queued",
+    ),
+    entry(
         "bad_head",
         409,
         "the pull request head does not match the queued head",
@@ -578,6 +583,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "presence_write_budget",
         429,
         "the presence write budget is exhausted for this minute",
+    ),
+    entry(
+        "promote_disabled",
+        409,
+        "Promote cannot run for this stage now; the message says why",
     ),
     entry(
         "pull_approve_invalid_request",

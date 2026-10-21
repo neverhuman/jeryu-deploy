@@ -89,6 +89,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `api_route_not_found` | 404 | no API route matches the request path |
 | `approval_blocked_jankurai_proof` | 409 | `jankurai/proof` on this head fails, has not run, or has not finished, and this repository is under the gate |
 | `attention_collect_failed` | 500 | the attention inbox could not be collected |
+| `audit_failed` | 500 | the press could not be recorded in the event log, so nothing was queued |
 | `bad_head` | 409 | the pull request head does not match the queued head |
 | `bad_request` | 422 | the request was rejected before it reached a handler |
 | `blob_too_large` | 413 | the requested blob is too large to render |
@@ -174,6 +175,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `not_open` | 409 | the pull request is not open |
 | `not_queued` | 409 | the pull request is not in the merge queue |
 | `not_retryable` | 409 | auto-pin has not requested a human retry for this repository and head |
+| `promote_disabled` | 409 | Promote cannot run for this stage now; the message says why |
 | `release_queue_full` | 429 | cancel a pending release ask or wait for an outcome; the queue is bounded |
 | `not_staged` | 409 | the forge has no record of this release being staged for the repository |
 | `ok_to_test_required` | 409 | a contributed head is gated only after a maintainer says ok-to-test |
