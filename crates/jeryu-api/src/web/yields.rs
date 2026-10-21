@@ -31,13 +31,15 @@ use super::WebState;
 use super::strict_query::{StrictFields, StrictQuery, filter_one_of};
 use super::workcells_support::{TypedError, typed_error};
 pub(crate) use adhoc::SESSION_KIND;
-pub(crate) use report::{By, Request, Window, build};
+pub(crate) use report::{By, Request, Window, build, worked_in};
 
 const DOCS: &str = "docs/pipeline-events.md";
 /// The ledger kind a pull request review's spend is recorded under.
 pub(crate) const REVIEW_KIND: &str = "pr.reviewed";
 /// Days before `until` the window starts when `since` is left out.
 const DEFAULT_DAYS: i64 = 28;
+/// Events read per page when the headline numbers page the log.
+const EVENT_PAGE: i64 = 500;
 
 /// `GET /api/v1/yield` query.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -120,6 +122,58 @@ fn session_spend(
     Ok(rows)
 }
 
+/// The events the headline numbers read, newest pages first, one page loop per
+/// kind as `review_catch::read_events` does.
+fn read_headline_events(
+    state: &WebState,
+    family: Option<&str>,
+) -> Result<Vec<crate::web::pipeline::Event>, String> {
+    let mut out = Vec::new();
+    for kind in super::headline::KINDS {
+        let mut before: Option<i64> = None;
+        loop {
+            let page = state.events.query(&crate::web::pipeline::EventsQuery {
+                kind: Some((*kind).to_string()),
+                family: family.map(str::to_string),
+                before_seq: before,
+                limit: Some(EVENT_PAGE),
+                ..Default::default()
+            })?;
+            let Some(last) = page.last() else { break };
+            before = Some(last.seq);
+            let full = page.len() >= EVENT_PAGE as usize;
+            out.extend(page);
+            if !full {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `{(repo, pr): when production first ran it}` for every pull request of the
+/// window's todos. Read from the delivery receipts, which outlive the raw
+/// events, so an older todo keeps the day it actually shipped.
+fn deployment_times(
+    state: &WebState,
+    window: Window,
+    todos: &[crate::web::shift::ShiftTodo],
+) -> Result<BTreeMap<(String, u64), String>, String> {
+    let mut out = BTreeMap::new();
+    for todo in todos.iter().filter(|todo| worked_in(window, todo)) {
+        for pr in &todo.prs {
+            let key = (pr.repo.clone(), pr.number);
+            if out.contains_key(&key) {
+                continue;
+            }
+            if let Some(at) = state.events.first_pr_deployment(&pr.repo, pr.number)? {
+                out.insert(key, at);
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn refuse(status: StatusCode, code: &str, reason: &str, hint: &str) -> AxumResponse {
     typed_error(TypedError {
         status,
@@ -171,13 +225,15 @@ pub(crate) async fn yield_report(
         let reviews = worker_state.events.ledger(REVIEW_KIND)?;
         let sessions = session_spend(&worker_state, window)?;
         let events = super::review_catch::read_events(&worker_state, read_family.as_deref())?;
-        Ok::<_, String>((todos, reviews, sessions, events))
+        let headline_events = read_headline_events(&worker_state, read_family.as_deref())?;
+        let shipped = deployment_times(&worker_state, window, &todos)?;
+        Ok::<_, String>((todos, reviews, sessions, events, headline_events, shipped))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((todos, reviews, sessions, events)) => {
+        Ok((todos, reviews, sessions, events, headline_events, shipped)) => {
             let request = Request {
                 window,
                 family,
@@ -189,6 +245,20 @@ pub(crate) async fn yield_report(
             let at = |ms| chrono::DateTime::from_timestamp_millis(ms);
             report.review_catch =
                 super::review_catch::report(&events, at(since_ms).zip(at(until_ms)));
+            if let (Some(since), Some(until)) = (at(since_ms), at(until_ms)) {
+                let in_window: Vec<_> = todos
+                    .iter()
+                    .filter(|todo| worked_in(window, todo))
+                    .cloned()
+                    .collect();
+                report.headline = super::headline::report(
+                    &in_window,
+                    &headline_events,
+                    (since, until),
+                    now,
+                    &|repo: &str, pr: u64| shipped.get(&(repo.to_string(), pr)).cloned(),
+                );
+            }
             Json(report).into_response()
         }
         Err(reason) => refuse(

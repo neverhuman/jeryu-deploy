@@ -205,6 +205,9 @@ pub(crate) struct YieldReport {
     /// What review caught against what escaped it, by reviewer kind; the
     /// handler fills it from the event log (`review_catch`).
     pub review_catch: crate::web::review_catch::ReviewCatch,
+    /// Lead time, exception rate and bad-change rate over the same window;
+    /// the handler fills it from the event log (`headline`).
+    pub headline: crate::web::headline::Headline,
 }
 
 /// Where a todo ended up.
@@ -506,6 +509,15 @@ pub(crate) struct Request {
 /// carries, inside the window or not, so a long-running shift is not charged
 /// twice to the todos that happen to be in view. `sessions` are the ledger's
 /// `session.costed` rows, summed apart into `adhoc`.
+/// Whether a todo was worked in `window`: the cut `build` and the headline
+/// numbers share, so both report on the same todos.
+pub(crate) fn worked_in(window: Window, todo: &ShiftTodo) -> bool {
+    todo.worked_by
+        .iter()
+        .filter_map(started_day)
+        .any(|day| window.contains(day))
+}
+
 pub(crate) fn build(
     request: &Request,
     todos: &[ShiftTodo],
@@ -548,12 +560,7 @@ pub(crate) fn build(
     let mut sources = BTreeSet::new();
     let mut facts = Vec::new();
     for todo in todos {
-        let in_window = todo
-            .worked_by
-            .iter()
-            .filter_map(started_day)
-            .any(|day| request.window.contains(day));
-        let Some(landing) = landing(todo).filter(|_| in_window) else {
+        let Some(landing) = landing(todo).filter(|_| worked_in(request.window, todo)) else {
             continue;
         };
         let mut review = 0.0;
@@ -699,5 +706,6 @@ pub(crate) fn build(
         scrap: top(&scrapped),
         adhoc: adhoc::summarise(request.window, request.family.as_deref(), sessions),
         review_catch: Default::default(),
+        headline: Default::default(),
     }
 }

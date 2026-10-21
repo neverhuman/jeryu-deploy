@@ -935,6 +935,59 @@ landing arm. An experiment arm has
 `TodoRef`: `{id, family, title, status, merged, rework, spend_usd, attempts, agent,
 model}`, agent and model of the landing attempt.
 
+### The three headline numbers
+
+`headline` carries lead time, exception rate and bad-change rate over the same
+window and the same todos the rest of the report covers. Implementation:
+`crates/jeryu-api/src/web/headline.rs`; Flow and Yield both show it.
+
+```jsonc
+"headline": {
+  "lead_time": {
+    // seconds; n is the todos the span could be measured on, and the
+    // percentiles are null with fewer than five of them (`too_few_samples`).
+    "filed_to_prod_s": {"n": 42, "p50": 251940, "p90": 913320},
+    "claim_to_main_s": {"n": 57, "p50": 82740, "p90": 543600}
+  },
+  "exception_rate": {
+    "todos": 61, "needed_human": 14, "rate": 0.2295,
+    "reasons": {"blocked": 9, "handoff": 3, "taken_on_by_a_person": 2}
+  },
+  "bad_change_rate": {
+    "changes": 140, "bad": 6, "rate": 0.0429,
+    "flaky_reds": 4, "by_repo": {"acme/widget": 6}
+  }
+}
+```
+
+**Lead time.** `filed_to_prod_s` runs from `filed_at` to when production first
+ran the todo's work: the earliest successful production deployment of each of
+its pull requests (`deploy.status` with `outcome` `success` and
+`detail.environment` `production`, or its verified delivery receipt), the
+latest over its repositories. A todo is left out when one of its pull requests
+has no such deployment, so the number is never dated from the deployment a
+different repository happens to have. `claim_to_main_s` runs from its first
+attempt's `started` to the `pr.merged` of its last pull request to merge, over
+merged todos only. A span that would be negative (a clock, not a measurement)
+is left out.
+
+**Exception rate.** The share of the window's todos that needed a person:
+stopped `blocked` or `handoff`, `closed` by hand, taken on by an `assignee`, or
+with an attempt whose outcome was `blocked`, `incomplete`, `retarget` or
+`killed`. An automatic `retry` is not an exception. `reasons` counts todos per
+reason, and one todo may have several. `rate` is null with no todos in the
+window.
+
+**Bad-change rate.** `changes` is the pull requests that merged in the window
+(`pr.merged`). `bad` is those that turned a repository red: a red stretch of
+main whose culprit is that merge and that a rerun of the same commit did not
+clear (`pipeline/main_health.rs`), or a production deployment of that pull
+request that failed (`deploy.status` with `outcome` `failure` or `error`). One
+pull request counts once however many ways it went red, and a failure on a
+change that merged outside the window counts against neither side.
+`flaky_reds` is the red stretches a rerun cleared, reported beside the rate
+rather than in it. `rate` is null (`no_merged_changes`) when nothing merged.
+
 ### Ad-hoc sessions
 
 `adhoc` is what agent sessions run by hand spent: the cost ledger's

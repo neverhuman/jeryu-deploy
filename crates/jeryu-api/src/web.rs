@@ -21,6 +21,7 @@ mod error_envelope;
 pub(crate) mod family;
 pub(crate) mod flow;
 pub(crate) mod gate_wanted;
+mod headline;
 pub(crate) mod human_time;
 mod idempotency;
 pub(crate) mod incidents;

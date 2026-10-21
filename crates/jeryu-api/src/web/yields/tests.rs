@@ -701,8 +701,28 @@ async fn yield_route_is_admin_only_refuses_bad_params_and_reads_the_queues() {
     close(&body["experiments"][0]["arms"][0]["arm_p"], 0.5);
     assert_eq!(body["scrap"][0]["id"], "20261005-080000-aaaaaa");
 
+    // The three headline numbers ride the same answer, over the same todos.
+    assert_eq!(body["headline"]["exception_rate"]["todos"], 1);
+    assert_eq!(body["headline"]["exception_rate"]["needed_human"], 1);
+    assert_eq!(body["headline"]["exception_rate"]["rate"], 1.0);
+    assert_eq!(body["headline"]["exception_rate"]["reasons"]["blocked"], 1);
+    assert_eq!(body["headline"]["lead_time"]["filed_to_prod_s"]["n"], 0);
+    assert_eq!(
+        body["headline"]["lead_time"]["claim_to_main_s"]["p50"],
+        Value::Null
+    );
+    assert_eq!(body["headline"]["bad_change_rate"]["changes"], 0);
+    assert_eq!(body["headline"]["bad_change_rate"]["rate"], Value::Null);
+    assert_eq!(
+        body["headline"]["bad_change_rate"]["unknown"],
+        "no_merged_changes"
+    );
+
     let outside = call("/api/v1/yield?since=2026-11-01&until=2026-11-02", &admin)
         .await
         .unwrap();
-    assert_eq!(json_of(outside).await["totals"]["todos"], 0);
+    let outside = json_of(outside).await;
+    assert_eq!(outside["totals"]["todos"], 0);
+    assert_eq!(outside["headline"]["exception_rate"]["todos"], 0);
+    assert_eq!(outside["headline"]["exception_rate"]["rate"], Value::Null);
 }
