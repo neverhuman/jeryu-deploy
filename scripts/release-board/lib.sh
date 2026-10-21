@@ -69,7 +69,9 @@ target() {
 
 # stage KEY=VALUE... — one stage. Keys: id name version state status known parallel never_deployed
 # column (one of the board's columns) targets (a JSON array) promote_cmd human_only automatic ships
-# (JSON array) missing (missing_json) arrived (arrived_json) rollback forge_repo forge_env.
+# (JSON array) missing (missing_json) arrived (arrived_json) rollback forge_repo forge_env
+# deploy_repo deploy_release (with promote_cmd: the staged release Promote deploys, `owner/name` and
+# its prod-<UTC stamp>-<sha>-unsigned id; both or neither).
 stage() {
   local -A f=([parallel]=false [never_deployed]=false [targets]='[]' [human_only]=false [automatic]=false [ships]='' [missing]='' [arrived]='[]')
   local kv
@@ -81,13 +83,15 @@ stage() {
     --arg cmd "${f[promote_cmd]:-}" --argjson human "${f[human_only]}" --argjson auto "${f[automatic]}" \
     --arg ships "${f[ships]}" --arg missing "${f[missing]}" --argjson arrived "${f[arrived]:-[]}" \
     --arg rollback "${f[rollback]:-}" \
-    --arg frepo "${f[forge_repo]:-}" --arg fenv "${f[forge_env]:-}" '
+    --arg frepo "${f[forge_repo]:-}" --arg fenv "${f[forge_env]:-}" \
+    --arg drepo "${f[deploy_repo]:-}" --arg drel "${f[deploy_release]:-}" '
     {id: $id, name: $name, version: (if $version == "" then null else $version end), state: $state,
      status: $status, known_by: $known, targets: $targets}
     + (if $parallel then {parallel: true} else {} end)
     + (if $never then {never_deployed: true} else {} end)
     + (if $column != "" then {column: $column} else {} end)
-    + (if $cmd != "" then {promote: {command: $cmd, human_only: $human, automatic: $auto}} else {} end)
+    + (if $cmd != "" then {promote: ({command: $cmd, human_only: $human, automatic: $auto}
+       + (if $drepo != "" and $drel != "" then {deploy: {repo: $drepo, release: $drel}} else {} end))} else {} end)
     + (if $ships != "" then {ships: ($ships | fromjson)} else {} end)
     + (if $missing != "" then {missing: ($missing | fromjson)} else {} end)
     + (if ($arrived | length) > 0 then {arrived: $arrived} else {} end)

@@ -29,7 +29,7 @@ collect_demo() {
   lane app "App" "demo/app" demo false \
     "$(stage id=main name=main version="$(short "$main")" state=none status=source known=derived column=main)" \
     "$(stage id=prod name=prod column=prod version="$(short "$prod")" state=warn status="$(behind "$m" "$prod" "$main") behind" known=host \
-        targets="[$(target node-a "$(short "$prod")" ok '["gate-a/slot0","gate-a/slot1"]'),$(target node-b old bad '[]' '[{"family":"demo","host":"node-b"}]')]" human_only=true promote_cmd="tag it" \
+        targets="[$(target node-a "$(short "$prod")" ok '["gate-a/slot0","gate-a/slot1"]'),$(target node-b old bad '[]' '[{"family":"demo","host":"node-b"}]')]" human_only=true promote_cmd="tag it" deploy_repo=demo/app deploy_release=prod-20261012T171717Z-f1b1fb4-unsigned \
         ships="$(git -C "$m" log --format='%h · %s' "$prod..$main" | lines_json)" forge_repo=demo/app forge_env=production \
         missing="$(missing_json demo "$m" demo/app main "$main" "$prod")" \
         arrived="$(arrived_json demo app prod "$m" demo/app "$prod")")"
@@ -108,6 +108,10 @@ jq -e '.lanes[0].stages[1] | .forge == {repo: "demo/app", environment: "producti
   and .targets[0].runners == ["gate-a/slot0", "gate-a/slot1"] and (.targets[1] | has("runners") | not)' "$b" >/dev/null \
   || fail "the prod stage carries its binding, promote, targets and ships"
 ok "a stage carries its forge binding, promote action, targets and what promoting ships"
+jq -e '.lanes[0].stages[1].promote.deploy == {repo: "demo/app", release: "prod-20261012T171717Z-f1b1fb4-unsigned"}
+  and (.lanes[0].stages[0] | has("promote") | not)' "$b" >/dev/null \
+  || fail "a promote that names a staged release carries its deploy"
+ok "a promote carries the staged release it deploys"
 jq -e '.lanes[0].stages[1] | .targets[1].slots == [{family: "demo", host: "node-b"}]
   and (.targets[0] | has("slots") | not)' "$b" >/dev/null \
   || fail "a target run by a worker pool names its shift slots: $(jq -c '.lanes[0].stages[1].targets' "$b")"

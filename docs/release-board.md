@@ -105,7 +105,8 @@ minutes ahead of the forge's clock.
     collector that knows a newer release is staged adds `deploy {repo, release}` (the forge
     repository that staged it and its `prod-<UTC stamp>-<sha>-unsigned` id); the page then also
     offers **Promote**, which runs that deploy ("Promote runs the deploy" below). A malformed
-    `deploy` is refused with `422`; it names no host or path.
+    `deploy` is refused with `422`; it names no host or path. A site adapter sets it with
+    `stage ... deploy_repo=owner/name deploy_release=<staged id>` (`scripts/release-board/lib.sh`).
   - `forge {repo, environment}` is the live overlay binding.
 - `work {total, method, parts[{key, label, count}], unlinked?}`: every todo in the family queue
   placed at the furthest point it reached — `live`, `merged` (on main, not released), `stranded`
