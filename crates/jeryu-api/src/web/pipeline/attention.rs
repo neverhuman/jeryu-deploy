@@ -20,7 +20,7 @@
 //! `next_step` and guessing which endpoint it meant. `href` stays where to go
 //! to understand the item.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -176,6 +176,7 @@ pub(crate) const KINDS: &[&str] = &[
     "release_stage_failed",
     "release_staged",
     "reviewer_offline",
+    "reviewer_rereviewing",
     "reviewer_stuck",
     "scorecard_digest",
     "shift_budget_spent",
@@ -1163,6 +1164,12 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     let pulls = open_pull_facts(state);
     let superseded_pulls = all_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
+    // Every open pull request and the head it is at now, so a rule that
+    // judges a head-anchored verdict can tell a current one from a stale one.
+    let open_heads: BTreeMap<(String, u64), String> = pulls
+        .iter()
+        .map(|p| ((p.repo.clone(), p.number), p.head_sha.clone()))
+        .collect();
     let waiting_review_count = pulls.iter().filter(|pull| waits_for_review(pull)).count();
     let entries = state.merge_queue.entries(state, |_| true);
     let building = entries.iter().any(|e| e.state == QueueState::Building);
@@ -1173,7 +1180,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     items.extend(queue_items(&entries, &open, now));
     items.extend(runner_items(
         &state.gate_runners.snapshot(),
-        &open,
+        &open_heads,
         waiting_review_count,
         building,
         reviewer_offline_thresholds(),

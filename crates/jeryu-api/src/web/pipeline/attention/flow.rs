@@ -964,10 +964,69 @@ pub(crate) fn main_red_items(facts: &[MainRedFacts]) -> Vec<Item> {
         .collect()
 }
 
+/// The informational row that replaces a hold whose head is gone: the
+/// reviewer is reading the pull request's current head right now, so the
+/// stale verdict is history rather than a thing to do.
+///
+/// `Watch`, never `Action`: nobody is being asked for anything. Returns
+/// `None` when no reviewer reports a live review of this pull request at
+/// `head` — then there is nothing to say, and the row is simply dropped.
+fn rereview_item(
+    reviewers: &[&GateRunnerRecord],
+    repo: &str,
+    pr: u64,
+    head: &str,
+    held_at: &str,
+) -> Option<Item> {
+    let (record, task) = reviewers.iter().find_map(|record| {
+        let task = record.heartbeat.current.as_ref()?;
+        (task.repo == repo && task.pr == Some(pr) && task.sha == head).then_some((record, task))
+    })?;
+    let mut item = Draft {
+        id: format!("reviewer-rereviewing:{repo}:{pr}"),
+        kind: "reviewer_rereviewing",
+        severity: Severity::Watch,
+        title: format!(
+            "Re-reviewing {} since {} (previous hold at {} is stale)",
+            short_sha(head),
+            task.started_at.to_rfc3339(),
+            short_sha(held_at)
+        ),
+        reason: format!(
+            "{} is reviewing {repo}#{pr} at its current head {}, which it started at {}. \
+             The verdict it left at {} was taken on a head that has been replaced since, so \
+             it asks nothing of anybody; wait for the pass on the current head.",
+            record.heartbeat.runner_id,
+            short_sha(head),
+            task.started_at.to_rfc3339(),
+            short_sha(held_at)
+        ),
+        href: pull_href(repo, pr),
+        label: "Wait for the review of the current head",
+        api: None,
+        command: None,
+    }
+    .build();
+    item.since = Some(task.started_at.to_rfc3339());
+    item.repo = Some(repo.to_string());
+    item.pr = Some(pr);
+    item.sha = Some(head.to_string());
+    Some(item)
+}
+
 /// Reviewers that could not review an open PR, and a gate with no runner.
+///
+/// `open_heads` is every open pull request and the head it is at now. A
+/// verdict is about the head it was taken on, so a hold only holds the pull
+/// request up while that head is still current: the fix for a hold is a push,
+/// and the push that answers it moves the head. Keyed by the live head rather
+/// than by "the pull request is open", `reviewer_stuck` stayed up for
+/// 39 minutes after the fix landed (live: jeryu/jeryu-ci-runner#109 held at
+/// 91beebd, fixed by edd08c5, which the reviewer was already re-reading), and
+/// read as a pull request nobody could move.
 pub(crate) fn runner_items(
     runners: &[GateRunnerRecord],
-    open_pulls: &BTreeSet<(String, u64)>,
+    open_heads: &BTreeMap<(String, u64), String>,
     waiting_review_count: usize,
     queue_building: bool,
     reviewer_thresholds: ReviewerOfflineThresholds,
@@ -985,19 +1044,33 @@ pub(crate) fn runner_items(
         reviewer_thresholds,
         now,
     ));
-    for record in reviewers {
+    let mut rowed: BTreeSet<(String, u64)> = BTreeSet::new();
+    for record in &reviewers {
         let Some(last) = &record.heartbeat.last else {
             continue;
         };
         let Some(explained) = review_hold_explanation(&last.conclusion) else {
             continue;
         };
-        let Some(pr) = last
+        let Some((pr, head)) = last
             .pr
-            .filter(|pr| open_pulls.contains(&(last.repo.clone(), *pr)))
+            .and_then(|pr| Some((pr, open_heads.get(&(last.repo.clone(), pr))?)))
         else {
             continue;
         };
+        if !rowed.insert((last.repo.clone(), pr)) {
+            continue;
+        }
+        if head != &last.sha {
+            // The head the verdict was taken on is gone, so the verdict asks
+            // nothing of anybody. Say so only while the reviewer is visibly
+            // on the new head: that is what a reader who remembers the hold
+            // came to find out.
+            if let Some(row) = rereview_item(&reviewers, &last.repo, pr, head, &last.sha) {
+                items.push(row);
+            }
+            continue;
+        }
         let mut item = Draft {
             id: format!("reviewer-stuck:{}:{}", last.repo, pr),
             kind: "reviewer_stuck",
@@ -1024,7 +1097,7 @@ pub(crate) fn runner_items(
     let gate_slot =
         |r: &&GateRunnerRecord| crate::web::control_plane::holds_gate_slot(&r.heartbeat);
     let gate_online = runners.iter().filter(gate_slot).any(|r| is_online(r, now));
-    if !gate_online && (!open_pulls.is_empty() || queue_building) {
+    if !gate_online && (!open_heads.is_empty() || queue_building) {
         let last_seen = runners
             .iter()
             .filter(gate_slot)
@@ -1039,7 +1112,7 @@ pub(crate) fn runner_items(
                 "{} pull request(s) are open{} and no gate runner slot has sent a heartbeat \
                  in the last 3 minutes, so no required check is posted and nothing can \
                  merge. The runners are systemd user timers on the gate host.",
-                open_pulls.len(),
+                open_heads.len(),
                 if queue_building {
                     " and the merge queue is waiting on a gate"
                 } else {

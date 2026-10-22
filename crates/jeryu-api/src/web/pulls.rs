@@ -1235,6 +1235,15 @@ fn detail_response(
         with_canonical_links(pr, summary);
     }
     value["workflow"] = workflow;
+    // The one review fact the reviews themselves do not carry: the pass that
+    // has not finished yet, and the head it is reading. Without it a page
+    // cannot tell "held, and nobody has looked since" from "held, and the
+    // reviewer is already reading the fix".
+    value["review_activity"] =
+        match review_activity::review_activity(state, pr, authenticated_login) {
+            Some(activity) => serde_json::to_value(activity).expect("review activity serializes"),
+            None => Value::Null,
+        };
     Json(value).into_response()
 }
 
@@ -1704,6 +1713,7 @@ mod expected;
 pub(in crate::web) mod landed;
 pub(in crate::web) mod owner_paths;
 mod posture;
+mod review_activity;
 mod workflow;
 
 #[cfg(test)]

@@ -21,7 +21,9 @@ use super::attention::{
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
 use super::types::Event;
-use crate::web::control_plane::{GateRunnerHeartbeat, GateRunnerRecord, GateRunnerResult};
+use crate::web::control_plane::{
+    GateRunnerHeartbeat, GateRunnerRecord, GateRunnerResult, GateRunnerTask,
+};
 use crate::web::merge_queue::{QueueEntry, QueueState};
 use crate::web::pulls::landed::Landed;
 use crate::web::pulls::{GateFailure, PullPosture};
@@ -1630,7 +1632,7 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
             // A live gate slot, so the inbox has nothing else to say.
             runner("xbabe2/slot0", &["pr-gate"], 30, None),
         ],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         0,
         false,
         reviewer_thresholds(),
@@ -1663,7 +1665,7 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
             // A live gate slot, so the inbox has nothing else to say.
             runner("xbabe2/slot0", &["pr-gate"], 30, None),
         ],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         0,
         false,
         reviewer_thresholds(),
@@ -1822,6 +1824,36 @@ fn runner(
     }
 }
 
+/// The head the `pull` and `runner` helpers both put their pull request at.
+const TEST_HEAD: &str = "b761244b76371995527bfe7795e98492703553a8";
+
+/// The head a pull request moved to when its author pushed the fix.
+const NEW_HEAD: &str = "edd08c5a1f2e4b6c8d0a2b4c6d8e0f1a2b3c4d5e";
+
+/// A reviewer that holds `pr` at `TEST_HEAD` and is reviewing it again at
+/// `head` right now.
+fn rereviewing(id: &str, pr: u64, head: &str) -> GateRunnerRecord {
+    let mut record = runner(id, &["redteam"], 30, Some(("hold", pr)));
+    record.heartbeat.current = Some(GateRunnerTask {
+        repo: "jeryu/jeryu-web".to_string(),
+        pr: Some(pr),
+        sha: head.to_string(),
+        recipe: "review".to_string(),
+        target: None,
+        kind: Some("pr".to_string()),
+        started_at: now() - Duration::minutes(2),
+    });
+    record
+}
+
+/// Every pull request of `open`, at `sha`: what `runner_items` reads to tell
+/// a verdict on the current head from one on a head that has been replaced.
+fn heads_at(open: &BTreeSet<(String, u64)>, sha: &str) -> BTreeMap<(String, u64), String> {
+    open.iter()
+        .map(|key| (key.clone(), sha.to_string()))
+        .collect()
+}
+
 #[test]
 fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     let open: BTreeSet<(String, u64)> = [("jeryu/jeryu-web".to_string(), 35)].into();
@@ -1843,7 +1875,7 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
 
     let healthy = runner_items(
         &[stuck.clone(), approved, closed_pr, gate, stale_gate.clone()],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         0,
         false,
         reviewer_thresholds(),
@@ -1861,7 +1893,7 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     // Only a reviewer and a gate slot silent for ten minutes are left.
     let down = runner_items(
         &[stuck, stale_gate.clone()],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         0,
         false,
         reviewer_thresholds(),
@@ -1880,7 +1912,7 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     assert!(
         runner_items(
             only_stale,
-            &BTreeSet::new(),
+            &BTreeMap::new(),
             0,
             false,
             reviewer_thresholds(),
@@ -1892,7 +1924,7 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     assert_eq!(
         kinds(&runner_items(
             only_stale,
-            &BTreeSet::new(),
+            &BTreeMap::new(),
             0,
             true,
             reviewer_thresholds(),
@@ -1901,6 +1933,130 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
         )),
         ["gate_runner_down"],
         "the merge queue waiting on a gate counts"
+    );
+}
+
+/// A hold is about the head it was taken on. Once the author pushes the fix
+/// the held head is gone, so the hold asks nothing of anybody: the action
+/// item goes, and while the reviewer is reading the new head the inbox says
+/// that instead (live: jeryu/jeryu-ci-runner#109, held at 91beebd and fixed
+/// by edd08c5, still read as stuck 39 minutes after the reviewer had moved).
+#[test]
+fn a_hold_on_a_head_that_has_been_replaced_is_not_a_stuck_reviewer() {
+    let repo = "jeryu/jeryu-web".to_string();
+    let open: BTreeSet<(String, u64)> = [(repo.clone(), 35)].into();
+    let gate = runner("node-2/slot0", &["pr-gate"], 30, None);
+
+    // Head B, the reviewer holding head A and already reading head B.
+    let moved = runner_items(
+        &[rereviewing("node-0/pr-redteam", 35, NEW_HEAD), gate.clone()],
+        &heads_at(&open, NEW_HEAD),
+        0,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    );
+    assert_eq!(kinds(&moved), ["reviewer_rereviewing"]);
+    let row = &moved[0];
+    assert_eq!(row.severity, Severity::Watch);
+    assert_eq!(row.repo.as_deref(), Some(repo.as_str()));
+    assert_eq!(row.pr, Some(35));
+    assert_eq!(row.sha.as_deref(), Some(NEW_HEAD));
+    assert_eq!(row.since.as_deref(), Some("2026-09-19T12:58:00+00:00"));
+    assert_eq!(
+        row.title,
+        format!(
+            "Re-reviewing {} since 2026-09-19T12:58:00+00:00 (previous hold at {} is stale)",
+            &NEW_HEAD[..7],
+            &TEST_HEAD[..7]
+        )
+    );
+    assert!(
+        row.reason.contains("asks nothing of anybody"),
+        "{}",
+        row.reason
+    );
+
+    // Head B, and no reviewer is reading it: the stale hold is simply dropped.
+    let quiet = runner_items(
+        &[
+            runner("node-0/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
+            gate.clone(),
+        ],
+        &heads_at(&open, NEW_HEAD),
+        0,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    );
+    assert!(quiet.is_empty(), "{quiet:?}");
+
+    // The hold is on the head the pull request is at now: still an action item.
+    let current = runner_items(
+        &[
+            runner("node-0/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
+            gate.clone(),
+        ],
+        &heads_at(&open, TEST_HEAD),
+        0,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    );
+    assert_eq!(kinds(&current), ["reviewer_stuck"]);
+    assert_eq!(current[0].severity, Severity::Action);
+    assert_eq!(current[0].sha.as_deref(), Some(TEST_HEAD));
+
+    // The pull request is closed: the inbox has nothing to say either way.
+    let closed = runner_items(
+        &[rereviewing("node-0/pr-redteam", 35, NEW_HEAD), gate],
+        &BTreeMap::new(),
+        0,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    );
+    assert!(closed.is_empty(), "{closed:?}");
+}
+
+/// A `CHANGES_REQUESTED` the author has already answered with a push is not
+/// an action item either: the posture counts only the reviews in force on the
+/// pull request's current head, so the row the inbox raises follows the head.
+#[test]
+fn changes_requested_on_a_head_that_has_been_replaced_raises_nothing() {
+    let answered = pull(
+        35,
+        45,
+        PullPosture {
+            checks_green: true,
+            required_approvals: 1,
+            ..PullPosture::default()
+        },
+    );
+    assert_eq!(
+        kinds(&pull_items(&[answered], &[], now(), &hosts())),
+        ["pr_awaiting_approval"],
+        "the withdrawn verdict asks for nothing; the open approval still does"
+    );
+
+    // The same pull request with the verdict in force on the current head.
+    let held = pull(
+        35,
+        45,
+        PullPosture {
+            changes_requested: 1,
+            checks_green: true,
+            required_approvals: 1,
+            ..PullPosture::default()
+        },
+    );
+    assert_eq!(
+        kinds(&pull_items(&[held], &[], now(), &hosts())),
+        ["pr_changes_requested"]
     );
 }
 
@@ -1913,7 +2069,7 @@ fn reviewer_offline_is_critical_when_reviewers_stop_reporting() {
 
     let stale_items = runner_items(
         &[stale, gate.clone()],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         2,
         false,
         reviewer_thresholds(),
@@ -1943,7 +2099,7 @@ fn reviewer_offline_is_critical_when_reviewers_stop_reporting() {
 
     let fresh_items = runner_items(
         &[fresh, gate],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         2,
         false,
         reviewer_thresholds(),
@@ -1967,7 +2123,7 @@ fn reviewer_offline_fires_when_review_passes_stop_completing() {
 
     let items = runner_items(
         &[quiet, gate],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         1,
         false,
         reviewer_thresholds(),
@@ -3590,6 +3746,7 @@ const KIND_ROUTES: &[(&str, &str)] = &[
     ("release_stage_failed", "/activity"),
     ("release_staged", "/releases"),
     ("reviewer_offline", "/runners"),
+    ("reviewer_rereviewing", "/repos/:provider/:owner/*"),
     ("reviewer_stuck", "/repos/:provider/:owner/*"),
     ("scorecard_digest", "/scorecard"),
     ("shift_budget_spent", "/work"),
@@ -4058,7 +4215,7 @@ fn one_of_every_kind() -> Vec<Item> {
             // A gate slot silent for ten minutes is a gate with no runner.
             runner("gate-1", &["pr-gate"], 600, None),
         ],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         1,
         true,
         reviewer_thresholds(),
@@ -4067,7 +4224,21 @@ fn one_of_every_kind() -> Vec<Item> {
     ));
     items.extend(runner_items(
         &[runner("gate-2", &["pr-gate"], 30, None)],
-        &open,
+        &heads_at(&open, TEST_HEAD),
+        1,
+        false,
+        reviewer_thresholds(),
+        now(),
+        &hosts(),
+    ));
+    // A hold left on a head that has been replaced, with the reviewer already
+    // on the new one: the informational row, not an action item.
+    items.extend(runner_items(
+        &[
+            rereviewing("review-2", 35, NEW_HEAD),
+            runner("gate-3", &["pr-gate"], 30, None),
+        ],
+        &heads_at(&open, NEW_HEAD),
         1,
         false,
         reviewer_thresholds(),

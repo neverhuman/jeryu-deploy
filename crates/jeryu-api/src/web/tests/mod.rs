@@ -57,6 +57,7 @@ mod release_board_tests;
 mod repo_admin_tests;
 mod repo_automation_tests;
 mod repo_list_tests;
+mod review_activity_tests;
 mod review_catch_tests;
 mod signup_tests;
 mod site_settings_tests;
