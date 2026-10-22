@@ -1,6 +1,6 @@
 # 0019. Gate in two tiers and promote only full-tier tags
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-22
 Supersedes: none
 Superseded-by: none
