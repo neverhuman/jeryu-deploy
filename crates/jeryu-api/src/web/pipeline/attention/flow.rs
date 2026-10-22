@@ -1130,8 +1130,73 @@ pub(crate) fn runner_items(
         .build();
         item.since = last_seen.map(|seen| seen.to_rfc3339());
         items.push(item);
+    } else if !open_heads.is_empty() {
+        items.extend(silent_gate_host_items(
+            &runners.iter().filter(gate_slot).collect::<Vec<_>>(),
+            open_heads.len(),
+            now,
+        ));
     }
     items
+}
+
+/// Gate hosts are partitioned by owner, so a host that hangs while another
+/// beats leaves its share ungated with the any-slot-online rule still quiet.
+/// One row per host whose slots have all been silent past the offline
+/// threshold. A heartbeat names its host but not the owners it gates, so the
+/// share is every open pull request and the row says so.
+fn silent_gate_host_items(
+    gate_slots: &[&GateRunnerRecord],
+    open_count: usize,
+    now: DateTime<Utc>,
+) -> Vec<Item> {
+    let mut by_host: BTreeMap<&str, Vec<&GateRunnerRecord>> = BTreeMap::new();
+    for record in gate_slots {
+        by_host
+            .entry(record.heartbeat.host.as_str())
+            .or_default()
+            .push(record);
+    }
+    let Some(live) = by_host
+        .iter()
+        .find(|(_, slots)| slots.iter().any(|r| is_online(r, now)))
+        .map(|(host, _)| *host)
+    else {
+        return Vec::new();
+    };
+    by_host
+        .iter()
+        .filter(|(_, slots)| !slots.iter().any(|r| is_online(r, now)))
+        .map(|(host, slots)| {
+            let last = slots.iter().map(|r| r.received_at).max();
+            let seen = last.map_or_else(|| "never".to_string(), |t| t.to_rfc3339());
+            let mut item = Draft {
+                id: format!("gate-runner-down:{host}"),
+                kind: "gate_runner_down",
+                severity: Severity::Critical,
+                title: format!("Gate host {host} is not reporting"),
+                reason: format!(
+                    "No gate runner slot on {host} has sent a heartbeat in the last 3 \
+                     minutes (last at {seen}) while {live} is alive, so the owners {host} \
+                     gates have no required check. Heartbeats do not name those owners: up \
+                     to {open_count} open pull request(s) may be waiting on {host}. Move \
+                     its owners into GATE_RUNNER_OWNERS on {live}, then restart its \
+                     runner timers; the command shows where that is set."
+                ),
+                href: "/runners".to_string(),
+                label: "Move the silent host's owners to a live gate host",
+                api: None,
+                command: Some(Shell {
+                    line: "systemctl --user show 'pr-gate-runner@*' -p Environment -p EnvironmentFiles"
+                        .to_string(),
+                    run_in: Hosts::anywhere(live),
+                }),
+            }
+            .build();
+            item.since = last.map(|t| t.to_rfc3339());
+            item
+        })
+        .collect()
 }
 
 fn reviewer_offline_items(

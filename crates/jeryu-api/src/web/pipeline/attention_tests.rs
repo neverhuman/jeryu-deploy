@@ -1936,6 +1936,60 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     );
 }
 
+/// One gate host hanging while another beats leaves its share ungated.
+#[test]
+fn a_silent_gate_host_is_raised_while_another_is_alive() {
+    let open = BTreeMap::from([(("veox/app".to_string(), 7u64), TEST_HEAD.to_string())]);
+    let on = |host: &str, id: &str, ago: i64| {
+        let mut r = runner(id, &["pr-gate"], ago, None);
+        r.heartbeat.host = host.to_string();
+        r
+    };
+    let run = |records: &[GateRunnerRecord], open: &BTreeMap<(String, u64), String>| {
+        runner_items(
+            records,
+            open,
+            0,
+            false,
+            reviewer_thresholds(),
+            now(),
+            &hosts(),
+        )
+    };
+    let both = [
+        on("host-a", "host-a/slot0", 30),
+        on("host-b", "host-b/slot0", 600),
+    ];
+    let rows = run(&both, &open);
+    assert_eq!(kinds(&rows), ["gate_runner_down"]);
+    assert_eq!(rows[0].severity, Severity::Critical);
+    assert!(rows[0].title.contains("host-b"));
+    assert!(rows[0].reason.contains("host-a"));
+    assert!(rows[0].reason.contains("1 open pull request"));
+    assert!(rows[0].action.command.is_some());
+    assert_eq!(
+        rows[0].action.run_in.as_deref(),
+        Some("host-a, any directory")
+    );
+    assert!(rows[0].since.is_some());
+    // One live slot keeps a host alive; nothing open means nothing is ungated.
+    let mixed = [
+        on("host-a", "host-a/slot0", 30),
+        on("host-b", "host-b/slot0", 600),
+        on("host-b", "host-b/slot1", 20),
+    ];
+    assert!(run(&mixed, &open).is_empty());
+    assert!(run(&both, &BTreeMap::new()).is_empty());
+    // Every host silent keeps the single all-silent row.
+    let none = [
+        on("host-a", "host-a/slot0", 600),
+        on("host-b", "host-b/slot0", 700),
+    ];
+    let rows = run(&none, &open);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].title, "No PR gate runner is reporting");
+}
+
 /// A hold is about the head it was taken on. Once the author pushes the fix
 /// the held head is gone, so the hold asks nothing of anybody: the action
 /// item goes, and while the reviewer is reading the new head the inbox says
