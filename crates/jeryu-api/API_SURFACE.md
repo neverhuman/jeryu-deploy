@@ -87,7 +87,7 @@ Implemented HTTP/WebSocket routes:
 - `GET /api/v1/repos/{id}/blob`
 - `GET /api/v1/repos/{id}/raw`
 - `GET /api/v1/repos/{id}/raw/{ref}/{path}` (path form; relative links resolve to siblings; ref may contain `/`, longest matching ref wins)
-- `GET /api/v1/repos/{id}/readme`
+- `GET /api/v1/repos/{id}/readme` (`?path=<dir>`: that folder's README; relative image and link URLs in rendered Markdown resolve to raw files and web views)
 - `PUT /api/v1/repos/{id}/readme`
 - `GET /api/v1/repos/{id}/pages` (every Markdown path at a ref, for the wiki reader)
 - `GET /api/v1/repos/{id}/blame?path=` (line runs and the commit that last changed each)

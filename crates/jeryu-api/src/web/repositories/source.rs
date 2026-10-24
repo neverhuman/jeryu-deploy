@@ -152,7 +152,7 @@ fn git_blob(
     let rendered_markdown = text
         .as_deref()
         .filter(|_| render == Some("html") && is_markdown_path(path))
-        .map(render_markdown);
+        .map(|text| render_repo_markdown(state, repo, ref_name, path, text));
     Ok(BlobResponse {
         repo: repo_id(repo),
         path: normalize_git_path(Some(path))?,
@@ -241,15 +241,74 @@ fn git_blob_bytes_inner(
         )));
     }
     let bytes = git_output(state, &bare.path, &["cat-file", "-p", &sha])?;
-    Ok((bytes, mime_for_path(&path), sha))
+    let mime = mime_for_repo_file(&path, &bytes);
+    Ok((bytes, mime, sha))
 }
 
+/// Render a repository Markdown file with its relative URLs resolved: images
+/// to the path-form raw file beside it, links to the web app's blob or tree
+/// view (see `markdown::MarkdownBase`).
+fn render_repo_markdown(
+    state: &WebState,
+    repo: &Repository,
+    ref_name: &str,
+    path: &str,
+    text: &str,
+) -> RenderedMarkdown {
+    let commit = state
+        .repo_manager
+        .open_parts(&repo.owner, &repo.name)
+        .ok()
+        .and_then(|bare| {
+            resolve_commit(state, &bare, ref_name)
+                .ok()
+                .map(|c| (bare, c))
+        });
+    let lookups = std::cell::Cell::new(0_u32);
+    let is_dir = |candidate: &str| -> bool {
+        // Bounded: a README with hundreds of links costs at most this many
+        // `cat-file` runs; past it a link without a trailing `/` is a file.
+        lookups.set(lookups.get() + 1);
+        let Some((bare, commit)) = commit.as_ref().filter(|_| lookups.get() <= 64) else {
+            return false;
+        };
+        git_lookup(
+            state,
+            &bare.path,
+            &["cat-file", "-t", &format!("{commit}:{candidate}")],
+        )
+        .ok()
+        .flatten()
+        .is_some_and(|kind| String::from_utf8_lossy(&kind).trim() == "tree")
+    };
+    let repo_id = repo.id.to_string();
+    let web_root = format!(
+        "/repos/jeryu/{}/{}",
+        encode_segment(&repo.owner),
+        encode_segment(&repo.name)
+    );
+    let dir = path
+        .trim_matches('/')
+        .rsplit_once('/')
+        .map_or("", |(dir, _)| dir);
+    let base = MarkdownBase {
+        repo_id: &repo_id,
+        web_root: &web_root,
+        ref_name,
+        dir,
+        is_dir: &is_dir,
+    };
+    render_markdown_in(text, Some(&base))
+}
+
+/// The README of a directory (`None` or empty: the repository root).
 fn git_readme_path(
     state: &WebState,
     repo: &Repository,
     ref_name: &str,
+    dir: Option<&str>,
 ) -> SourceResult<Option<String>> {
-    let entries = git_tree(state, repo, ref_name, None)?;
+    let entries = git_tree(state, repo, ref_name, dir)?;
     let mut candidates: Vec<_> = entries
         .into_iter()
         .filter(|entry| entry.kind == TreeEntryKind::File)
@@ -358,48 +417,35 @@ fn preview_limit_for_path(path: &str) -> u64 {
     }
 }
 
-/// Images, fonts and media a raw page loads as siblings. SVG is an image to
-/// `<img>`; opened directly, the raw CSP sandbox keeps its script inert.
-fn media_mime(lower: &str) -> Option<&'static str> {
-    let ext = lower.rsplit_once('.')?.1;
-    Some(match ext {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "svg" => "image/svg+xml",
-        "ico" => "image/x-icon",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
-        "wav" => "audio/wav",
-        "pdf" => "application/pdf",
-        _ => return None,
-    })
-}
-
-fn mime_for_path(path: &str) -> &'static str {
-    let lower = path.to_ascii_lowercase();
-    if is_markdown_path(&lower) {
-        "text/markdown; charset=utf-8"
-    } else if lower.ends_with(".json") {
-        "application/json; charset=utf-8"
-    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
-        "text/html; charset=utf-8"
-    } else if lower.ends_with(".css") {
-        "text/css; charset=utf-8"
-    } else if let Some(mime) = media_mime(&lower) {
-        mime
+/// The media type a repository file is served with, by `/blob`'s `mime` and
+/// by both raw forms. Names come from the shared table; repository content
+/// differs from the SPA's own files in two ways:
+///
+/// - JavaScript is `text/plain`, never `text/javascript`. With `nosniff` a
+///   browser then refuses it as a `<script>` on any page of this origin, the
+///   SPA included, whose `script-src 'self'` would otherwise admit a
+///   committed file. The raw CSP cannot do that job: a response's CSP governs
+///   the document it is, not the page that loads it as a script.
+/// - Anything the table does not know is `text/plain` when it is text, and
+///   `application/octet-stream` when it is binary (a NUL byte, or not UTF-8),
+///   so an unknown image or archive is offered as bytes instead of garbage.
+///
+/// HTML and SVG keep their real types; the raw CSP keeps them inert.
+pub(super) fn mime_for_repo_file(path: &str, bytes: &[u8]) -> &'static str {
+    match super::super::media_types::extension_of(path) {
+        Some(ext) if matches!(ext.to_ascii_lowercase().as_str(), "js" | "mjs" | "cjs") => {
+            return "text/plain; charset=utf-8";
+        }
+        Some(ext) => {
+            if let Some(mime) = super::super::media_types::by_extension(ext) {
+                return mime;
+            }
+        }
+        None => {}
+    }
+    if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
+        "application/octet-stream"
     } else {
-        // Everything else, `.js` and `.mjs` included, is plain text: with
-        // `nosniff` a browser refuses to run it as script or load it as a
-        // stylesheet, whatever a page asks.
         "text/plain; charset=utf-8"
     }
 }
@@ -544,14 +590,38 @@ pub(in crate::web) async fn repo_readme(
     let Some(repo) = find_repo(&state, &id) else {
         return readme_not_found_error();
     };
-    if let Ok(Some(path)) = git_readme_path(&state, &repo, source_ref(&repo, &query)) {
-        return match git_blob(
-            &state,
-            &repo,
-            source_ref(&repo, &query),
-            &path,
-            Some("html"),
-        ) {
+    // `?path=<dir>`: that directory's README, as a folder view shows it. A
+    // directory without one is a 404; the root keeps its stored fallback.
+    if let Some(dir) = query
+        .path
+        .as_deref()
+        .map(|dir| dir.trim_matches('/'))
+        .filter(|dir| !dir.is_empty())
+    {
+        return match git_readme_path(&state, &repo, source_ref(&repo, &query), Some(dir)) {
+            Ok(Some(path)) => readme_blob_response(&state, &repo, source_ref(&repo, &query), &path),
+            Ok(None) => api_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "no README in this directory at this ref",
+            ),
+            Err(response) => *response,
+        };
+    }
+    if let Ok(Some(path)) = git_readme_path(&state, &repo, source_ref(&repo, &query), None) {
+        return readme_blob_response(&state, &repo, source_ref(&repo, &query), &path);
+    }
+    Json(readme_response(&state, &repo)).into_response()
+}
+
+fn readme_blob_response(
+    state: &WebState,
+    repo: &Repository,
+    ref_name: &str,
+    path: &str,
+) -> AxumResponse {
+    {
+        match git_blob(state, repo, ref_name, path, Some("html")) {
             Ok(blob) => Json(ReadmeResponse {
                 markdown: blob.text.unwrap_or_default(),
                 rendered_markdown: blob
@@ -560,9 +630,8 @@ pub(in crate::web) async fn repo_readme(
             })
             .into_response(),
             Err(response) => *response,
-        };
+        }
     }
-    Json(readme_response(&state, &repo)).into_response()
 }
 
 pub(in crate::web) async fn repo_readme_update(

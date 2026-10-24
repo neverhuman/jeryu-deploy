@@ -29,6 +29,7 @@ mod mail;
 mod mail_layout;
 mod managed_launch;
 mod markdown;
+mod media_types;
 mod merge_attempts;
 mod merge_queue;
 pub(crate) mod mirror_reconcile;

@@ -11,7 +11,32 @@ use std::collections::HashMap;
 use jeryu_readmodel::contracts::{MarkdownHeading, MarkdownLink, RenderedMarkdown};
 use pulldown_cmark::{CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd, html};
 
+/// Where a Markdown file lives, so its relative URLs can be resolved the way
+/// a repository host does: images to the path-form raw file beside it, links
+/// to the web app's file or folder view.
+pub(super) struct MarkdownBase<'a> {
+    /// The repository id the raw route takes.
+    pub(super) repo_id: &'a str,
+    /// The repository's web-app root, `/repos/<host>/<owner>/<name>`.
+    pub(super) web_root: &'a str,
+    pub(super) ref_name: &'a str,
+    /// The Markdown file's directory, `""` at the root, no trailing `/`.
+    pub(super) dir: &'a str,
+    /// Whether a repository path is a directory (a link then opens the tree
+    /// view instead of the blob view).
+    pub(super) is_dir: &'a dyn Fn(&str) -> bool,
+}
+
 pub(super) fn render_markdown(markdown: &str) -> RenderedMarkdown {
+    render_markdown_in(markdown, None)
+}
+
+/// [`render_markdown`], with relative image and link URLs resolved against
+/// `base` when one is given.
+pub(super) fn render_markdown_in(
+    markdown: &str,
+    base: Option<&MarkdownBase<'_>>,
+) -> RenderedMarkdown {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
@@ -47,11 +72,22 @@ pub(super) fn render_markdown(markdown: &str) -> RenderedMarkdown {
                 if is_unsafe_url(dest_url) {
                     *dest_url = CowStr::Borrowed("#");
                 } else {
+                    if let Some(base) = base
+                        && let Some(resolved) = relative_target(dest_url, base, Target::Link)
+                    {
+                        *dest_url = CowStr::from(resolved);
+                    }
                     links.push(markdown_link(dest_url));
                 }
             }
-            Event::Start(Tag::Image { dest_url, .. }) if is_unsafe_url(dest_url) => {
-                *dest_url = CowStr::Borrowed("#");
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                if is_unsafe_url(dest_url) {
+                    *dest_url = CowStr::Borrowed("#");
+                } else if let Some(base) = base
+                    && let Some(resolved) = relative_target(dest_url, base, Target::Image)
+                {
+                    *dest_url = CowStr::from(resolved);
+                }
             }
             _ => {}
         }
@@ -133,6 +169,120 @@ fn is_unsafe_url(url: &str) -> bool {
     url.contains(':') && matches!(scheme.as_str(), "javascript" | "vbscript" | "data")
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Target {
+    Image,
+    Link,
+}
+
+/// The rewritten URL for a relative `url`, or `None` to leave it as written.
+///
+/// Relative means: no scheme, not protocol-relative, no leading `/`, and not
+/// a bare `#fragment`. The path is percent-decoded, joined to the file's
+/// directory, and `.`/`..` are folded; a path that climbs above the
+/// repository root becomes `#`. Images go to the path-form raw URL; links go
+/// to the web app's blob view, or its tree view for a directory, keeping any
+/// `#fragment`.
+fn relative_target(url: &str, base: &MarkdownBase<'_>, target: Target) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() || url.starts_with(['/', '#', '?']) || has_scheme(url) {
+        return None;
+    }
+    let (rest, fragment) = match url.split_once('#') {
+        Some((rest, fragment)) => (rest, Some(fragment)),
+        None => (url, None),
+    };
+    // A query means nothing to a file in a repository.
+    let path_part = rest.split_once('?').map_or(rest, |(path, _)| path);
+    let trailing_slash = path_part.ends_with('/');
+    let mut parts: Vec<String> = base
+        .dir
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    for raw in path_part.split('/') {
+        let part = super::auth::percent_decode(raw);
+        match part.as_str() {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return Some("#".to_string());
+                }
+            }
+            _ if part.contains('\0') => return Some("#".to_string()),
+            _ => parts.push(part),
+        }
+    }
+    let path = parts
+        .iter()
+        .map(|part| encode_segment(part))
+        .collect::<Vec<_>>()
+        .join("/");
+    let resolved = match target {
+        Target::Image => {
+            if path.is_empty() {
+                return Some("#".to_string());
+            }
+            let ref_path = base
+                .ref_name
+                .split('/')
+                .map(encode_segment)
+                .collect::<Vec<_>>()
+                .join("/");
+            format!(
+                "/api/v1/repos/{}/raw/{ref_path}/{path}",
+                encode_segment(base.repo_id)
+            )
+        }
+        Target::Link => {
+            let joined = parts.join("/");
+            let view = if trailing_slash || joined.is_empty() || (base.is_dir)(&joined) {
+                "tree"
+            } else {
+                "blob"
+            };
+            let mut link = format!("{}/{view}/{}", base.web_root, encode_segment(base.ref_name));
+            if !path.is_empty() {
+                link.push('/');
+                link.push_str(&path);
+            }
+            if let Some(fragment) = fragment {
+                link.push('#');
+                link.push_str(fragment);
+            }
+            link
+        }
+    };
+    Some(resolved)
+}
+
+/// `scheme:` per RFC 3986, or a protocol-relative `//host`.
+fn has_scheme(url: &str) -> bool {
+    if url.starts_with("//") {
+        return true;
+    }
+    let Some((scheme, _)) = url.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// Percent-encode one path segment (everything but RFC 3986 unreserved).
+pub(super) fn encode_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 fn markdown_link(href: &str) -> MarkdownLink {
     let external = href.starts_with("http://")
         || href.starts_with("https://")
@@ -147,7 +297,98 @@ fn markdown_link(href: &str) -> MarkdownLink {
 
 #[cfg(test)]
 mod tests {
-    use super::render_markdown;
+    use super::{MarkdownBase, render_markdown, render_markdown_in};
+
+    fn rendered_in(markdown: &str, dir: &str) -> String {
+        let is_dir = |path: &str| path == "showcase/set-a" || path == "docs";
+        let base = MarkdownBase {
+            repo_id: "repo-1",
+            web_root: "/repos/jeryu/acme/widgets",
+            ref_name: "release/v1",
+            dir,
+            is_dir: &is_dir,
+        };
+        render_markdown_in(markdown, Some(&base)).html
+    }
+
+    #[test]
+    fn relative_images_go_to_the_raw_file_beside_the_document() {
+        let html = rendered_in(
+            "![a](shot.webp) ![b](./nested/deep/b.png) ![c](../other/c.png) ![d](img%20one.png) ![e](x.png?raw=1#frag)",
+            "showcase/set-a",
+        );
+        let raw = "/api/v1/repos/repo-1/raw/release/v1";
+        assert!(
+            html.contains(&format!("src=\"{raw}/showcase/set-a/shot.webp\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("src=\"{raw}/showcase/set-a/nested/deep/b.png\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("src=\"{raw}/showcase/other/c.png\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("src=\"{raw}/showcase/set-a/img%20one.png\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("src=\"{raw}/showcase/set-a/x.png\"")),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn relative_links_open_the_web_view_and_escapes_are_refused() {
+        let html = rendered_in(
+            "[guide](../guide.md#setup) [set](./) [docs](../../docs) [up](../../../etc/passwd) ![up](../../../x.png) [top](#top)",
+            "showcase/set-a",
+        );
+        let web = "/repos/jeryu/acme/widgets";
+        assert!(
+            html.contains(&format!(
+                "href=\"{web}/blob/release%2Fv1/showcase/guide.md#setup\""
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("href=\"{web}/tree/release%2Fv1/showcase/set-a\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("href=\"{web}/tree/release%2Fv1/docs\"")),
+            "{html}"
+        );
+        assert!(html.contains("href=\"#\">up</a>"), "{html}");
+        assert!(html.contains("src=\"#\" alt=\"up\""), "{html}");
+        assert!(html.contains("href=\"#top\""), "{html}");
+        assert!(!html.contains("passwd"), "{html}");
+    }
+
+    #[test]
+    fn absolute_external_and_unsafe_urls_are_not_rebased() {
+        let html = rendered_in(
+            "![abs](/static/x.png) ![ext](https://cdn.example/x.png) ![proto](//cdn.example/y.png) [mail](mailto:a@example.com) ![inline](data:image/png;base64,AAAA) [js](javascript:alert(1))",
+            "docs",
+        );
+        assert!(html.contains("src=\"/static/x.png\""), "{html}");
+        assert!(html.contains("src=\"https://cdn.example/x.png\""), "{html}");
+        assert!(html.contains("src=\"//cdn.example/y.png\""), "{html}");
+        assert!(html.contains("href=\"mailto:a@example.com\""), "{html}");
+        // data: and javascript: stay neutralised exactly as without a base.
+        assert!(!html.contains("data:image"), "{html}");
+        assert!(!html.contains("javascript:"), "{html}");
+        assert!(!html.contains("/api/v1/repos/"), "{html}");
+    }
+
+    #[test]
+    fn without_a_base_relative_urls_are_left_as_written() {
+        let out = render_markdown("![a](shot.webp) [b](other.md)");
+        assert!(out.html.contains("src=\"shot.webp\""));
+        assert!(out.html.contains("href=\"other.md\""));
+    }
 
     #[test]
     fn renders_commonmark_blocks_not_one_paragraph_per_line() {

@@ -22,9 +22,34 @@ struct Forge {
 /// `v1.2/notes/r.txt`; branch `release/v1.2` holds its own `notes/r.txt`; tag
 /// `release` points at `main`, so `release/v1.2/notes/r.txt` is ambiguous
 /// and the longest ref has to win.
+/// One file per media type a page loads, with bytes like the real thing.
+const MEDIA: &[(&str, &[u8])] = &[
+    ("shot.webp", b"RIFF\x10\0\0\0WEBPVP8 "),
+    ("shot.png", b"\x89PNG\r\n\x1a\n\0\0"),
+    ("shot.JPG", b"\xff\xd8\xff\xe0\0\x10JFIF"),
+    ("anim.gif", b"GIF89a\x01\0\x01\0"),
+    ("shot.avif", b"\0\0\0\x1cftypavif"),
+    (
+        "icon.svg",
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>",
+    ),
+    ("favicon.ico", b"\0\0\x01\0\x01\0"),
+    ("doc.pdf", b"%PDF-1.7\n\xe2\xe3"),
+    ("clip.mp4", b"\0\0\0\x18ftypmp42"),
+    ("clip.webm", b"\x1a\x45\xdf\xa3\x9f"),
+    ("font.woff", b"wOFF\0\x01\0\0"),
+    ("font.woff2", b"wOF2\0\x01\0\0"),
+    ("mod.wasm", b"\0asm\x01\0\0\0"),
+    ("app.mjs", b"export default 1"),
+    ("blob.bin", b"\x00\x9f\x92\x96binary"),
+    ("noext", b"\xff\xfe\xfd not utf-8"),
+    ("notes.log", b"plain words"),
+];
+
 fn seed(storage: &Path, name: &str) {
     let work = storage.join(format!("{name}-work"));
     std::fs::create_dir_all(work.join("site/nested/deep")).unwrap();
+    std::fs::create_dir_all(work.join("site/media")).unwrap();
     std::fs::create_dir_all(work.join("v1.2/notes")).unwrap();
     run_git(&work, &["init", "-q", "-b", "main"]);
     std::fs::write(
@@ -35,7 +60,15 @@ fn seed(storage: &Path, name: &str) {
     std::fs::write(work.join("site/img one.png"), b"\x89PNG\r\n\x1a\nfake").unwrap();
     std::fs::write(work.join("site/app.js"), "alert(1)").unwrap();
     std::fs::write(work.join("site/nested/deep/style.css"), "p{}").unwrap();
+    for (file, bytes) in MEDIA {
+        std::fs::write(work.join("site/media").join(file), bytes).unwrap();
+    }
     std::fs::write(work.join("v1.2/notes/r.txt"), "main copy").unwrap();
+    std::fs::write(
+        work.join("site/README.md"),
+        "# Shots\n\n![shot](media/shot.webp)\n\n[style](nested/deep/style.css) [folder](nested) [up](../../x)\n",
+    )
+    .unwrap();
     run_git(&work, &["add", "."]);
     run_git(&work, &["commit", "-q", "-m", "base"]);
     run_git(&work, &["tag", "release"]);
@@ -305,4 +338,119 @@ async fn private_repository_needs_a_credential_and_a_grant() {
     let reader = get(&forge.router, &uri, Some(&forge.reader)).await;
     assert_eq!(reader.status(), StatusCode::OK);
     assert_inert(&reader, &uri);
+}
+
+/// Each kind of file a page loads gets its own type, a binary file the table
+/// does not know is `application/octet-stream` (never text), script stays
+/// `text/plain`, and every one carries the raw CSP, SVG with script inside
+/// included.
+#[tokio::test]
+async fn media_files_get_their_real_types_and_the_raw_policy() {
+    let forge = forge();
+    for (file, expected) in [
+        ("shot.webp", "image/webp"),
+        ("shot.png", "image/png"),
+        ("shot.JPG", "image/jpeg"),
+        ("anim.gif", "image/gif"),
+        ("shot.avif", "image/avif"),
+        ("icon.svg", "image/svg+xml"),
+        ("favicon.ico", "image/x-icon"),
+        ("doc.pdf", "application/pdf"),
+        ("clip.mp4", "video/mp4"),
+        ("clip.webm", "video/webm"),
+        ("font.woff", "font/woff"),
+        ("font.woff2", "font/woff2"),
+        ("mod.wasm", "application/wasm"),
+        ("app.mjs", "text/plain; charset=utf-8"),
+        ("blob.bin", "application/octet-stream"),
+        ("noext", "application/octet-stream"),
+        ("notes.log", "text/plain; charset=utf-8"),
+    ] {
+        for uri in [
+            format!("/api/v1/repos/{}/raw/main/site/media/{file}", forge.open),
+            format!(
+                "/api/v1/repos/{}/raw?ref=main&path=site%2Fmedia%2F{file}",
+                forge.open
+            ),
+        ] {
+            let response = get(&forge.router, &uri, None).await;
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            assert_eq!(
+                header_of(&response, header::CONTENT_TYPE),
+                expected,
+                "{uri}"
+            );
+            assert_inert(&response, &uri);
+        }
+    }
+    let svg = get(
+        &forge.router,
+        &format!("/api/v1/repos/{}/raw/main/site/media/icon.svg", forge.open),
+        None,
+    )
+    .await;
+    assert!(body_text(svg).await.contains("<script>"));
+}
+
+/// A folder's README, as the folder view shows it: `?path=<dir>` on the
+/// readme route, rendered with its images on the path-form raw route and its
+/// links on the web app's views; the blob route renders the same way.
+#[tokio::test]
+async fn folder_readme_renders_with_repository_relative_urls() {
+    let forge = forge();
+    let id = &forge.open;
+    let raw = format!("/api/v1/repos/{id}/raw/main/site/media/shot.webp");
+    let web = "/repos/jeryu/alice/open";
+    for uri in [
+        format!("/api/v1/repos/{id}/readme?ref=main&path=site"),
+        format!("/api/v1/repos/{id}/readme?ref=main&path=site%2F"),
+        format!("/api/v1/repos/{id}/blob?ref=main&path=site%2FREADME.md&render=html"),
+    ] {
+        let response = get(&forge.router, &uri, None).await;
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let body = response_json(response).await;
+        let html = body["rendered_markdown"]["html"]
+            .as_str()
+            .or_else(|| body["html"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(html.contains(&format!("src=\"{raw}\"")), "{uri}: {html}");
+        assert!(
+            html.contains(&format!(
+                "href=\"{web}/blob/main/site/nested/deep/style.css\""
+            )),
+            "{uri}: {html}"
+        );
+        assert!(
+            html.contains(&format!("href=\"{web}/tree/main/site/nested\"")),
+            "{uri}: {html}"
+        );
+        assert!(html.contains("href=\"#\">up</a>"), "{uri}: {html}");
+    }
+    let image = get(&forge.router, &raw, None).await;
+    assert_eq!(image.status(), StatusCode::OK);
+    assert_eq!(header_of(&image, header::CONTENT_TYPE), "image/webp");
+
+    let none = get(
+        &forge.router,
+        &format!("/api/v1/repos/{id}/readme?ref=main&path=site%2Fnested"),
+        None,
+    )
+    .await;
+    assert_eq!(none.status(), StatusCode::NOT_FOUND);
+    let missing = get(
+        &forge.router,
+        &format!("/api/v1/repos/{id}/readme?ref=main&path=no%2Fsuch"),
+        None,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    // The folder README of a private repository is behind the same gate.
+    let closed = get(
+        &forge.router,
+        &format!("/api/v1/repos/{}/readme?ref=main&path=site", forge.closed),
+        None,
+    )
+    .await;
+    assert_eq!(closed.status(), StatusCode::UNAUTHORIZED);
 }

@@ -673,19 +673,10 @@ fn clean_spa_path(request_path: &str) -> Option<PathBuf> {
 }
 
 fn content_type_for_path(path: &Path) -> &'static str {
-    match path.extension().and_then(|part| part.to_str()) {
-        Some("html") => "text/html; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("json") | Some("map") => "application/json; charset=utf-8",
-        Some("svg") => "image/svg+xml",
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("webp") => "image/webp",
-        Some("ico") => "image/x-icon",
-        Some("txt") => "text/plain; charset=utf-8",
-        _ => "application/octet-stream",
-    }
+    path.extension()
+        .and_then(|part| part.to_str())
+        .and_then(super::media_types::by_extension)
+        .unwrap_or("application/octet-stream")
 }
 
 #[cfg(test)]

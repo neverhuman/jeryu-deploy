@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 use super::jankurai::audits::{
     RunnerAuditSubmission, author_produced_submission, authorize_runner_submission,
 };
-use super::markdown::render_markdown;
+use super::markdown::{MarkdownBase, encode_segment, render_markdown, render_markdown_in};
 use super::paging::{PageInfo, PageParams};
 use super::{WebState, api_error};
 
