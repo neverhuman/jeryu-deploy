@@ -52,6 +52,7 @@ mod pull_import_tests;
 mod pull_origin_tests;
 mod pull_replacement_tests;
 mod pulls_tests;
+mod raw_path_tests;
 mod regate_tests;
 mod release_actions_tests;
 mod release_board_tests;

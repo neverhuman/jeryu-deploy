@@ -127,8 +127,8 @@ use jeryu_runnerd::{WarmPool, WorkcellManager};
 use repositories::{
     deployed_repositories, fleet_tool_adoption, release_pins, repo_blame, repo_blob, repo_commit,
     repo_commits, repo_compare, repo_detail, repo_jankurai_scores_ingest,
-    repo_jankurai_scores_list, repo_pages, repo_raw, repo_readme, repo_readme_update, repo_refs,
-    repo_release_tag, repo_tree, repo_update, repos,
+    repo_jankurai_scores_list, repo_pages, repo_raw, repo_raw_path, repo_readme,
+    repo_readme_update, repo_refs, repo_release_tag, repo_tree, repo_update, repos,
 };
 use surface::{bootstrap_payload_for_user, github_forward, graphql, markdown_render, repo_entry};
 
@@ -1390,6 +1390,9 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/repos/:id/tree", get(repo_tree)),
         ("/api/v1/repos/:id/blob", get(repo_blob)),
         ("/api/v1/repos/:id/raw", get(repo_raw)),
+        // Path form, `{ref}/{path}`, so a raw page's relative links reach
+        // its siblings; see `repositories::raw` for ref splitting and CSP.
+        ("/api/v1/repos/:id/raw/*rest", get(repo_raw_path)),
         ("/api/v1/repos/:id/pages", get(repo_pages)),
         ("/api/v1/repos/:id/blame", get(repo_blame)),
         ("/api/v1/repos/:id/codegraph/query", post(codegraph::query)),

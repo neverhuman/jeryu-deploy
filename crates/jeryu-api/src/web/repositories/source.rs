@@ -176,7 +176,7 @@ fn git_blob(
     })
 }
 
-fn git_blob_bytes(
+pub(super) fn git_blob_bytes(
     state: &WebState,
     repo: &Repository,
     ref_name: &str,
@@ -358,6 +358,32 @@ fn preview_limit_for_path(path: &str) -> u64 {
     }
 }
 
+/// Images, fonts and media a raw page loads as siblings. SVG is an image to
+/// `<img>`; opened directly, the raw CSP sandbox keeps its script inert.
+fn media_mime(lower: &str) -> Option<&'static str> {
+    let ext = lower.rsplit_once('.')?.1;
+    Some(match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "pdf" => "application/pdf",
+        _ => return None,
+    })
+}
+
 fn mime_for_path(path: &str) -> &'static str {
     let lower = path.to_ascii_lowercase();
     if is_markdown_path(&lower) {
@@ -368,7 +394,12 @@ fn mime_for_path(path: &str) -> &'static str {
         "text/html; charset=utf-8"
     } else if lower.ends_with(".css") {
         "text/css; charset=utf-8"
+    } else if let Some(mime) = media_mime(&lower) {
+        mime
     } else {
+        // Everything else, `.js` and `.mjs` included, is plain text: with
+        // `nosniff` a browser refuses to run it as script or load it as a
+        // stylesheet, whatever a page asks.
         "text/plain; charset=utf-8"
     }
 }
@@ -489,16 +520,20 @@ pub(in crate::web) async fn repo_raw(
         return api_error(StatusCode::NOT_FOUND, "not_found", "repository not found");
     };
     let Some(path) = query.path.as_deref().filter(|path| !path.trim().is_empty()) else {
-        return (
-            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
-            readme_markdown(&state, &repo),
-        )
-            .into_response();
+        return super::raw::with_raw_headers(
+            (
+                [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+                readme_markdown(&state, &repo),
+            )
+                .into_response(),
+            None,
+        );
     };
-    match git_blob_bytes(&state, &repo, source_ref(&repo, &query), path) {
+    let response = match git_blob_bytes(&state, &repo, source_ref(&repo, &query), path) {
         Ok((bytes, mime)) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
         Err(response) => *response,
-    }
+    };
+    super::raw::with_raw_headers(response, Some(path))
 }
 
 pub(in crate::web) async fn repo_readme(

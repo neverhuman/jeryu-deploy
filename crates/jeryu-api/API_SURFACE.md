@@ -86,6 +86,7 @@ Implemented HTTP/WebSocket routes:
 - `GET /api/v1/repos/{id}/tree`
 - `GET /api/v1/repos/{id}/blob`
 - `GET /api/v1/repos/{id}/raw`
+- `GET /api/v1/repos/{id}/raw/{ref}/{path}` (path form; relative links resolve to siblings; ref may contain `/`, longest matching ref wins)
 - `GET /api/v1/repos/{id}/readme`
 - `PUT /api/v1/repos/{id}/readme`
 - `GET /api/v1/repos/{id}/pages` (every Markdown path at a ref, for the wiki reader)

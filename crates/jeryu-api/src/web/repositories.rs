@@ -701,6 +701,7 @@ mod commits;
 mod compare;
 mod deployed;
 mod pages;
+mod raw;
 mod release_pins;
 mod release_tag;
 mod source;
@@ -711,6 +712,9 @@ pub(super) use commits::repo_commits;
 pub(super) use compare::repo_compare;
 pub(super) use deployed::deployed_repositories;
 pub(super) use pages::repo_pages;
+#[cfg(test)]
+pub(super) use raw::RAW_CONTENT_SECURITY_POLICY;
+pub(super) use raw::repo_raw_path;
 pub(super) use release_pins::release_pins;
 pub(super) use release_tag::{TagLookupMiss, nearest_release_tag, repo_release_tag};
 pub(super) use source::{
