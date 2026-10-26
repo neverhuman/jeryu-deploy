@@ -63,6 +63,8 @@ pub(crate) struct FlowQuery {
     pub lots_offset: Option<String>,
     /// List at most this many lots per station (1 to 100, default 20).
     pub lots_limit: Option<String>,
+    /// `oldest` (default) or `newest` first, by arrival at the station.
+    pub lots_order: Option<String>,
 }
 
 impl StrictFields for FlowQuery {
@@ -74,9 +76,11 @@ impl StrictFields for FlowQuery {
         "station",
         "lots_offset",
         "lots_limit",
+        "lots_order",
     ];
     const REPAIR_HINT: &'static str = "send days as 7, 28 or 90 (or window as 7d, 28d or 90d); \
-         station is a station id, lots_offset a whole number, lots_limit 1 to 100";
+         station is a station id, lots_offset a whole number, lots_limit 1 to 100, \
+         lots_order oldest or newest";
 
     fn check_values(&self) -> Result<(), String> {
         if self.repo.as_ref().is_some_and(|r| {
@@ -130,10 +134,16 @@ pub(crate) fn lots_page(query: &FlowQuery) -> Result<LotsPage, String> {
     if limit == 0 {
         return Err("lots_limit: 0 lists nothing; send 1 to 100".to_string());
     }
+    let order = match text(&query.lots_order).as_deref() {
+        None | Some("oldest") => "oldest",
+        Some("newest") => "newest",
+        Some(other) => return Err(format!("lots_order: {other:?} is not oldest or newest")),
+    };
     Ok(LotsPage {
         station,
         offset,
         limit,
+        order,
     })
 }
 

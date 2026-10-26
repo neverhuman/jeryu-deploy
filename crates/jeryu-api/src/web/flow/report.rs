@@ -217,13 +217,15 @@ pub(crate) struct FlowReport {
     pub lots_page: LotsPage,
 }
 
-/// Which lots one answer lists: up to `limit` per station, oldest first,
-/// after skipping `offset`; only `station`'s when it names one.
+/// Which lots one answer lists: up to `limit` per station in `order`
+/// (`oldest` or `newest` first by arrival at the station), after skipping
+/// `offset`; only `station`'s when it names one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct LotsPage {
     pub station: Option<&'static str>,
     pub offset: u32,
     pub limit: u32,
+    pub order: &'static str,
 }
 
 impl Default for LotsPage {
@@ -232,6 +234,7 @@ impl Default for LotsPage {
             station: None,
             offset: 0,
             limit: LOTS_PER_STATION as u32,
+            order: "oldest",
         }
     }
 }
@@ -541,10 +544,15 @@ fn station_report(
     report
 }
 
-/// The one station holding the most lot-hours of waiting.
+/// The one station holding the most lot-hours of waiting, among the stations
+/// that hold work now: a station with nothing in progress is not where work
+/// is stuck, whatever its history says.
 fn mark_bottleneck(stations: &mut [StationReport]) {
     let mut worst: Option<(usize, f64)> = None;
     for (index, station) in stations.iter().enumerate() {
+        if station.wip.waiting + station.wip.active + station.wip.held == 0 {
+            continue;
+        }
         let Some(queue) = station.queue_s else {
             continue;
         };
@@ -636,6 +644,9 @@ fn lots(
             })
             .collect();
         open.sort_by_key(|visit| (visit.entered_ms, visit.lot_id.clone()));
+        if page.order == "newest" {
+            open.reverse();
+        }
         let listed: Vec<&Visit> = open
             .into_iter()
             .skip(page.offset as usize)

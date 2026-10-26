@@ -752,12 +752,11 @@ fn percentiles_the_bottleneck_and_an_eta_come_from_the_samples() {
     let stage = station(&report, "stage");
     assert!(stage["queue_s"].is_null());
     assert!(stage["process_s"].is_null());
-    // Queue holds the most lot-hours of waiting: two minutes for a slot,
-    // longer than any other station's queue.
+    // Queue held the most lot-hours of waiting (two minutes for a slot,
+    // longer than any other station's queue), but every lot has left the
+    // line: a station with nothing in progress is no bottleneck.
     let queue = station(&report, "queue");
     assert_eq!(queue["queue_s"]["p50"], 2 * 60);
-    assert_eq!(queue["bottleneck"], true);
-    assert_eq!(stage["bottleneck"], false);
     assert_eq!(
         report["stations"]
             .as_array()
@@ -765,8 +764,8 @@ fn percentiles_the_bottleneck_and_an_eta_come_from_the_samples() {
             .iter()
             .filter(|station| station["bottleneck"] == true)
             .count(),
-        1,
-        "one bottleneck"
+        0,
+        "an empty line has no bottleneck"
     );
 
     // The line finished four lots, each 45 minutes from filing to deployed.
@@ -1495,7 +1494,14 @@ fn closure_reconciliation_preserves_observed_metrics_and_changes_only_current_in
         assert_eq!(old.total_s, new.total_s);
         assert_eq!(old.first_pass_rate, new.first_pass_rate);
         assert_eq!(old.throughput_per_hour, new.throughput_per_hour);
-        assert_eq!(old.bottleneck, new.bottleneck);
+        if old.id == "gate" {
+            // The one current lot was the only work at Gate; reconciled
+            // away, Gate holds nothing and is no longer the bottleneck.
+            assert!(old.bottleneck);
+            assert!(!new.bottleneck);
+        } else {
+            assert_eq!(old.bottleneck, new.bottleneck);
+        }
         assert_eq!(old.unknown, new.unknown);
         if old.id == "gate" {
             assert_eq!(
@@ -2390,6 +2396,7 @@ fn lots_are_a_page_of_what_the_station_counts_and_say_so() {
         station: Some("queue"),
         offset: 20,
         limit: 10,
+        order: "oldest",
     };
     let rest = super::report::build_paged(&request, &visits, &reached, &|_| true, page);
     let ids: Vec<&str> = rest.lots.iter().map(|lot| lot.lot_id.as_str()).collect();
@@ -2413,6 +2420,7 @@ fn lots_are_a_page_of_what_the_station_counts_and_say_so() {
             station: Some("gate"),
             offset: 0,
             limit: 20,
+            order: "oldest",
         },
     );
     assert!(other.lots.is_empty());
@@ -2519,8 +2527,17 @@ async fn flow_route_pages_lots_and_marks_claims_from_heartbeats() {
     assert_eq!(page["lots_truncated"], true);
     assert_eq!(
         page["lots_page"],
-        serde_json::json!({"station": "work", "offset": 0, "limit": 1})
+        serde_json::json!({"station": "work", "offset": 0, "limit": 1, "order": "oldest"})
     );
+    // The newest claim first: where current work sits on a long station.
+    let newest = json_of(
+        call("/api/v1/flow?days=7&station=work&lots_limit=1&lots_order=newest")
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(newest["lots"][0]["lot_id"], stale);
+    assert_eq!(newest["lots_truncated"], true);
     let next = json_of(
         call("/api/v1/flow?days=7&station=work&lots_limit=1&lots_offset=1")
             .await
@@ -2536,9 +2553,61 @@ async fn flow_route_pages_lots_and_marks_claims_from_heartbeats() {
         "/api/v1/flow?lots_limit=101",
         "/api/v1/flow?lots_offset=-1",
         "/api/v1/flow?lots_offset=many",
+        "/api/v1/flow?lots_order=random",
     ] {
         let response = call(bad).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
         assert_eq!(json_of(response).await["code"], "invalid_query", "{bad}");
     }
+}
+
+/// A station with nothing in progress is never the bottleneck, however long
+/// its past lots waited (live, family-scoped: Deploy flagged with zero wip).
+#[test]
+fn a_station_with_no_work_in_progress_is_never_the_bottleneck() {
+    let visit = |lot: String, station: Station, wait: i64, left: Option<i64>| Visit {
+        lot_id: lot,
+        station,
+        entered_ms: START,
+        started_ms: Some(START + wait),
+        left_ms: left,
+        direction: if left.is_some() { "forward" } else { "open" }.into(),
+        rework_to: None,
+        repo: None,
+        pr: None,
+        hold: None,
+        family: None,
+    };
+    let mut visits = Vec::new();
+    for n in 0..4 {
+        // Deploy: long waits in the past, nothing there now.
+        visits.push(visit(
+            format!("deploy-{n}"),
+            Station::Deploy,
+            300 * MINUTE,
+            Some(START + 301 * MINUTE),
+        ));
+        // Gate: short waits, one still in progress.
+        visits.push(visit(
+            format!("gate-{n}"),
+            Station::Gate,
+            10 * MINUTE,
+            (n < 3).then_some(START + 11 * MINUTE),
+        ));
+    }
+    let request = Request {
+        family: None,
+        days: 7,
+        now_ms: START + 400 * MINUTE,
+    };
+    let reached = BTreeSet::from([Station::Gate, Station::Deploy]);
+    let report = build(&request, &visits, &reached);
+    let of = |id: &str| report.stations.iter().find(|s| s.id == id).unwrap();
+    assert_eq!(of("deploy").wip.active + of("deploy").wip.waiting, 0);
+    assert!(
+        of("deploy").queue_s.is_some(),
+        "deploy has the larger history"
+    );
+    assert!(!of("deploy").bottleneck);
+    assert!(of("gate").bottleneck);
 }

@@ -354,14 +354,22 @@ spellings disagreeing, or a key the route does not read is
 
 Paging the lots: `station` (a station id) lists only that station's lots,
 `lots_offset` skips that many of each listed station's lots (oldest first) and
-`lots_limit` (1 to 100, default 20) lists at most that many per station.
+`lots_limit` (1 to 100, default 20) lists at most that many per station, and
+`lots_order` (`oldest`, the default, or `newest`) picks which end of each
+station's line the page starts from, by arrival at the station.
 Out-of-range values are refused, never clamped. The counts never shrink to the
 page: `stations[].wip` counts every open visit, `stations[].lots_listed` says
 how many of them this answer lists, `lots_total` is the sum of the stations'
 `waiting + active + held`, and `lots_truncated` is true when a paged station
 has more lots past this page. A lot open at two stations at once (Review and
 Gate run in parallel) counts at both, so `lots_total` can exceed `line.wip`,
-which counts lots.
+which counts lots. Which to read: a station's `wip` is authoritative for
+what sits at that station; `line.wip` is authoritative for how many lots are
+on the line. Never add the stations up to get the line.
+
+`bottleneck` is only ever a station with work in progress now
+(`waiting + active + held > 0`): a quiet station is not where work is stuck,
+whatever its past waits were.
 
 Claims at Work: an open Work visit is a claim, and only
 `todo.attempt_finished` or a landing closes it, so a worker that died or
