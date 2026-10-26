@@ -704,6 +704,7 @@ mod pages;
 mod raw;
 mod release_pins;
 mod release_tag;
+mod release_tags;
 mod source;
 
 pub(super) use blame::repo_blame;
@@ -717,6 +718,7 @@ pub(super) use raw::RAW_CONTENT_SECURITY_POLICY;
 pub(super) use raw::repo_raw_path;
 pub(super) use release_pins::release_pins;
 pub(super) use release_tag::{TagLookupMiss, nearest_release_tag, repo_release_tag};
+pub(super) use release_tags::{ReleaseTagsQuery, release_tags};
 pub(super) use source::{
     repo_blob, repo_raw, repo_readme, repo_readme_update, repo_refs, repo_tree,
 };

@@ -1388,6 +1388,7 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/repos/:id/release-tag", get(repo_release_tag)),
         ("/api/v1/deployments", get(deployed_repositories)),
         ("/api/v1/release-pins", get(release_pins)),
+        ("/api/v1/release-tags", get(repositories::release_tags)),
         ("/api/v1/repos/:id/tree", get(repo_tree)),
         ("/api/v1/repos/:id/blob", get(repo_blob)),
         ("/api/v1/repos/:id/raw", get(repo_raw)),

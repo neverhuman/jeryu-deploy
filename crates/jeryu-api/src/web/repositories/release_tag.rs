@@ -97,6 +97,11 @@ pub(in crate::web) fn nearest_release_tag(
     let Ok(resolved) = state.repo_manager.resolve_parts(&repo.owner, &repo.name) else {
         return Err(TagLookupMiss::NoGitData);
     };
+    // A repository the registry knows but whose storage was never created
+    // (a metadata-only import) has no git data, not a missing branch.
+    if !resolved.path.exists() {
+        return Err(TagLookupMiss::NoGitData);
+    }
     let git = |args: &[&str]| -> Option<String> {
         let out = Command::new(&state.repo_manager.config().git_bin)
             .arg("-C")

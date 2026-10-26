@@ -269,6 +269,7 @@ fn query_params(path: &str) -> &'static [&'static str] {
         "/api/v1/agent-presence" => keys::<super::agent_presence::PresenceOverviewQuery>(),
         "/api/v1/repos/:id/agent-presence" => keys::<super::agent_presence::PresenceRepoQuery>(),
         "/api/v1/usage" => keys::<super::usage::UsageQuery>(),
+        "/api/v1/release-tags" => keys::<super::repositories::ReleaseTagsQuery>(),
         "/api/v1/search" => &["q"],
         "/api/v1/audit"
         | "/api/v1/agent-runs"
@@ -401,6 +402,7 @@ mod tests {
             "/api/v1/flow",
             "/api/v1/outcomes",
             "/api/v1/incidents",
+            "/api/v1/release-tags",
         ] {
             assert!(
                 !query_params(path).is_empty(),
