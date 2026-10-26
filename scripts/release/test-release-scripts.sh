@@ -148,6 +148,36 @@ rm "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d/30-mirror.conf" "$JERYU_SYSTEMD_USER
 rmdir "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d"
 ok "mirror allowlist preflight refuses missing or empty config before stopping, and accepts configured or disabled mirrors"
 
+# Unit syntax the preflight does not expect must not read as a crash: a word
+# that assigns nothing is ignored like systemd ignores it, and a file it cannot
+# read or parse is refused by name instead of as a traceback.
+mkdir -p "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d"
+dropin="$JERYU_SYSTEMD_USER_DIR/jeryu.service.d/30-mirror.conf"
+printf '[Service]\nEnvironment=JERYU_MIRROR_REMOTE_ALLOWLIST=github.com/acme NOT_AN_ASSIGNMENT\n' >"$dropin"
+bash "$here/install-forge-unit.sh" >"$T/mirror-odd-word.log" 2>&1 \
+  || { cat "$T/mirror-odd-word.log" >&2; fail "a word assigning nothing was read as a failure"; }
+rm "$JERYU_SYSTEMD_USER_DIR/jeryu.service"
+printf 'JERYU_MIRROR_REMOTE_ALLOWLIST="github.com/acme\n' >"$T/mirror-unparsable.env"
+printf '[Service]\nEnvironmentFile=%s\n' "$T/mirror-unparsable.env" >"$dropin"
+rc=0; bash "$here/install-forge-unit.sh" >"$T/mirror-unparsable.log" 2>&1 || rc=$?
+[[ $rc != 0 ]] || fail "an unparsable environment file was accepted"
+grep -q "cannot parse" "$T/mirror-unparsable.log" || fail "the refusal does not say the line cannot be parsed"
+grep -q "mirror-unparsable.env" "$T/mirror-unparsable.log" || fail "the refusal does not name the file"
+if grep -q "Traceback" "$T/mirror-unparsable.log"; then fail "the preflight answered with a traceback"; fi
+[[ ! -e "$JERYU_SYSTEMD_USER_DIR/jeryu.service" ]] || fail "an unparsable environment file installed a unit"
+printf 'JERYU_MIRROR_REMOTE_ALLOWLIST=github.com/acme\n' >"$T/mirror-unreadable.env"
+chmod 000 "$T/mirror-unreadable.env"
+printf '[Service]\nEnvironmentFile=%s\n' "$T/mirror-unreadable.env" >"$dropin"
+rc=0; bash "$here/install-forge-unit.sh" >"$T/mirror-unreadable.log" 2>&1 || rc=$?
+[[ $rc != 0 ]] || fail "an unreadable environment file was accepted"
+grep -q "cannot be read" "$T/mirror-unreadable.log" || fail "the refusal does not say the file cannot be read"
+if grep -q "Traceback" "$T/mirror-unreadable.log"; then fail "the preflight answered with a traceback"; fi
+[[ ! -e "$JERYU_SYSTEMD_USER_DIR/jeryu.service" ]] || fail "an unreadable environment file installed a unit"
+chmod 600 "$T/mirror-unreadable.env"
+rm "$dropin"
+rmdir "$JERYU_SYSTEMD_USER_DIR/jeryu.service.d"
+ok "the mirror allowlist preflight reports unreadable unit syntax by name instead of crashing"
+
 stage
 "$JERYU_SYSTEMCTL" --user start jeryu.service
 for n in forge work codegraph shift; do

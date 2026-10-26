@@ -144,6 +144,12 @@ for file in ${env_files[@]+"${env_files[@]}"}; do
     echo "jeryu.service reads EnvironmentFile=$file, which does not exist; refusing" >&2
     exit 1
   }
+  # Named but unreadable is a refusal with a reason, not a redirect error from
+  # the loop below: the forge's own environment could not be read either.
+  [[ -r "$file" ]] || {
+    echo "jeryu.service reads EnvironmentFile=$file, which cannot be read; refusing" >&2
+    exit 1
+  }
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && defined+=("${line%%=*}")
   done <"$file"
@@ -178,8 +184,23 @@ values = {}
 files = []
 unset = []
 
-def words(raw):
-    return shlex.split(raw, comments=False, posix=True)
+def refuse(reason):
+    sys.exit(f"{reason}; refusing before stopping the forge. Fix the file, or "
+             "explicitly disable mirror pushes with JERYU_GITHUB_PUSH=0.")
+
+def words(raw, where):
+    try:
+        return shlex.split(raw, comments=False, posix=True)
+    except ValueError as error:
+        # Unreadable syntax is still a refusal: the allowlist cannot be proven
+        # set from a line this cannot parse. It says which file, not a traceback.
+        refuse(f"{where} has a line this installer cannot parse ({error}): {raw.strip()}")
+
+def contents(file, where):
+    try:
+        return file.read_text()
+    except (OSError, UnicodeDecodeError) as error:
+        refuse(f"{where} {file} cannot be read ({error})")
 
 def expand(path):
     return path.replace("%%", "\0").replace("%h", os.path.expanduser("~")).replace(
@@ -188,7 +209,7 @@ def expand(path):
 
 for conf in sys.argv[1:]:
     section = ""
-    for line in Path(conf).read_text().splitlines():
+    for line in contents(Path(conf), "the unit file").splitlines():
         line = line.strip()
         if line.startswith("["):
             section = line
@@ -198,30 +219,33 @@ for conf in sys.argv[1:]:
         if key == "Environment":
             if not raw.strip():
                 values.clear()
-            for assignment in words(raw):
+            for assignment in words(raw, f"{conf}"):
+                # systemd ignores a word that assigns nothing.
+                if "=" not in assignment:
+                    continue
                 name, value = assignment.split("=", 1)
                 values[name] = value
         elif key == "EnvironmentFile":
             if not raw.strip():
                 files.clear()
-            files.extend(expand(path) for path in words(raw))
+            files.extend(expand(path) for path in words(raw, f"{conf}"))
         elif key == "UnsetEnvironment":
             if not raw.strip():
                 unset.clear()
-            unset.extend(words(raw))
+            unset.extend(words(raw, f"{conf}"))
 for path in files:
     optional = path.startswith("-")
     file = Path(path[1:] if optional else path)
     if optional and not file.exists():
         continue
-    for line in file.read_text().splitlines():
+    for line in contents(file, "the environment file").splitlines():
         if re.match(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=", line):
             name, raw = line.strip().split("=", 1)
             name = name.strip()
             if name not in ("JERYU_GITHUB_PUSH", "JERYU_MIRROR_REMOTE_ALLOWLIST"):
                 continue
             # EnvironmentFile values are not shell-expanded.
-            parsed = words(raw)
+            parsed = words(raw, f"{file}")
             values[name] = " ".join(parsed)
 for entry in unset:
     name, separator, value = entry.partition("=")

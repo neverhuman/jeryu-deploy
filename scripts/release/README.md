@@ -151,6 +151,11 @@ can override earlier values, and an empty value is refused before production
 stops. Sites that intentionally run without mirror pushes must explicitly set
 `JERYU_GITHUB_PUSH=0` in the service environment instead.
 
+A unit or environment file the preflight cannot read, or a line it cannot
+parse, is refused by name with that reason -- also before production stops --
+rather than failing as a crash the operator has to decode. A word in
+`Environment=` that assigns nothing is ignored, as systemd ignores it.
+
 To change a limit without a release, edit the limits file and run
 `scripts/release/install-forge-unit.sh` on the forge host, then
 `systemctl --user restart jeryu.service`. `install-forge-unit.sh --help` lists
