@@ -4,43 +4,32 @@
 
 use super::*;
 
-/// Files a test state would leak if it did not own its databases. Counted
-/// rather than asserted absent, so stale files from an older build of the
-/// suite cannot fail an otherwise clean run.
-fn web_sqlite_files_in_temp_dir() -> usize {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            name.starts_with("jeryu-web-") && name.contains(".sqlite")
-        })
-        .count()
-}
-
 #[test]
 fn a_test_web_state_owns_its_databases_and_removes_them_when_it_drops() {
-    let before = web_sqlite_files_in_temp_dir();
     let state = WebState::new(ForgeCore::new());
     let data_dir = state.test_data_dir.path().to_path_buf();
+    let temp_dir = std::env::temp_dir();
+    assert_ne!(
+        data_dir, temp_dir,
+        "the state must own a directory of its own, not the shared temp directory"
+    );
     for database in ["codegraph.sqlite", "work.sqlite", "shift.sqlite"] {
+        let path = data_dir.join(database);
         assert!(
-            data_dir.join(database).is_file(),
-            "{database} must live in the directory the state owns, not the system temp directory"
+            path.is_file(),
+            "{database} must live in the directory the state owns"
         );
     }
 
+    // The sqlite files a state opens, and the `-wal`/`-shm` siblings sqlite
+    // writes next to them, all sit in this one directory. Asserting the
+    // directory is gone therefore covers every file the state created; a
+    // count over the shared temp directory could not, because other
+    // processes add and remove files there while this test runs.
     drop(state);
 
     assert!(
         !data_dir.exists(),
         "dropping the state must remove the directory holding its databases"
-    );
-    assert_eq!(
-        web_sqlite_files_in_temp_dir(),
-        before,
-        "a test state must not write jeryu-web-*.sqlite files into the system temp directory"
     );
 }
