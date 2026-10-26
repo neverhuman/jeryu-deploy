@@ -9,6 +9,8 @@
     ".jankurai/": "audit",
     "AGENTS.md": "split",
     "CLAUDE.md": "docs",
+    "CONTRIBUTING.md": "docs",
+    "SECURITY.md": "docs",
     "CHANGELOG.md": "release",
     "Cargo.lock": "jeryu-deploy",
     "Cargo.toml": "jeryu-deploy",
