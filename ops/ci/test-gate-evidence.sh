@@ -44,6 +44,15 @@ case "$3" in
     JERYU_TOOL_RENDER="$2.renderer"; gate_stage preflight gate_preflight ;;
   killed) gate_stage killed bash -c 'kill -KILL "$PPID"; sleep 1' ;;
   interruption) gate_stage interrupted bash -c 'kill -TERM "$PPID"; sleep 1' ;;
+  heartbeat)
+    JERYU_GATE_HEARTBEAT_SECONDS=1 gate_stage slow bash -c 'echo working; sleep 3'
+    gate_complete=true ;;
+  leaked-prefix)
+    # A VAR=... prefix on a function call outlives the call, which is why no
+    # stage may carry one; env keeps it to the stage that asked for it.
+    gate_stage scoped env FIXTURE_SCOPED=yes true
+    [ -z "${FIXTURE_SCOPED:-}" ] || { echo "FIXTURE_SCOPED leaked into the gate" >&2; exit 1; }
+    gate_complete=true ;;
   incomplete) gate_stage first true ;;
   success) gate_stage first true; gate_stage later-success true; gate_complete=true ;;
 esac
@@ -70,6 +79,14 @@ run_case() {
     missing-tool) grep -q 'missing prerequisite: cargo-audit; repair: cargo install --locked cargo-audit' "$(jq -r '.stages[0].log' "$run/receipt.json")" ;;
     interruption) jq -e '.stages[0].exit_code == 143 and .stages[0].name == "interrupted"' "$run/receipt.json" >/dev/null ;;
     success) jq -e '.conclusion == "success" and (.stages|length == 2)' "$run/receipt.json" >/dev/null ;;
+    heartbeat)
+      # A long stage says where it is while it runs, and still prints its own
+      # output and records its exit code.
+      grep -q 'stage=slow running .*; last: working' "$work/$case_name.log" || {
+        cat "$work/$case_name.log"; echo 'no heartbeat for a long stage' >&2; exit 1; }
+      jq -e '.stages[0].name == "slow" and .stages[0].exit_code == 0' "$run/receipt.json" >/dev/null
+      grep -q working "$(jq -r '.stages[0].log' "$run/receipt.json")" ;;
+    leaked-prefix) jq -e '.conclusion == "success"' "$run/receipt.json" >/dev/null ;;
   esac
 }
 run_case failure 27
@@ -82,7 +99,18 @@ run_case interruption 143
 run_case killed 137
 run_case incomplete 1
 run_case success 0
-# Retained evidence must stay bounded: a gate host runs this recipe every push.
+run_case heartbeat 0
+run_case leaked-prefix 0
+# No stage may be called with a VAR=... prefix: bash keeps those assignments
+# set for every stage after it (ops/ci/pr-ci.sh explains the one fix). Line
+# continuations are joined first, so a prefix wrapped across lines is read as
+# the one command it is.
+if sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$repo_root/ops/ci/pr-ci.sh" |
+  grep -nE '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)+gate_stage[[:space:]]'; then
+  echo 'a gate stage carries an environment prefix; use env instead' >&2
+  exit 1
+fi
+
 prune_case() {
   local root="$work/prune" dir i
   mkdir -p "$root"

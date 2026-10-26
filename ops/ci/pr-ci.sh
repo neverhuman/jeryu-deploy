@@ -118,8 +118,12 @@ if [ -n "$test_tmp" ]; then
   trap 'code=$?; rm -rf -- "$test_tmp"; gate_evidence_finish "$code"' EXIT
   echo "[pr-ci] test temp directories on $test_tmp" >&2
 fi
-TMPDIR="${test_tmp:-${TMPDIR:-/tmp}}" JERYU_JANKURAI_BIN=/nonexistent/jankurai \
-  gate_stage workspace-tests cargo test --locked --workspace "${HOST_CI_EXCLUDE_PACKAGES[@]}" --jobs "$JOBS" --no-fail-fast -- \
+# gate_stage is a function, and a VAR=... prefix on a function call outlives it:
+# the assignments would stay set for every later stage. env scopes them to the
+# one command that needs them.
+gate_stage workspace-tests \
+  env TMPDIR="${test_tmp:-${TMPDIR:-/tmp}}" JERYU_JANKURAI_BIN=/nonexistent/jankurai \
+  cargo test --locked --workspace "${HOST_CI_EXCLUDE_PACKAGES[@]}" --jobs "$JOBS" --no-fail-fast -- \
   --test-threads "$TEST_THREADS" "${host_ci_skip_args[@]}"
 
 echo "[pr-ci] immutable web-bundle integration" >&2
@@ -146,7 +150,7 @@ echo "[pr-ci] jankurai gate (hosted jankurai/proof verdict for this head)" >&2
 gate_stage audit-policy bash "${repo_root}/ops/ci/jankurai-gate.sh"
 
 echo "[pr-ci] security lane"
-JERYU_SECURITY_NETWORK=1 gate_stage security bash "${repo_root}/ops/ci/security.sh"
+gate_stage security env JERYU_SECURITY_NETWORK=1 bash "${repo_root}/ops/ci/security.sh"
 gate_stage lock-unchanged assert_cargo_lock_unchanged
 
 echo "[pr-ci] PASS — fmt + clippy + workspace tests + web bundle + jankurai + security all green" >&2

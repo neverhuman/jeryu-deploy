@@ -92,21 +92,51 @@ gate_evidence_finish() {
   exit "$code"
 }
 
+# A stage's output lands in its log and is printed when it exits, so a stage
+# that runs for minutes says nothing meanwhile and the gate reads as hung. This
+# beats beside it on stderr with the stage, its elapsed seconds and the last
+# line its log holds, without touching the stage's own output or exit code.
+# JERYU_GATE_HEARTBEAT_SECONDS sets the interval; 0 turns it off. It polls the
+# owning shell and stops when that shell is gone, so a killed gate leaves no
+# beating orphan behind.
+gate_stage_heartbeat() {
+  local name="$1" log="$2" every="$3" owner="$4" waited=0 last
+  while sleep 1; do
+    kill -0 "$owner" 2>/dev/null || return 0
+    waited=$(( waited + 1 ))
+    (( waited % every == 0 )) || continue
+    last="$(tail -n 1 -- "$log" 2>/dev/null || true)"
+    echo "[pr-ci] stage=$name running ${waited}s${last:+; last: $last}" >&2
+  done
+}
+
 gate_stage() {
   local name="$1"; shift
   gate_stage_name="$name"
-  local code
+  local code heartbeat=0 every="${JERYU_GATE_HEARTBEAT_SECONDS:-60}"
+  case "$every" in ''|*[!0-9]*) every=60 ;; esac
   gate_active=true
   gate_stage_start="$(date +%s)"
   gate_stage_log="$gate_run/$(printf '%03d' "$(($(wc -l < "$gate_steps") + 1))")-$name.log"
   printf -v gate_command_id '%q ' "$@"
   echo "[pr-ci] stage=$name command=$gate_command_id log=$gate_stage_log" >&2
   gate_receipt running null
+  : > "$gate_stage_log"
+  if (( every > 0 )); then
+    gate_stage_heartbeat "$name" "$gate_stage_log" "$every" "$$" &
+    heartbeat=$!
+  fi
   # Run outside an if/! context: Bash otherwise disables errexit in functions.
+  # The stage stays a foreground child of this shell: a signal aimed at the
+  # gate (its fixtures aim one) must reach this shell, not a wrapper.
   set +e
   (set -e; "$@") > "$gate_stage_log" 2>&1
   code=$?
   set -e
+  if (( heartbeat != 0 )); then
+    kill "$heartbeat" 2>/dev/null
+    wait "$heartbeat" 2>/dev/null || true
+  fi
   # Read the regular file after the child exits. A tee pipeline would wait for
   # stray descendants holding stdout open, changing existing fixture behavior.
   if (( code != 0 )); then gate_failure="$code"; fi
