@@ -340,9 +340,13 @@ const REBUILD_LOCKS_KEPT: usize = 1024;
 
 /// This repository's rebuild lock, shared by the read and the refresh paths.
 fn rebuild_lock(bare: &Path) -> Arc<Mutex<()>> {
-    let mut locks = REBUILD_LOCKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    rebuild_lock_in(&REBUILD_LOCKS, bare)
+}
+
+/// [`rebuild_lock`] over a given lock map, so a test can prune its own map
+/// instead of the process-wide one other tests share.
+fn rebuild_lock_in(map: &Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>, bare: &Path) -> Arc<Mutex<()>> {
+    let mut locks = map.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if locks.len() >= REBUILD_LOCKS_KEPT {
         // An entry no caller holds guards nothing: dropping it loses no claim,
         // and the next rebuild of that repository makes a fresh one.
@@ -364,10 +368,7 @@ fn try_claim(lock: &Mutex<()>) -> Option<std::sync::MutexGuard<'_, ()>> {
 }
 
 /// The rebuilds running in this process, at most [`REBUILD_PARALLEL`].
-static REBUILD_SLOTS: RebuildSlots = RebuildSlots {
-    in_flight: Mutex::new(0),
-    freed: Condvar::new(),
-};
+static REBUILD_SLOTS: RebuildSlots = RebuildSlots::new();
 
 struct RebuildSlots {
     in_flight: Mutex<usize>,
@@ -375,6 +376,13 @@ struct RebuildSlots {
 }
 
 impl RebuildSlots {
+    const fn new() -> Self {
+        Self {
+            in_flight: Mutex::new(0),
+            freed: Condvar::new(),
+        }
+    }
+
     fn count(&self) -> std::sync::MutexGuard<'_, usize> {
         self.in_flight
             .lock()
@@ -388,7 +396,7 @@ impl RebuildSlots {
             return None;
         }
         *in_flight += 1;
-        Some(RebuildSlot)
+        Some(RebuildSlot(self))
     }
 
     /// Wait for a slot. For push- and timer-driven refreshes, which run on a
@@ -402,19 +410,19 @@ impl RebuildSlots {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         *in_flight += 1;
-        RebuildSlot
+        RebuildSlot(self)
     }
 }
 
 /// A slot held for one rebuild, returned on drop so a panicking rebuild does
 /// not retire it.
-struct RebuildSlot;
+struct RebuildSlot(&'static RebuildSlots);
 
 impl Drop for RebuildSlot {
     fn drop(&mut self) {
-        let mut in_flight = REBUILD_SLOTS.count();
+        let mut in_flight = self.0.count();
         *in_flight = in_flight.saturating_sub(1);
-        REBUILD_SLOTS.freed.notify_one();
+        self.0.freed.notify_one();
     }
 }
 
@@ -955,13 +963,19 @@ mod tests {
 
     #[test]
     fn unheld_repository_locks_are_dropped_once_the_map_fills() {
+        // A map of its own: the process-wide one is shared with every test
+        // running in parallel, so its size is not this test's to assert.
+        let map = std::sync::Mutex::default();
         for index in 0..super::REBUILD_LOCKS_KEPT {
-            super::rebuild_lock(std::path::Path::new(&format!("/jeryu/pruned-{index}.git")));
+            super::rebuild_lock_in(
+                &map,
+                std::path::Path::new(&format!("/jeryu/pruned-{index}.git")),
+            );
         }
-        let held = super::rebuild_lock(std::path::Path::new("/jeryu/pruned-held.git"));
+        let held = super::rebuild_lock_in(&map, std::path::Path::new("/jeryu/pruned-held.git"));
         let _claim = super::try_claim(&held).expect("a free lock is claimed");
-        super::rebuild_lock(std::path::Path::new("/jeryu/pruned-trigger.git"));
-        let locks = super::REBUILD_LOCKS.lock().expect("lock map");
+        super::rebuild_lock_in(&map, std::path::Path::new("/jeryu/pruned-trigger.git"));
+        let locks = map.lock().expect("lock map");
         assert!(locks.len() < super::REBUILD_LOCKS_KEPT);
         // A lock a rebuild holds is never pruned out from under it.
         assert!(locks.contains_key(std::path::Path::new("/jeryu/pruned-held.git")));
@@ -969,17 +983,21 @@ mod tests {
 
     #[test]
     fn rebuilds_in_flight_are_bounded_and_the_slot_returns_on_panic() {
+        // Slots of its own: filling the process-wide ones would refuse a
+        // codegraph read another test runs in parallel, and that test's
+        // rebuilds would move the count this one asserts.
+        let pool: &'static super::RebuildSlots = Box::leak(Box::new(super::RebuildSlots::new()));
         let slots: Vec<_> = (0..super::REBUILD_PARALLEL)
-            .map(|_| super::REBUILD_SLOTS.try_take().expect("a free slot"))
+            .map(|_| pool.try_take().expect("a free slot"))
             .collect();
-        assert!(super::REBUILD_SLOTS.try_take().is_none());
+        assert!(pool.try_take().is_none());
         drop(slots);
         let outcome = std::panic::catch_unwind(|| {
-            let _slot = super::REBUILD_SLOTS.try_take().expect("a free slot");
+            let _slot = pool.try_take().expect("a free slot");
             panic!("indexing run panicked");
         });
         assert!(outcome.is_err());
-        assert_eq!(*super::REBUILD_SLOTS.count(), 0);
+        assert_eq!(*pool.count(), 0);
     }
 
     #[test]
