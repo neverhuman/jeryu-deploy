@@ -1300,7 +1300,8 @@ spelling of a family key; one the forge does not host answers
            "todo_id": "20261006-120000-a1b2c3", "model": "model-a",
            "input_tokens": 1400, "output_tokens": 200, "cache_read_input_tokens": 90000,
            "cache_creation_input_tokens": 400, "cost_usd": 0.55, "turns": 7,
-           "updated_at": "2026-10-06T12:00:00Z", "tokens_per_minute": 312.5}],
+           "updated_at": "2026-10-06T12:00:00Z", "tokens_per_minute": 312.5,
+           "sampled_at": "2026-10-06T12:00:03Z", "in_window": true, "current": true}],
  "totals": {"input_tokens": 1400, "output_tokens": 200, "cache_read_input_tokens": 90000,
             "cache_creation_input_tokens": 400, "cost_usd": 0.55}}
 ```
@@ -1315,6 +1316,17 @@ counted again in today's. Empty buckets are kept: a chart needs the gap.
 `tokens_per_minute` is fresh input plus output plus cache-creation tokens a
 minute over the attempt's samples in the window, and `null` until the attempt
 has two samples apart in time. `totals` is the sum of the buckets.
+
+`live` holds each slot's **newest sample, whatever its age** (up to the
+30-day retention), so a slot idle for days still has a row with its last
+attempt's counts while `totals` for the window is zero. Each row says how to
+read it: `sampled_at` is when the server stored the sample, `in_window` is
+true when that is inside `from`..`to` (so its spend can be in `totals`), and
+`current` is read from the slot's heartbeats: `true` when its newest beat is
+healthy (within two minutes) and names the same todo, `false` when its newest
+beat inside the heartbeat retention (14 days) is stale or names another todo
+or none, `null` when the slot has not beaten inside the retention. A page
+showing what is being spent now keeps the `current: true` rows.
 
 ### `usage.changed`
 

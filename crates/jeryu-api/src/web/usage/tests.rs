@@ -483,6 +483,12 @@ async fn the_usage_route_serves_heartbeat_totals_and_refuses_a_bad_query() {
     assert_eq!(live[0]["todo_id"], "t1");
     assert_eq!(live[0]["input_tokens"], 1_400);
     assert!(live[0].get("tokens_per_minute").is_some());
+    assert_eq!(live[0]["in_window"], true);
+    assert!(live[0]["sampled_at"].is_string());
+    assert_eq!(
+        live[0]["current"], true,
+        "w1's newest beat is fresh and names t1"
+    );
 
     // A window or a bucket the route cannot answer is a mistake in the
     // request: an empty chart would read as a shift that spent nothing.
@@ -585,4 +591,87 @@ async fn a_per_model_attempt_usage_is_kept_for_yield_and_summed_for_the_chart() 
         Value::Null,
         "an attempt on two models names neither"
     );
+}
+
+fn stored_beat(
+    slot: &str,
+    todo: Option<&str>,
+    received_ms: i64,
+) -> crate::web::shift::StoredHeartbeat {
+    crate::web::shift::StoredHeartbeat {
+        received_ms,
+        heartbeat: crate::web::shift::Heartbeat {
+            operator: "dana".into(),
+            host: "build-1.example".into(),
+            slot: slot.into(),
+            family: "jeryu".into(),
+            state: if todo.is_some() { "working" } else { "idle" }.into(),
+            todo_id: todo.map(str::to_string),
+            stage: None,
+            lease_until: None,
+            shift: None,
+            planned_slots: None,
+            schedule: None,
+            version: None,
+            kind: "todoq".into(),
+            detail: None,
+            capacity: None,
+            active: None,
+            usage: None,
+        },
+    }
+}
+
+/// The shape of the live 2026-10-26 answer: every worker idle for days, the
+/// 24-hour `totals` all zero (correctly: nothing was sampled in the window),
+/// and `live[]` still listing each slot's last attempt from days before with
+/// nothing saying how old it was. Each row now says when it was sampled,
+/// whether that is inside the window, and whether the slot is working it now.
+#[test]
+fn a_slot_s_last_sample_says_how_old_it_is_and_whether_the_slot_still_works_it() {
+    let now = 1_793_000_000_000;
+    let day = 24 * 60 * MINUTE;
+    let old = |slot: &str, todo: &str, days: i64| {
+        sample(
+            now - days * day,
+            slot,
+            Some(todo),
+            usage(20_000, 1_400, 160_000, 0, 0.07),
+        )
+    };
+    let latest = vec![
+        old("w1", "todo-idle-now", 3),
+        old("w2", "todo-went-quiet", 3),
+        old("w3", "todo-no-beats", 12),
+        sample(
+            now - MINUTE,
+            "w4",
+            Some("todo-working"),
+            usage(10, 5, 0, 0, 0.01),
+        ),
+    ];
+    let mut answer = build(&[], &[], &latest, now - day, now, 5 * MINUTE);
+    assert_eq!(
+        answer.totals,
+        UsageCounts::default(),
+        "nothing sampled in the window"
+    );
+    let beats = vec![
+        stored_beat("w1", None, now - 10_000),
+        stored_beat("w2", Some("todo-went-quiet"), now - 30 * MINUTE),
+        stored_beat("w4", Some("todo-working"), now - 5_000),
+    ];
+    mark_current(&mut answer.live, &beats, now);
+    let row = |slot: &str| answer.live.iter().find(|row| row.slot == slot).unwrap();
+    assert_eq!(row("w1").current, Some(false), "healthy, but idle");
+    assert_eq!(
+        row("w2").current,
+        Some(false),
+        "names it, but stopped beating"
+    );
+    assert_eq!(row("w3").current, None, "no beat inside the retention");
+    assert_eq!(row("w4").current, Some(true));
+    assert!(!row("w1").in_window);
+    assert!(row("w4").in_window);
+    assert_eq!(row("w3").sampled_at, rfc3339_ms(now - 12 * day));
 }

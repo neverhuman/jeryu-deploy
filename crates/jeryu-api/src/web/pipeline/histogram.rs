@@ -404,4 +404,126 @@ mod tests {
         assert_eq!(median(vec![4, 1, 9, 5]), Some(5));
         assert_eq!(cents(0.1 + 0.2), 0.3);
     }
+
+    /// The live 2026-10-26 read reported 0 todos finished, 0 blocked, 0 merged
+    /// and 0 deploys over 24 hours while the log held hundreds of events. The
+    /// events below are shaped like that log (sources, kinds, outcomes and
+    /// spacing; names invented): the counted kinds all fell before the window,
+    /// and what the window held was gates, hourly `todo.waiting_on_unmerged`
+    /// notices (outcome `blocked`), an in-progress deploy status and a costed
+    /// session. So the zeros were right, and this pins down why: the window
+    /// is the last 24 hours of whole buckets, and a waiting notice or a deploy
+    /// still in progress is no finished todo, block or deploy.
+    #[test]
+    fn real_shaped_events_count_only_what_finished_inside_the_window() {
+        use crate::web::pipeline::{EventStore, NewEvent};
+        let dir = tempfile::tempdir().unwrap();
+        let store = EventStore::open(&dir.path().join("shift.sqlite")).unwrap();
+        // 2026-10-26T13:07:43Z, when the read was taken.
+        let now = 1_793_020_063_000;
+        let hour = 3_600_000;
+        let event = |source: &str, kind: &str, outcome: Option<&str>| NewEvent {
+            source: source.to_string(),
+            kind: kind.to_string(),
+            summary: kind.to_string(),
+            outcome: outcome.map(str::to_string),
+            family: Some("acme".to_string()),
+            repo: Some("acme/widget".to_string()),
+            ..NewEvent::default()
+        };
+        let at = |new: NewEvent, ms: i64| {
+            store.insert("operator", &new, ms).unwrap();
+        };
+        // Before the window: what the 7-day read counts.
+        at(
+            event("forge", "pr.merged", Some("success")),
+            now - 34 * hour,
+        );
+        at(
+            event("forge", "deploy.status", Some("success")),
+            now - 35 * hour,
+        );
+        at(
+            NewEvent {
+                todo_id: Some("20260101-000001-aaaa01".into()),
+                cost_usd: Some(1.5),
+                ..event("todoq", "todo.attempt_finished", Some("blocked"))
+            },
+            now - 68 * hour,
+        );
+        at(
+            NewEvent {
+                todo_id: Some("20260101-000002-aaaa02".into()),
+                cost_usd: Some(2.0),
+                ..event("todoq", "todo.attempt_finished", Some("done"))
+            },
+            now - 70 * hour,
+        );
+        // Inside the window.
+        for n in 0..20 {
+            at(event("forge", "gate.started", None), now - n * hour);
+            at(
+                event("pr-gate", "gate.log", Some("inputs_changed")),
+                now - n * hour + 60_000,
+            );
+            at(
+                NewEvent {
+                    todo_id: Some("20260101-000003-aaaa03".into()),
+                    ..event("todoq", "todo.waiting_on_unmerged", Some("blocked"))
+                },
+                now - n * hour + 120_000,
+            );
+        }
+        at(
+            event("forge", "deploy.status", Some("in_progress")),
+            now - 2 * hour,
+        );
+        at(
+            NewEvent {
+                source: "todoq-agents".into(),
+                kind: "session.costed".into(),
+                summary: "session".into(),
+                cost_usd: Some(4.22),
+                ..NewEvent::default()
+            },
+            now - hour,
+        );
+
+        let read = |hours: i64| {
+            let bucket_ms = 1_800_000;
+            let (from_ms, to_ms) = window(now, hours, bucket_ms);
+            let filter = EventsQuery::default();
+            let window = HistogramWindow {
+                from_ms,
+                to_ms,
+                bucket_ms,
+                filter: &filter,
+            };
+            assemble(&window, store.histogram(&window).unwrap())
+        };
+        let day = read(24);
+        assert_eq!(
+            day.totals,
+            Totals {
+                todos_finished: 0,
+                blocked: 0,
+                prs_merged: 0,
+                deploys: 0,
+                spent_usd: 4.22,
+            }
+        );
+        let todos: i64 = day.buckets.iter().map(|b| b.by_group.todos).sum();
+        assert_eq!(todos, 20, "the waiting notices are todo events, not blocks");
+        let week = read(168);
+        assert_eq!(
+            week.totals,
+            Totals {
+                todos_finished: 1,
+                blocked: 1,
+                prs_merged: 1,
+                deploys: 1,
+                spent_usd: 7.72,
+            }
+        );
+    }
 }

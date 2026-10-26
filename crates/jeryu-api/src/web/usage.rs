@@ -514,6 +514,18 @@ pub(crate) struct LiveUsage {
     /// Fresh input plus output tokens a minute over this attempt's samples in
     /// the window; `null` until the attempt has two samples apart in time.
     pub tokens_per_minute: Option<f64>,
+    /// When the server stored this sample. A slot's newest sample is kept
+    /// whatever its age, so it can be days older than the window.
+    pub sampled_at: String,
+    /// True when the sample was stored inside the answer's window, so its
+    /// spend can show up in `totals`.
+    pub in_window: bool,
+    /// Whether the slot is working this attempt now, from its heartbeats:
+    /// `true` when its newest beat is healthy and names the same todo,
+    /// `false` when its newest beat inside the heartbeat retention is stale
+    /// or names another todo (or none), `null` when the slot has not beaten
+    /// inside the retention at all.
+    pub current: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -614,6 +626,9 @@ pub(crate) fn build(
             todo_id: sample.todo_id.clone(),
             usage: sample.usage.clone(),
             tokens_per_minute: flow.get(&attempt_key(sample)).and_then(Flow::per_minute),
+            sampled_at: rfc3339_ms(sample.ts_ms),
+            in_window: sample.ts_ms >= from_ms && sample.ts_ms <= to_ms,
+            current: None,
         })
         .collect();
     UsageResponse {
@@ -629,6 +644,42 @@ pub(crate) fn build(
             .collect(),
         live,
         totals,
+    }
+}
+
+/// Say, for each live row, whether its slot is working that attempt now.
+/// `latest` is the newest heartbeat of every slot inside the heartbeat
+/// retention (`HeartbeatStore::latest`).
+pub(crate) fn mark_current(
+    live: &mut [LiveUsage],
+    latest: &[super::shift::StoredHeartbeat],
+    now_ms: i64,
+) {
+    let beats: BTreeMap<SlotKey, &super::shift::StoredHeartbeat> = latest
+        .iter()
+        .map(|row| {
+            (
+                (
+                    row.heartbeat.operator.clone(),
+                    row.heartbeat.host.clone(),
+                    row.heartbeat.slot.clone(),
+                    row.heartbeat.family.clone(),
+                ),
+                row,
+            )
+        })
+        .collect();
+    for row in live {
+        let key = (
+            row.operator.clone(),
+            row.host.clone(),
+            row.slot.clone(),
+            row.family.clone(),
+        );
+        row.current = beats.get(&key).map(|beat| {
+            now_ms.saturating_sub(beat.received_ms) <= super::shift::HEALTHY_MS
+                && beat.heartbeat.todo_id == row.todo_id
+        });
     }
 }
 
@@ -706,16 +757,28 @@ pub(crate) async fn usage(
             state.usage.latest_per_slot()?,
         ))
     });
-    match read {
-        Ok((samples, baselines, latest)) => Json(build(
-            &keep(samples),
-            &keep(baselines),
-            &keep(latest),
-            from,
-            to,
-            bucket_seconds * 1000,
+    let read = read.and_then(|read| {
+        Ok((
+            read,
+            state
+                .shift
+                .heartbeats
+                .latest(to - super::shift::HEARTBEAT_RETENTION_MS)?,
         ))
-        .into_response(),
+    });
+    match read {
+        Ok(((samples, baselines, latest), beats)) => {
+            let mut answer = build(
+                &keep(samples),
+                &keep(baselines),
+                &keep(latest),
+                from,
+                to,
+                bucket_seconds * 1000,
+            );
+            mark_current(&mut answer.live, &beats, to);
+            Json(answer).into_response()
+        }
         Err(reason) => usage_store_error(&reason),
     }
 }

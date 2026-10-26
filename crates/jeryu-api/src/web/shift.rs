@@ -61,7 +61,8 @@ use heartbeats::HeartbeatStore;
 #[cfg(test)]
 pub(crate) use heartbeats::migrate_through as migrate_shift_store_through;
 pub(crate) use heartbeats::{
-    HEALTHY_MS, StoredHeartbeat, migrate as migrate_shift_store, rfc3339_ms,
+    HEALTHY_MS, RETENTION_MS as HEARTBEAT_RETENTION_MS, StoredHeartbeat,
+    migrate as migrate_shift_store, rfc3339_ms,
 };
 pub use migration_sequence::shift_store_migrations;
 use queue::{Queue, WriteError, commit_change, commit_change_at, discover};
