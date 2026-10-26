@@ -18,7 +18,9 @@
 //!
 //! The decision is made here, on the forge, out of the gate's own status: no
 //! file in the tree the gate tests takes part in it, and a reader cannot be
-//! talked into treating an ungated commit as green. What may post the status is
+//! talked into treating an ungated commit as green: clients cannot push
+//! `refs/green/*` at all, and the shell readers also check that the commit is
+//! on main and carries a green `<name>/main-health`. What may post the status is
 //! what may move the ref, so the ref is exactly as trustworthy as the
 //! `<name>/main-health` context already was -- and the combined status readers
 //! used before mixed in every other context anyone had posted on that commit.
@@ -30,10 +32,20 @@ use jeryu_gitd::{RepoManager, merge_base};
 /// The actor recorded for a green-ref move in the ref audit trail.
 const GREEN_REF_ACTOR: &str = "forge/green-ref";
 
+/// The namespace only the forge writes. The release automation trusts what a
+/// ref here names, so receive-pack refuses every client command on it
+/// (`crate::git_transport`), an administrator's included.
+const GREEN_REF_PREFIX: &str = "refs/green/";
+
 /// `refs/green/<default branch>` for a repository whose default branch is
 /// `default_branch`.
 pub(crate) fn green_ref_name(default_branch: &str) -> String {
-    format!("refs/green/{default_branch}")
+    format!("{GREEN_REF_PREFIX}{default_branch}")
+}
+
+/// Whether `name` is in the green-ref namespace, which clients cannot push.
+pub(crate) fn is_green_ref(name: &str) -> bool {
+    name.starts_with(GREEN_REF_PREFIX)
 }
 
 /// What one green `main-health` status did to the green ref.
@@ -178,6 +190,9 @@ mod tests {
     fn green_ref_is_named_after_the_default_branch() {
         assert_eq!(green_ref_name("main"), "refs/green/main");
         assert_eq!(green_ref_name("trunk"), "refs/green/trunk");
+        assert!(is_green_ref(&green_ref_name("main")));
+        assert!(!is_green_ref("refs/heads/refs/green/main"));
+        assert!(!is_green_ref("refs/greenish/main"));
     }
 
     #[test]

@@ -364,3 +364,47 @@ fn one_pr_read_is_reused_for_guard_and_capped_notices_on_a_multi_ref_push() {
     assert!(lines.len() <= MAX_NOTICE_BRANCHES * 3 + 1);
     assert!(lines.last().unwrap().contains("16 branches"));
 }
+
+/// `refs/green/*` is the release automation's trust anchor and `refs/queue*/*`
+/// the merge queue's state: no client push may create one, administrator
+/// included. Only the forge writes them, from the gate's own verdicts.
+#[tokio::test]
+async fn forge_owned_refs_cannot_be_pushed_by_any_client() {
+    let f = Fixture::new();
+    for name in [
+        "refs/green/main",
+        "refs/green/trunk",
+        "refs/queue/main/1",
+        "refs/queue-meta/main/1",
+    ] {
+        for token in [&f.admin, &f.writer] {
+            let line = format!(
+                "{} {} {name}\0report-status\n",
+                crate::ci_bridge::ZERO_OID,
+                f.new
+            );
+            let mut body = format!("{:04x}", line.len() + 4).into_bytes();
+            body.extend_from_slice(line.as_bytes());
+            body.extend_from_slice(b"0000");
+            body.extend(git(&f.bare, &["pack-objects", "--stdout", "--revs"]));
+            let (status, reply) = f.push(token, None, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{name}: {reply}");
+            assert!(reply.contains("cannot be pushed"), "{name}: {reply}");
+            let exists = crate::test_git::git_command()
+                .arg("-C")
+                .arg(&f.bare)
+                .args(["rev-parse", "--verify", "-q", name])
+                .stdin(Stdio::null())
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(!exists, "a refused push created {name}");
+        }
+    }
+    // A branch whose name merely spells the green ref is an ordinary branch;
+    // the readers match the ref name exactly, so it impersonates nothing.
+    assert!(!crate::green_ref::is_green_ref(
+        "refs/heads/refs/green/main"
+    ));
+}

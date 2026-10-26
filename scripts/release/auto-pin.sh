@@ -9,10 +9,12 @@
 #
 #   1. Resolve jeryu-deploy main and jeryu-web's `refs/green/main`: the newest commit of jeryu-web
 #      main the gate proved green, which the forge moves there itself (the green ref; see
-#      crates/jeryu-api/src/green_ref.rs). That commit is what this pins, and the reason no status
-#      is read here: a status is posted on a commit, and a landing that rebased leaves main's own
-#      head without one, which is what used to leave a green jeryu-web unpinned. Nothing to do
-#      when the pin already is that commit.
+#      crates/jeryu-api/src/green_ref.rs), read by its exact name, never as an ls-remote tail
+#      pattern a branch could also match. That commit is what this pins, not main's head: a
+#      landing that rebased leaves main's head without a status, which is what used to leave a
+#      green jeryu-web unpinned. The ref is not trusted alone: before building, the commit must
+#      be on jeryu-web main and its newest `jeryu-web/main-health` must be `success`
+#      (a wait otherwise). Nothing to do when the pin already is that commit.
 #   2. Nothing to do when the green commit does not descend from the pin (a human rewrote history),
 #      when any bump pull request for jeryu-web is open (its landing moves the pin; the next tick
 #      proposes whatever is newer), or when this head already has its branch and pull request.
@@ -124,15 +126,19 @@ did() {
     {repo: $repo, sha: $sha, recipe: "auto-pin", conclusion: $conclusion, seconds: 0, finishedAt: $at}
     + (if $pr != "" then {pr: ($pr | tonumber)} else {} end)'
 }
-# waiting_for PR: this head waits behind bump #PR. The time the wait began is kept across ticks,
-# so the row says since when and not "just now". There is no wait for a gate any more: the head
-# comes from the green ref, so it is only ever reached once its gate run has passed.
+# waiting_for PR: this head waits (behind bump #PR, or for the gate when PR is empty: no green
+# ref yet, or a green commit whose main-health is not success). The time the wait began is kept
+# across ticks, so the row says since when and not "just now".
 waiting_for() {
-  local key="$head $1" since
+  local key="$head ${1:-gate}" since
   since="$(awk -F'\t' -v key="$key" '$1 == key { print $2 }' "$state/waiting" 2>/dev/null)" || since=""
   [ -n "$since" ] || { since="$(date -u +%FT%TZ)"; printf '%s\t%s\n' "$key" "$since" >"$state/waiting"; }
-  beat_last="$(did waiting "$1" "$head" "$since")" || beat_last=""
+  beat_last="$(did waiting "${1:-}" "$head" "$since")" || beat_last=""
 }
+# remote_ref REMOTE REF -> the oid of exactly REF. ls-remote matches a pattern against the tail of
+# every ref, so `refs/green/main` alone also matches a branch named "refs/green/main"
+# (refs/heads/refs/green/main), which any writer can create; only the exact name counts.
+remote_ref() { git ls-remote "$1" "$2" | awk -v ref="$2" '$2 == ref { print $1 }'; }
 # beat: one runner heartbeat (POST /api/v1/runners/heartbeat, docs/pipeline-events.md), sent by
 # the EXIT trap so idle ticks, early exits and finished work all report. `last` is a wait noted
 # this tick, else a failure recorded for the current head, else the newest opened bump; with no
@@ -315,15 +321,16 @@ close_landed_bumps() {
   done <<<"$rows"
 }
 
-main="$(git ls-remote "$remote" refs/heads/main | cut -f1)"
+main="$(remote_ref "$remote" refs/heads/main)"
 # The gate's verdict about jeryu-web main, as a ref: whatever this names was proved green by a
 # full gate run of that exact commit. An empty ref is "nothing proved yet", not "not green".
-head="$(git ls-remote "$web_remote" refs/green/main | cut -f1)"
+head="$(remote_ref "$web_remote" refs/green/main)"
 [[ "$main" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve jeryu-deploy main ($main)"; exit 1; }
 # No green ref at all: the gate has proved no commit of that main yet, so there is nothing to
-# pin. The heartbeat still goes out from the EXIT trap, naming the newest bump this timer opened;
-# a wait is reported per head, and here there is no head to name.
+# pin. The heartbeat says the timer waits for the gate of jeryu-web main's head.
 if [ -z "$head" ]; then
+  head="$(remote_ref "$web_remote" refs/heads/main)"
+  if [[ "$head" =~ ^[0-9a-f]{40}$ ]]; then waiting_for ""; else head=""; fi
   say "$web_path has no refs/green/main yet; waiting for the gate"; exit 0
 fi
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve $web_path refs/green/main ($head)"; exit 1; }
@@ -344,6 +351,11 @@ pin="$(git -C "$cache" show "$main:$lock_file" | awk '
 web_cache="$state/jeryu-web.git"
 [ -d "$web_cache" ] || git clone -q --bare "$web_remote" "$web_cache"
 git -C "$web_cache" fetch -q "$web_remote" "+refs/heads/main:refs/heads/main"
+# The ref is not trusted alone. The forge moves it only onto a commit of main, but a bare clone
+# carries every branch, so an off-main commit would build here without this check.
+if ! git -C "$web_cache" merge-base --is-ancestor "$head" refs/heads/main 2>/dev/null; then
+  say "$web_path refs/green/main ${head:0:12} is not a commit of jeryu-web main; refusing to pin it"; exit 1
+fi
 if ! git -C "$web_cache" merge-base --is-ancestor "$pin" "$head" 2>/dev/null; then
   say "jeryu-web main ${head:0:12} does not descend from the pin ${pin:0:12}; leaving it for a human"; exit 0
 fi
@@ -627,7 +639,18 @@ if [ -n "$other" ]; then
   else waiting_for "$other"; say "bump #$other is open; ${head:0:12} waits for it to land"; exit 0; fi
 fi
 
-pushed="$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
+pushed="$(remote_ref "$remote" "refs/heads/$branch")"
+if [ -z "$pushed" ]; then
+  # And it must carry the verdict that moved it: a green <name>/main-health as the newest status
+  # of that context. Anything else, or an unreadable status, is a wait, not a pin.
+  health_context="${web_path##*/}/main-health"
+  health="$(api GET "/api/v3/repos/$web_path/commits/$head/status" \
+    | jq -r -L "$here" --arg context "$health_context" 'include "latest-statuses";
+        [latest_statuses[] | select(.context == $context)][0].state // "missing"')" || health=unreadable
+  if [ "$health" != success ]; then
+    waiting_for ""; say "jeryu-web ${head:0:12} has $health_context $health; waiting"; exit 0
+  fi
+fi
 
 attempt=$((failures + 1))
 log="$state/logs/${head:0:12}-attempt$attempt.log"; : >"$log"

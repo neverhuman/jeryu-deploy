@@ -349,6 +349,10 @@ printf '%s\n' "\$*" >>"$A/curl-args"
 case "\$*" in
   *"/api/v1/runners/heartbeat"*) [ -e "$A/refuse-beats" ] && exit 22; cat >>"$A/beats.jsonl"; echo >>"$A/beats.jsonl" ;;
   *"/api/v1/events"*) [ -e "$A/refuse-events" ] && exit 22; cat >>"$A/events.jsonl"; echo >>"$A/events.jsonl" ;;
+  *"/commits/"*"/status"*)
+    jq -n --arg state "\$(cat "$A/health" 2>/dev/null || echo success)" '{state: \$state, statuses: [
+      {context: "jeryu-deploy/main-health", state: \$state, updated_at: "2026-10-15T16:49:48Z"},
+      {context: "jeryu-deploy/main-health", state: "failure", updated_at: "2026-10-15T16:40:22Z"}]}' ;;
   *) echo '{"state":"success"}' ;;
 esac
 EOF
@@ -359,7 +363,7 @@ echo "not-a-real-token" >"$A/token"
 # It runs from a copy placed in a fixture home, so the checkout and settings file the deploy
 # command names are the fixture's and the same wherever this test runs.
 H="$A/home"; mkdir -p "$H/deploy-checkout/scripts/release" "$H/.config/jeryu"
-cp "$here/auto-stage.sh" "$here/deploy-release.sh" "$H/deploy-checkout/scripts/release/"
+cp "$here/auto-stage.sh" "$here/deploy-release.sh" "$here/latest-statuses.jq" "$H/deploy-checkout/scripts/release/"
 cat >"$H/.config/jeryu/release.env" <<EOF
 JERYU_BUILD_HOST=build-1
 JERYU_FORGE_HOST=edge-1
@@ -389,11 +393,16 @@ ok "auto-stage refuses each unset site setting by name"
 
 # Nothing of main is proved green yet: there is no commit to stage, and no status is read to guess
 # one. staged.tsv is created by every tick, so "nothing staged" is an empty file.
+# A branch whose name spells the green ref (refs/heads/refs/green/main) matches a bare ls-remote
+# pattern; it must not stand in for the ref. It stays for the rest of the suite.
+git -C "$A/remote.git" update-ref refs/heads/refs/green/main "$sha"
 auto_stage >"$A/no-green.log" 2>&1 || fail "auto-stage failed while there was no green ref"
-grep -q "has no refs/green/main yet" "$A/no-green.log" || fail "auto-stage did not say it awaits the green ref"
+grep -q "has no refs/green/main yet" "$A/no-green.log" || { cat "$A/no-green.log" >&2; fail "auto-stage did not say it awaits the green ref (or took the spoofing branch)"; }
 [[ ! -s "$A/state/staged.tsv" && ! -s "$A/events.jsonl" ]] || fail "auto-stage staged without a green ref"
+jq -sc '.[-1]' "$A/beats.jsonl" | jq -e --arg sha "$sha" '.last.conclusion == "waiting" and .last.sha == $sha' >/dev/null \
+  || fail "a tick waiting for the green ref does not beat waiting for main's head"
 rm -rf "$A/state"
-ok "auto-stage stages nothing until the green ref names a commit"
+ok "auto-stage stages nothing until the green ref names a commit, and a branch spelling it is not it"
 
 # The gate proves the first commit; main then moves on. Everything below asks for $sha, the commit
 # the green ref names, so each assertion is also proof that staging follows the ref and not main's
@@ -405,6 +414,26 @@ git -C "$A/src" -c user.name=t -c user.email=t@t commit -q -m later
 git -C "$A/src" push -q "$A/remote.git" main:main
 newer_main="$(git -C "$A/remote.git" rev-parse refs/heads/main)"
 [[ "$newer_main" != "$sha" ]] || fail "the fixture did not move main past the green commit"
+
+# The ref is not trusted alone: an off-main commit is refused, a commit whose newest main-health
+# is not success waits, and neither is staged.
+off_main="$(git -C "$A/remote.git" -c user.name=t -c user.email=t@t commit-tree -m side "$sha^{tree}" -p "$sha")"
+git -C "$A/remote.git" update-ref refs/heads/side "$off_main"
+git -C "$A/remote.git" update-ref refs/green/main "$off_main"
+rc=0; auto_stage >"$A/off-main.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "is not a commit of main; refusing" "$A/off-main.log" \
+  || { cat "$A/off-main.log" >&2; fail "auto-stage did not refuse a green ref off main"; }
+[[ ! -s "$A/state/staged.tsv" && ! -s "$A/events.jsonl" ]] || fail "auto-stage staged an off-main commit"
+git -C "$A/remote.git" update-ref refs/green/main "$sha"; git -C "$A/remote.git" update-ref -d refs/heads/side
+rm -rf "$A/state"
+echo failure >"$A/health"; : >"$A/beats.jsonl"
+auto_stage >"$A/red-health.log" 2>&1 || fail "a tick with a red main-health failed"
+grep -q "has jeryu-deploy/main-health failure; waiting" "$A/red-health.log" || { cat "$A/red-health.log" >&2; fail "auto-stage did not wait on a red main-health"; }
+[[ ! -s "$A/state/staged.tsv" && ! -s "$A/events.jsonl" ]] || fail "auto-stage staged a commit whose main-health is red"
+jq -sc '.[-1]' "$A/beats.jsonl" | jq -e --arg sha "$sha" '.last.conclusion == "waiting" and .last.sha == $sha' >/dev/null \
+  || fail "a tick waiting on main-health does not beat waiting"
+rm -f "$A/health"; rm -rf "$A/state"; : >"$A/beats.jsonl"
+ok "auto-stage refuses a green ref off main and waits for a green main-health on the green commit"
 
 touch "$A/fail"
 if auto_stage >"$A/run1.log" 2>&1; then fail "auto-stage reported success for a failed staging"; fi
@@ -594,7 +623,8 @@ case "\$method \$url" in
   "GET https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-web/commits/"*"/status")
     jq -n --arg state "\$(cat "$P/gate")" '{state: \$state, statuses: [
       {context: "jeryu-web/required", state: \$state, updated_at: "2026-10-15T16:49:48.808799285Z"},
-      {context: "jeryu-web/required", state: "pending", updated_at: "2026-10-15T16:40:22Z"}]}' ;;
+      {context: "jeryu-web/required", state: "pending", updated_at: "2026-10-15T16:40:22Z"},
+      {context: "jeryu-web/main-health", state: \$state, updated_at: "2026-10-15T16:49:48Z"}]}' ;;
   *) echo "unexpected curl: \$method \$url" >&2; exit 22 ;;
 esac
 EOF
@@ -644,16 +674,34 @@ grep -q "JERYU_PIN_GIT_NAME and JERYU_PIN_GIT_EMAIL are unset" "$P/run.log" \
 ok "auto-pin refuses an unset credential path or bump identity by name"
 
 git -C "$P/web.git" update-ref -d refs/green/main # the gate has proved nothing of jeryu-web main
+# A branch whose name spells the green ref matches a bare ls-remote pattern; it is not the ref.
+git -C "$P/web.git" update-ref refs/heads/refs/green/main "$h1"
 auto_pin >"$P/run.log" 2>&1 || fail "a tick without a green ref failed"
-grep -q "has no refs/green/main yet" "$P/run.log" || fail "auto-pin did not wait for the web green ref"
+grep -q "has no refs/green/main yet" "$P/run.log" || { cat "$P/run.log" >&2; fail "auto-pin did not wait for the web green ref (or took the spoofing branch)"; }
+git -C "$P/web.git" update-ref -d refs/heads/refs/green/main
 [[ -z "$(branches)" && ! -s "$P/prs.jsonl" && ! -s "$P/builds" && ! -s "$P/events.jsonl" ]] || fail "auto-pin acted with no proved web commit"
 [[ "$(posted "$P/beats.jsonl")" == 1 && "$(grep -c runners/heartbeat "$P/curl-args")" == 1 ]] || fail "a tick must post exactly one heartbeat"
 beat_is '.runnerId == $id and .host == $host and .slot == 0 and .labels == ["automation"]
-  and .intervalSeconds == 300 and (has("current") | not) and (has("last") | not)' \
-  --arg id "$me/auto-pin" --arg host "$me" || fail "the auto-pin heartbeat is not the contract's"
-ok "auto-pin waits while jeryu-web has no green ref, and beats once to say so"
+  and .intervalSeconds == 300 and (has("current") | not) and .last.conclusion == "waiting"
+  and .last.sha == $sha and (.last | has("pr") | not)' \
+  --arg id "$me/auto-pin" --arg host "$me" --arg sha "$h1" || fail "the auto-pin heartbeat is not the contract's"
+ok "auto-pin waits while jeryu-web has no green ref, a branch spelling it is not it, and beats once to say so"
 
+# The ref is not trusted alone: off jeryu-web main it is refused, and a green commit whose newest
+# main-health is not success is a wait.
+web_side="$(git -C "$P/web.git" -c user.name=t -c user.email=t@t commit-tree -m side "$h1^{tree}" -p "$h1")"
+git -C "$P/web.git" update-ref refs/heads/side "$web_side"; git -C "$P/web.git" update-ref refs/green/main "$web_side"
+rc=0; auto_pin >"$P/run.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "is not a commit of jeryu-web main; refusing" "$P/run.log" \
+  || { cat "$P/run.log" >&2; fail "auto-pin did not refuse a green ref off jeryu-web main"; }
+git -C "$P/web.git" update-ref -d refs/heads/side
 git -C "$P/web.git" update-ref refs/green/main "$h1"
+auto_pin >"$P/run.log" 2>&1 || fail "a tick with a pending main-health failed"
+grep -q "has jeryu-web/main-health pending; waiting" "$P/run.log" || { cat "$P/run.log" >&2; fail "auto-pin did not wait on main-health"; }
+beat_is '.last.conclusion == "waiting" and .last.sha == $sha' --arg sha "$h1" || fail "a main-health wait does not beat waiting"
+[[ -z "$(branches)" && ! -s "$P/prs.jsonl" && ! -s "$P/builds" ]] || fail "auto-pin built a commit whose main-health is not green"
+ok "auto-pin refuses a green ref off jeryu-web main and waits for its main-health"
+
 # The status API now only feeds the snapshot the review body quotes; it decides nothing.
 echo success >"$P/gate"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "auto-pin failed on the happy path"; }
@@ -675,7 +723,7 @@ jq -es --arg h "$h1" '.[0].body | contains("**Evidence for review.**") and conta
   and (contains("REVIEW_DATA_DO_NOT_COPY") | not) and (contains("web change 3") | not)
   and contains("pointer, not a gate receipt")' "$P/prs.jsonl" >/dev/null \
   || fail "the pull request body does not carry the review evidence and each shipped commit"
-jq -es '.[0].body | contains("combined: success; latest contexts: jeryu-web/required: success")
+jq -es '.[0].body | contains("combined: success; latest contexts: jeryu-web/main-health: success, jeryu-web/required: success")
   and (contains("jeryu-web/required: pending") | not)
   and contains("does not perform this real bundle rebuild")' "$P/prs.jsonl" >/dev/null \
   || fail "the pin summary mixes historical states or overclaims the required proof"

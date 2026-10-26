@@ -344,8 +344,14 @@ forge: nothing in the tree the gate tests takes part in it. `GET /api/v1/release
 and the commit it holds on every repository's row, so a lagging main is visible without reading
 statuses, and a red main is a `main_red` item in the attention inbox.
 
-Both timers below resolve that ref with one `git ls-remote` and read no commit status to decide
-anything. An absent ref means the gate has proved nothing yet, which is a wait, not a failure.
+Only the forge writes `refs/green/*`: receive-pack refuses a client command on that namespace,
+an administrator's included, as it does for the merge queue's `refs/queue/*`.
+
+Both timers below resolve that ref by its exact name (`git ls-remote` filtered to the ref itself:
+a bare `refs/green/main` pattern also matches a branch named `refs/green/main`). They do not trust
+it alone: the commit must be on main (else the tick refuses it), and its newest
+`<repo>/main-health` must be `success` (else the tick waits). An absent ref means the gate has
+proved nothing yet, which is a wait for the gate of main's head, not a failure.
 
 ## Auto-staging
 
@@ -364,8 +370,9 @@ contract is in [`docs/pipeline-events.md`](../../docs/pipeline-events.md).
 
 Every tick, idle ones included, ends with one runner heartbeat (`<host>/auto-stage`, label
 `automation`, no `pr`), so `/runners` shows the timer alive and whether it last `staged` a commit,
-is `waiting` for the gate to prove a commit of main, or `failed`. Best-effort like the events; `JERYU_AUTO_STAGE_BEAT=0`
-turns it off.
+is `waiting` (for the gate of main's head while there is no green ref, or for the green commit's
+`main-health`), or `failed`. Best-effort like the events; `JERYU_AUTO_STAGE_BEAT=0` turns it off.
+The installer copies `latest-statuses.jq` beside `auto-stage.sh`; re-run it after an update.
 
 ## Deploying from the forge (release actions)
 

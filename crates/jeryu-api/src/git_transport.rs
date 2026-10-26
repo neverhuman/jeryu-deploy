@@ -440,6 +440,18 @@ pub(crate) async fn git_upload_pack(
     .await
 }
 
+/// Who owns `name` when only the forge may write it: no client push may
+/// create, move or delete such a ref, whatever the pusher's role.
+fn forge_owned_ref(name: &str) -> Option<&'static str> {
+    if crate::web::is_queue_owned_ref(name) {
+        Some("the merge queue")
+    } else if crate::green_ref::is_green_ref(name) {
+        Some("the forge's green-ref verdict")
+    } else {
+        None
+    }
+}
+
 pub(crate) async fn git_receive_pack(
     State(state): State<Arc<WebState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -467,14 +479,15 @@ pub(crate) async fn git_receive_pack(
         Ok(commands) => commands,
         Err(response) => return *response,
     };
-    if let Some(command) = commands
-        .iter()
-        .find(|command| crate::web::is_queue_owned_ref(&command.ref_name))
-    {
+    // The forge also owns refs/green/*: the release automation builds, pins and
+    // stages what the green ref names, so a pushed one would choose a release.
+    if let Some((command, owner_name)) = commands.iter().find_map(|command| {
+        forge_owned_ref(&command.ref_name).map(|owner_name| (command, owner_name))
+    }) {
         return (
             StatusCode::FORBIDDEN,
             format!(
-                "{} is owned by the merge queue and cannot be pushed\n",
+                "{} is owned by {owner_name} and cannot be pushed\n",
                 command.ref_name
             ),
         )

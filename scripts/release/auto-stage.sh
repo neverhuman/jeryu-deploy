@@ -5,9 +5,12 @@
 #   1. Resolve `refs/green/main`: the commit the forge moves that ref onto when the gate posts a
 #      green run of a commit main carries (the green ref; see crates/jeryu-api/src/green_ref.rs).
 #      Nothing to do when that commit is already live or already staged, and nothing to stage
-#      before the ref exists. No status is read here: a status is posted on a commit, and a
-#      landing that rebased leaves main's own head without one, which is what used to stall
-#      staging behind a status that was never going to arrive.
+#      before the ref exists. The ref is read by its exact name, never as an ls-remote tail
+#      pattern a branch could also match. Main's own head is not what is staged: a landing that
+#      rebased leaves it without a status, which is what used to stall staging behind a status
+#      that was never going to arrive. The ref is not trusted alone, though: the commit must be
+#      on main and its newest `<repo>/main-health` must be `success` (latest-statuses.jq, installed
+#      beside this script), or the tick refuses or waits.
 #   2. Run stage-release.sh from THAT commit (git archive of scripts/release), so the staging
 #      recipe is always the one that was reviewed with the code it stages.
 #   3. Record the result. A commit that fails to stage is retried at most twice, then left for a
@@ -22,9 +25,9 @@
 #      the gate to prove a commit of main, or failed to stage. Best-effort like the events.
 #
 # State in $JERYU_AUTO_STAGE_STATE (~/.local/state/jeryu-auto-stage): staged.tsv (sha, release,
-# time), failures/<sha> (attempt count), latest (the newest staged release id), waiting (since
-# when the green ref has been awaited), a git cache, logs/<sha12>-attempt<N>.log (the staging
-# output, newest 20 kept).
+# time), failures/<sha> (attempt count), latest (the newest staged release id), waiting (what the
+# current wait is for -- the green ref, or the green commit's main-health -- and since when), a
+# git cache, logs/<sha12>-attempt<N>.log (the staging output, newest 20 kept).
 #
 # Env: JERYU_DEPLOY_REMOTE, JERYU_BUILD_HOST, JERYU_FORGE_HOST (as the staging
 # script; the last two required with no default);
@@ -39,6 +42,7 @@
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 remote="${JERYU_DEPLOY_REMOTE:-https://git.neverhuman.org/git/jeryu/jeryu-deploy.git}"
 # A machine name and a credential path are one installation's data, so this
 # public source carries no default for either.
@@ -153,15 +157,30 @@ if [ -r "$token_file" ]; then
   printf 'header = "Authorization: Bearer %s"\n' "$(cat "$token_file")" >"$cfg"
 fi
 
-green="$(git ls-remote "$remote" refs/green/main | cut -f1)"
+# remote_ref REMOTE REF -> the oid of exactly REF. ls-remote matches a pattern against the tail of
+# every ref, so `refs/green/main` alone also matches a branch named "refs/green/main"
+# (refs/heads/refs/green/main), which any writer can create; only the exact name counts.
+remote_ref() { git ls-remote "$1" "$2" | awk -v ref="$2" '$2 == ref { print $1 }'; }
+# waiting_on KEY SHA WHY: this tick waits. The time the wait began is kept across ticks (one line,
+# replaced when the wait changes), so the /runners row says since when and not "just now".
+waiting_on() {
+  local since
+  since="$(awk -F'\t' -v key="$1" '$1 == key { print $2 }' "$state/waiting" 2>/dev/null)" || since=""
+  [ -n "$since" ] || { since="$(date -u +%FT%TZ)"; printf '%s\t%s\n' "$1" "$since" >"$state/waiting"; }
+  [ -z "$2" ] || beat_last="$(did waiting "$2" "$since")" || beat_last=""
+  say "$3 (since $since)"
+}
+
+green="$(remote_ref "$remote" refs/green/main)"
 if [ -z "$green" ]; then
-  # Nothing of main has been proved green yet. Keep the time this wait began across ticks so the
-  # /runners row says since when, and name no commit: there is none to name.
-  since="$(awk -F'\t' '$1 == "green-ref" { print $2 }' "$state/waiting" 2>/dev/null)" || since=""
-  [ -n "$since" ] || { since="$(date -u +%FT%TZ)"; printf '%s\t%s\n' green-ref "$since" >"$state/waiting"; }
-  say "$repo_path has no refs/green/main yet; waiting for the gate (since $since)"; exit 0
+  # Nothing of main has been proved green yet: the wait is for the gate of main's head.
+  head_now="$(remote_ref "$remote" refs/heads/main)"
+  [[ "$head_now" =~ ^[0-9a-f]{40}$ ]] || head_now=""
+  waiting_on green-ref "$head_now" "$repo_path has no refs/green/main yet; waiting for the gate"; exit 0
 fi
 [[ "$green" =~ ^[0-9a-f]{40}$ ]] || { say "could not resolve refs/green/main ($green)"; exit 1; }
+# The ref exists again: a later wait for it starts its own clock.
+[ "$(cut -f1 "$state/waiting" 2>/dev/null)" != green-ref ] || rm -f "$state/waiting"
 
 if cut -f1 "$state/staged.tsv" | grep -qx "$green"; then exit 0; fi
 live="$(ssh "$build_host" "ssh -n $forge_host 'readlink ~/.jeryu/bin/jeryu'")"
@@ -175,13 +194,27 @@ if (( failures >= max_failures )); then
   say "${green:0:12} failed to stage $failures times; leaving it for a human"; exit 0
 fi
 
-# The events and the heartbeat are the only forge requests left, and both need the token; a tick
-# that cannot report what it staged still stops where it always did.
+# The main-health check, the events and the heartbeat need the token.
 [ -n "$cfg" ] || { say "status token $token_file is not readable"; exit 1; }
 
 cache="$state/jeryu-deploy.git"
 [ -d "$cache" ] || git clone -q --bare "$remote" "$cache"
 git -C "$cache" fetch -q origin "+refs/heads/main:refs/heads/main"
+# Two checks that do not rest on the ref alone. The commit must be one of main's: the forge moves
+# the ref only onto such a commit, but a bare clone carries every branch, so an off-main commit
+# would archive and run here without this. And it must carry a green <repo>/main-health, the
+# verdict that moved the ref, as the newest status of that context.
+git -C "$cache" merge-base --is-ancestor "$green" refs/heads/main 2>/dev/null \
+  || { say "refs/green/main ${green:0:12} is not a commit of main; refusing to stage it"; exit 1; }
+health_context="${repo_path##*/}/main-health"
+health="$(curl --silent --show-error --fail --max-time 60 --config "$cfg" -H 'Accept: application/json' \
+  "$base/api/v3/repos/$repo_path/commits/$green/status" \
+  | jq -r -L "$here" --arg context "$health_context" 'include "latest-statuses";
+      [latest_statuses[] | select(.context == $context)][0].state // "missing"')" || health=unreadable
+if [ "$health" != success ]; then
+  waiting_on "health $green" "$green" "the green commit ${green:0:12} has $health_context $health; waiting"; exit 0
+fi
+rm -f "$state/waiting"
 work="$(mktemp -d)"
 git -C "$cache" archive "$green" scripts/release | tar -x -C "$work"
 
