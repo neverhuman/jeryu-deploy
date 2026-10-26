@@ -177,10 +177,10 @@ mod tests {
 
     #[test]
     fn aggregates_registry_and_tasks() {
-        let dir = std::env::temp_dir().join(format!(
-            "jeryu-tool-registry-{}",
-            jeryu_runner_core::receipt::now_ms()
-        ));
+        // A directory the test owns: it is removed when the test ends, even
+        // if an assertion below panics.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
         std::fs::create_dir_all(dir.join("tasks")).unwrap();
         std::fs::write(
             dir.join("tools-registry.toml"),
@@ -224,7 +224,5 @@ loc_saved_estimate = 56
         assert_eq!(summary.open_task_count, 1);
         // Sorted: published (loc_saved 100) first.
         assert_eq!(summary.tools[0].id, "a");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

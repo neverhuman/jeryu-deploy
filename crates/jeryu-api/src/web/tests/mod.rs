@@ -70,6 +70,7 @@ mod site_settings_tests;
 mod source_tests;
 mod surface_tests;
 mod team_bots_tests;
+mod test_fixture_tests;
 mod tools_tests;
 mod waitlist_forward_tests;
 mod waitlist_mail_tests;

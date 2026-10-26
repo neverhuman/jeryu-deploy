@@ -324,6 +324,12 @@ pub(crate) struct WebState {
     /// Unit-test sessions must never seed agent credentials from the operator home.
     #[cfg(test)]
     session_auth_home: Arc<tempfile::TempDir>,
+    /// Owns the throwaway sqlite databases a test state opens, so they are
+    /// deleted when the last handle to the state drops, panic included.
+    /// Without an owner the files (plus `-wal`/`-shm`) accumulate in the
+    /// system temp directory until the host runs out of disk.
+    #[cfg(test)]
+    test_data_dir: Arc<tempfile::TempDir>,
 }
 
 impl WebState {
@@ -343,21 +349,19 @@ impl WebState {
         );
         // ForgeCore is Arc-backed, so this handle shares state with `github`.
         let core_handle = core.clone();
+        // A test state's databases live in a directory it owns; dropping the
+        // state removes them. Production uses the durable `data_dir`.
+        #[cfg(test)]
+        let test_data_dir = Arc::new(tempfile::tempdir().expect("test database directory"));
         let codegraph_path = {
             #[cfg(test)]
             {
-                // The durable data_dir is only consulted outside tests. The
-                // path carries a process-wide counter on top of the timestamp:
-                // parallel tests constructing WebStates in the same millisecond
-                // must NOT share one sqlite file (locked-database flakes).
+                // The durable data_dir is only consulted outside tests. Each
+                // WebState owns a fresh directory, so two states built in the
+                // same millisecond never share one sqlite file (which would
+                // flake with a locked database).
                 let _ = &data_dir;
-                static TEST_DB_SEQ: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                std::env::temp_dir().join(format!(
-                    "jeryu-web-codegraph-{}-{}.sqlite",
-                    jeryu_runner_core::receipt::now_ms(),
-                    TEST_DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                ))
+                test_data_dir.path().join("codegraph.sqlite")
             }
             #[cfg(not(test))]
             {
@@ -369,13 +373,7 @@ impl WebState {
             #[cfg(test)]
             {
                 let _ = &data_dir;
-                static TEST_WORK_DB_SEQ: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                std::env::temp_dir().join(format!(
-                    "jeryu-web-work-{}-{}.sqlite",
-                    jeryu_runner_core::receipt::now_ms(),
-                    TEST_WORK_DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                ))
+                test_data_dir.path().join("work.sqlite")
             }
             #[cfg(not(test))]
             {
@@ -386,14 +384,7 @@ impl WebState {
         let shift_path = {
             #[cfg(test)]
             {
-                static TEST_SHIFT_DB_SEQ: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                std::env::temp_dir().join(format!(
-                    "jeryu-web-shift-{}-{}-{}.sqlite",
-                    std::process::id(),
-                    jeryu_runner_core::receipt::now_ms(),
-                    TEST_SHIFT_DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                ))
+                test_data_dir.path().join("shift.sqlite")
             }
             #[cfg(not(test))]
             {
@@ -490,6 +481,8 @@ impl WebState {
             session_runtime: sessions::SessionRuntimeConfig::from_env(),
             #[cfg(test)]
             session_auth_home: Arc::new(tempfile::tempdir().expect("session fixture auth home")),
+            #[cfg(test)]
+            test_data_dir,
             split_catalog,
             tool_registry_path: None,
             split_manifests: Vec::new(),

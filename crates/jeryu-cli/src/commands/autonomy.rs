@@ -482,18 +482,6 @@ mod tests {
         }
     }
 
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jeryu-autonomy-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn justfile_required_recipe_detection() {
         assert!(justfile_has_required("required:\n    cargo test\n"));
@@ -509,20 +497,21 @@ mod tests {
 
     #[test]
     fn lane_command_follows_the_gate_choice() {
-        let dir = scratch("detect");
+        // A directory the test owns: removed when the test ends, even on panic.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
         // Nothing at all: default to `just required`.
-        assert_eq!(detect_lane_command(&dir), JUST_REQUIRED);
+        assert_eq!(detect_lane_command(dir), JUST_REQUIRED);
         // Only the pr-ci script: the gate's fallback.
         std::fs::create_dir_all(dir.join("ops/ci")).unwrap();
         std::fs::write(dir.join("ops/ci/pr-ci.sh"), "#!/bin/sh\n").unwrap();
-        assert_eq!(detect_lane_command(&dir), PR_CI_SCRIPT);
+        assert_eq!(detect_lane_command(dir), PR_CI_SCRIPT);
         // A justfile without `required` still falls back to the script.
         std::fs::write(dir.join("justfile"), "test:\n    true\n").unwrap();
-        assert_eq!(detect_lane_command(&dir), PR_CI_SCRIPT);
+        assert_eq!(detect_lane_command(dir), PR_CI_SCRIPT);
         // A `required` recipe wins.
         std::fs::write(dir.join("justfile"), "required:\n    true\n").unwrap();
-        assert_eq!(detect_lane_command(&dir), JUST_REQUIRED);
-        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(detect_lane_command(dir), JUST_REQUIRED);
     }
 
     #[test]

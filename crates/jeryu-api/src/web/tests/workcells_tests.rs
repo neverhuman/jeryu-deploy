@@ -163,12 +163,24 @@ fn sandbox_is_required(value: Option<&str>) -> bool {
     value.is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes"))
 }
 
-fn write_exec_script(label: &str, contents: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "jeryu-r5-{label}-{}-{}.sh",
-        std::process::id(),
-        jeryu_runner_core::receipt::now_ms()
-    ));
+/// An executable script inside a directory the test owns, so it is removed
+/// when the test ends, including on panic. Dereferences to its path.
+struct TempScript {
+    path: std::path::PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+impl std::ops::Deref for TempScript {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}
+
+fn write_exec_script(label: &str, contents: &str) -> TempScript {
+    let dir = tempfile::tempdir().expect("staging script directory");
+    let path = dir.path().join(format!("jeryu-r5-{label}.sh"));
     std::fs::write(&path, contents).expect("write staging script");
     #[cfg(unix)]
     {
@@ -178,7 +190,7 @@ fn write_exec_script(label: &str, contents: &str) -> std::path::PathBuf {
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).expect("mark script executable");
     }
-    path
+    TempScript { path, _dir: dir }
 }
 
 #[tokio::test]
@@ -538,7 +550,6 @@ printf '%s' "$EDIT_CONTENT" > "$EDIT_TARGET"
         );
     let sink = CollectingSink::new();
     let Some(result) = run_or_skip(&driver, workspace.path(), &spec, &sink) else {
-        let _ = std::fs::remove_file(&script_src);
         let _ = workspace.close();
         return;
     };
@@ -641,7 +652,6 @@ printf '%s' "$EDIT_CONTENT" > "$EDIT_TARGET"
             .any(|item| item["kind"] == "conclusion" && item["payload"]["conclusion"] == "success")
     );
 
-    let _ = std::fs::remove_file(&script_src);
     let _ = workspace.close();
 }
 

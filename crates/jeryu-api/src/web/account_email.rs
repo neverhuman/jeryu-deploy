@@ -1080,10 +1080,27 @@ fn spend_rate_limit_exceeded(
 mod tests {
     use super::*;
 
-    fn store() -> AccountEmailStore {
-        let path =
-            std::env::temp_dir().join(format!("jeryu-account-email-{}.sqlite", Uuid::new_v4()));
-        AccountEmailStore::open(&path).expect("open the account email store")
+    /// A store inside a directory the test owns, so the sqlite file and its
+    /// `-wal`/`-shm` siblings are removed when the test ends, including on
+    /// panic. Dereferences to the store, so a test reads like it holds one.
+    struct TestStore {
+        store: AccountEmailStore,
+        _dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for TestStore {
+        type Target = AccountEmailStore;
+
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    fn store() -> TestStore {
+        let dir = tempfile::tempdir().expect("account email store directory");
+        let store = AccountEmailStore::open(&dir.path().join("account-email.sqlite"))
+            .expect("open the account email store");
+        TestStore { store, _dir: dir }
     }
 
     #[test]

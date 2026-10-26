@@ -338,12 +338,30 @@ status = "proposed"
 origin_cluster = "c-1"
 "#;
 
-    fn fixture(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jeryu-tool-proposals-{tag}-{}-{}",
-            std::process::id(),
-            jeryu_runner_core::receipt::now_ms()
-        ));
+    /// A registry fixture in a directory the test owns, removed when the test
+    /// ends, including on panic. Dereferences to the registry path.
+    struct Fixture {
+        registry: std::path::PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for Fixture {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.registry
+        }
+    }
+
+    impl AsRef<std::path::Path> for Fixture {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.registry
+        }
+    }
+
+    fn fixture() -> Fixture {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
         std::fs::create_dir_all(dir.join("tasks")).unwrap();
         std::fs::write(dir.join("tools-registry.toml"), REGISTRY).unwrap();
         std::fs::write(
@@ -356,12 +374,15 @@ origin_cluster = "c-1"
             "id = \"0002\"\ntool_id = \"kept\"\nstatus = \"open\"\n",
         )
         .unwrap();
-        dir.join("tools-registry.toml")
+        Fixture {
+            registry: dir.join("tools-registry.toml"),
+            _dir: temp,
+        }
     }
 
     #[test]
     fn approve_moves_proposed_to_building_and_keeps_the_rest() {
-        let path = fixture("approve");
+        let path = fixture();
         let applied = apply_decision(&path, "prop", Decision::Approve, "operator").unwrap();
         assert_eq!(applied.receipt.status, Some("building"));
         assert!(applied.rejected_cluster.is_none());
@@ -374,7 +395,7 @@ origin_cluster = "c-1"
 
     #[test]
     fn reject_removes_the_entry_and_its_open_task_only() {
-        let path = fixture("reject");
+        let path = fixture();
         let applied = apply_decision(&path, "prop", Decision::Reject, "operator").unwrap();
         assert_eq!(applied.receipt.status, None);
         assert_eq!(applied.receipt.removed_tasks, vec!["0001".to_string()]);
@@ -390,7 +411,7 @@ origin_cluster = "c-1"
 
     #[test]
     fn reject_keeps_task_files_when_the_registry_write_fails() {
-        let path = fixture("reject-write-fails");
+        let path = fixture();
         // A directory at the temp path makes the registry write fail.
         std::fs::create_dir(registry_tmp_path(&path)).unwrap();
         assert!(matches!(
@@ -405,7 +426,7 @@ origin_cluster = "c-1"
 
     #[test]
     fn only_proposed_tools_can_be_decided() {
-        let path = fixture("guard");
+        let path = fixture();
         assert!(matches!(
             apply_decision(&path, "kept", Decision::Approve, "operator"),
             Err(DecisionError::NotProposed(status)) if status == "published"
