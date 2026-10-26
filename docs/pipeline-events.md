@@ -319,8 +319,10 @@ of zeros, never a gap in the series.
  "buckets": [{"start": "2026-10-05T09:00:00Z", "total": 12,
               "by_group": {"todos": 4, "gates": 3, "reviews": 2, "pulls": 1,
                            "merges": 1, "releases": 0, "deploys": 1, "other": 0},
-              "failures": 1, "needs_human": 1, "cost_usd": 0.42, "seconds_p50": 114}],
- "totals": {"todos_finished": 9, "blocked": 1, "prs_merged": 4, "deploys": 2, "spent_usd": 3.71}}
+              "failures": 1, "needs_human": 1, "cost_usd": 0.42, "seconds_p50": 114,
+              "commits": 6, "lines_added": 412, "lines_deleted": 97}],
+ "totals": {"todos_finished": 9, "blocked": 1, "prs_merged": 4, "deploys": 2, "spent_usd": 3.71,
+            "commits": 31, "lines_added": 2210, "lines_deleted": 640}}
 ```
 
 - `by_group` counts the same kind prefixes as the Activity chips: `todo.`,
@@ -335,7 +337,22 @@ of zeros, never a gap in the series.
 - `cost_usd` and `spent_usd` are summed to the cent. `seconds_p50` is the
   median `seconds` of the events in the bucket that carry one (the upper of
   the two middles for an even count), `null` when none does.
-- `totals` covers the whole window, not one bucket: the five wall-mode tiles.
+- `commits` counts the non-merge commits on the default branch of every
+  repository in scope (the `family` and `repo` filters; every hosted
+  repository without them), each in the bucket of its **author** time: when
+  the work was written, not when it landed. Mains are rebase-merged, which
+  sets the commit time to the landing, so a commit written ten days ago that
+  lands today raises the bar of ten days ago. Branches are not counted (a
+  rebased branch would count its work again on every push). `lines_added` and
+  `lines_deleted` are those commits' `git --numstat` lines, leaving out binary
+  files and files a tool writes: lockfiles (`Cargo.lock`,
+  `package-lock.json`, ...), `*.min.js`/`*.min.css`, and anything under a
+  `dist/`, `generated/`, `vendor/` or `node_modules/` directory. Commits are
+  read from git, not from `pipeline_events`: they are not in `total`, and
+  `source`, `kind` and `needs_human` do not narrow them. A repository is read
+  again once its push time moves, and at least daily.
+- `totals` covers the whole window, not one bucket: the five wall-mode tiles,
+  plus `commits`, `lines_added` and `lines_deleted` summed over the buckets.
   `todos_finished` and `blocked` are `todo.attempt_finished` with `outcome`
   `done` and `blocked`, `prs_merged` is `pr.merged`, and `deploys` is
   `deploy.status` with `outcome` `success`.

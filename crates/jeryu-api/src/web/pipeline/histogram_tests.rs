@@ -87,7 +87,8 @@ async fn an_empty_window_is_zero_filled_and_has_no_gaps() {
     assert_eq!(from.timestamp() % 3600, 0, "bars start on whole hours");
     assert_eq!(
         page["totals"],
-        json!({"todos_finished": 0, "blocked": 0, "prs_merged": 0, "deploys": 0, "spent_usd": 0.0})
+        json!({"todos_finished": 0, "blocked": 0, "prs_merged": 0, "deploys": 0, "spent_usd": 0.0,
+              "commits": 0, "lines_added": 0, "lines_deleted": 0})
     );
 
     // Reading it is admin-only, like reading the log it counts.
@@ -146,7 +147,8 @@ async fn events_land_in_their_bucket_grouped_by_chip_with_totals() {
     assert_eq!(buckets[0]["total"], 0, "the earlier bucket stays a zero");
     assert_eq!(
         page["totals"],
-        json!({"todos_finished": 1, "blocked": 1, "prs_merged": 1, "deploys": 1, "spent_usd": 0.75})
+        json!({"todos_finished": 1, "blocked": 1, "prs_merged": 1, "deploys": 1, "spent_usd": 0.75,
+              "commits": 0, "lines_added": 0, "lines_deleted": 0})
     );
 
     // Filters narrow the same window; the series keeps its shape.

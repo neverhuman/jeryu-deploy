@@ -10,6 +10,7 @@
 //! [`emit`], which never fails the request it rides on.
 
 pub(crate) mod attention;
+mod commits;
 pub(crate) mod emit;
 pub(crate) mod estimate;
 pub(crate) mod histogram;
@@ -22,6 +23,8 @@ mod types;
 
 #[cfg(test)]
 mod attention_tests;
+#[cfg(test)]
+mod commits_tests;
 #[cfg(test)]
 mod emit_tests;
 #[cfg(test)]

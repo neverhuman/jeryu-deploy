@@ -134,6 +134,13 @@ pub(crate) struct Bucket {
     /// Median `seconds` of the events in the bucket that carry one (the upper
     /// of the two middles for an even count), `null` when none does.
     pub seconds_p50: Option<i64>,
+    /// Commits authored in the bucket on the scope's default branches, and
+    /// the lines they added and deleted ([`super::commits`]). Not events: they
+    /// are not in `total`, and `source`, `kind` and `needs_human` do not
+    /// narrow them.
+    pub commits: i64,
+    pub lines_added: i64,
+    pub lines_deleted: i64,
 }
 
 /// The window's own counters: the tiles the Activity wall shows.
@@ -144,6 +151,9 @@ pub(crate) struct Totals {
     pub prs_merged: i64,
     pub deploys: i64,
     pub spent_usd: f64,
+    pub commits: i64,
+    pub lines_added: i64,
+    pub lines_deleted: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -225,6 +235,9 @@ fn assemble(window: &HistogramWindow<'_>, rows: Vec<GroupRow>) -> HistogramRespo
             needs_human: 0,
             cost_usd: 0.0,
             seconds_p50: None,
+            commits: 0,
+            lines_added: 0,
+            lines_deleted: 0,
         })
         .collect();
     let mut totals = Totals::default();
@@ -315,7 +328,8 @@ pub(crate) async fn histogram(
     } else {
         bucket_seconds(query.bucket.as_deref(), hours)
     } * 1000;
-    let (from_ms, to_ms) = window(Utc::now().timestamp_millis(), hours, bucket_ms);
+    let now_ms = Utc::now().timestamp_millis();
+    let (from_ms, to_ms) = window(now_ms, hours, bucket_ms);
     let count = (to_ms - from_ms) / bucket_ms;
     if count > MAX_BUCKETS {
         return refused(
@@ -345,9 +359,38 @@ pub(crate) async fn histogram(
         bucket_ms,
         filter: &filter,
     };
-    match state.events.histogram(&window) {
-        Ok(rows) => Json(assemble(&window, rows)).into_response(),
-        Err(reason) => super::events_store_error(&reason),
+    let rows = match state.events.histogram(&window) {
+        Ok(rows) => rows,
+        Err(reason) => return super::events_store_error(&reason),
+    };
+    let mut response = assemble(&window, rows);
+    // Reading git can take a while on a cold cache (every repository in
+    // scope, a month back), so it runs off the request's async thread.
+    let (family, repo) = (filter.family.clone(), filter.repo.clone());
+    let changes = tokio::task::spawn_blocking(move || {
+        super::commits::per_bucket(
+            &state,
+            family.as_deref(),
+            repo.as_deref(),
+            (from_ms, to_ms, bucket_ms),
+            now_ms,
+        )
+    })
+    .await
+    .unwrap_or_default();
+    add_changes(&mut response, &changes);
+    Json(response).into_response()
+}
+
+/// Lays each bucket's commits and lines onto the series and sums the window.
+fn add_changes(response: &mut HistogramResponse, changes: &[super::commits::Change]) {
+    for (bucket, change) in response.buckets.iter_mut().zip(changes) {
+        bucket.commits = change.commits;
+        bucket.lines_added = change.lines_added;
+        bucket.lines_deleted = change.lines_deleted;
+        response.totals.commits += change.commits;
+        response.totals.lines_added += change.lines_added;
+        response.totals.lines_deleted += change.lines_deleted;
     }
 }
 
@@ -510,6 +553,7 @@ mod tests {
                 prs_merged: 0,
                 deploys: 0,
                 spent_usd: 4.22,
+                ..Totals::default()
             }
         );
         let todos: i64 = day.buckets.iter().map(|b| b.by_group.todos).sum();
@@ -523,6 +567,7 @@ mod tests {
                 prs_merged: 1,
                 deploys: 1,
                 spent_usd: 7.72,
+                ..Totals::default()
             }
         );
     }
