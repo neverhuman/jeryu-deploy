@@ -938,7 +938,9 @@ model}`, agent and model of the landing attempt.
 ### The three headline numbers
 
 `headline` carries lead time, exception rate and bad-change rate over the same
-window and the same todos the rest of the report covers. Implementation:
+window and the same todos the rest of the report covers (worked in the window,
+with a landing attempt). It reads events from two days before the window on.
+Implementation:
 `crates/jeryu-api/src/web/headline.rs`. The API carries it; the Flow and Yield
 pages do not render it yet.
 

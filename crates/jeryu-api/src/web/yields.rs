@@ -17,7 +17,7 @@ mod report;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::Json;
@@ -31,7 +31,7 @@ use super::WebState;
 use super::strict_query::{StrictFields, StrictQuery, filter_one_of};
 use super::workcells_support::{TypedError, typed_error};
 pub(crate) use adhoc::SESSION_KIND;
-pub(crate) use report::{By, Request, Window, build, worked_in};
+pub(crate) use report::{By, Request, Window, build, in_report};
 
 const DOCS: &str = "docs/pipeline-events.md";
 /// The ledger kind a pull request review's spend is recorded under.
@@ -122,12 +122,25 @@ fn session_spend(
     Ok(rows)
 }
 
+/// How far before the window the headline numbers read events: enough to
+/// know whether main was already red when the window opened and which merge a
+/// red stretch follows. A change that merged before the window counts on
+/// neither side of the bad-change rate, so older events are never needed.
+const HEADLINE_LOOKBACK_MS: i64 = 2 * 24 * 60 * 60 * 1000;
+
 /// The events the headline numbers read, newest pages first, one page loop per
-/// kind as `review_catch::read_events` does.
+/// kind as `review_catch::read_events` does, stopping once a page reaches
+/// back past `floor_ms`.
 fn read_headline_events(
     state: &WebState,
     family: Option<&str>,
+    floor_ms: i64,
 ) -> Result<Vec<crate::web::pipeline::Event>, String> {
+    let recent = |event: &crate::web::pipeline::Event| {
+        chrono::DateTime::parse_from_rfc3339(&event.ts)
+            .map(|ts| ts.timestamp_millis() >= floor_ms)
+            .unwrap_or(true)
+    };
     let mut out = Vec::new();
     for kind in super::headline::KINDS {
         let mut before: Option<i64> = None;
@@ -141,9 +154,9 @@ fn read_headline_events(
             })?;
             let Some(last) = page.last() else { break };
             before = Some(last.seq);
-            let full = page.len() >= EVENT_PAGE as usize;
-            out.extend(page);
-            if !full {
+            let more = page.len() >= EVENT_PAGE as usize && recent(last);
+            out.extend(page.into_iter().filter(|event| recent(event)));
+            if !more {
                 break;
             }
         }
@@ -152,26 +165,29 @@ fn read_headline_events(
 }
 
 /// `{(repo, pr): when production first ran it}` for every pull request of the
-/// window's todos. Read from the delivery receipts, which outlive the raw
+/// report's todos, read in one query. The delivery receipts outlive the raw
 /// events, so an older todo keeps the day it actually shipped.
 fn deployment_times(
     state: &WebState,
     window: Window,
     todos: &[crate::web::shift::ShiftTodo],
 ) -> Result<BTreeMap<(String, u64), String>, String> {
-    let mut out = BTreeMap::new();
-    for todo in todos.iter().filter(|todo| worked_in(window, todo)) {
-        for pr in &todo.prs {
-            let key = (pr.repo.clone(), pr.number);
-            if out.contains_key(&key) {
-                continue;
-            }
-            if let Some(at) = state.events.first_pr_deployment(&pr.repo, pr.number)? {
-                out.insert(key, at);
-            }
-        }
+    let wanted: BTreeSet<(String, i64)> = todos
+        .iter()
+        .filter(|todo| in_report(window, todo))
+        .flat_map(|todo| &todo.prs)
+        .filter_map(|pr| Some((pr.repo.clone(), i64::try_from(pr.number).ok()?)))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(BTreeMap::new());
     }
-    Ok(out)
+    Ok(state
+        .events
+        .first_pr_deployments()?
+        .into_iter()
+        .filter(|(key, _)| wanted.contains(key))
+        .filter_map(|((repo, pr), at)| Some(((repo, u64::try_from(pr).ok()?), at)))
+        .collect())
 }
 
 fn refuse(status: StatusCode, code: &str, reason: &str, hint: &str) -> AxumResponse {
@@ -225,7 +241,11 @@ pub(crate) async fn yield_report(
         let reviews = worker_state.events.ledger(REVIEW_KIND)?;
         let sessions = session_spend(&worker_state, window)?;
         let events = super::review_catch::read_events(&worker_state, read_family.as_deref())?;
-        let headline_events = read_headline_events(&worker_state, read_family.as_deref())?;
+        let headline_events = read_headline_events(
+            &worker_state,
+            read_family.as_deref(),
+            window_ms(window).0 - HEADLINE_LOOKBACK_MS,
+        )?;
         let shipped = deployment_times(&worker_state, window, &todos)?;
         Ok::<_, String>((todos, reviews, sessions, events, headline_events, shipped))
     })
@@ -248,7 +268,7 @@ pub(crate) async fn yield_report(
             if let (Some(since), Some(until)) = (at(since_ms), at(until_ms)) {
                 let in_window: Vec<_> = todos
                     .iter()
-                    .filter(|todo| worked_in(window, todo))
+                    .filter(|todo| in_report(window, todo))
                     .cloned()
                     .collect();
                 report.headline = super::headline::report(

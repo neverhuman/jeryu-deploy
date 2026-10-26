@@ -306,3 +306,12 @@ fn an_empty_window_says_nothing_rather_than_zero_rates() {
     assert_eq!(headline.bad_change_rate.rate, None);
     assert_eq!(headline.lead_time.filed_to_prod_s.p50, None);
 }
+
+/// Events arrive newest page first: a re-merged pull request keeps its newest
+/// merge, not whichever event came last.
+#[test]
+fn a_re_merged_pull_request_keeps_its_newest_merge() {
+    let events = [merged(9, 30, 7, "bbb"), merged(3, 10, 7, "aaa")];
+    let kept = super::merged_at(&events);
+    assert_eq!(kept.values().copied().collect::<Vec<_>>(), [at(30)]);
+}

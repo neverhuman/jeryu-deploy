@@ -288,25 +288,72 @@ impl EventStore {
         pr: u64,
     ) -> Result<Option<String>, String> {
         let pr = i64::try_from(pr).map_err(|err| err.to_string())?;
+        let found = self.first_deployments(Some(repo), Some(pr))?;
+        Ok(found.into_values().next())
+    }
+
+    /// `{(repo, pr): first successful production deployment}` for every pull
+    /// request that has one, in one query.
+    pub(crate) fn first_pr_deployments(
+        &self,
+    ) -> Result<std::collections::BTreeMap<(String, i64), String>, String> {
+        self.first_deployments(None, None)
+    }
+
+    /// The pull request is matched by its own repository and number, never by
+    /// lot: work a todo carries is projected onto the todo's lot, not
+    /// `repo#pr`. Evidence is a production deployment event naming the pull
+    /// request, or a passed deploy visit recorded for it (a consumer's
+    /// deployment that shipped a pinned pull request, or one whose event was
+    /// pruned and left a delivery receipt). A visit whose own event names a
+    /// different pull request, as a todo lot spanning several can record, is
+    /// never counted for this one.
+    fn first_deployments(
+        &self,
+        repo: Option<&str>,
+        pr: Option<i64>,
+    ) -> Result<std::collections::BTreeMap<(String, i64), String>, String> {
         let inner = self.inner.lock().expect("pipeline event mutex poisoned");
-        let at: Option<i64> = inner
+        let mut stmt = inner
             .conn
-            .query_row(
-                "SELECT MIN(a.ts_ms) FROM flow_activity a
-             WHERE a.lot_id=?1 AND a.repo=?2 AND a.pr=?3
-               AND a.station='deploy' AND a.state='passed'
-               AND (EXISTS (SELECT 1 FROM flow_delivery_receipts d
-                    WHERE d.event_seq=a.event_seq AND d.lot_id=a.lot_id
-                      AND d.kind='deploy.status')
-                 OR EXISTS (SELECT 1 FROM pipeline_events e
-                    WHERE e.seq=a.event_seq AND e.kind='deploy.status'
-                      AND e.outcome='success'
-                      AND json_extract(e.detail_json,'$.environment')='production'))",
-                params![format!("{repo}#{pr}"), repo, pr],
-                |row| row.get(0),
+            .prepare_cached(
+                "SELECT repo, pr, MIN(ts_ms) FROM (
+                   SELECT e.repo AS repo, e.pr AS pr, e.ts_ms AS ts_ms
+                     FROM pipeline_events e
+                    WHERE e.kind='deploy.status' AND e.outcome='success'
+                      AND json_extract(e.detail_json,'$.environment')='production'
+                      AND e.repo IS NOT NULL AND e.pr IS NOT NULL
+                      AND (?1 IS NULL OR e.repo=?1) AND (?2 IS NULL OR e.pr=?2)
+                   UNION ALL
+                   SELECT a.repo, a.pr, a.ts_ms
+                     FROM flow_activity a
+                    WHERE a.station='deploy' AND a.state='passed'
+                      AND a.repo IS NOT NULL AND a.pr IS NOT NULL
+                      AND (?1 IS NULL OR a.repo=?1) AND (?2 IS NULL OR a.pr=?2)
+                      AND (EXISTS (SELECT 1 FROM flow_delivery_receipts d
+                                    WHERE d.event_seq=a.event_seq AND d.lot_id=a.lot_id
+                                      AND d.kind='deploy.status')
+                        OR EXISTS (SELECT 1 FROM pipeline_events e
+                                    WHERE e.seq=a.event_seq AND e.kind='deploy.status'
+                                      AND e.outcome='success'
+                                      AND json_extract(e.detail_json,'$.environment')='production'))
+                      AND NOT EXISTS (SELECT 1 FROM pipeline_events e
+                                       WHERE e.seq=a.event_seq AND e.pr IS NOT NULL
+                                         AND (e.repo IS NOT a.repo OR e.pr IS NOT a.pr))
+                 ) GROUP BY repo, pr",
             )
             .map_err(|err| err.to_string())?;
-        Ok(at.map(rfc3339_ms))
+        let rows = stmt
+            .query_map(params![repo, pr], |row| {
+                Ok((
+                    (row.get::<_, String>(0)?, row.get::<_, i64>(1)?),
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        rows.map(|row| row.map(|(key, at)| (key, rfc3339_ms(at))))
+            .collect::<Result<_, _>>()
+            .map_err(|err| err.to_string())
     }
 
     pub(crate) fn flow_history(

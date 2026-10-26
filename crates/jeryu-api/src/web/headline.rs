@@ -168,12 +168,14 @@ fn exception_reasons(todo: &ShiftTodo) -> BTreeSet<&'static str> {
     reasons
 }
 
-/// When each pull request merged, by `(repo, number)`, newest merge winning.
+/// When each pull request merged, by `(repo, number)`, newest merge winning
+/// whatever order the events arrive in.
 fn merged_at(events: &[Event]) -> BTreeMap<(String, i64), DateTime<Utc>> {
-    let mut out = BTreeMap::new();
+    let mut out: BTreeMap<(String, i64), DateTime<Utc>> = BTreeMap::new();
     for event in events.iter().filter(|event| event.kind == "pr.merged") {
         if let (Some(repo), Some(pr), Some(ts)) = (event.repo.clone(), event.pr, at(&event.ts)) {
-            out.insert((repo, pr), ts);
+            let kept = out.entry((repo, pr)).or_insert(ts);
+            *kept = (*kept).max(ts);
         }
     }
     out

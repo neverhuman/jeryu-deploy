@@ -503,9 +503,8 @@ pub(crate) struct Request {
     pub now: DateTime<Utc>,
 }
 
-/// Whether a todo was worked in `window`: the cut `build` and the headline
-/// numbers share, so both report on the same todos.
-pub(crate) fn worked_in(window: Window, todo: &ShiftTodo) -> bool {
+/// Whether a todo was worked in `window`.
+fn worked_in(window: Window, todo: &ShiftTodo) -> bool {
     todo.worked_by
         .iter()
         .filter_map(started_day)
@@ -518,6 +517,12 @@ pub(crate) fn worked_in(window: Window, todo: &ShiftTodo) -> bool {
 /// carries, inside the window or not, so a long-running shift is not charged
 /// twice to the todos that happen to be in view. `sessions` are the ledger's
 /// `session.costed` rows, summed apart into `adhoc`.
+/// Whether the report covers a todo: it has a landing attempt and was worked
+/// in `window`. `build` and the headline numbers share this cut.
+pub(crate) fn in_report(window: Window, todo: &ShiftTodo) -> bool {
+    landing(todo).is_some() && worked_in(window, todo)
+}
+
 pub(crate) fn build(
     request: &Request,
     todos: &[ShiftTodo],
