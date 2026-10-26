@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{error::Error, fmt};
 
@@ -221,11 +221,18 @@ pub(super) fn refresh_repo_index(
 /// names none after a read of another ref left the index on it.
 ///
 /// A rebuild is a full checkout and walk of the repository, and the ref comes
-/// from the caller, so rebuilds are bounded: one runs at a time in the process
-/// ([`REBUILD`]), and a repository is rebuilt for a ref other than its default
-/// branch at most once per [`OTHER_REF_REBUILD_EVERY`]. A read of the default
-/// branch is never throttled, so it always restores the index the scheduler
-/// and push refreshes keep.
+/// from the caller, so rebuilds are bounded: one at a time per repository
+/// ([`rebuild_lock`]), at most [`REBUILD_PARALLEL`] across the process, and a
+/// repository is rebuilt for a ref other than its default branch at most once
+/// per [`OTHER_REF_REBUILD_EVERY`]. A read of the default branch is never
+/// throttled, so it always restores the index the scheduler and push refreshes
+/// keep.
+///
+/// A read never waits for a rebuild. It is served on a thread of the async
+/// runtime that also carries git and the rest of the API, so a read that finds
+/// this repository already being rebuilt, or the process at its rebuild limit,
+/// answers with a retryable error instead of holding that thread for a clone
+/// and a workspace walk.
 pub(super) fn repo_graph(
     state: &WebState,
     id: &str,
@@ -251,8 +258,29 @@ pub(super) fn repo_graph(
     if !snapshot.symbols.is_empty() && indexed_ref == wanted_ref {
         return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
     }
-    let indexed_ref = indexed_ref.to_string();
     let default_branch = wanted_ref == repo.default_branch;
+    // Only this repository's rebuilds are serialized, and the read does not
+    // wait: a rebuild already running here means a retryable answer now.
+    let lock = rebuild_lock(&bare);
+    let Some(_one_at_a_time) = try_claim(&lock) else {
+        return Err(CodeGraphRouteError::RebuildInProgress {
+            retry_after_secs: REBUILD_RETRY_AFTER_SECS,
+        });
+    };
+    // Another read or a refresh may have rebuilt this very ref since the
+    // snapshot above was loaded, so the claim is spent on what is still stale.
+    let snapshot = store
+        .load_snapshot()
+        .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))?;
+    let indexed_ref = snapshot
+        .index_runs
+        .last()
+        .map(|run| run.ref_name.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if !snapshot.symbols.is_empty() && indexed_ref == wanted_ref {
+        return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
+    }
     // Restoring the default branch over another ref's index is always allowed:
     // it is already bounded by the other-ref throttle. Rebuilding an index that
     // is about the default branch but holds no symbol (nothing the analyzer
@@ -274,18 +302,14 @@ pub(super) fn repo_graph(
             retry_after_secs: wait.as_secs().max(1),
         });
     }
-    let _one_at_a_time = REBUILD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Another read may have rebuilt this very ref while this one waited.
-    let snapshot = store
-        .load_snapshot()
-        .map_err(|err| CodeGraphRouteError::IndexFailed(err.to_string()))?;
-    if !snapshot.symbols.is_empty()
-        && snapshot.index_runs.last().map(|run| run.ref_name.as_str()) == Some(wanted_ref)
-    {
-        return Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot));
-    }
+    // Rebuilds of different repositories are bounded too: each is a clone and
+    // a workspace walk, so the process runs only so many at once and a read
+    // that finds them all busy is told to retry rather than queued.
+    let Some(_slot) = REBUILD_SLOTS.try_take() else {
+        return Err(CodeGraphRouteError::RebuildCapacity {
+            retry_after_secs: REBUILD_RETRY_AFTER_SECS,
+        });
+    };
     refresh_repo_index(state, id, wanted_ref)?;
     let snapshot = store
         .load_snapshot()
@@ -293,8 +317,106 @@ pub(super) fn repo_graph(
     Ok(jeryu_codegraph::CodeGraph::from_snapshot(snapshot))
 }
 
-/// One read-driven index rebuild at a time across the process.
-static REBUILD: Mutex<()> = Mutex::new(());
+/// How long a caller is asked to wait when a rebuild it wanted is already
+/// running, or the process is at its rebuild limit.
+const REBUILD_RETRY_AFTER_SECS: u64 = 5;
+
+/// How many index rebuilds this process runs at once. Each is a clone and a
+/// full workspace walk, so the whole host is not handed to indexing.
+const REBUILD_PARALLEL: usize = 2;
+
+/// One index rebuild at a time per repository, by its bare path.
+///
+/// Per repository rather than per process: a rebuild clones and walks a whole
+/// workspace, so a single process-wide lock made a read of one repository wait
+/// out an unrelated repository's rebuild.
+static REBUILD_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// How many repository locks are kept before the unheld ones are dropped. The
+/// map holds one entry per repository read in this process, so it is pruned
+/// rather than left to grow with every repository that ever appears.
+const REBUILD_LOCKS_KEPT: usize = 1024;
+
+/// This repository's rebuild lock, shared by the read and the refresh paths.
+fn rebuild_lock(bare: &Path) -> Arc<Mutex<()>> {
+    let mut locks = REBUILD_LOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if locks.len() >= REBUILD_LOCKS_KEPT {
+        // An entry no caller holds guards nothing: dropping it loses no claim,
+        // and the next rebuild of that repository makes a fresh one.
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+    Arc::clone(locks.entry(bare.to_path_buf()).or_default())
+}
+
+/// Claim a rebuild lock without waiting, or `None` when a rebuild holds it.
+///
+/// A lock a panicking rebuild poisoned is claimable: one failed run must not
+/// leave a repository unindexable for the life of the process.
+fn try_claim(lock: &Mutex<()>) -> Option<std::sync::MutexGuard<'_, ()>> {
+    match lock.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
+/// The rebuilds running in this process, at most [`REBUILD_PARALLEL`].
+static REBUILD_SLOTS: RebuildSlots = RebuildSlots {
+    in_flight: Mutex::new(0),
+    freed: Condvar::new(),
+};
+
+struct RebuildSlots {
+    in_flight: Mutex<usize>,
+    freed: Condvar,
+}
+
+impl RebuildSlots {
+    fn count(&self) -> std::sync::MutexGuard<'_, usize> {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Take a slot if one is free. For reads, which must not wait.
+    fn try_take(&'static self) -> Option<RebuildSlot> {
+        let mut in_flight = self.count();
+        if *in_flight >= REBUILD_PARALLEL {
+            return None;
+        }
+        *in_flight += 1;
+        Some(RebuildSlot)
+    }
+
+    /// Wait for a slot. For push- and timer-driven refreshes, which run on a
+    /// blocking thread and must not drop the work they were asked to do.
+    fn take(&'static self) -> RebuildSlot {
+        let mut in_flight = self.count();
+        while *in_flight >= REBUILD_PARALLEL {
+            in_flight = self
+                .freed
+                .wait(in_flight)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *in_flight += 1;
+        RebuildSlot
+    }
+}
+
+/// A slot held for one rebuild, returned on drop so a panicking rebuild does
+/// not retire it.
+struct RebuildSlot;
+
+impl Drop for RebuildSlot {
+    fn drop(&mut self) {
+        let mut in_flight = REBUILD_SLOTS.count();
+        *in_flight = in_flight.saturating_sub(1);
+        REBUILD_SLOTS.freed.notify_one();
+    }
+}
 
 /// How often a read may rebuild one repository's index: once per period for
 /// its default branch and once per period for all its other refs together.
@@ -323,49 +445,29 @@ fn claim_rebuild(bare: &Path, default_branch: bool) -> std::result::Result<(), D
     Ok(())
 }
 
-/// Repositories (by bare path, else id) a push- or timer-driven refresh is
-/// running for right now.
-static SCHEDULED_IN_FLIGHT: LazyLock<Mutex<std::collections::HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
-
-/// A push- or timer-driven refresh, under the same one-at-a-time lock as the
-/// read path. A repository whose refresh is already running is skipped, not
+/// A push- or timer-driven refresh, under the same per-repository lock as the
+/// read path. A repository whose rebuild is already running is skipped, not
 /// queued: the running one reads the newest ref, and the next push or tick
 /// catches anything later. `None` when skipped.
+///
+/// The lock is released on drop and a lock a panicking run poisoned is still
+/// claimable, so one failed indexing run cannot stop every later refresh of
+/// that repository.
 pub(super) fn refresh_scheduled(
     state: &WebState,
     id: &str,
     ref_name: &str,
 ) -> Option<std::result::Result<usize, CodeGraphRouteError>> {
-    let key = find_repo(state, id)
-        .and_then(|repo| bare_repo_path(state, &repo).ok())
-        .map(|bare| bare.display().to_string())
-        .unwrap_or_else(|| id.to_string());
-    if !SCHEDULED_IN_FLIGHT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(key.clone())
-    {
-        return None;
-    }
-    // Released on drop, so a panic in the indexing run cannot leave the
-    // repository marked in flight for the life of the process.
-    let _in_flight = InFlightGuard(key);
-    let _one_at_a_time = REBUILD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(bare) = find_repo(state, id).and_then(|repo| bare_repo_path(state, &repo).ok()) else {
+        // Nothing to lock and nothing to index: let the refresh report why.
+        return Some(refresh_repo_index(state, id, ref_name));
+    };
+    let lock = rebuild_lock(&bare);
+    let _one_at_a_time = try_claim(&lock)?;
+    // Unlike a read, a refresh waits for a slot: it runs on a blocking thread,
+    // and dropping it would leave this repository stale until the next tick.
+    let _slot = REBUILD_SLOTS.take();
     Some(refresh_repo_index(state, id, ref_name))
-}
-
-struct InFlightGuard(String);
-
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        SCHEDULED_IN_FLIGHT
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.0);
-    }
 }
 
 /// Whether `bare`'s index holds any symbol at all. Cheaper than loading the
@@ -397,6 +499,15 @@ pub(super) enum CodeGraphRouteError {
     /// The default branch has no index yet and a rebuild was attempted too
     /// recently to try again.
     NotIndexed {
+        retry_after_secs: u64,
+    },
+    /// This repository's index is being rebuilt right now, and a read does not
+    /// wait for a rebuild.
+    RebuildInProgress {
+        retry_after_secs: u64,
+    },
+    /// The process is already running as many index rebuilds as it allows.
+    RebuildCapacity {
         retry_after_secs: u64,
     },
 }
@@ -465,6 +576,32 @@ impl CodeGraphRouteError {
                 ],
                 "rerun cargo test -p jeryu-api --features web codegraph",
             ),
+            Self::RebuildInProgress { retry_after_secs } => codegraph_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "codegraph_rebuild_in_progress",
+                "read a repository index another rebuild is writing",
+                &format!(
+                    "this repository's index is being rebuilt; retry in {retry_after_secs} seconds"
+                ),
+                &[
+                    "retry after the wait; the rebuild in flight is writing the answer",
+                    "name no ref to read the default branch once the rebuild lands",
+                ],
+                "rerun cargo test --offline -p jeryu-api --features web codegraph",
+            ),
+            Self::RebuildCapacity { retry_after_secs } => codegraph_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "codegraph_rebuild_capacity",
+                "start a repository index rebuild",
+                &format!(
+                    "this server is already running the {REBUILD_PARALLEL} index rebuilds it allows; retry in {retry_after_secs} seconds"
+                ),
+                &[
+                    "retry after the wait",
+                    "let the scheduled refresh keep this repository indexed so reads need no rebuild",
+                ],
+                "rerun cargo test --offline -p jeryu-api --features web codegraph",
+            ),
             Self::IndexFailed(reason) => codegraph_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "codegraph_index_failed",
@@ -496,6 +633,14 @@ impl fmt::Display for CodeGraphRouteError {
             Self::NotIndexed { retry_after_secs } => write!(
                 f,
                 "this repository is not indexed yet; retry in {retry_after_secs} seconds"
+            ),
+            Self::RebuildInProgress { retry_after_secs } => write!(
+                f,
+                "this repository's index is being rebuilt; retry in {retry_after_secs} seconds"
+            ),
+            Self::RebuildCapacity { retry_after_secs } => write!(
+                f,
+                "this server is already running the {REBUILD_PARALLEL} index rebuilds it allows; retry in {retry_after_secs} seconds"
             ),
         }
     }
@@ -651,6 +796,8 @@ mod tests {
     use axum::body::to_bytes;
     use serde_json::{Value, json};
 
+    use std::sync::Arc;
+
     use super::{CodeGraphRouteError, TempCheckout, codegraph_error, is_rich_query, run_git};
     use axum::http::StatusCode;
 
@@ -741,6 +888,18 @@ mod tests {
                 },
                 "codegraph_not_indexed",
             ),
+            (
+                CodeGraphRouteError::RebuildInProgress {
+                    retry_after_secs: 5,
+                },
+                "codegraph_rebuild_in_progress",
+            ),
+            (
+                CodeGraphRouteError::RebuildCapacity {
+                    retry_after_secs: 5,
+                },
+                "codegraph_rebuild_capacity",
+            ),
         ];
         for (error, code) in errors {
             let body = response_json(error.into_response()).await;
@@ -762,20 +921,65 @@ mod tests {
     }
 
     #[test]
-    fn a_panicking_refresh_does_not_leave_the_repository_marked_in_flight() {
-        let key = "in-flight-guard-test".to_string();
+    fn a_rebuild_lock_is_per_repository_and_claimed_without_waiting() {
+        let one = super::rebuild_lock(std::path::Path::new("/jeryu/lock-scope-one.git"));
+        let two = super::rebuild_lock(std::path::Path::new("/jeryu/lock-scope-two.git"));
+        let held = super::try_claim(&one).expect("a free lock is claimed");
+        // Another repository's rebuild is never behind this one.
+        assert!(super::try_claim(&two).is_some());
+        // The same repository is: the second caller is told so rather than
+        // waiting out a clone and a workspace walk.
+        assert!(super::try_claim(&one).is_none());
+        drop(held);
+        assert!(super::try_claim(&one).is_some());
+        // Both callers of the same repository share one lock.
+        assert!(Arc::ptr_eq(
+            &one,
+            &super::rebuild_lock(std::path::Path::new("/jeryu/lock-scope-one.git"))
+        ));
+    }
+
+    #[test]
+    fn a_panicking_rebuild_leaves_the_repository_claimable() {
+        let lock = super::rebuild_lock(std::path::Path::new("/jeryu/lock-panic.git"));
         let outcome = std::panic::catch_unwind(|| {
-            assert!(
-                super::SCHEDULED_IN_FLIGHT
-                    .lock()
-                    .unwrap()
-                    .insert("in-flight-guard-test".to_string())
-            );
-            let _guard = super::InFlightGuard("in-flight-guard-test".to_string());
+            let claimed = super::rebuild_lock(std::path::Path::new("/jeryu/lock-panic.git"));
+            let _held = super::try_claim(&claimed).expect("a free lock is claimed");
             panic!("indexing run panicked");
         });
         assert!(outcome.is_err());
-        assert!(!super::SCHEDULED_IN_FLIGHT.lock().unwrap().contains(&key));
+        // The lock is poisoned, not forfeited: the next refresh still runs.
+        assert!(lock.try_lock().is_err());
+        assert!(super::try_claim(&lock).is_some());
+    }
+
+    #[test]
+    fn unheld_repository_locks_are_dropped_once_the_map_fills() {
+        for index in 0..super::REBUILD_LOCKS_KEPT {
+            super::rebuild_lock(std::path::Path::new(&format!("/jeryu/pruned-{index}.git")));
+        }
+        let held = super::rebuild_lock(std::path::Path::new("/jeryu/pruned-held.git"));
+        let _claim = super::try_claim(&held).expect("a free lock is claimed");
+        super::rebuild_lock(std::path::Path::new("/jeryu/pruned-trigger.git"));
+        let locks = super::REBUILD_LOCKS.lock().expect("lock map");
+        assert!(locks.len() < super::REBUILD_LOCKS_KEPT);
+        // A lock a rebuild holds is never pruned out from under it.
+        assert!(locks.contains_key(std::path::Path::new("/jeryu/pruned-held.git")));
+    }
+
+    #[test]
+    fn rebuilds_in_flight_are_bounded_and_the_slot_returns_on_panic() {
+        let slots: Vec<_> = (0..super::REBUILD_PARALLEL)
+            .map(|_| super::REBUILD_SLOTS.try_take().expect("a free slot"))
+            .collect();
+        assert!(super::REBUILD_SLOTS.try_take().is_none());
+        drop(slots);
+        let outcome = std::panic::catch_unwind(|| {
+            let _slot = super::REBUILD_SLOTS.try_take().expect("a free slot");
+            panic!("indexing run panicked");
+        });
+        assert!(outcome.is_err());
+        assert_eq!(*super::REBUILD_SLOTS.count(), 0);
     }
 
     #[test]

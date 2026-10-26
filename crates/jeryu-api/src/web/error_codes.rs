@@ -162,6 +162,16 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("codegraph_query_failed", 500, "the codegraph query failed"),
     entry(
+        "codegraph_rebuild_capacity",
+        503,
+        "the server is already running as many codegraph rebuilds as it allows",
+    ),
+    entry(
+        "codegraph_rebuild_in_progress",
+        503,
+        "the repository's codegraph index is being rebuilt right now",
+    ),
+    entry(
         "codegraph_rebuild_throttled",
         429,
         "the repository was indexed for another ref too recently to rebuild again",
