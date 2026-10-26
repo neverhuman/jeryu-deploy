@@ -601,6 +601,58 @@ fn a_closed_pull_branch_is_flagged_only_when_pushed_after_the_close() {
     assert!(names.contains(&"closed-after".to_string()), "{names:?}");
 }
 
+/// Commit dates are whatever the pusher says: a push after the close that is
+/// dated before it still strands work, because the closed pull request's
+/// recorded head decides.
+#[test]
+fn a_backdated_push_after_the_close_is_still_flagged() {
+    let fixture = Fixture::new();
+    let tip = fixture.branch_with("backdated", &[("bd.txt", "b\n")], "old try", OLD);
+    let number = fixture.pull("backdated", &tip);
+    fixture.close(number);
+    git(&fixture._work, &["checkout", "--quiet", "backdated"]);
+    fixture.commit_here(
+        &[("bd2.txt", "b2\n")],
+        "pushed later",
+        "2001-01-01T00:00:00Z",
+    );
+    git(
+        &fixture._work,
+        &[
+            "push",
+            "--quiet",
+            fixture.bare().to_str().unwrap(),
+            "backdated",
+        ],
+    );
+    git(&fixture._work, &["checkout", "--quiet", "main"]);
+    assert!(fixture.stranded_names().contains(&"backdated".to_string()));
+}
+
+/// One walk of the default branch answers every `Todo:` id of a repository.
+#[test]
+fn landed_todo_ids_reads_the_default_branch_once() {
+    let fixture = Fixture::new();
+    fixture.land_on_main(&[("x.txt", "x\n")], "Landed\n\nTodo: 20261001-aaa");
+    let ids = landed_todo_ids(&fixture.state, "alice", "jeryu", "main");
+    assert!(ids.contains("20261001-aaa"), "{ids:?}");
+    assert!(!ids.contains("20261001-bbb"), "{ids:?}");
+}
+
+#[test]
+fn a_listing_reports_how_much_it_assessed() {
+    let fixture = Fixture::new();
+    for n in 0..(MAX_LISTED_BRANCHES + 3) {
+        let name = format!("many/{n:03}");
+        git(&fixture.bare(), &["branch", &name, "dayshift/2026-10-11"]);
+    }
+    let repo = fixture.state.core.get_repository("alice", "jeryu").unwrap();
+    let listing = listing(&fixture.state, &repo).expect("readable");
+    assert_eq!(listing.examined, MAX_LISTED_BRANCHES);
+    assert!(listing.candidates > MAX_LISTED_BRANCHES, "{listing:?}");
+    assert!(!listing.complete());
+}
+
 fn account(login: &str) -> jeryu_core::AccountSummary {
     jeryu_core::AccountSummary {
         login: login.to_string(),
@@ -658,6 +710,18 @@ async fn the_branch_list_route_answers_readers_and_hides_private_repositories() 
         .collect();
     assert!(branches.contains(&"listed".to_string()), "{body}");
     assert_eq!(body["total"], branches.len());
+
+    assert_eq!(body["complete"], true, "{body}");
+    assert_eq!(body["examined"], body["candidates"], "{body}");
+
+    // A second request within the minute is answered from the kept listing,
+    // without rerunning git for every branch.
+    fixture.branch_with("listed-later", &[("l2.txt", "l\n")], "later work", OLD);
+    let (_, again) = list_status(&fixture, "mallory", "alice/jeryu").await;
+    assert_eq!(again["items"], body["items"]);
+    fixture.state.stranded_lists.lock().unwrap().clear();
+    let (_, fresh) = list_status(&fixture, "mallory", "alice/jeryu").await;
+    assert!(fresh.to_string().contains("listed-later"), "{fresh}");
 
     let (private, _) = list_status(&fixture, "mallory", "alice/secret").await;
     let (missing, _) = list_status(&fixture, "mallory", "alice/nothing").await;

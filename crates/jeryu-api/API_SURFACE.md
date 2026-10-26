@@ -83,6 +83,7 @@ Implemented HTTP/WebSocket routes:
 - `GET /api/v1/bootstrap.tui`
 - `GET /api/v1/repos`, `GET /api/v1/repos/{id}`
 - `GET /api/v1/repos/{id}/refs`
+- `GET /api/v1/repos/{id}/stranded-branches` (branches with commits not on the default branch and no open pull request; read access required; at most 100 branches assessed in name order within 10 s, kept for a minute; `complete` is false when the pass stopped short)
 - `GET /api/v1/repos/{id}/tree`
 - `GET /api/v1/repos/{id}/blob`
 - `GET /api/v1/repos/{id}/raw`

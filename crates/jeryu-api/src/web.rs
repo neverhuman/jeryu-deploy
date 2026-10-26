@@ -311,6 +311,11 @@ pub(crate) struct WebState {
     /// The last stranded-branch scan result per repository, kept until that
     /// repository is scanned again.
     pub(crate) stranded_scans: Arc<Mutex<stranded_branches::ScanCache>>,
+    /// Recent per-repository stranded-branch listings, so the list route does
+    /// not rerun git for every branch on each request.
+    pub(crate) stranded_lists: Arc<Mutex<stranded_branches::ListCache>>,
+    /// Bounds how many stranded-branch listings run git at once.
+    pub(crate) stranded_list_permits: Arc<tokio::sync::Semaphore>,
     /// Unit-test sessions must never seed agent credentials from the operator home.
     #[cfg(test)]
     session_auth_home: Arc<tempfile::TempDir>,
@@ -488,6 +493,10 @@ impl WebState {
             mcp_personal_token_peers: Vec::new(),
             auth_rate_limits: Arc::new(Mutex::new(BTreeMap::new())),
             stranded_scans: Arc::default(),
+            stranded_lists: Arc::default(),
+            stranded_list_permits: Arc::new(tokio::sync::Semaphore::new(
+                stranded_branches::LIST_CONCURRENCY,
+            )),
         }
     }
 
