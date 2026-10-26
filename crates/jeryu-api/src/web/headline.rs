@@ -1,5 +1,5 @@
 //! The three numbers that say how the factory is doing, carried by
-//! `GET /api/v1/yield` and shown on Flow and Yield:
+//! `GET /api/v1/yield` (the Flow and Yield pages do not render it yet):
 //!
 //! * **lead time** -- how long a todo takes, filed to production and claim to
 //!   main. Production time is the todo's pull request's first successful

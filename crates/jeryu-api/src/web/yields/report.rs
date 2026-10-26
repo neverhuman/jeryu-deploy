@@ -503,12 +503,6 @@ pub(crate) struct Request {
     pub now: DateTime<Utc>,
 }
 
-/// The whole report. `todos` are every todo of the family (or of every
-/// family) with the merged truth already derived; `reviews` are the ledger's
-/// `pr.reviewed` rows. Review spend is split over every todo a pull request
-/// carries, inside the window or not, so a long-running shift is not charged
-/// twice to the todos that happen to be in view. `sessions` are the ledger's
-/// `session.costed` rows, summed apart into `adhoc`.
 /// Whether a todo was worked in `window`: the cut `build` and the headline
 /// numbers share, so both report on the same todos.
 pub(crate) fn worked_in(window: Window, todo: &ShiftTodo) -> bool {
@@ -518,6 +512,12 @@ pub(crate) fn worked_in(window: Window, todo: &ShiftTodo) -> bool {
         .any(|day| window.contains(day))
 }
 
+/// The whole report. `todos` are every todo of the family (or of every
+/// family) with the merged truth already derived; `reviews` are the ledger's
+/// `pr.reviewed` rows. Review spend is split over every todo a pull request
+/// carries, inside the window or not, so a long-running shift is not charged
+/// twice to the todos that happen to be in view. `sessions` are the ledger's
+/// `session.costed` rows, summed apart into `adhoc`.
 pub(crate) fn build(
     request: &Request,
     todos: &[ShiftTodo],
