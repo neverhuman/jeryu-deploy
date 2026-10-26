@@ -190,6 +190,21 @@ async fn admins_pick_the_wiki_and_readers_see_it_only_with_access() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["stranded_custody_prefixes"][0], "preserve/", "{body}");
 
+    // An explicit null sent with the prefixes clears the wiki; only an
+    // absent field leaves it.
+    let (status, body) = call(
+        &router,
+        HttpMethod::PUT,
+        "/api/v1/admin/site-settings",
+        Some(&admin),
+        Some(json!({ "internal_wiki": null, "stranded_custody_prefixes": ["keep/"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["internal_wiki"], Value::Null, "{body}");
+    assert_eq!(body["stranded_custody_prefixes"], json!(["keep/"]));
+    put(&admin, json!("acme/docs")).await;
+
     // Clearing removes it.
     let (status, body) = put(&admin, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{body}");

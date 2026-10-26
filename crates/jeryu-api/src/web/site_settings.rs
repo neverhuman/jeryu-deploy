@@ -155,13 +155,25 @@ pub(crate) struct AdminSiteSettingsResponse {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct AdminSiteSettingsUpdate {
-    /// `owner/name` of the repository to use, or `null` to clear it.
-    pub internal_wiki: Option<String>,
+    /// `owner/name` of the repository to use, or `null` to clear it. The
+    /// outer `None` is a body without the field, so an explicit `null` sent
+    /// with the prefixes still clears the wiki.
+    #[serde(default, deserialize_with = "present")]
+    pub internal_wiki: Option<Option<String>>,
     /// Branch prefixes the stranded-branch rule treats as custody refs, or
     /// `[]` to go back to the defaults. Absent leaves them as they are (and,
     /// when sent alone, leaves the wiki as it is).
     #[serde(default)]
     pub stranded_custody_prefixes: Option<Vec<String>>,
+}
+
+/// A field that is present, `null` included: `Some(None)` for `null`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 fn wiki_repository(repo: &Repository) -> WikiRepository {
@@ -283,6 +295,7 @@ pub(crate) async fn admin_put_site_settings(
                 &format!("could not save site settings: {error}"),
             );
         }
+        // Sent alone, the prefixes leave the wiki as it is.
         if update.internal_wiki.is_none() {
             return match admin_view(&state) {
                 Ok(view) => Json(view).into_response(),
@@ -292,6 +305,7 @@ pub(crate) async fn admin_put_site_settings(
     }
     let repo_id = match update
         .internal_wiki
+        .flatten()
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
