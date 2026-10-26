@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Utc};
 
-use super::{Draft, Item, Severity, repo_href};
+use super::{Draft, Item, PushedAfterMergeFacts, Severity, pushed_after_merge_items, repo_href};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StrandedBranchFacts {
@@ -144,6 +144,29 @@ pub(crate) fn split_backlog(
     (rest, backlogs)
 }
 
+/// The rows for every stranded branch: a `pushed_after_merge` row for each
+/// branch a recently closed pull request left behind, whatever its age, then
+/// the rest, with each repository's old leftovers grouped into one backlog row.
+pub(crate) fn stranded_rows(
+    stranded: Vec<StrandedBranchFacts>,
+    pushed: &[PushedAfterMergeFacts],
+    now: DateTime<Utc>,
+) -> Vec<Item> {
+    let rest: Vec<_> = stranded
+        .into_iter()
+        .filter(|branch| {
+            !pushed
+                .iter()
+                .any(|push| push.repo == branch.repo && push.branch == branch.branch)
+        })
+        .collect();
+    let (rest, backlogs) = split_backlog(rest, now);
+    let mut items = pushed_after_merge_items(pushed);
+    items.extend(stranded_backlog_items(&backlogs, now));
+    items.extend(stranded_branch_items(&rest));
+    items
+}
+
 /// The route that lists a repository's stranded branches.
 pub(crate) fn backlog_list_href(repo: &str) -> String {
     format!("/api/v1/repos/{repo}/stranded-branches")
@@ -213,3 +236,7 @@ pub(crate) fn stranded_backlog_items(
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "stranded_tests.rs"]
+mod tests;

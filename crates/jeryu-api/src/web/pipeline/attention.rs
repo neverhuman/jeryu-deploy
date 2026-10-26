@@ -68,9 +68,9 @@ pub(crate) use mirror::{MirrorDrift, MirrorFailure, divergence_items, mirror_ite
 pub(crate) use pins::{pin_items, web_pin_bump_prs};
 pub(crate) use pushed::{PushedAfterMergeFacts, pushed_after_merge_items};
 pub(crate) use scorecard::digest_items;
-pub(crate) use stranded::{
-    StrandedBranchFacts, split_backlog, stranded_backlog_items, stranded_branch_items,
-};
+pub(crate) use stranded::{StrandedBranchFacts, stranded_rows};
+#[cfg(test)]
+pub(crate) use stranded::{split_backlog, stranded_backlog_items, stranded_branch_items};
 pub(crate) use summary::{FamilyCounts, family_summary};
 pub(crate) use work::{budget_items, shift_items, todo_items, worker_items};
 
@@ -1139,10 +1139,8 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
             .iter()
             .any(|(repo, branch)| fact.branch == *branch && same_repo_name(&fact.repo, repo))
     });
-    // A one-time backlog arrives as one row per repository, not one per branch.
-    let (stranded, backlogs) = split_backlog(stranded, now);
-    items.extend(stranded_backlog_items(&backlogs, now));
-    let mut stranded = stranded;
+    // A branch a recently closed pull request left behind keeps its specific
+    // row however old it is; only what is left groups into a backlog.
     let pushed: Vec<_> = stranded
         .iter()
         .filter_map(|branch| {
@@ -1161,13 +1159,7 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
             commit_count: push.commit_count,
         })
         .collect();
-    stranded.retain(|branch| {
-        !pushed
-            .iter()
-            .any(|push| push.repo == branch.repo && push.branch == branch.branch)
-    });
-    items.extend(pushed_after_merge_items(&pushed));
-    items.extend(stranded_branch_items(&stranded));
+    items.extend(stranded_rows(stranded, &pushed, now));
     let pulls = open_pull_facts(state);
     let superseded_pulls = all_pull_facts(state);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
