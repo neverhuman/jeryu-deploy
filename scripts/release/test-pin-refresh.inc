@@ -64,6 +64,8 @@ if auto_pin >"$P/run.log" 2>&1; then fail "a refused refresh push reported succe
 [[ "$(git -C "$P/deploy.git" rev-parse "$b1")" == "$refresh_before" ]] || fail "refused refresh changed remote"
 rm "$P/refuse-refresh-push"
 refresh_fixture
+# An older decided pull request on the same branch, listed first, must not shadow the open bump.
+jq '[.[0] + {number: 5, state: "closed"}] + .' "$P/pulls.json" >"$P/pulls.next"; mv "$P/pulls.next" "$P/pulls.json"
 cp "$P/state/opened.tsv" "$P/refresh-owned"
 builds_before="$(lines "$P/builds")"
 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "same-head refresh failed"; }
@@ -79,10 +81,48 @@ cmp "$P/refresh-owned" "$P/state/opened.tsv" || fail "refresh lost ownership"
 refresh_fixture
 refresh_before="$refresh_after"
 refresh_unchanged
+# A gate that keeps failing is the bump's own: refreshes are spaced and capped.
+refresh_main_commit() { # MESSAGE [FILE CONTENT]: one more commit on deploy main
+  if [ -n "${2:-}" ]; then printf '%s\n' "$3" >"$P/deploy/$2"; chmod +x "$P/deploy/$2"; g "$P/deploy" add "$2"
+  else echo "$1" >>"$P/deploy/Cargo.lock"; g "$P/deploy" add Cargo.lock; fi
+  g "$P/deploy" commit -q -m "$1"; g "$P/deploy" push -q "$P/deploy.git" main
+}
+refresh_main_commit 'another main commit'
+refresh_fixture
+refresh_unchanged
+grep -q 'next refresh after' "$P/run.log" || { cat "$P/run.log" >&2; fail "a second refresh inside the interval was not held back"; }
+refresh_fixture
+JERYU_AUTO_PIN_REFRESH_AFTER=0 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a due second refresh failed"; }
+refresh_second="$(git -C "$P/deploy.git" rev-parse "$b1")"
+[[ "$refresh_second" != "$refresh_after" ]] || { cat "$P/run.log" >&2; fail "a due second refresh did not push"; }
+# Main changes the bundle recipe: the carried hash is stale, so the refresh rebuilds with main's.
+dist_c="$(printf c%.0s {1..64})"
+refresh_main_commit 'change the bundle recipe' scripts/release/build-web-dist.sh "#!/usr/bin/env bash
+echo build >>\"$P/builds\"; echo \"\$2 $dist_c\""
+refresh_fixture
+builds_before="$(lines "$P/builds")"
+JERYU_AUTO_PIN_REFRESH_AFTER=0 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "a recipe-change refresh failed"; }
+refresh_rebuilt="$(git -C "$P/deploy.git" rev-parse "$b1")"
+refresh_recipe_main="$(git -C "$P/deploy.git" rev-parse main)"
+[[ "$refresh_rebuilt" != "$refresh_second" && "$(lines "$P/builds")" == $((builds_before + 1)) ]] \
+  || { cat "$P/run.log" >&2; fail "a recipe change on main did not rebuild the bundle"; }
+git -C "$P/deploy.git" merge-base --is-ancestor "$refresh_second" "$refresh_rebuilt" || fail "the rebuilt refresh rewrote history"
+grep -qx "web_dist_sha256 = \"$dist_c\"" <(git -C "$P/deploy.git" show "$refresh_rebuilt:jeryu-split.lock.toml") \
+  || fail "the refresh kept a hash built by an older recipe"
+[[ "$(git -C "$P/deploy.git" diff --name-only "$refresh_recipe_main" "$refresh_rebuilt")" == jeryu-split.lock.toml ]] \
+  || fail "the rebuilt refresh is not main plus the pin"
+# The cap: a fourth refresh asks for a person instead of pushing again.
+refresh_main_commit 'yet another main commit'
+refresh_fixture; : >"$P/events.jsonl"
+JERYU_AUTO_PIN_REFRESH_AFTER=0 auto_pin >"$P/run.log" 2>&1 || { cat "$P/run.log" >&2; fail "an exhausted refresh failed the tick"; }
+[[ "$(git -C "$P/deploy.git" rev-parse "$b1")" == "$refresh_rebuilt" ]] || fail "a bump past its refresh cap was pushed again"
+jq -es 'any(.[]; .kind == "pin.bump_failed" and .needs_human == true and .pr == 60)' "$P/events.jsonl" >/dev/null \
+  || fail "an exhausted refresh did not ask for a person"
+rm -rf "$P/state/refresh"; : >"$P/events.jsonl"
 # Restore the surrounding suite's histories and observations.
 git -C "$P/deploy.git" update-ref "refs/heads/$b1" "$refresh_after^1"
 git -C "$P/deploy.git" update-ref refs/heads/main "$refresh_main"
 git -C "$P/deploy" checkout -q -B main "$refresh_main"
 git -C "$P/web.git" update-ref refs/heads/main "$h2"
 undo_bump
-ok "same-head failed bumps incorporate main without rewriting history, rebuilding, or losing ownership"
+ok "same-head failed bumps incorporate main without rewriting history or losing ownership, rebuild on a recipe change, and back off"

@@ -20,7 +20,12 @@
 #      commit that is not an ancestor of the head is left alone with a `pin.bump_diverged` event, and
 #      so is one this script did not open.
 #      An owned same-head bump with a finished failing required gate is refreshed
-#      with current deploy main when behind, without rewriting its branch history.
+#      with current deploy main when behind, without rewriting its branch history. Only when it is
+#      the only open web pin bump: beside another one, both are left for a person. When main
+#      changed the bundle recipe (build-web-dist.sh) since the bump's base, the refresh rebuilds
+#      with main's recipe and pins that hash. A bump is refreshed at most
+#      JERYU_AUTO_PIN_MAX_REFRESHES times and no more often than JERYU_AUTO_PIN_REFRESH_AFTER;
+#      then `pin.bump_failed` asks for a person, since its gate fails on the bump itself.
 #   3. Build the dist with build-web-dist.sh taken from jeryu-deploy main itself (git archive), so
 #      the recipe is always the reviewed one. It prints "<commit> <web_dist_sha256>".
 #   4. On branch auto/pin-web-<sha12> cut from main: set exactly the two lock fields, commit as
@@ -49,7 +54,7 @@
 #      one or for the web gate, or failed on a head. Best-effort: it never fails or delays a tick.
 #
 # State in $JERYU_AUTO_PIN_STATE (~/.local/state/jeryu-auto-pin): opened.tsv (web sha, PR, time),
-# failures/<web sha>, prune-seen (the bump branches the last prune pass left), waiting (what the
+# failures/<web sha>, refresh/<PR> (refreshes so far and when), prune-seen (the bump branches the last prune pass left), waiting (what the
 # newest wait is for, and since when), git caches, web-dist/ (build-web-dist.sh's OUT_ROOT), logs/
 # (newest 20).
 #
@@ -61,7 +66,8 @@
 # JERYU_PIN_GIT_NAME / JERYU_PIN_GIT_EMAIL (required, no default: the identity the bump is
 # committed as. A credential path and an automation identity belong to one installation, and
 # this source is public, so none of the three has a default);
-# JERYU_AUTO_PIN_MAX_FAILURES (2); JERYU_AUTO_PIN_SUPERSEDE_AFTER (6h; also 90m or seconds); JERYU_AUTO_PIN_EVENTS=0 turns the events off;
+# JERYU_AUTO_PIN_MAX_FAILURES (2); JERYU_AUTO_PIN_SUPERSEDE_AFTER (6h; also 90m or seconds);
+# JERYU_AUTO_PIN_MAX_REFRESHES (3); JERYU_AUTO_PIN_REFRESH_AFTER (1h); JERYU_AUTO_PIN_EVENTS=0 turns the events off;
 # JERYU_AUTO_PIN_BEAT=0 turns the heartbeat off.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
@@ -357,7 +363,10 @@ emit() {
 branch="auto/pin-web-${head:0:12}"
 title="release: pin jeryu-web ${head:0:7}"
 list_pulls || exit 1
-mine="$(jq -r --arg b "$branch" '[.[] | select(.head.ref == $b)][0].number // empty' <<<"$pulls")"
+# This head's own bump: the newest open one of this repository, else any (a decided one).
+mine="$(jq -r --arg b "$branch" --arg repo "$repo_path" '[.[] | select(.head.ref == $b)] as $rows
+  | ([$rows[] | select(.state == "open" and .head.repo.full_name == $repo)] | max_by(.number) | .number)
+    // $rows[0].number // empty' <<<"$pulls")"
 other="$(jq -r '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))][0].number // empty' <<<"$pulls")"
 other_count="$(jq '[.[] | select(.state == "open" and (.title | startswith("release: pin jeryu-web")))] | length' <<<"$pulls")"
 if (( other_count > 1 )); then
@@ -456,8 +465,48 @@ refresh_unqueued() {
   jq -e 'all((.reviews // [])[]; .effective != true or .state != "CHANGES_REQUESTED")' <<<"$detail" >/dev/null \
     || { say "bump #$n has requested changes; skipping"; return 1; }
 }
+# refresh_record N: count one refresh attempt of bump #N, so a bump whose gate keeps failing on its
+# own merits is refreshed at most JERYU_AUTO_PIN_MAX_REFRESHES times, no more often than
+# JERYU_AUTO_PIN_REFRESH_AFTER, and then left for a person.
+refresh_record() {
+  local n="$1" count=0 at
+  read -r count at <"$state/refresh/$n" 2>/dev/null || count=0
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  printf '%s %s\n' "$((count + 1))" "$(date -u +%s)" >"$state/refresh/$n"
+}
+# refresh_due N: 0 when bump #N may be refreshed now; says why not otherwise.
+refresh_due() {
+  local n="$1" count=0 at=0 age
+  read -r count at <"$state/refresh/$n" 2>/dev/null || { count=0; at=0; }
+  [[ "$count" =~ ^[0-9]+$ && "$at" =~ ^[0-9]+$ ]] || { count=0; at=0; }
+  if (( count >= max_refreshes )); then
+    say "bump #$n was refreshed $count times and its required gate still fails; leaving it for a human"
+    emit pin.bump_failed true "auto-pin:refresh-exhausted:$n:$count" \
+      "bump $repo_path#$n still fails its required gate after $count refreshes onto main; left for a person" \
+      "$(jq -n --arg dep "$web_path" --arg to "$head" --argjson refreshes "$count" '{dependency: $dep, to: $to, refreshes: $refreshes}')" \
+      "$n" "the gate fails on the bump itself, not only because main moved"
+    return 1
+  fi
+  age=$(( $(date -u +%s) - at ))
+  if (( count > 0 && age < refresh_after )); then
+    say "bump #$n was refreshed ${age}s ago (refresh $count of $max_refreshes); next refresh after ${refresh_after}s; skipping"
+    return 1
+  fi
+}
+# lock_with LOCK_REV COMMIT HASH: the lock at LOCK_REV with only the jeryu-web pin fields set.
+lock_with() {
+  git -C "$cache" show "$1:$lock_file" | awk -v commit="$2" -v hash="$3" '
+    /^\[\[repo\]\]/ { inweb = 0 }
+    /^name = "jeryu-web"$/ { inweb = 1 }
+    inweb && $1 == "commit" && $2 == "=" { print "commit = \"" commit "\""; next }
+    inweb && $1 == "web_dist_sha256" && $2 == "=" { print "web_dist_sha256 = \"" hash "\""; next }
+    { print }'
+}
+# The files that decide the bundle's bytes. When main changed them since the bump's base, the
+# carried web_dist_sha256 was made by a recipe main no longer has, so the refresh rebuilds.
+recipe_paths=(scripts/release/build-web-dist.sh)
 refresh_bump() {
-  local n="$1" row sha detail base_sha co hash expected actual current
+  local n="$1" row sha detail base_sha co hash expected actual current pair built rebuilt=""
   row="$(jq -ce --argjson n "$n" --arg repo "$repo_path" --arg branch "$branch" '
     .[] | select(.number == $n and .state == "open" and .head.ref == $branch
       and .head.repo.full_name == $repo and .base.ref == "main"
@@ -469,36 +518,59 @@ refresh_bump() {
   detail="$(api GET "/api/v1/repos/$repo_path/pulls/$n")" && required_failed "$n" "$row" "$detail" \
     || { say "bump #$n has no finished failing exact-head required gate; skipping"; return 0; }
   refresh_unqueued "$n" "$detail" || return 0
-  git -C "$cache" fetch -q "$remote" "+refs/heads/$branch:refs/auto-pin/refresh" \
-    && [ "$(git -C "$cache" rev-parse refs/auto-pin/refresh)" = "$sha" ] \
+  # A ref clone copies, so the work clone below reaches the bump without object-copy tricks.
+  git -C "$cache" fetch -q "$remote" "+refs/heads/$branch:refs/heads/auto-pin-refresh" \
+    && [ "$(git -C "$cache" rev-parse refs/heads/auto-pin-refresh)" = "$sha" ] \
     || { say "bump #$n moved or could not be fetched; skipping"; return 0; }
   base_sha="$(git -C "$cache" merge-base "$main" "$sha")" \
     || { say "bump #$n has no common base with main; skipping"; return 0; }
   [ "$base_sha" != "$main" ] \
     || { say "bump #$n already includes current main; skipping"; return 0; }
+  refresh_due "$n" || return 0
   # Reconstruct the sole allowed edit from the common base. Do not replay any
   # unrelated file or lock-field changes, even on a branch this timer opened.
   hash="$(git -C "$cache" show "$sha:$lock_file" | awk '
     /^\[\[repo\]\]/ { inweb = 0 }
     /^name = "jeryu-web"$/ { inweb = 1 }
-    inweb && $1 == "web_dist_sha256" { gsub(/"/, "", $3); print $3 }')"
+    inweb && $1 == "web_dist_sha256" { gsub(/"/, "", $3); print $3 }')" || hash=""
   [[ "$hash" =~ ^[0-9a-f]{64}$ ]] \
     || { say "bump #$n has no valid bundle hash; skipping"; return 0; }
-  git -C "$cache" show "$base_sha:$lock_file" | awk -v commit="$head" -v hash="$hash" '
-    /^\[\[repo\]\]/ { inweb = 0 }
-    /^name = "jeryu-web"$/ { inweb = 1 }
-    inweb && $1 == "commit" { print "commit = \"" commit "\""; next }
-    inweb && $1 == "web_dist_sha256" { print "web_dist_sha256 = \"" hash "\""; next }
-    { print }' >"$work/refresh.lock"
-  expected="$(git hash-object "$work/refresh.lock")"
-  actual="$(git -C "$cache" rev-parse "$sha:$lock_file")"
+  lock_with "$base_sha" "$head" "$hash" >"$work/refresh.lock" \
+    && expected="$(git -C "$cache" hash-object "$work/refresh.lock")" \
+    && actual="$(git -C "$cache" rev-parse "$sha:$lock_file")" \
+    || { say "bump #$n has no readable $lock_file; skipping"; return 0; }
   [ "$expected" = "$actual" ] && [ "$(git -C "$cache" diff --name-only "$base_sha" "$sha")" = "$lock_file" ] \
     || { say "bump #$n is not solely the current web pin edit; skipping"; return 0; }
+  if ! git -C "$cache" diff --quiet "$base_sha" "$main" -- "${recipe_paths[@]}"; then
+    # Same build as the open path: main's own recipe, so the hash is the one staging will rebuild.
+    say "main changed the bundle recipe since bump #$n was built; rebuilding jeryu-web ${head:0:12}"
+    refresh_record "$n"
+    mkdir -p "$work/recipe"
+    pair="$(git -C "$cache" archive "$main" scripts/release "$lock_file" | tar -x -C "$work/recipe" \
+      && JERYU_WEB_REMOTE="$web_remote" "$work/recipe/scripts/release/build-web-dist.sh" --commit "$head" "$state/web-dist" | tail -1)" \
+      || { say "bump #$n: rebuilding with main's recipe failed; skipping"; return 0; }
+    read -r built rebuilt <<<"$pair"
+    [[ "$built" == "$head" && "$rebuilt" =~ ^[0-9a-f]{64}$ ]] \
+      || { say "bump #$n: the rebuild did not print '<commit> <hash>' for ${head:0:12}; skipping"; return 0; }
+    [ "$rebuilt" = "$hash" ] || say "bump #$n: main's recipe builds $rebuilt, not the carried $hash"
+    hash="$rebuilt"
+  fi
   co="$work/refresh"
+  lock_with "$main" "$head" "$hash" >"$work/refresh-main.lock" \
+    || { say "bump #$n: could not read $lock_file at main; skipping"; return 0; }
   git clone -q --no-hardlinks "$cache" "$co" \
     && git -C "$co" checkout -q --detach "$sha" \
-    && git -C "$co" -c user.name="$git_name" -c user.email="$git_email" merge --no-ff -m "release: refresh web pin on current main" "$main" \
+    && git -C "$co" -c user.name="$git_name" -c user.email="$git_email" merge -q --no-ff -m "release: refresh web pin on current main" "$main" \
     || { say "bump #$n could not replay cleanly onto main; skipping"; return 0; }
+  # The refreshed tree is exactly main plus the pin: with a rebuilt hash, that hash.
+  if ! cmp -s "$work/refresh-main.lock" "$co/$lock_file"; then
+    cp "$work/refresh-main.lock" "$co/$lock_file" \
+      && git -C "$co" -c user.name="$git_name" -c user.email="$git_email" commit -q -a --amend --no-edit \
+      || { say "bump #$n: could not write the rebuilt hash; skipping"; return 0; }
+  fi
+  [ "$(git -C "$co" diff --name-only "$main" HEAD)" = "$lock_file" ] \
+    && cmp -s "$work/refresh-main.lock" "$co/$lock_file" \
+    || { say "bump #$n: the refreshed tree is not main plus the pin; skipping"; return 0; }
   # Re-read both identities and required posture after preparing the commit.
   current="$(api GET "/api/v3/repos/$repo_path/pulls/$n")" \
     && jq -e --argjson row "$row" '.state == "open" and .head == $row.head and .base == $row.base' <<<"$current" >/dev/null \
@@ -510,13 +582,9 @@ refresh_bump() {
     || { say "bump #$n or main changed during refresh; skipping"; return 0; }
   git -C "$co" push -q "$remote" "HEAD:refs/heads/$branch" \
     || { say "bump #$n refresh push refused; will reconsider next tick"; return 1; }
-  say "refreshed bump #$n onto main ${main:0:12}; its new head requires fresh checks"
+  [ -n "$rebuilt" ] || refresh_record "$n"
+  say "refreshed bump #$n onto main ${main:0:12}$([ -z "$rebuilt" ] || echo ", bundle rebuilt"); its new head requires fresh checks"
 }
-if [ -n "$mine" ]; then
-  waiting_for "$mine"
-  refresh_bump "$mine"
-  exit $?
-fi
 
 # duration_seconds 6h|90m|3600 -> seconds; prints nothing for a malformed value.
 duration_seconds() {
@@ -530,6 +598,17 @@ duration_seconds() {
 supersede_after="$(duration_seconds "${JERYU_AUTO_PIN_SUPERSEDE_AFTER:-6h}")"
 [ -n "$supersede_after" ] || supersede_after=21600
 superseded_pr="" superseded_pinned=""
+max_refreshes="${JERYU_AUTO_PIN_MAX_REFRESHES:-3}"
+[[ "$max_refreshes" =~ ^[0-9]+$ ]] || max_refreshes=3
+refresh_after="$(duration_seconds "${JERYU_AUTO_PIN_REFRESH_AFTER:-1h}")"
+[ -n "$refresh_after" ] || refresh_after=3600
+mkdir -p "$state/refresh"
+if [ -n "$mine" ]; then
+  waiting_for "$mine"
+  refresh_bump "$mine"
+  exit $?
+fi
+
 if [ -n "$other" ]; then
   if supersede_stale "$other"; then other=""
   else waiting_for "$other"; say "bump #$other is open; ${head:0:12} waits for it to land"; exit 0; fi

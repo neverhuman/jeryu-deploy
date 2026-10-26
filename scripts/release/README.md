@@ -207,6 +207,14 @@ gate, recovers its required gate or joins the queue during the build,
 the pre-close check leaves it alone and emits a cleanup event for the replacement.
 Multiple existing bumps, an unrecorded bump or a diverged pin stop replacement.
 A second list before PR creation catches other bumps opened during the build.
+When the current head's own bump (recorded in `opened.tsv`, the only open web pin bump, not
+queued, no requested changes) has a finished failing exact-head required gate and deploy main has
+moved past its base, a tick merges main into it with a normal push, so the pull request keeps its
+number. The refreshed tree is main plus the two pin fields; when main changed
+`build-web-dist.sh` since the bump was built, the bundle is rebuilt with main's recipe and that
+hash is pinned. A bump is refreshed at most `JERYU_AUTO_PIN_MAX_REFRESHES` times (default 3) and
+no more often than `JERYU_AUTO_PIN_REFRESH_AFTER` (default `1h`); after that a gate that still
+fails is the bump's own, and `pin.bump_failed` asks for a person.
 It retries
 a failing head once, then posts `pin.bump_failed` for a human and leaves that head alone. What is
 pinned, how far behind it is and whether a bump is open: `GET /api/v1/pins` and the inbox item
