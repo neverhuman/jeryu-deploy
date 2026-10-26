@@ -402,9 +402,13 @@ impl GithubRouter {
     /// pointer comment, in one call.
     ///
     /// The comment goes first, so a close whose pointer never arrived cannot
-    /// happen; then the link, so a closed pull request is never left without
-    /// the record this call exists for; the close last, which is the step a
-    /// rerun of the same call repeats harmlessly.
+    /// happen. Then the close, and the link only once the close succeeded: a
+    /// refused close would otherwise leave an open pull request flagged as
+    /// replaced. A link the forge would refuse (itself, a cycle) is refused
+    /// before the close, so the only failure left after it is the store's;
+    /// that one reopens the pull request, and the pointer comment stands
+    /// either way, so the startup backfill records the link even if the
+    /// reopen fails too.
     fn close_as_replaced(
         &self,
         owner: &str,
@@ -444,6 +448,12 @@ impl GithubRouter {
                 other => error_response(other),
             };
         }
+        if let Some(refused) = self
+            .pull_replacements
+            .refusal(owner, repo, number, replacing)
+        {
+            return replacement_refused(422, refused.code, &refused.message);
+        }
         let actor = actor(body);
         if let Err(err) = self.core.create_review(
             owner,
@@ -459,22 +469,7 @@ impl GithubRouter {
         ) {
             return error_response(err);
         }
-        if let Err(refused) = self.pull_replacements.record(
-            owner,
-            repo,
-            number,
-            replacing,
-            &actor,
-            chrono::Utc::now().timestamp_millis(),
-        ) {
-            let status = if refused.code == "storage_failed" {
-                500
-            } else {
-                422
-            };
-            return replacement_refused(status, refused.code, &refused.message);
-        }
-        match self.core.update_pull_request(
+        let closed = match self.core.update_pull_request(
             owner,
             repo,
             number,
@@ -483,9 +478,36 @@ impl GithubRouter {
                 ..UpdatePullRequestRequest::default()
             },
         ) {
-            Ok(pr) => json_response(200, &self.pull_request_json_with_replacement(&pr)),
-            Err(err) => error_response(err),
+            Ok(pr) => pr,
+            Err(err) => return error_response(err),
+        };
+        if let Err(refused) = self.pull_replacements.record(
+            owner,
+            repo,
+            number,
+            replacing,
+            &actor,
+            chrono::Utc::now().timestamp_millis(),
+        ) {
+            // Roll the close back: a caller whose call failed must not be left
+            // with a closed pull request and no record of what replaced it.
+            let _ = self.core.update_pull_request(
+                owner,
+                repo,
+                number,
+                UpdatePullRequestRequest {
+                    state: Some(PullRequestState::Open),
+                    ..UpdatePullRequestRequest::default()
+                },
+            );
+            let status = if refused.code == "storage_failed" {
+                500
+            } else {
+                422
+            };
+            return replacement_refused(status, refused.code, &refused.message);
         }
+        json_response(200, &self.pull_request_json_with_replacement(&closed))
     }
 
     pub(super) fn merge_pull(&self, owner: &str, repo: &str, number: &str, body: &str) -> Response {

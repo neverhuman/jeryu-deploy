@@ -599,8 +599,15 @@ fn open_pull_facts(state: &WebState) -> Vec<PullFacts> {
 /// the pull request that is still live. A pull request with a recorded link is
 /// included whatever state it is in, so a lot still open at a station under a
 /// pull request that was closed as replaced names its replacement too.
-pub(crate) fn superseded_open_pulls(state: &WebState) -> Vec<flow::Superseded> {
-    let facts = all_pull_facts(state);
+/// `since_ms` bounds the read: with one, a closed or merged pull request older
+/// than it is left out, which keeps a long repository history off every
+/// /api/v1/flow request. A pull request still open is read whatever its age —
+/// its hold is live work, and a lot may have sat at its station for months.
+pub(crate) fn superseded_open_pulls(
+    state: &WebState,
+    since_ms: Option<i64>,
+) -> Vec<flow::Superseded> {
+    let facts = all_pull_facts(state, since_ms);
     let mut found: Vec<flow::Superseded> = flow::superseded_pulls(&facts)
         .into_iter()
         .map(|(_, found)| found)
@@ -658,7 +665,7 @@ pub(crate) fn superseded_open_pulls(state: &WebState) -> Vec<flow::Superseded> {
     found
 }
 
-fn all_pull_facts(state: &WebState) -> Vec<SupersededPullFacts> {
+fn all_pull_facts(state: &WebState, since_ms: Option<i64>) -> Vec<SupersededPullFacts> {
     let mut pulls = Vec::new();
     for repo in state.core.list_repositories(None) {
         if repo.archived {
@@ -667,44 +674,61 @@ fn all_pull_facts(state: &WebState) -> Vec<SupersededPullFacts> {
         let Ok(listed) = state.core.list_pull_requests(&repo.owner, &repo.name, None) else {
             continue;
         };
-        pulls.extend(listed.into_iter().map(|pr| {
-            SupersededPullFacts {
-                recorded_replacement: state
-                    .github
-                    .pull_replacements()
-                    .superseded_by(&pr.owner, &pr.repo, pr.number)
-                    .map(|link| link.number),
-                repo: format!("{}/{}", pr.owner, pr.repo),
-                author: pr.author,
-                base_ref: pr.base.ref_name,
-                source_repository: pr.source_repository,
-                number: pr.number,
-                title: pr.title,
-                body: pr.body,
-                head_ref: pr.head.ref_name,
-                created_at: pr.created_at,
-                status: if pr.merged {
-                    "merged"
-                } else if matches!(
-                    pr.state,
-                    jeryu_core::PullRequestState::Open
-                        | jeryu_core::PullRequestState::Draft
-                        | jeryu_core::PullRequestState::ReadyForReview
-                        | jeryu_core::PullRequestState::Approved
-                        | jeryu_core::PullRequestState::Mergeable
-                        | jeryu_core::PullRequestState::Queued
-                        | jeryu_core::PullRequestState::BlockedByChecks
-                        | jeryu_core::PullRequestState::BlockedByPolicy
-                        | jeryu_core::PullRequestState::SpeculativeMergeTesting
-                ) {
-                    "open"
-                } else {
-                    "closed"
-                },
-            }
-        }));
+        pulls.extend(
+            listed
+                .into_iter()
+                .filter(|pr| read_in_window(pr, since_ms))
+                .map(|pr| SupersededPullFacts {
+                    recorded_replacement: state
+                        .github
+                        .pull_replacements()
+                        .superseded_by(&pr.owner, &pr.repo, pr.number)
+                        .map(|link| link.number),
+                    repo: format!("{}/{}", pr.owner, pr.repo),
+                    author: pr.author,
+                    base_ref: pr.base.ref_name,
+                    source_repository: pr.source_repository,
+                    number: pr.number,
+                    title: pr.title,
+                    body: pr.body,
+                    head_ref: pr.head.ref_name,
+                    created_at: pr.created_at,
+                    status: if pr.merged {
+                        "merged"
+                    } else if matches!(
+                        pr.state,
+                        jeryu_core::PullRequestState::Open
+                            | jeryu_core::PullRequestState::Draft
+                            | jeryu_core::PullRequestState::ReadyForReview
+                            | jeryu_core::PullRequestState::Approved
+                            | jeryu_core::PullRequestState::Mergeable
+                            | jeryu_core::PullRequestState::Queued
+                            | jeryu_core::PullRequestState::BlockedByChecks
+                            | jeryu_core::PullRequestState::BlockedByPolicy
+                            | jeryu_core::PullRequestState::SpeculativeMergeTesting
+                    ) {
+                        "open"
+                    } else {
+                        "closed"
+                    },
+                }),
+        );
     }
     pulls
+}
+
+/// Whether a window-bounded read includes `pr`: an open pull request always,
+/// a closed or merged one only while it was last touched inside the window.
+fn read_in_window(pr: &jeryu_core::PullRequest, since_ms: Option<i64>) -> bool {
+    let Some(since_ms) = since_ms else {
+        return true;
+    };
+    pr.updated_at.timestamp_millis() >= since_ms
+        || !(pr.merged
+            || matches!(
+                pr.state,
+                jeryu_core::PullRequestState::Closed | jeryu_core::PullRequestState::Merged
+            ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1182,7 +1206,9 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
         .collect();
     items.extend(stranded_rows(stranded, &pushed, now));
     let pulls = open_pull_facts(state);
-    let superseded_pulls = all_pull_facts(state);
+    // needs-you asks about every open pull request, however old: it is a list
+    // of what waits on somebody, not a window.
+    let superseded_pulls = all_pull_facts(state, None);
     let open: BTreeSet<(String, u64)> = pulls.iter().map(|p| (p.repo.clone(), p.number)).collect();
     // Every open pull request and the head it is at now, so a rule that
     // judges a head-anchored verdict can tell a current one from a stale one.

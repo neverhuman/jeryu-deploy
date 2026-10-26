@@ -250,6 +250,39 @@ async fn a_link_to_another_repository_to_itself_or_one_that_cycles_is_refused() 
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(edge_code(&body), "pull_replacement_cycle");
     assert_eq!(fx.link(3), None);
+    // A refusal is decided before anything is written: #3 is still open and
+    // carries no pointer comment claiming #1 replaced it.
+    let (_, three) = fx
+        .get(&format!("/api/v3/repos/{OWNER}/{NAME}/pulls/3"), &fx.dana)
+        .await;
+    assert_eq!(three["state"], "open");
+    assert!(
+        fx.state
+            .core
+            .list_reviews(OWNER, NAME, 3)
+            .expect("reviews")
+            .is_empty(),
+        "a refused replacement must leave no pointer comment"
+    );
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_json_still_closes_a_pull_request_the_plain_way() {
+    let fx = Fixture::new(2);
+    // This route took no body before `superseded_by` existed, so a client
+    // that sends something else gets the landed-close it always got: here
+    // that one refuses, because #1 still has work to land.
+    let (status, body) = fx
+        .call(
+            HttpMethod::POST,
+            &format!("/api/v1/repos/{OWNER}/{NAME}/pulls/1/close"),
+            &fx.dana,
+            "not json at all",
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "pull_close_has_work_to_land");
+    assert_eq!(fx.link(1), None);
 }
 
 #[tokio::test]
@@ -416,6 +449,51 @@ async fn the_backfill_reads_the_pointers_already_written_and_leaves_recorded_lin
 }
 
 #[tokio::test]
+async fn the_backfill_ignores_a_closing_pointer_from_somebody_who_cannot_write_the_repository() {
+    let fx = Fixture::new(2);
+    let comment = |login: &str| {
+        fx.state
+            .core
+            .add_issue_comment(
+                OWNER,
+                NAME,
+                fx.state
+                    .core
+                    .get_pull_request(OWNER, NAME, 1)
+                    .expect("the replaced pull request")
+                    .issue_number,
+                login,
+                jeryu_core::CreateCommentRequest {
+                    body: "Landed via #2.".to_string(),
+                },
+            )
+            .expect("comment the thread");
+    };
+    comment("mallory");
+    fx.state
+        .core
+        .update_pull_request(
+            OWNER,
+            NAME,
+            1,
+            jeryu_core::UpdatePullRequestRequest {
+                state: Some(jeryu_core::PullRequestState::Closed),
+                ..Default::default()
+            },
+        )
+        .expect("close it");
+    // mallory holds nothing on acme/widgets, so the pointer is a passer-by's
+    // claim about somebody else's pull request.
+    assert_eq!(fx.state.github.backfill_pull_replacements(), 0);
+    assert_eq!(fx.link(1), None);
+
+    // The same words from a commenter with write access are the record.
+    comment("dana");
+    assert_eq!(fx.state.github.backfill_pull_replacements(), 1);
+    assert_eq!(fx.link(1), Some(2));
+}
+
+#[tokio::test]
 async fn flow_follows_the_chain_to_the_pull_request_that_is_live() {
     let fx = Fixture::new(3);
     assert_eq!(
@@ -426,7 +504,7 @@ async fn flow_follows_the_chain_to_the_pull_request_that_is_live() {
         fx.close_as_replaced_v3(2, "3", &fx.dana).await.0,
         StatusCode::OK
     );
-    let found = crate::web::pipeline::attention::superseded_open_pulls(&fx.state);
+    let found = crate::web::pipeline::attention::superseded_open_pulls(&fx.state, None);
     let one = found
         .iter()
         .find(|hit| hit.number == 1)
@@ -434,4 +512,19 @@ async fn flow_follows_the_chain_to_the_pull_request_that_is_live() {
     assert_eq!(one.replacement_number, 3);
     assert_eq!(one.replacement_repo, format!("{OWNER}/{NAME}"));
     assert_eq!(one.replacement_state, "open");
+
+    // Flow reads only its window: #1 and #2 are closed, so a window that
+    // starts after they closed leaves them out of the walk entirely.
+    let later = chrono::Utc::now().timestamp_millis() + 60_000;
+    let bounded = crate::web::pipeline::attention::superseded_open_pulls(&fx.state, Some(later));
+    assert!(
+        !bounded.iter().any(|hit| hit.number == 1 || hit.number == 2),
+        "a closed pull request outside the window is not read: {bounded:?}"
+    );
+    // A window that starts before them reads them again.
+    let bounded = crate::web::pipeline::attention::superseded_open_pulls(
+        &fx.state,
+        Some(chrono::Utc::now().timestamp_millis() - 600_000),
+    );
+    assert!(bounded.iter().any(|hit| hit.number == 1), "{bounded:?}");
 }

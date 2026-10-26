@@ -133,20 +133,8 @@ impl PullReplacements {
         set_by: &str,
         now_ms: i64,
     ) -> Result<(), LinkRefused> {
-        if replaced == replacing {
-            return Err(LinkRefused {
-                code: "pull_replacement_self",
-                message: format!("#{replaced} cannot replace itself"),
-            });
-        }
-        if let Some(cycle) = self.closes_a_cycle(owner, repo, replaced, replacing) {
-            return Err(LinkRefused {
-                code: "pull_replacement_cycle",
-                message: format!(
-                    "#{replacing} is already replaced by #{cycle}, so recording it as the \
-                     replacement of #{replaced} would make a cycle"
-                ),
-            });
+        if let Some(refused) = self.refusal(owner, repo, replaced, replacing) {
+            return Err(refused);
         }
         let link = ReplacementLink {
             number: replacing,
@@ -164,6 +152,32 @@ impl PullReplacements {
         }
         self.lock().insert(key(owner, repo, replaced), link);
         Ok(())
+    }
+
+    /// Why [`record`](Self::record) would refuse this link, without writing
+    /// anything: a caller that closes the pull request first asks here before
+    /// the close, so a refusal never leaves a closed pull request behind.
+    pub(crate) fn refusal(
+        &self,
+        owner: &str,
+        repo: &str,
+        replaced: u64,
+        replacing: u64,
+    ) -> Option<LinkRefused> {
+        if replaced == replacing {
+            return Some(LinkRefused {
+                code: "pull_replacement_self",
+                message: format!("#{replaced} cannot replace itself"),
+            });
+        }
+        let cycle = self.closes_a_cycle(owner, repo, replaced, replacing)?;
+        Some(LinkRefused {
+            code: "pull_replacement_cycle",
+            message: format!(
+                "#{replacing} is already replaced by #{cycle}, so recording it as the \
+                 replacement of #{replaced} would make a cycle"
+            ),
+        })
     }
 
     /// The pull request on the chain from `replacing` that already names
@@ -276,6 +290,29 @@ fn may_claim(claimant: &ClaimScope<'_>, replaced: &ClaimScope<'_>) -> bool {
         && claimant.created_at > replaced.created_at
 }
 
+/// True when a closing comment on a pull request may record `replacing` as
+/// what replaced it. A comment is whoever wrote it, so without a guard any
+/// commenter's "Landed via #9" marks somebody else's pull request replaced.
+/// The pointer is believed only from a commenter who could have landed the
+/// replacement — write access to the repository — and only within the scope
+/// [`may_claim`] allows a pull request's own text: the same base and source
+/// repository, neither side an imported contribution, and the replacement
+/// opened after the pull request it replaces. The commenter need not be the
+/// author: the forge's own close, a reviewer's and a teammate's all count,
+/// which is what the closing comments already written look like.
+fn may_point(
+    commenter_can_write: bool,
+    replacing: &ClaimScope<'_>,
+    replaced: &ClaimScope<'_>,
+) -> bool {
+    commenter_can_write
+        && !replacing.head_ref.starts_with(CONTRIBUTION_BRANCH_PREFIX)
+        && !replaced.head_ref.starts_with(CONTRIBUTION_BRANCH_PREFIX)
+        && replacing.base_ref == replaced.base_ref
+        && replacing.source_repository == replaced.source_repository
+        && replacing.created_at > replaced.created_at
+}
+
 /// Links the pull requests whose own text already says what replaced them: a
 /// closing comment that points at the replacement (`Landed via #7`), or a
 /// replacement whose title or body says `replaces #3`. Only pull requests with
@@ -293,7 +330,6 @@ pub(crate) fn backfill(core: &ForgeCore, links: &PullReplacements, now_ms: i64) 
         let Ok(pulls) = core.list_pull_requests(&repo.owner, &repo.name, None) else {
             continue;
         };
-        let numbers: Vec<u64> = pulls.iter().map(|pr| pr.number).collect();
         let full_name = format!("{}/{}", repo.owner, repo.name);
         for pr in &pulls {
             // The replacement's own `replaces #3` is read whatever state it is
@@ -331,20 +367,26 @@ pub(crate) fn backfill(core: &ForgeCore, links: &PullReplacements, now_ms: i64) 
             {
                 continue;
             }
-            let Some(replacing) = closing_pointer(core, pr) else {
+            let Some((replacing, commenter)) = closing_pointer(core, pr) else {
                 continue;
             };
-            if numbers.contains(&replacing)
-                && links
-                    .record(
-                        &repo.owner,
-                        &repo.name,
-                        pr.number,
-                        replacing,
-                        "backfill",
-                        now_ms,
-                    )
-                    .is_ok()
+            let Some(named) = pulls.iter().find(|candidate| candidate.number == replacing) else {
+                continue;
+            };
+            if may_point(
+                core.user_can_write_repo(commenter.trim(), &repo.owner, &repo.name),
+                &ClaimScope::of(named, &full_name),
+                &ClaimScope::of(pr, &full_name),
+            ) && links
+                .record(
+                    &repo.owner,
+                    &repo.name,
+                    pr.number,
+                    replacing,
+                    "backfill",
+                    now_ms,
+                )
+                .is_ok()
             {
                 recorded += 1;
             }
@@ -353,32 +395,36 @@ pub(crate) fn backfill(core: &ForgeCore, links: &PullReplacements, now_ms: i64) 
     recorded
 }
 
-/// The replacement the newest closing pointer on a pull request names. Both
+/// The replacement the newest closing pointer on a pull request names, with
+/// the login that wrote it for [`may_point`] to weigh. Both
 /// places a pointer is written are read — a review comment (the forge's own
 /// close writes one) and the pull request's companion issue thread (what the
 /// page's close dialog and `gh pr close --comment` write) — newest first, so a
 /// pull request closed, reopened and replaced again points at the replacement
 /// that is live.
-fn closing_pointer(core: &ForgeCore, pr: &jeryu_core::PullRequest) -> Option<u64> {
-    let mut comments: Vec<(chrono::DateTime<chrono::Utc>, String)> = core
+fn closing_pointer(core: &ForgeCore, pr: &jeryu_core::PullRequest) -> Option<(u64, String)> {
+    let mut comments: Vec<(chrono::DateTime<chrono::Utc>, String, String)> = core
         .list_reviews(&pr.owner, &pr.repo, pr.number)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|review| review.body.map(|body| (review.submitted_at, body)))
+        .filter_map(|review| {
+            review
+                .body
+                .map(|body| (review.submitted_at, body, review.author))
+        })
         .collect();
     comments.extend(
         core.list_issue_comments(&pr.owner, &pr.repo, pr.issue_number)
             .unwrap_or_default()
             .into_iter()
-            .map(|comment| (comment.created_at, comment.body)),
+            .map(|comment| (comment.created_at, comment.body, comment.author)),
     );
-    comments.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    comments.sort_by_key(|(at, _, _)| std::cmp::Reverse(*at));
     comments
         .iter()
         .take(BACKFILL_COMMENTS)
-        .map(|(_, body)| body.as_str())
-        .find_map(|body| match pointer(body) {
-            Some((false, number)) => Some(number),
+        .find_map(|(_, body, author)| match pointer(body) {
+            Some((false, number)) => Some((number, author.clone())),
             _ => None,
         })
 }
@@ -626,6 +672,44 @@ mod tests {
         ));
         assert!(!may_claim(
             &scope("alton", "main", "nightshift/1-r2", 5),
+            &scope("alton", "main", "contrib/gh-41", 0)
+        ));
+    }
+
+    #[test]
+    fn a_closing_comment_is_read_only_from_a_commenter_who_could_have_landed_it() {
+        let replaced = scope("alton", "main", "nightshift/1", 0);
+        let replacement = scope("mara", "main", "nightshift/1-r2", 5);
+        // Another author's close counts, so long as it is a commenter with
+        // write access to the repository.
+        assert!(may_point(true, &replacement, &replaced));
+        // A commenter who cannot write the repository is a passer-by.
+        assert!(!may_point(false, &replacement, &replaced));
+        // A replacement on another base, or from another repository, is not
+        // this pull request's replacement whoever says it is.
+        assert!(!may_point(
+            true,
+            &scope("mara", "release", "nightshift/1-r2", 5),
+            &replaced
+        ));
+        let mut forked = scope("mara", "main", "nightshift/1-r2", 5);
+        forked.source_repository = "someone/fork";
+        assert!(!may_point(true, &forked, &replaced));
+        // An earlier pull request did not replace a later one.
+        assert!(!may_point(
+            true,
+            &scope("mara", "main", "nightshift/1-r2", 0),
+            &scope("alton", "main", "nightshift/1", 5)
+        ));
+        // Neither side may be an imported contribution.
+        assert!(!may_point(
+            true,
+            &scope("mara", "main", "contrib/gh-42", 5),
+            &replaced
+        ));
+        assert!(!may_point(
+            true,
+            &replacement,
             &scope("alton", "main", "contrib/gh-41", 0)
         ));
     }

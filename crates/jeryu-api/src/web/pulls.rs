@@ -990,6 +990,10 @@ pub(super) async fn close(
 /// another repository (`globex/widgets#5`, a URL) is refused rather than
 /// guessed at: a replacement link only ever joins two pull requests of one
 /// repository.
+///
+/// A body that is not JSON at all is the plain landed-close too: this route
+/// took no body before the field existed, and a client that sends one anyway
+/// must keep getting the close it always got rather than a 422.
 fn replacement_asked_for(body: &Bytes) -> Result<Option<u64>, Box<AxumResponse>> {
     if body.is_empty() {
         return Ok(None);
@@ -1009,7 +1013,7 @@ fn replacement_asked_for(body: &Bytes) -> Result<Option<u64>, Box<AxumResponse>>
         )
     };
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return Err(Box::new(invalid()));
+        return Ok(None);
     };
     match value.get("superseded_by") {
         None | Some(Value::Null) => Ok(None),
@@ -1046,8 +1050,12 @@ fn replacement_asked_for(body: &Bytes) -> Result<Option<u64>, Box<AxumResponse>>
 /// close a cycle.
 ///
 /// The comment goes first, so a recorded link always has the pointer a reader
-/// of an older client still sees; then the link; then the close, which is the
-/// step a rerun repeats harmlessly.
+/// of an older client still sees. Then the close, and only once it succeeded
+/// the link: a refused close would otherwise leave an open pull request
+/// flagged as replaced. A link the forge would refuse (itself, a cycle) is
+/// refused before the close, so the only failure left after it is the store's;
+/// that one rolls the close back, and the pointer comment stands either way,
+/// so the startup backfill records the link even if the rollback fails too.
 fn close_as_replaced(
     state: &WebState,
     account: &AccountSummary,
@@ -1106,6 +1114,25 @@ fn close_as_replaced(
             None,
         );
     }
+    if let Some(refused) =
+        state
+            .github
+            .pull_replacements()
+            .refusal(&repo.owner, &repo.name, pr.number, replacing)
+    {
+        return repair_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            refused.code,
+            purpose,
+            &refused.message,
+            &[
+                "name the pull request that carries this change now",
+                "follow the chain: the replacement may itself have been replaced",
+            ],
+            PROOF_LANE,
+            Some(json!({ "superseded_by": replacing })),
+        );
+    }
     if let Err(error) = state.github.core().create_review(
         &repo.owner,
         &repo.name,
@@ -1120,6 +1147,18 @@ fn close_as_replaced(
     ) {
         return core_error(error, "comment the replacement before closing");
     }
+    let updated = match state.github.core().update_pull_request(
+        &repo.owner,
+        &repo.name,
+        pr.number,
+        UpdatePullRequestRequest {
+            state: Some(jeryu_core::PullRequestState::Closed),
+            ..UpdatePullRequestRequest::default()
+        },
+    ) {
+        Ok(updated) => updated,
+        Err(error) => return core_error(error, purpose),
+    };
     if let Err(refused) = state.github.pull_replacements().record(
         &repo.owner,
         &repo.name,
@@ -1128,6 +1167,7 @@ fn close_as_replaced(
         &account.login,
         chrono::Utc::now().timestamp_millis(),
     ) {
+        let rolled_back = reopen(state, repo, pr).is_ok();
         let status = if refused.code == "storage_failed" {
             StatusCode::INTERNAL_SERVER_ERROR
         } else {
@@ -1143,21 +1183,12 @@ fn close_as_replaced(
                 "follow the chain: the replacement may itself have been replaced",
             ],
             PROOF_LANE,
-            Some(json!({ "superseded_by": replacing })),
+            Some(json!({
+                "superseded_by": replacing,
+                "rolled_back": rolled_back,
+            })),
         );
     }
-    let updated = match state.github.core().update_pull_request(
-        &repo.owner,
-        &repo.name,
-        pr.number,
-        UpdatePullRequestRequest {
-            state: Some(jeryu_core::PullRequestState::Closed),
-            ..UpdatePullRequestRequest::default()
-        },
-    ) {
-        Ok(updated) => updated,
-        Err(error) => return core_error(error, purpose),
-    };
     let _ = state.github.core().append_audit_as(
         &account.login,
         "pull_request.close_as_replaced",
@@ -1169,6 +1200,31 @@ fn close_as_replaced(
         }),
     );
     detail_response(state, &updated, Some(&account.login))
+}
+
+/// Reopens a pull request a close-as-replaced closed and could not then
+/// record the link for, so a caller never sees a pull request closed by a call
+/// that failed. A rollback that fails itself is reported, not hidden: the
+/// pointer comment is already on the pull request, so the startup backfill
+/// still records what replaced it.
+fn reopen(
+    state: &WebState,
+    repo: &jeryu_core::Repository,
+    pr: &PullRequest,
+) -> Result<(), jeryu_core::ForgeError> {
+    state
+        .github
+        .core()
+        .update_pull_request(
+            &repo.owner,
+            &repo.name,
+            pr.number,
+            UpdatePullRequestRequest {
+                state: Some(jeryu_core::PullRequestState::Open),
+                ..UpdatePullRequestRequest::default()
+            },
+        )
+        .map(|_| ())
 }
 
 fn resolve_pr(

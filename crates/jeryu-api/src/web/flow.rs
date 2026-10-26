@@ -252,7 +252,7 @@ pub(crate) async fn flow(
         // whatever the ledger says; the rule is needs-you's `pr_superseded`.
         report::mark_superseded(
             &mut visits,
-            &super::pipeline::attention::superseded_open_pulls(&worker_state),
+            &super::pipeline::attention::superseded_open_pulls(&worker_state, Some(since_ms)),
         );
         let open = worker_state
             .events
