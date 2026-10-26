@@ -118,6 +118,18 @@ than evicting a runner that may still hold cells.
 The table lives beside the in-memory ledger it fences and is lost with it when
 the forge restarts, so a restarted forge admits no lifetime and holds no cell: a
 claim from before the restart is fenced, not served a freshly minted cell.
+A fenced claim or failed-tree hold answers 409 `workcell_epoch_fenced`, and its
+`common_fixes` name `POST /api/v1/workcells/runners`, so a runner recovers by
+taking an epoch and claiming again. There is no heartbeat and no expiry: a
+lifetime lasts until it is reissued, dropped, or the forge restarts.
+
+Rolling this out: agent sessions need nothing (they use the seeded host
+lifetime below), and the in-memory ledger already starts empty after a deploy,
+so the only change for a runner that claims through `/api/v1/workcells` is one
+`POST /api/v1/workcells/runners` at startup and again after a 409
+`workcell_epoch_fenced`. That runner already calls the admin-only
+`/api/v1/workcells` claim, heartbeat and release routes, so taking an epoch
+needs no credential it did not hold before.
 
 New sessions (`POST /api/v1/repos/{id}/sessions`) claim from this host's own warm
 pool, so they carry the host's own lifetime (`forge-host`), not the `runner`

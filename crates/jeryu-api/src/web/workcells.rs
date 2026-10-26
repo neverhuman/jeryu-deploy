@@ -208,8 +208,26 @@ pub(super) async fn claim(State(state): State<Arc<WebState>>, body: Bytes) -> Ax
     };
     match outcome {
         Ok(lease) => Json(lease).into_response(),
-        Err(err) => workcell_error(err),
+        Err(err) => claim_fence_error(err),
     }
+}
+
+/// What a runner refused at the claim fence should do. The registry of runner
+/// lifetimes lives in memory, so after a deploy or a forge restart every
+/// runner other than this host is fenced until it takes an epoch again.
+const CLAIM_FENCE_FIXES: &[&str] = &[
+    "take a runner epoch from POST /api/v1/workcells/runners and claim with it",
+    "take a new epoch after the forge restarts: the registry and the ledger are in memory",
+];
+
+/// Answer a refused claim or failed-tree hold. A fenced runner is told how to
+/// take an epoch, since the generic fence fixes do not name the route.
+fn claim_fence_error(mut err: jeryu_runnerd::WorkcellError) -> AxumResponse {
+    if err.reason == "workcell_epoch_fenced" {
+        err.common_fixes = CLAIM_FENCE_FIXES;
+        err.docs_url = "docs/workcell.md#claim-fencing--daemon-issued-runner-epochs";
+    }
+    workcell_error(err)
 }
 
 pub(super) async fn repair_live(State(state): State<Arc<WebState>>, body: Bytes) -> AxumResponse {
@@ -262,7 +280,7 @@ pub(super) async fn repair_live(State(state): State<Arc<WebState>>, body: Bytes)
         failure_log_digest: request.failure_log_digest,
     }) {
         Ok(lease) => lease,
-        Err(err) => return workcell_error(err),
+        Err(err) => return claim_fence_error(err),
     };
     let repairing = match manager.begin_live_repair(&held.workcell_id, held.runner_epoch) {
         Ok(lease) => lease,

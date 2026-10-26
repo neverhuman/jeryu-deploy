@@ -253,7 +253,18 @@ async fn a_claim_at_an_epoch_the_daemon_never_issued_is_fenced() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
-    assert_eq!(response_json(resp).await["code"], "workcell_epoch_fenced");
+    let body = response_json(resp).await;
+    assert_eq!(body["code"], "workcell_epoch_fenced");
+    // After a deploy or restart this is what every runner sees first, so the
+    // refusal names the route that admits it.
+    assert!(
+        body["common_fixes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|fix| fix.as_str().unwrap().contains("POST /api/v1/workcells/runners")),
+        "a fenced claim names how to take an epoch: {body}"
+    );
     assert!(
         !super::workcells::list(State(state))
             .await
