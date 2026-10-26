@@ -208,9 +208,7 @@ pub(crate) async fn promote(
         "stage": stage.id,
         "requested_by": account.login,
     }));
-    if let Err(error) =
-        crate::web::pipeline::record(&state, crate::web::pipeline::trust::FORGE, event)
-    {
+    if let Err(error) = crate::web::pipeline::record(&state, "forge", event) {
         return refusal(
             StatusCode::INTERNAL_SERVER_ERROR,
             "audit_failed",
