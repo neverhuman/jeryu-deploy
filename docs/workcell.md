@@ -103,17 +103,33 @@ is the daemon for it and issues those epochs itself:
 
 | Route | Does |
 | --- | --- |
+| `GET /api/v1/workcells/runners` | lists every admitted lifetime: `runner_id`, `runner_epoch`, and the `live_cells` it holds |
 | `POST /api/v1/workcells/runners` | starts a new lifetime for `runner_id` and answers the `runner_epoch` its claims must carry |
-| `DELETE /api/v1/workcells/runners/{runner_id}` | drops a lifetime, fencing it from any further claim |
+| `DELETE /api/v1/workcells/runners/{runner_id}` | drops a lifetime, fencing it from any further claim; the id may contain `/` (`node-2/slot0`) |
 
 A runner takes an epoch before it claims, and asks again when it restarts: the
 epoch rises, so a claim still in flight from its previous lifetime is fenced
-instead of taking a cell. Cells a dropped lifetime already holds are untouched —
-`heartbeat`, `release`, `run_agent` and `export_pr` are fenced on the cell's own
-epoch — so dropping a lifetime strands no work. Both routes are admin-only, like
-the whole `/api/v1/workcells` surface, and at most 256 lifetimes are admitted at
-once; past that an admission is refused (`workcell_runner_fleet_full`) rather
-than evicting a runner that may still hold cells.
+instead of taking a cell. Epochs only rise, across forge restarts too (they
+start from the wall clock), so a runner admitted again never gets an epoch an
+earlier lifetime used. The answer's `replaced_epoch` names the lifetime an
+admission fenced, so a caller that did not mean to replace a live runner can
+tell. Cells a dropped lifetime already holds are untouched — `heartbeat`,
+`release`, `run_agent` and `export_pr` are fenced on the cell's own epoch — so
+dropping a lifetime strands no work.
+
+All three routes are admin-only, like the whole `/api/v1/workcells` surface, and
+every admission, reissue, eviction and drop is written to the forge audit trail
+(subject `workcells/runners/{runner_id}`, actions `workcell.runner.admit` and
+`workcell.runner.retire`) with the admin who made it. A runner id is letters,
+digits and `-_./`, at most 128 characters, with no empty, `.` or `..` segment.
+
+At most 256 lifetimes are admitted at once. When the table is full, a new
+runner takes the slot of the oldest lifetime that holds no live cell (claimed,
+held, repairing or blocked), named in the answer's `evicted_runner_id`; an
+evicted runner that comes back is fenced and takes a new epoch like after a
+restart. Only when every admitted lifetime holds a live cell is the admission
+refused (`workcell_runner_fleet_full`), since evicting one would fence work in
+flight. So runners whose ids change across restarts cannot wedge admission.
 
 The table lives beside the in-memory ledger it fences and is lost with it when
 the forge restarts, so a restarted forge admits no lifetime and holds no cell: a
@@ -121,19 +137,24 @@ claim from before the restart is fenced, not served a freshly minted cell.
 A fenced claim or failed-tree hold answers 409 `workcell_epoch_fenced`, and its
 `common_fixes` name `POST /api/v1/workcells/runners`, so a runner recovers by
 taking an epoch and claiming again. There is no heartbeat and no expiry: a
-lifetime lasts until it is reissued, dropped, or the forge restarts.
+lifetime lasts until it is reissued, dropped, evicted while idle, or the forge
+restarts.
 
 Rolling this out: agent sessions need nothing (they use the seeded host
 lifetime below), and the in-memory ledger already starts empty after a deploy,
 so the only change for a runner that claims through `/api/v1/workcells` is one
 `POST /api/v1/workcells/runners` at startup and again after a 409
-`workcell_epoch_fenced`. That runner already calls the admin-only
-`/api/v1/workcells` claim, heartbeat and release routes, so taking an epoch
-needs no credential it did not hold before.
+`workcell_epoch_fenced`. No runner in the jeryu family calls these routes
+today (the forge's own sessions are the only claimant), so there is no
+out-of-tree client to update in step. A runner that later drives them already
+calls the admin-only `/api/v1/workcells` claim, heartbeat and release routes,
+so taking an epoch needs no credential it did not hold before.
 
 New sessions (`POST /api/v1/repos/{id}/sessions`) claim from this host's own warm
 pool, so they carry the host's own lifetime (`forge-host`), not the `runner`
-label the request names — that label is recorded on the run.
+label the request names. A session cell in `GET /api/v1/workcells` therefore
+reports `runner_id` `forge-host`; the session's own `runner_id` (what the
+Sessions pages show) is still the label the request named.
 
 Proof lane:
 

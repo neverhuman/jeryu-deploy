@@ -1,18 +1,23 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod run_agent;
 
-use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response as AxumResponse};
-use jeryu_core::{CreatePullRequestRequest, ForgeError};
+use axum::{Extension, Json};
+use jeryu_core::{AccountSummary, CreatePullRequestRequest, ForgeError};
 use jeryu_readmodel::contracts::WebEvent;
 use jeryu_readmodel::{TuiReadModel, WorkcellsDashboard, WorkcellsSummary};
-use jeryu_runnerd::{HoldFailedTreeRequest, StartupSync, WorkcellClaimRequest, WorkcellLease};
+use jeryu_runnerd::{
+    HoldFailedTreeRequest, StartupSync, WorkcellClaimRequest, WorkcellLease, WorkcellManager,
+    WorkcellState,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use super::WebState;
 use super::runner_epochs::{MAX_ADMITTED_RUNNERS, valid_runner_id};
@@ -33,6 +38,12 @@ pub(super) struct AdmitRunnerRequest {
 pub(super) struct AdmittedRunnerResponse {
     pub runner_id: String,
     pub runner_epoch: u64,
+    /// The epoch this admission replaced, when the runner already had a
+    /// lifetime. Claims at that epoch are fenced from now on, so a caller that
+    /// did not expect to replace one has just fenced a live runner.
+    pub replaced_epoch: Option<u64>,
+    /// The idle lifetime dropped to make room, when the registry was full.
+    pub evicted_runner_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +51,15 @@ pub(super) struct RetiredRunnerResponse {
     pub runner_id: String,
     /// `true` when this request dropped a lifetime the registry still held.
     pub retired: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct AdmittedRunnerRow {
+    pub runner_id: String,
+    pub runner_epoch: u64,
+    /// Live cells (claimed, held, repairing or blocked) the ledger records for
+    /// this runner. A lifetime with none is what a full registry evicts first.
+    pub live_cells: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,10 +139,65 @@ pub(super) async fn status(
     }
 }
 
+/// Runner ids that hold a live cell in the ledger: one a full registry must
+/// not evict, since its next heartbeat or release would still need it.
+fn live_cell_counts(manager: &WorkcellManager) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for lease in manager.workcells() {
+        if matches!(
+            lease.state,
+            WorkcellState::Claimed
+                | WorkcellState::Held
+                | WorkcellState::Repairing
+                | WorkcellState::Blocked
+        ) {
+            *counts.entry(lease.runner_id).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// The admin who called, for the audit trail; `operator` when the forge runs
+/// without auth (local and test).
+fn audit_actor(account: Option<&Extension<AccountSummary>>) -> String {
+    account.map_or_else(|| "operator".to_string(), |account| account.login.clone())
+}
+
+/// The audit subject a runner lifetime is recorded under.
+pub(super) fn runner_audit_subject(runner_id: &str) -> String {
+    format!("workcells/runners/{runner_id}")
+}
+
+/// `GET /api/v1/workcells/runners`: every runner lifetime this daemon admits,
+/// with the live cells each holds, so an operator can see which to drop.
+pub(super) async fn list_runners(State(state): State<Arc<WebState>>) -> AxumResponse {
+    let counts = live_cell_counts(&manager(&state));
+    let admitted = state
+        .runner_epochs
+        .lock()
+        .expect("runner epoch registry lock")
+        .admitted();
+    let rows: Vec<AdmittedRunnerRow> = admitted
+        .into_iter()
+        .map(|(runner_id, runner_epoch)| AdmittedRunnerRow {
+            live_cells: counts.get(&runner_id).copied().unwrap_or(0),
+            runner_id,
+            runner_epoch,
+        })
+        .collect();
+    Json(rows).into_response()
+}
+
 /// Issue `runner_id` a work-cell claim epoch, starting a new lifetime for it.
 /// Claims from the runner's previous lifetime are fenced from this point on,
-/// so a runner asks again only when it restarts.
-pub(super) async fn admit_runner(State(state): State<Arc<WebState>>, body: Bytes) -> AxumResponse {
+/// so a runner asks again only when it restarts; the answer's
+/// `replaced_epoch` says when that happened. A full registry drops its oldest
+/// lifetime with no live cell to make room. Each admission is audited.
+pub(super) async fn admit_runner(
+    State(state): State<Arc<WebState>>,
+    account: Option<Extension<AccountSummary>>,
+    body: Bytes,
+) -> AxumResponse {
     let request: AdmitRunnerRequest = match parse_json_body(
         &body,
         "issue a workcell runner epoch",
@@ -140,52 +215,87 @@ pub(super) async fn admit_runner(State(state): State<Arc<WebState>>, body: Bytes
             reason: "runner_id must be a short plain id of letters, digits and -_./",
             common_fixes: &[
                 "name the runner as the fleet does, for example node-2/slot0",
-                "drop spaces, path traversal and anything over 128 characters",
+                "drop spaces, empty, . and .. segments, and anything over 128 characters",
             ],
             docs_url: "docs/workcell.md",
             repair_hint: "rerun cargo test -p jeryu-api --features web --jobs 40",
             message: "runner_id is not a valid workcell runner id",
         });
     }
-    let issued = state
-        .runner_epochs
-        .lock()
-        .expect("runner epoch registry lock")
-        .issue(&runner_id);
-    match issued {
-        Some(runner_epoch) => Json(AdmittedRunnerResponse {
-            runner_id,
-            runner_epoch,
-        })
-        .into_response(),
-        None => typed_error(TypedError {
+    // Lock order matches `sync_claim_fence`: the ledger, then the registry.
+    let issued = {
+        let counts = live_cell_counts(&manager(&state));
+        state
+            .runner_epochs
+            .lock()
+            .expect("runner epoch registry lock")
+            .issue(&runner_id, |id| counts.contains_key(id))
+    };
+    let Some(issued) = issued else {
+        return typed_error(TypedError {
             status: StatusCode::CONFLICT,
             code: "workcell_runner_fleet_full",
             purpose: "issue a workcell runner epoch",
-            reason: "the daemon already admits the most runner lifetimes it holds",
+            reason: "every admitted runner lifetime still holds a live cell",
             common_fixes: &[
-                "retire the runners that have gone before admitting a new one",
-                "check the workcell list for lifetimes no runner is using",
+                "release or repair the cells of runners that have gone, then admit again",
+                "list admitted lifetimes with GET /api/v1/workcells/runners and drop one",
             ],
             docs_url: "docs/workcell.md",
             repair_hint: "rerun cargo test -p jeryu-api --features web --jobs 40",
-            message: &format!("at most {MAX_ADMITTED_RUNNERS} runner lifetimes are admitted"),
+            message: &format!(
+                "at most {MAX_ADMITTED_RUNNERS} runner lifetimes are admitted and none is idle"
+            ),
+        });
+    };
+    let _ = state.core.append_audit_as(
+        &audit_actor(account.as_ref()),
+        "workcell.runner.admit",
+        &runner_audit_subject(&runner_id),
+        "completed",
+        json!({
+            "runner_epoch": issued.epoch,
+            "replaced_epoch": issued.replaced_epoch,
+            "evicted": issued.evicted.as_ref().map(|(id, epoch)| json!({
+                "runner_id": id,
+                "runner_epoch": epoch,
+            })),
         }),
-    }
+    );
+    Json(AdmittedRunnerResponse {
+        runner_id,
+        runner_epoch: issued.epoch,
+        replaced_epoch: issued.replaced_epoch,
+        evicted_runner_id: issued.evicted.map(|(id, _)| id),
+    })
+    .into_response()
 }
 
 /// Drop `runner_id`'s lifetime, fencing it from any further claim. The cells it
 /// already holds are left alone: they are released, held or repaired through
-/// their own per-cell epoch, so dropping the lifetime loses no work.
+/// their own per-cell epoch, so dropping the lifetime loses no work. The route
+/// takes the rest of the path, so an id with `/` (`node-2/slot0`) is dropped
+/// like any other.
 pub(super) async fn retire_runner(
     State(state): State<Arc<WebState>>,
+    account: Option<Extension<AccountSummary>>,
     AxumPath(runner_id): AxumPath<String>,
 ) -> AxumResponse {
+    let runner_id = runner_id.trim_start_matches('/').to_string();
     let retired = state
         .runner_epochs
         .lock()
         .expect("runner epoch registry lock")
         .retire(&runner_id);
+    if retired {
+        let _ = state.core.append_audit_as(
+            &audit_actor(account.as_ref()),
+            "workcell.runner.retire",
+            &runner_audit_subject(&runner_id),
+            "completed",
+            json!({}),
+        );
+    }
     Json(RetiredRunnerResponse { runner_id, retired }).into_response()
 }
 

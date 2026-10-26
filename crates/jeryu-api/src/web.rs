@@ -603,8 +603,9 @@ impl WebState {
                 .lock()
                 .expect("runner epoch registry lock");
             registry
-                .issue(runner_id)
+                .issue(runner_id, |_| true)
                 .expect("the registry has room for a fixture runner")
+                .epoch
         };
         let mut manager = workcells_support::manager(self);
         workcells_support::sync_claim_fence(self, &mut manager);
@@ -1239,9 +1240,14 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         // Runner lifetimes the daemon issues. A runner takes an epoch here
         // before it may claim, and the claim it then sends is checked against
         // that epoch; dropping a lifetime fences it (`runner_epochs`).
-        ("/api/v1/workcells/runners", post(workcells::admit_runner)),
         (
-            "/api/v1/workcells/runners/:runner_id",
+            "/api/v1/workcells/runners",
+            get(workcells::list_runners).post(workcells::admit_runner),
+        ),
+        // A wildcard, not `:runner_id`: runner ids may contain `/`
+        // (`node-2/slot0`), and a one-segment parameter could never drop one.
+        (
+            "/api/v1/workcells/runners/*runner_id",
             axum::routing::delete(workcells::retire_runner),
         ),
         (

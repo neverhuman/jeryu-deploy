@@ -28,6 +28,7 @@ async fn admit_r1(state: &Arc<WebState>) -> u64 {
     let admitted = response_json(
         super::workcells::admit_runner(
             State(state.clone()),
+            None,
             axum::body::Bytes::from(json!({ "runner_id": "r1" }).to_string()),
         )
         .await,
@@ -262,7 +263,10 @@ async fn a_claim_at_an_epoch_the_daemon_never_issued_is_fenced() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|fix| fix.as_str().unwrap().contains("POST /api/v1/workcells/runners")),
+            .any(|fix| fix
+                .as_str()
+                .unwrap()
+                .contains("POST /api/v1/workcells/runners")),
         "a fenced claim names how to take an epoch: {body}"
     );
     assert!(
@@ -319,12 +323,12 @@ async fn a_retired_runner_is_fenced_and_its_held_cell_still_releases() {
     let id = claimed["workcell_id"].as_str().unwrap().to_string();
 
     let retired = response_json(
-        super::workcells::retire_runner(State(state.clone()), AxumPath("r1".into())).await,
+        super::workcells::retire_runner(State(state.clone()), None, AxumPath("r1".into())).await,
     )
     .await;
     assert_eq!(retired["retired"], true);
     let again = response_json(
-        super::workcells::retire_runner(State(state.clone()), AxumPath("r1".into())).await,
+        super::workcells::retire_runner(State(state.clone()), None, AxumPath("r1".into())).await,
     )
     .await;
     assert_eq!(
@@ -355,9 +359,18 @@ async fn a_retired_runner_is_fenced_and_its_held_cell_still_releases() {
 #[tokio::test]
 async fn admit_runner_refuses_an_id_that_may_not_key_the_fence() {
     let state = Arc::new(WebState::new(ForgeCore::new()));
-    for runner_id in ["", "   ", "node 2", "../etc/passwd", "/node-2"] {
+    for runner_id in [
+        "",
+        "   ",
+        "node 2",
+        "../etc/passwd",
+        "/node-2",
+        "..",
+        "node-2//slot0",
+    ] {
         let resp = super::workcells::admit_runner(
             State(state.clone()),
+            None,
             axum::body::Bytes::from(json!({ "runner_id": runner_id }).to_string()),
         )
         .await;
@@ -412,5 +425,134 @@ async fn taking_a_runner_epoch_is_admin_only() {
         registry.lock().unwrap().epoch("r1"),
         None,
         "a refused request issues no lifetime"
+    );
+}
+
+/// Runner ids may contain `/` (`node-2/slot0`), so the drop route takes the
+/// rest of the path: a one-segment parameter would never match such an id and
+/// its lifetime could not be dropped.
+#[tokio::test]
+async fn a_runner_named_with_a_slash_is_listed_and_dropped_through_the_router() {
+    use axum::body::Body;
+    use axum::http::Method;
+    use tower::ServiceExt;
+
+    let state = WebState::new(ForgeCore::new());
+    let registry = Arc::clone(&state.runner_epochs);
+    let router = app(state, std::path::Path::new("/tmp/jeryu-no-spa"));
+    let send = |method: Method, uri: &str, body: Option<Value>| {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+            .unwrap();
+        router.clone().oneshot(request)
+    };
+
+    let admitted = send(
+        Method::POST,
+        "/api/v1/workcells/runners",
+        Some(json!({ "runner_id": "node-2/slot0" })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(admitted.status(), StatusCode::OK);
+    let admitted = response_json(admitted).await;
+    assert_eq!(admitted["replaced_epoch"], Value::Null);
+    let epoch = admitted["runner_epoch"].as_u64().unwrap();
+
+    let again = response_json(
+        send(
+            Method::POST,
+            "/api/v1/workcells/runners",
+            Some(json!({ "runner_id": "node-2/slot0" })),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        again["replaced_epoch"], epoch,
+        "a reissue says which lifetime it fenced"
+    );
+
+    let listed = send(Method::GET, "/api/v1/workcells/runners", None)
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = response_json(listed).await;
+    let row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["runner_id"] == "node-2/slot0")
+        .expect("the admitted runner is listed");
+    assert_eq!(row["runner_epoch"], again["runner_epoch"]);
+    assert_eq!(row["live_cells"], 0);
+
+    let dropped = send(
+        Method::DELETE,
+        "/api/v1/workcells/runners/node-2/slot0",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(dropped.status(), StatusCode::OK);
+    let dropped = response_json(dropped).await;
+    assert_eq!(dropped["runner_id"], "node-2/slot0");
+    assert_eq!(dropped["retired"], true);
+    assert_eq!(registry.lock().unwrap().epoch("node-2/slot0"), None);
+}
+
+/// Admitting and dropping a runner lifetime fences whoever held it, so both are
+/// written to the forge audit trail with the admin who did it and, for a
+/// reissue, the epoch it replaced.
+#[tokio::test]
+async fn admitting_and_dropping_a_runner_are_audited_with_the_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = ForgeCore::open_sqlite(dir.path().join("forge.sqlite")).unwrap();
+    core.create_account(
+        "ops-admin",
+        "ops-admin-password",
+        jeryu_core::UserRole::Admin,
+    )
+    .unwrap();
+    let account = core.get_account("ops-admin").unwrap();
+    let state = Arc::new(WebState::new(core));
+    for _ in 0..2 {
+        super::workcells::admit_runner(
+            State(state.clone()),
+            Some(axum::Extension(account.clone())),
+            axum::body::Bytes::from(json!({ "runner_id": "r1" }).to_string()),
+        )
+        .await;
+    }
+    super::workcells::retire_runner(
+        State(state.clone()),
+        Some(axum::Extension(account)),
+        AxumPath("r1".into()),
+    )
+    .await;
+    let entries = state
+        .core
+        .list_audit(&super::workcells::runner_audit_subject("r1"))
+        .unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.action.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "workcell.runner.admit",
+            "workcell.runner.admit",
+            "workcell.runner.retire"
+        ]
+    );
+    assert!(entries.iter().all(|entry| entry.actor == "ops-admin"));
+    assert_eq!(entries[0].detail["replaced_epoch"], Value::Null);
+    assert_eq!(
+        entries[1].detail["replaced_epoch"], entries[0].detail["runner_epoch"],
+        "a reissue records the lifetime it fenced"
     );
 }

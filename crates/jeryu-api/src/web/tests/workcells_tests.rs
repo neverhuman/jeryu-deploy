@@ -107,6 +107,7 @@ async fn admit_runner_epoch(state: Arc<WebState>, runner_id: &str) -> u64 {
     let admitted = response_json(
         crate::web::workcells::admit_runner(
             State(state),
+            None,
             axum::body::Bytes::from(serde_json::json!({ "runner_id": runner_id }).to_string()),
         )
         .await,

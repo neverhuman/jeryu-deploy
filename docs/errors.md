@@ -308,7 +308,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `workcell_run_sandbox_unavailable` | 424 | the host sandbox for the workcell run is unavailable |
 | `workcell_run_supervision_failed` | 500 | the workcell run supervision failed |
 | `workcell_run_workspace_denied` | 422 | the workcell run workspace was denied |
-| `workcell_runner_fleet_full` | 409 | the daemon already admits the most workcell runner lifetimes it holds |
+| `workcell_runner_fleet_full` | 409 | the workcell runner registry is full and every lifetime holds a live cell |
 | `workcell_runner_id_invalid` | 400 | the workcell runner id is not a short plain id |
 | `workcell_startup_rebase_failed` | 409 | the workcell startup rebase failed |
 | `workcell_tar_path_denied` | 422 | the workcell archive contains a denied path |

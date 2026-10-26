@@ -1125,7 +1125,7 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     entry(
         "workcell_runner_fleet_full",
         409,
-        "the daemon already admits the most workcell runner lifetimes it holds",
+        "the workcell runner registry is full and every lifetime holds a live cell",
     ),
     entry(
         "workcell_runner_id_invalid",
