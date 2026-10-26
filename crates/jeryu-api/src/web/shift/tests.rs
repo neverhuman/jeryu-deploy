@@ -2331,6 +2331,17 @@ async fn a_scoped_bot_token_files_todos_and_nothing_broader() {
     .unwrap();
     assert_eq!(filed.status(), StatusCode::CREATED);
     assert_eq!(body_json(filed).await["title"], "from jarvi");
+    // The filing leaves a bot activity record like every other bot call.
+    let filer_bot = core
+        .list_account_bots("jeryu")
+        .unwrap()
+        .into_iter()
+        .find(|bot| bot.slug == "filer")
+        .unwrap();
+    assert_eq!(
+        filer_bot.last_action.as_deref(),
+        Some("POST /api/v1/shift/todos")
+    );
 
     // Reach decides: a bot with no write to the queue repo files nothing.
     let denied = call(

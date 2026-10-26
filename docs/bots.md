@@ -38,7 +38,8 @@ again on every request against the owner's current grants.
   call files at most 20 todos. The todo's creator is the bot's acting account,
   so a team bot files as `<organization>.<slug>[bot]`. Every other route under
   `/api/v1/shift/` — reading the queue, todo actions, heartbeats — stays shut
-  to bots and answers `403`.
+  to bots and answers `403`. Like every bot HTTP call, a filing updates the
+  bot's activity record (`last_action` `POST /api/v1/shift/todos`).
 - Changing the owner's password, or disabling or locking the account, revokes
   every key the account's bots hold.
 

@@ -879,10 +879,13 @@ pub(super) async fn gate(
     }
     request.extensions_mut().insert(account);
     let mut response = next.run(request).await;
+    // Every route a bot may reach leaves an activity record, the one shift
+    // write (`bot_todo_filing`) included.
     if let Some(bot) = observed_bot
         && (observed_path.starts_with("/api/v1/repos/")
             || observed_path == "/mcp"
-            || observed_path.starts_with("/mcp/"))
+            || observed_path.starts_with("/mcp/")
+            || bot_todo_filing(&observed_method, &observed_path))
     {
         bots::record_bot_http(
             &state,
