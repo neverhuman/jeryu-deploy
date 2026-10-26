@@ -109,9 +109,13 @@ is the daemon for it and issues those epochs itself:
 
 A runner takes an epoch before it claims, and asks again when it restarts: the
 epoch rises, so a claim still in flight from its previous lifetime is fenced
-instead of taking a cell. Epochs only rise, across forge restarts too (they
-start from the wall clock), so a runner admitted again never gets an epoch an
-earlier lifetime used. The answer's `replaced_epoch` names the lifetime an
+instead of taking a cell. Within one forge process an epoch is never issued
+twice, even to a runner id that was dropped or evicted and admitted again.
+Each epoch is also at least the wall clock in milliseconds, so after a restart
+epochs stay above the previous process's as long as the host clock does not
+step backwards (an NTP step back of more than the restart gap could let one
+repeat; the cost is that one stale claim from that runner's earlier lifetime
+is not fenced). The answer's `replaced_epoch` names the lifetime an
 admission fenced, so a caller that did not mean to replace a live runner can
 tell. Cells a dropped lifetime already holds are untouched — `heartbeat`,
 `release`, `run_agent` and `export_pr` are fenced on the cell's own epoch — so
@@ -119,16 +123,24 @@ dropping a lifetime strands no work.
 
 All three routes are admin-only, like the whole `/api/v1/workcells` surface, and
 every admission, reissue, eviction and drop is written to the forge audit trail
-(subject `workcells/runners/{runner_id}`, actions `workcell.runner.admit` and
-`workcell.runner.retire`) with the admin who made it. A runner id is letters,
-digits and `-_./`, at most 128 characters, with no empty, `.` or `..` segment.
+with the admin who made it, under subject `workcells/runners/{runner_id}`:
+`workcell.runner.admit` (with `replaced_epoch` and any eviction) for the
+admitted runner, `workcell.runner.evict` (with `evicted_for`) for a runner an
+admission evicted, and `workcell.runner.retire` for a drop. A runner id is
+letters, digits and `-_./`, at most 128 characters, with no empty, `.` or `..`
+segment; `forge-host` is reserved. Admission and drop apply the same rule, and
+a drop of an id that breaks it answers 400 `workcell_runner_id_invalid`.
 
 At most 256 lifetimes are admitted at once. When the table is full, a new
 runner takes the slot of the oldest lifetime that holds no live cell (claimed,
-held, repairing or blocked), named in the answer's `evicted_runner_id`; an
+held, repairing or blocked) and was admitted at least ten minutes ago, so a
+runner that was just admitted and has not sent its first claim yet is not
+taken for gone. The evicted runner is named in the answer's
+`evicted_runner_id`; an
 evicted runner that comes back is fenced and takes a new epoch like after a
-restart. Only when every admitted lifetime holds a live cell is the admission
-refused (`workcell_runner_fleet_full`), since evicting one would fence work in
+restart. The ledger stays locked while the cells are counted and the eviction
+is decided, so no claim lands on a lifetime in between. Only when no lifetime
+may be evicted is the admission refused (`workcell_runner_fleet_full`), since evicting one would fence work in
 flight. So runners whose ids change across restarts cannot wedge admission.
 
 The table lives beside the in-memory ledger it fences and is lost with it when
@@ -152,9 +164,14 @@ so taking an epoch needs no credential it did not hold before.
 
 New sessions (`POST /api/v1/repos/{id}/sessions`) claim from this host's own warm
 pool, so they carry the host's own lifetime (`forge-host`), not the `runner`
-label the request names. A session cell in `GET /api/v1/workcells` therefore
-reports `runner_id` `forge-host`; the session's own `runner_id` (what the
-Sessions pages show) is still the label the request named.
+label the request names. That lifetime fences only the warm pool, which keeps
+its own ledger: it is not in the work-cell ledger's fence, so no claim through
+`/api/v1/workcells` can use it, it cannot be admitted or dropped through the
+runner routes, and like every epoch it is taken from the clock at start, so a
+pre-restart session claim is fenced too. Session leases live in the warm pool's
+ledger, not in the one `GET /api/v1/workcells` and the control plane's runner
+view read, so neither shows a `forge-host` row; the session's own `runner_id`
+(what the Sessions pages show) is still the label the request named.
 
 Proof lane:
 

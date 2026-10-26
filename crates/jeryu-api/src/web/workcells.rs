@@ -215,7 +215,7 @@ pub(super) async fn admit_runner(
             reason: "runner_id must be a short plain id of letters, digits and -_./",
             common_fixes: &[
                 "name the runner as the fleet does, for example node-2/slot0",
-                "drop spaces, empty, . and .. segments, and anything over 128 characters",
+                "drop spaces, empty, . and .. segments and anything over 128 characters; forge-host is reserved for this host",
             ],
             docs_url: "docs/workcell.md",
             repair_hint: "rerun cargo test -p jeryu-api --features web --jobs 40",
@@ -223,13 +223,18 @@ pub(super) async fn admit_runner(
         });
     }
     // Lock order matches `sync_claim_fence`: the ledger, then the registry.
+    // The ledger stays locked until the registry has decided, so no claim can
+    // land on a lifetime between counting its cells and evicting it.
     let issued = {
-        let counts = live_cell_counts(&manager(&state));
-        state
+        let ledger = manager(&state);
+        let counts = live_cell_counts(&ledger);
+        let issued = state
             .runner_epochs
             .lock()
             .expect("runner epoch registry lock")
-            .issue(&runner_id, |id| counts.contains_key(id))
+            .issue(&runner_id, |id| counts.contains_key(id));
+        drop(ledger);
+        issued
     };
     let Some(issued) = issued else {
         return typed_error(TypedError {
@@ -248,8 +253,23 @@ pub(super) async fn admit_runner(
             ),
         });
     };
+    let actor = audit_actor(account.as_ref());
+    if let Some((evicted_id, evicted_epoch)) = &issued.evicted {
+        // Recorded under the evicted runner too: its id is where an operator
+        // looks when that runner's claims start being fenced.
+        let _ = state.core.append_audit_as(
+            &actor,
+            "workcell.runner.evict",
+            &runner_audit_subject(evicted_id),
+            "completed",
+            json!({
+                "runner_epoch": evicted_epoch,
+                "evicted_for": runner_id,
+            }),
+        );
+    }
     let _ = state.core.append_audit_as(
-        &audit_actor(account.as_ref()),
+        &actor,
         "workcell.runner.admit",
         &runner_audit_subject(&runner_id),
         "completed",
@@ -281,7 +301,28 @@ pub(super) async fn retire_runner(
     account: Option<Extension<AccountSummary>>,
     AxumPath(runner_id): AxumPath<String>,
 ) -> AxumResponse {
-    let runner_id = runner_id.trim_start_matches('/').to_string();
+    // The wildcard may hand the id over with its leading separator; take that
+    // one off and hold the rest to the same rule admission does, so the drop
+    // and admit surfaces (and their audit subjects) name the same ids.
+    let runner_id = runner_id
+        .strip_prefix('/')
+        .unwrap_or(&runner_id)
+        .to_string();
+    if !valid_runner_id(&runner_id) {
+        return typed_error(TypedError {
+            status: StatusCode::BAD_REQUEST,
+            code: "workcell_runner_id_invalid",
+            purpose: "drop a workcell runner lifetime",
+            reason: "runner_id must be a short plain id of letters, digits and -_./",
+            common_fixes: &[
+                "name the runner exactly as it was admitted, for example node-2/slot0",
+                "list admitted lifetimes with GET /api/v1/workcells/runners",
+            ],
+            docs_url: "docs/workcell.md",
+            repair_hint: "rerun cargo test -p jeryu-api --features web --jobs 40",
+            message: "runner_id is not a valid workcell runner id",
+        });
+    }
     let retired = state
         .runner_epochs
         .lock()

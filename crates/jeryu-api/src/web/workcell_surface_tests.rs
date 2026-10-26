@@ -556,3 +556,86 @@ async fn admitting_and_dropping_a_runner_are_audited_with_the_caller() {
         "a reissue records the lifetime it fenced"
     );
 }
+
+/// This host's own lifetime fences only its warm session pool. It never
+/// enters the work-cell ledger's fence, so a claim through `/api/v1/workcells`
+/// cannot borrow it, and its id can be neither admitted nor dropped.
+#[tokio::test]
+async fn the_host_lifetime_cannot_be_used_admitted_or_dropped_through_workcells() {
+    let state = Arc::new(WebState::new(ForgeCore::new()));
+    let host_epoch = state.runner_epochs.lock().unwrap().host_epoch();
+    let mut body = claim_body(host_epoch);
+    body["runner_id"] = json!(super::runner_epochs::HOST_RUNNER_ID);
+    let resp = super::workcells::claim(
+        State(state.clone()),
+        axum::body::Bytes::from(serde_json::to_vec(&body).unwrap()),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(response_json(resp).await["code"], "workcell_epoch_fenced");
+
+    let admit = super::workcells::admit_runner(
+        State(state.clone()),
+        None,
+        axum::body::Bytes::from(
+            json!({ "runner_id": super::runner_epochs::HOST_RUNNER_ID }).to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(admit.status(), StatusCode::BAD_REQUEST);
+    for id in [
+        super::runner_epochs::HOST_RUNNER_ID,
+        "node-2//slot0",
+        "..",
+        // The wildcard's own leading `/` is taken off once; a second is an
+        // empty segment.
+        "//r1",
+    ] {
+        let drop =
+            super::workcells::retire_runner(State(state.clone()), None, AxumPath(id.into())).await;
+        assert_eq!(drop.status(), StatusCode::BAD_REQUEST, "{id:?}");
+    }
+    assert_eq!(
+        state.runner_epochs.lock().unwrap().host_epoch(),
+        host_epoch,
+        "the host lifetime is untouched"
+    );
+}
+
+/// An eviction fences the evicted runner, so it is audited under that
+/// runner's own subject as well as under the newcomer's admission.
+#[tokio::test]
+async fn an_eviction_is_audited_under_the_evicted_runner() {
+    use super::runner_epochs::{EVICTION_GRACE, MAX_ADMITTED_RUNNERS};
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = ForgeCore::open_sqlite(dir.path().join("forge.sqlite")).unwrap();
+    let state = Arc::new(WebState::new(core));
+    {
+        let mut registry = state.runner_epochs.lock().unwrap();
+        for slot in 0..MAX_ADMITTED_RUNNERS {
+            registry.issue(&format!("r{slot}"), |_| false).unwrap();
+        }
+        registry.backdate_all(EVICTION_GRACE + std::time::Duration::from_secs(1));
+    }
+    let admitted = response_json(
+        super::workcells::admit_runner(
+            State(state.clone()),
+            None,
+            axum::body::Bytes::from(json!({ "runner_id": "newcomer" }).to_string()),
+        )
+        .await,
+    )
+    .await;
+    let evicted = admitted["evicted_runner_id"]
+        .as_str()
+        .expect("a full registry of idle runners makes room")
+        .to_string();
+    let entries = state
+        .core
+        .list_audit(&super::workcells::runner_audit_subject(&evicted))
+        .unwrap();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].action, "workcell.runner.evict");
+    assert_eq!(entries[0].detail["evicted_for"], "newcomer");
+}

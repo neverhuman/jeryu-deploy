@@ -12,29 +12,35 @@
 //! claim, and every claim entry point syncs the ledger from this table first.
 //! Issuing again starts a new lifetime: the epoch rises, so a claim still in
 //! flight from the runner's previous lifetime is fenced instead of taking a
-//! cell. `DELETE /api/v1/workcells/runners/{runner_id}` (the id may contain `/`) drops a lifetime, which
-//! fences it and frees its slot. The whole `/api/v1/workcells` surface is
-//! admin-only (`web::auth::admin_only_path`), this pair included.
+//! cell. `DELETE /api/v1/workcells/runners/{runner_id}` (the id may contain
+//! `/`) drops a lifetime, which fences it and frees its slot. The whole
+//! `/api/v1/workcells` surface is admin-only (`web::auth::admin_only_path`).
 //!
 //! The table lives beside the in-memory ledger it fences and is lost with it on
 //! restart, so a restarted forge admits no lifetime and holds no cell: a claim
 //! from before the restart is fenced rather than served a freshly minted cell.
-//! Epochs only rise, across restarts too (they start from the wall clock), so
-//! a runner admitted again never gets an epoch an earlier lifetime used.
+//! Epochs are never reused within a process, and each one is at least the wall
+//! clock in milliseconds, so across restarts they rise too unless the clock
+//! steps back.
 //!
 //! When the table is full a new runner takes the slot of the oldest lifetime
-//! that holds no live cell, so runners that went away without being dropped
-//! cannot wedge admission. `GET /api/v1/workcells/runners` lists what is
-//! admitted, and every admission, reissue, eviction and drop is written to the
-//! forge audit trail with the admin who made it.
+//! that holds no live cell and was admitted at least [`EVICTION_GRACE`] ago,
+//! so runners that went away without being dropped cannot wedge admission.
+//!
+//! This host's own lifetime ([`HOST_RUNNER_ID`]) is separate: it fences only
+//! the warm session pool, which is this process's, and never enters the
+//! work-cell ledger's fence, so no claim through `/api/v1/workcells` can use it.
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// How many runner lifetimes the registry holds at once. When it is full, a
-/// new runner takes the slot of the longest-admitted lifetime that holds no
-/// live cell; only when every admitted runner holds one is the admission
-/// refused, since evicting it would fence a runner with work in flight.
+/// How many reported runner lifetimes the registry holds at once.
 pub(crate) const MAX_ADMITTED_RUNNERS: usize = 256;
+
+/// How long a new lifetime is safe from eviction. A runner admitted moments
+/// ago holds no cell yet because it has not sent its first claim, which does
+/// not make it gone.
+pub(crate) const EVICTION_GRACE: Duration = Duration::from_secs(600);
 
 /// Longest runner id the registry admits. The id keys the fence and is copied
 /// into every lease it claims, so it stays short and plain.
@@ -42,18 +48,20 @@ pub(crate) const MAX_RUNNER_ID_LEN: usize = 128;
 
 /// The in-process runner the forge claims warm session cells as. A new session
 /// claims from this host's own warm pool, so the lifetime that owns those cells
-/// is this process's, not the `runner` label the request carries. It is seeded
-/// at construction and cannot be dropped, so the host always has an epoch.
+/// is this process's, not the `runner` label the request carries. The id is
+/// reserved: no reported runner may be admitted, or dropped, under it.
 pub(crate) const HOST_RUNNER_ID: &str = "forge-host";
 
 /// `true` when `runner_id` may key the claim fence: a short, non-empty id of
 /// ASCII letters, digits and `-`, `_`, `.`, `/` (hosts name slots `node-2/slot0`),
-/// which neither starts nor ends at a `/`, has no empty segment and carries no
-/// `.` or `..` segment. The id reaches no path, but it is copied into leases,
-/// reported, and named in `DELETE /api/v1/workcells/runners/{runner_id}`, so it
+/// which neither starts nor ends at a `/`, has no empty segment, carries no
+/// `.` or `..` segment, and is not the reserved [`HOST_RUNNER_ID`]. The id
+/// reaches no path, but it is copied into leases, reported, used as an audit
+/// subject and named in `DELETE /api/v1/workcells/runners/{runner_id}`, so it
 /// stays plain.
 pub(crate) fn valid_runner_id(runner_id: &str) -> bool {
     !runner_id.is_empty()
+        && runner_id != HOST_RUNNER_ID
         && runner_id.len() <= MAX_RUNNER_ID_LEN
         && runner_id
             .split('/')
@@ -75,65 +83,89 @@ pub(crate) struct Issued {
     pub(crate) evicted: Option<(String, u64)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Lifetime {
+    epoch: u64,
+    admitted_at: Instant,
+}
+
 #[derive(Debug)]
 pub(crate) struct RunnerEpochRegistry {
-    issued: BTreeMap<String, u64>,
-    /// The epoch the next lifetime gets. Epochs only rise: never reused for a
-    /// runner id that was dropped or evicted and admitted again, and seeded
-    /// from the wall clock so a forge restart does not hand out an epoch a
-    /// runner's previous lifetime already used. A claim from any earlier
-    /// lifetime therefore stays fenced.
+    issued: BTreeMap<String, Lifetime>,
+    /// This process's own lifetime, for the warm session pool only.
+    host_epoch: u64,
+    /// The lowest epoch the next lifetime may get. Each issue takes the larger
+    /// of this and the wall clock in milliseconds, so epochs are never reused
+    /// within a process and stay above an earlier process's.
     next_epoch: u64,
 }
 
 impl Default for RunnerEpochRegistry {
-    /// Seed [`HOST_RUNNER_ID`]'s lifetime for this process, so the warm session
-    /// pool has an admitted epoch from the first request.
     fn default() -> Self {
+        let host_epoch = clock_epoch();
         Self {
-            issued: BTreeMap::from([(HOST_RUNNER_ID.to_string(), 1)]),
-            next_epoch: first_runner_epoch(),
+            issued: BTreeMap::new(),
+            host_epoch,
+            next_epoch: host_epoch.saturating_add(1),
         }
     }
 }
 
-/// The first epoch this process issues a reported runner: milliseconds since
-/// the Unix epoch, so it is above anything an earlier process issued (which
-/// counted up from its own, earlier start, one per admission).
-fn first_runner_epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+/// The wall clock in milliseconds since the Unix epoch, at least 1. A clock
+/// before the Unix epoch reads as 1, and the counter then still only rises.
+fn clock_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {
             u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
         })
-        .max(2)
+        .max(1)
 }
 
 impl RunnerEpochRegistry {
     /// Start a new lifetime for `runner_id`. `holds_cells` says whether a
     /// runner still holds a live cell in the ledger; when the registry is full
-    /// the oldest lifetime for which it is `false` is dropped to make room.
-    /// `None` when the registry is full and every lifetime holds cells.
+    /// the oldest lifetime for which it is `false`, admitted at least
+    /// [`EVICTION_GRACE`] ago, is dropped to make room. `None` when the
+    /// registry is full and no lifetime may be evicted.
     pub(crate) fn issue(
         &mut self,
         runner_id: &str,
         holds_cells: impl Fn(&str) -> bool,
     ) -> Option<Issued> {
-        let replaced_epoch = self.issued.get(runner_id).copied();
+        self.issue_at(runner_id, holds_cells, Instant::now())
+    }
+
+    fn issue_at(
+        &mut self,
+        runner_id: &str,
+        holds_cells: impl Fn(&str) -> bool,
+        now: Instant,
+    ) -> Option<Issued> {
+        let replaced_epoch = self.issued.get(runner_id).map(|lifetime| lifetime.epoch);
         let mut evicted = None;
         if replaced_epoch.is_none() && self.issued.len() >= MAX_ADMITTED_RUNNERS {
             let idle = self
                 .issued
                 .iter()
-                .filter(|(id, _)| id.as_str() != HOST_RUNNER_ID && !holds_cells(id))
-                .min_by_key(|(_, epoch)| **epoch)
-                .map(|(id, epoch)| (id.clone(), *epoch))?;
+                .filter(|(id, lifetime)| {
+                    now.saturating_duration_since(lifetime.admitted_at) >= EVICTION_GRACE
+                        && !holds_cells(id)
+                })
+                .min_by_key(|(_, lifetime)| lifetime.epoch)
+                .map(|(id, lifetime)| (id.clone(), lifetime.epoch))?;
             self.issued.remove(&idle.0);
             evicted = Some(idle);
         }
-        let epoch = self.next_epoch;
-        self.next_epoch = self.next_epoch.saturating_add(1);
-        self.issued.insert(runner_id.to_string(), epoch);
+        let epoch = self.next_epoch.max(clock_epoch());
+        self.next_epoch = epoch.saturating_add(1);
+        self.issued.insert(
+            runner_id.to_string(),
+            Lifetime {
+                epoch,
+                admitted_at: now,
+            },
+        );
         Some(Issued {
             epoch,
             replaced_epoch,
@@ -142,32 +174,41 @@ impl RunnerEpochRegistry {
     }
 
     /// Drop `runner_id`'s lifetime, fencing it from any further claim.
-    /// [`HOST_RUNNER_ID`] is this process itself and is never dropped.
     pub(crate) fn retire(&mut self, runner_id: &str) -> bool {
-        if runner_id == HOST_RUNNER_ID {
-            return false;
-        }
         self.issued.remove(runner_id).is_some()
     }
 
-    /// Epoch `runner_id`'s claims must carry, if it has an admitted lifetime.
+    /// Test-only: epoch `runner_id`'s claims must carry, if it has an admitted
+    /// lifetime. Production reads the whole table through [`Self::admitted`].
+    #[cfg(test)]
     pub(crate) fn epoch(&self, runner_id: &str) -> Option<u64> {
-        self.issued.get(runner_id).copied()
+        self.issued.get(runner_id).map(|lifetime| lifetime.epoch)
     }
 
-    /// Epoch this host's own claims carry. Seeded by [`Self::default`] and
-    /// never dropped by [`Self::retire`].
+    /// Epoch this host's own warm session claims carry. It is not in
+    /// [`Self::admitted`], so it never fences the work-cell ledger.
     pub(crate) fn host_epoch(&self) -> u64 {
-        self.epoch(HOST_RUNNER_ID)
-            .expect("the host runner lifetime is seeded and never retired")
+        self.host_epoch
     }
 
-    /// Every lifetime this daemon admits, for `sync_runner_epochs` and the
-    /// operator listing.
+    /// Test-only: age every lifetime by `by`, as if it had been admitted that
+    /// much earlier, so a handler test can reach the eviction path.
+    #[cfg(test)]
+    pub(crate) fn backdate_all(&mut self, by: Duration) {
+        for lifetime in self.issued.values_mut() {
+            lifetime.admitted_at = lifetime
+                .admitted_at
+                .checked_sub(by)
+                .unwrap_or(lifetime.admitted_at);
+        }
+    }
+
+    /// Every reported runner lifetime this daemon admits, for the work-cell
+    /// ledger's fence and the operator listing.
     pub(crate) fn admitted(&self) -> Vec<(String, u64)> {
         self.issued
             .iter()
-            .map(|(runner_id, epoch)| (runner_id.clone(), *epoch))
+            .map(|(runner_id, lifetime)| (runner_id.clone(), lifetime.epoch))
             .collect()
     }
 }
@@ -184,15 +225,30 @@ mod tests {
         true
     }
 
+    /// A registry with every slot taken, admitted at `at`.
+    fn full_registry(at: Instant) -> RunnerEpochRegistry {
+        let mut registry = RunnerEpochRegistry::default();
+        for slot in 0..MAX_ADMITTED_RUNNERS {
+            assert!(
+                registry
+                    .issue_at(&format!("r{slot}"), none_hold, at)
+                    .is_some()
+            );
+        }
+        registry
+    }
+
     #[test]
-    fn a_fresh_registry_admits_only_this_host() {
+    fn a_fresh_registry_admits_no_reported_runner_and_keeps_the_host_apart() {
         let registry = RunnerEpochRegistry::default();
-        assert_eq!(registry.host_epoch(), 1);
         assert_eq!(registry.epoch("r1"), None);
-        assert_eq!(
-            registry.admitted(),
-            vec![(HOST_RUNNER_ID.to_string(), 1)],
-            "no reported runner is admitted until the daemon issues it an epoch"
+        assert!(
+            registry.admitted().is_empty(),
+            "the host lifetime never enters the work-cell ledger's fence"
+        );
+        assert!(
+            registry.host_epoch() > 1,
+            "the host epoch comes from the clock"
         );
     }
 
@@ -201,11 +257,12 @@ mod tests {
         let mut registry = RunnerEpochRegistry::default();
         let first = registry.issue("r1", none_hold).unwrap();
         assert_eq!(first.replaced_epoch, None);
+        assert!(first.epoch > registry.host_epoch());
         let second = registry.issue("r1", none_hold).unwrap();
         assert!(second.epoch > first.epoch);
         assert_eq!(second.replaced_epoch, Some(first.epoch));
         assert_eq!(registry.epoch("r1"), Some(second.epoch));
-        assert_eq!(registry.admitted().len(), 2);
+        assert_eq!(registry.admitted().len(), 1);
     }
 
     #[test]
@@ -224,10 +281,12 @@ mod tests {
     fn a_new_process_issues_epochs_above_an_earlier_one() {
         let mut earlier = RunnerEpochRegistry::default();
         let before = earlier.issue("r1", none_hold).unwrap().epoch;
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let mut restarted = RunnerEpochRegistry::default();
-        let after = restarted.issue("r1", none_hold).unwrap().epoch;
-        assert!(after > before, "{after} must be above {before}");
+        std::thread::sleep(Duration::from_millis(2));
+        let restarted = RunnerEpochRegistry::default();
+        assert!(
+            restarted.host_epoch() > before,
+            "the host lifetime rises too"
+        );
     }
 
     #[test]
@@ -237,23 +296,16 @@ mod tests {
         assert!(registry.retire("r1"));
         assert_eq!(registry.epoch("r1"), None);
         assert!(!registry.retire("r1"), "retiring twice reports no lifetime");
-        assert!(
-            !registry.retire(HOST_RUNNER_ID),
-            "this process's own lifetime is not a reported runner's to drop"
-        );
-        assert_eq!(registry.host_epoch(), 1);
     }
 
     #[test]
-    fn a_full_table_evicts_the_oldest_idle_lifetime() {
-        let mut registry = RunnerEpochRegistry::default();
-        // The seeded host lifetime already occupies one slot.
-        for slot in 0..MAX_ADMITTED_RUNNERS - 1 {
-            assert!(registry.issue(&format!("r{slot}"), none_hold).is_some());
-        }
+    fn a_full_table_evicts_the_oldest_idle_lifetime_past_its_grace() {
+        let then = Instant::now();
+        let mut registry = full_registry(then);
+        let later = then + EVICTION_GRACE;
         // r0 holds a cell, so the oldest idle lifetime is r1.
         let issued = registry
-            .issue("newcomer", |id| id == "r0")
+            .issue_at("newcomer", |id| id == "r0", later)
             .expect("an idle lifetime makes room");
         assert_eq!(
             issued.evicted.as_ref().map(|(id, _)| id.as_str()),
@@ -265,22 +317,29 @@ mod tests {
             "a runner holding cells stays"
         );
         assert_eq!(registry.admitted().len(), MAX_ADMITTED_RUNNERS);
-        assert!(
-            registry.epoch(HOST_RUNNER_ID).is_some(),
-            "the host is never evicted"
+    }
+
+    #[test]
+    fn a_runner_admitted_within_the_grace_is_not_evicted_before_its_first_claim() {
+        let then = Instant::now();
+        let mut registry = full_registry(then);
+        assert_eq!(
+            registry.issue_at("newcomer", none_hold, then + EVICTION_GRACE / 2),
+            None,
+            "idle but just admitted is not gone"
         );
+        assert_eq!(registry.admitted().len(), MAX_ADMITTED_RUNNERS);
     }
 
     #[test]
     fn a_full_table_of_busy_runners_refuses_rather_than_evicting() {
-        let mut registry = RunnerEpochRegistry::default();
-        for slot in 0..MAX_ADMITTED_RUNNERS - 1 {
-            registry.issue(&format!("r{slot}"), none_hold);
-        }
-        assert_eq!(registry.issue("one-too-many", all_hold), None);
+        let then = Instant::now();
+        let mut registry = full_registry(then);
+        let later = then + EVICTION_GRACE;
+        assert_eq!(registry.issue_at("one-too-many", all_hold, later), None);
         assert_eq!(registry.admitted().len(), MAX_ADMITTED_RUNNERS);
         assert!(
-            registry.issue("r0", all_hold).is_some(),
+            registry.issue_at("r0", all_hold, later).is_some(),
             "a runner already admitted still renews at the cap"
         );
     }
@@ -300,6 +359,7 @@ mod tests {
             ".",
             "..",
             "node-2/./slot0",
+            HOST_RUNNER_ID,
         ] {
             assert!(!valid_runner_id(refused), "{refused:?}");
         }
