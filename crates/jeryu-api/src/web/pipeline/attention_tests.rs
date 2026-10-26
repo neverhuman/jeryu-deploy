@@ -4797,7 +4797,7 @@ fn a_hold_row_is_as_old_as_the_oldest_changes_requested_review() {
             runner("acme/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
             runner("globex/slot0", &["pr-gate"], 30, None),
         ],
-        &open,
+        &heads_at(&open, TEST_HEAD),
         0,
         false,
         reviewer_thresholds(),
