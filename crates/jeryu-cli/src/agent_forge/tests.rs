@@ -158,7 +158,7 @@ fn redirects_and_forbidden_responses_fail_closed() {
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut data = [0; 4096];
-            stream.read(&mut data).unwrap();
+            assert!(stream.read(&mut data).unwrap() > 0);
             write!(stream, "HTTP/1.1 {status}\r\nLocation: /elsewhere\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecret").unwrap();
         });
         let spec = request::spec(Args::parse_from([
