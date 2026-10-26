@@ -112,7 +112,13 @@ async fn send(router: &AxumRouter, path: &str, token: &str, body: String) -> (St
     (status, response_json(response).await)
 }
 
+/// Drives the real gh 2.45.0 binary against the forge. It needs `gh` at
+/// exactly 2.45.0 plus python3 and openssl on PATH, which no CI lane pins, so
+/// it is opt-in: `cargo test -p jeryu-api --features web
+/// actual_gh_245_pr_view -- --ignored`. The captured request it exercises is
+/// covered on every lane by the in-process tests below.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs gh 2.45.0, python3 and openssl on PATH; run with --ignored"]
 async fn actual_gh_245_pr_view_reads_four_lifecycle_fixtures() {
     let (core, pulls, token) = seed();
     let directory = tempdir().unwrap();
@@ -288,4 +294,108 @@ async fn pr_view_checks_principal_agent_reach_and_rejects_modified_queries() {
         .unwrap();
     let (_, allowed) = send(&router, "/api/graphql", &bob, request("widgets", 1)).await;
     assert_eq!(allowed["data"]["repository"]["pullRequest"]["number"], 1);
+}
+
+async fn send_raw(
+    router: &AxumRouter,
+    method: &str,
+    path: &str,
+    authorization: &str,
+    body: String,
+) -> (StatusCode, Value) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, "127.0.0.1")
+                .header(header::AUTHORIZATION, authorization)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, response_json(response).await)
+}
+
+/// A query string, a trailing slash or a doubled slash on the `/api/v3`
+/// GraphQL path still answers for the caller: an account that cannot read a
+/// private repository sees neither its metadata nor its pull requests.
+#[tokio::test]
+async fn graphql_on_the_v3_edge_stays_account_scoped_whatever_the_path_spelling() {
+    let (core, _expected, admin) = seed();
+    core.create_account("bob", "fixture-password", UserRole::User)
+        .unwrap();
+    let bob = core
+        .create_personal_access_token("bob", "fixture", None)
+        .unwrap()
+        .secret;
+    let directory = tempdir().unwrap();
+    let router = app(
+        WebState::new(core).with_auth(true, false, false),
+        directory.path(),
+    );
+    let metadata = json!({
+        "query": "query { repository(owner: \"ada\", name: \"vault\") { nameWithOwner isPrivate url } }"
+    })
+    .to_string();
+    // Every spelling: whatever answers, it carries no private data.
+    for path in [
+        "/api/v3/graphql?page=1",
+        "/api/v3/graphql?per_page=1&page=2",
+        "/api/v3/graphql/",
+        "/api/v3//graphql",
+        "/api/v3/graphql/?page=1",
+    ] {
+        for body in [request("vault", 1), metadata.clone()] {
+            let (_, read) = send(&router, path, &bob, body).await;
+            assert!(
+                read["data"]["repository"].is_null(),
+                "{path} leaked private data: {read}"
+            );
+        }
+    }
+    // The routed spellings answer GraphQL, for the caller.
+    for path in [
+        "/api/v3/graphql?page=1",
+        "/api/v3/graphql?per_page=1&page=2",
+    ] {
+        let (status, read) = send(&router, path, &bob, request("vault", 1)).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {read}");
+        assert_eq!(read["data"]["repository"], Value::Null, "{path}: {read}");
+        let (status, read) = send(&router, path, &admin, request("widgets", 1)).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {read}");
+        assert_eq!(
+            read["data"]["repository"]["pullRequest"]["number"], 1,
+            "{path}: {read}"
+        );
+    }
+}
+
+/// gh 2.45.0's `token` Authorization scheme is accepted for GraphQL only; the
+/// rest of the edge keeps taking a Bearer credential, as it did before.
+#[tokio::test]
+async fn the_token_scheme_is_accepted_only_for_graphql() {
+    let (core, _expected, admin) = seed();
+    let directory = tempdir().unwrap();
+    let router = app(
+        WebState::new(core).with_auth(true, false, false),
+        directory.path(),
+    );
+    let token = format!("token {admin}");
+    let bearer = format!("Bearer {admin}");
+    for path in ["/graphql", "/api/graphql", "/api/v3/graphql"] {
+        let (status, read) = send_raw(&router, "POST", path, &token, request("widgets", 1)).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {read}");
+        assert_eq!(read["data"]["repository"]["pullRequest"]["number"], 1);
+    }
+    for path in ["/api/v3/repos/ada/widgets", "/repos/ada/widgets/pulls/1"] {
+        let (status, read) = send_raw(&router, "GET", path, &token, String::new()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}: {read}");
+        let (status, read) = send_raw(&router, "GET", path, &bearer, String::new()).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {read}");
+    }
 }

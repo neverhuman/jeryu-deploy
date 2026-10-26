@@ -44,8 +44,13 @@ pub(super) async fn graphql(
     headers: HeaderMap,
     body: Bytes,
 ) -> AxumResponse {
-    let auth = match github_account_from_headers(&state, peer.as_ref(), &HttpMethod::POST, &headers)
-    {
+    let auth = match github_account_from_headers(
+        &state,
+        peer.as_ref(),
+        &HttpMethod::POST,
+        &headers,
+        GhTokenScheme::Accept,
+    ) {
         Ok(auth) => auth,
         Err(response) => return *response,
     };
@@ -77,7 +82,8 @@ fn authorized_graphql(
         }
         return github_response(state.github.handle(Method::Post, "/graphql", body));
     }
-    github_response(state.github.graphql_for_account(body, &auth.account))
+    let body = bind_authenticated_actor(body, &auth.account.login);
+    github_response(state.github.graphql_for_account(&body, &auth.account))
 }
 
 /// Accept-aware `/repos` entrypoint that serves the SPA shell to browser
@@ -213,7 +219,25 @@ async fn github_forward_request(
     if method == Method::Get && uri.path() == crate::github::V3_PREFIX {
         return github_response(state.github.handle(method, crate::github::V3_PREFIX, ""));
     }
-    let auth = match github_account_from_headers(&state, peer.as_ref(), &http_method, &headers) {
+    // GraphQL on the compatibility edge answers for the caller, exactly as
+    // `/graphql` does: the router's own entry point is unscoped (it is also
+    // used in-process, past authorization), so reading a repository through
+    // this path without the caller would show any account the metadata of a
+    // repository it may not read. Match on the path's segments, never on the
+    // raw path and query, so `?page=1` or a trailing slash cannot step past it.
+    let is_graphql = method == Method::Post && edge_segments(uri.path()) == ["graphql"];
+    let token_scheme = if is_graphql {
+        GhTokenScheme::Accept
+    } else {
+        GhTokenScheme::Refuse
+    };
+    let auth = match github_account_from_headers(
+        &state,
+        peer.as_ref(),
+        &http_method,
+        &headers,
+        token_scheme,
+    ) {
         Ok(auth) => auth,
         Err(response) => return *response,
     };
@@ -221,7 +245,7 @@ async fn github_forward_request(
     let path_and_query = uri
         .path_and_query()
         .map_or_else(|| uri.path().to_string(), ToString::to_string);
-    if method == Method::Post && normalize_github_edge_path(&path_and_query) == "/graphql" {
+    if is_graphql {
         return authorized_graphql(
             &state,
             std::str::from_utf8(&body).unwrap_or_default(),
@@ -440,6 +464,7 @@ fn github_account_from_headers(
     peer: Option<&ConnectInfo<SocketAddr>>,
     method: &HttpMethod,
     headers: &HeaderMap,
+    token_scheme: GhTokenScheme,
 ) -> Result<super::auth::HeaderAuth, Box<AxumResponse>> {
     if !state.auth_required
         || super::auth::local_dev_trusted(state, peer.map(|connect| connect.0), headers)
@@ -450,13 +475,15 @@ fn github_account_from_headers(
             bot: None,
         });
     }
-    // gh 2.45.0 uses GitHub's `token` scheme for its GraphQL transport.
-    // Translate only the scheme; credential classification and all account
-    // and bot checks remain in the existing authentication service.
+    // gh 2.45.0 uses GitHub's `token` scheme for its GraphQL transport, and
+    // only GraphQL requests (`token_scheme == Accept`) take it. Translate only
+    // the scheme; credential classification and all account and bot checks
+    // remain in the existing authentication service.
     let mut credential_headers = headers.clone();
-    if let Some(raw) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
+    if token_scheme == GhTokenScheme::Accept
+        && let Some(raw) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
         && let Some((scheme, token)) = raw.split_once(' ')
         && scheme.eq_ignore_ascii_case("token")
         && let Ok(value) = HeaderValue::from_str(&format!("Bearer {}", token.trim()))
@@ -494,19 +521,16 @@ fn authorize_github_repo_request(
     auth: &super::auth::HeaderAuth,
 ) -> Option<AxumResponse> {
     let account = &auth.account;
-    let normalized = normalize_github_edge_path(path_and_query);
-    let route_path = normalized
-        .split_once('?')
-        .map_or(normalized, |(path, _)| path);
-    let segments: Vec<&str> = route_path
-        .trim_matches('/')
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect();
+    let segments = edge_segments(path_and_query);
     if let Some(bot) = &auth.bot {
         return authorize_bot_on_github(state, method, &segments, bot);
     }
     match (method, segments.as_slice()) {
+        // GraphQL is answered for the caller before this point; reaching here
+        // would run the unscoped in-process entry point, so refuse it.
+        (Method::Post, ["graphql"]) => Some(github_forbidden(
+            "GraphQL on the compatibility edge is answered for the caller only",
+        )),
         (Method::Post, ["repos"]) if account.role != UserRole::Admin => Some(github_forbidden(
             "repository creation requires admin access",
         )),
@@ -610,6 +634,28 @@ fn github_user_path(path_and_query: &str) -> bool {
         .split_once('?')
         .map_or(normalized, |(path, _)| path);
     route_path.trim_matches('/') == "user"
+}
+
+/// Whether a request may authenticate with GitHub's `token` Authorization
+/// scheme: only the GraphQL transport gh 2.45.0 uses it for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GhTokenScheme {
+    Accept,
+    Refuse,
+}
+
+/// The edge route's path segments: `/api/v3` and any query stripped, empty
+/// segments (a trailing or doubled slash) dropped.
+fn edge_segments(path_and_query: &str) -> Vec<&str> {
+    let normalized = normalize_github_edge_path(path_and_query);
+    let route_path = normalized
+        .split_once('?')
+        .map_or(normalized, |(path, _)| path);
+    route_path
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
 }
 
 fn normalize_github_edge_path(path: &str) -> &str {
