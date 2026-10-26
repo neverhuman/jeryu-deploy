@@ -141,18 +141,28 @@ contribution merges at all.
 
 The maintainer list is site configuration, not code: `JERYU_PULL_MAINTAINERS`
 (comma-separated logins, read at startup). It is empty by default, and while it
-is empty the importer stays off. On this site the operator sets
-`JERYU_PULL_MAINTAINERS=alton,jepsont` in the forge environment file.
+is empty the importer stays off. The operator sets it in the forge
+environment file, for example `JERYU_PULL_MAINTAINERS=alice,bob`.
 
 - **ok-to-test.** A contributed head's gate does not start by itself. A
   maintainer calls `POST /api/v1/repos/:id/pulls/:number/ok-to-test` (optional
   body `{"head_sha": "<40 hex>"}`, refused with `head_moved` if the head is not
-  the one they looked at). Until then the forge sends the gate runner no
-  `gate-wanted` signal for the branch and refuses `POST .../regate`, and the
-  merge passport carries `passport_blocked_contributed_not_ok_to_test`. The
-  record is bound to that exact head, so a force-push needs a new ok-to-test,
-  and it is kept in memory, so a forge restart asks for it again. Anybody not
-  on the list gets `403 pull_maintainer_required`.
+  the one they looked at; any other body is `400 invalid_request`). The forge
+  publishes the allowance at `GET /api/v1/gate-allowances?state=active`
+  (`{"allowances":[{"repo","number","head_sha","label":"ok-to-test","allowed_by","allowed_at"}]}`),
+  which the gate runner reads each tick. The runner is what keeps a stranger's
+  code from running: it executes nothing of a pull request labelled
+  `origin:contributed` unless an allowance from one of its own configured
+  maintainers (`PR_GATE_OK_TO_TEST_MAINTAINERS`) names the exact head, and
+  then only in its sandbox; a forge that does not answer the route leaves
+  every contribution unrun (jeryu-ci-runner `ops/pr-gate/README.md`). Until
+  the head is allowed, the forge also sends the runner no `gate-wanted` signal
+  for the branch, refuses `POST .../regate`, and the merge passport carries
+  `passport_blocked_contributed_not_ok_to_test`. The record is bound to that
+  exact head, so a force-push needs a new ok-to-test, and it is kept in
+  memory, so a forge restart asks for it again (the runner then sees no
+  allowance and runs nothing). Anybody not on the list gets
+  `403 pull_maintainer_required`.
 - **Approval.** Only a maintainer's approval on the exact head counts for
   merging a contribution (see above).
 - **DCO.** Outside contributors sign the DCO, not a CLA: every commit of a

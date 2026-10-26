@@ -624,6 +624,124 @@ async fn only_a_maintainers_ok_to_test_starts_a_contributed_gate() {
     assert!(crate::web::pull_contrib::gate_may_start(&state, &internal));
 }
 
+async fn allowances(state: &Arc<WebState>, query: Option<&str>) -> AxumResponse {
+    crate::web::pull_contrib::gate_allowances(
+        State(state.clone()),
+        authenticated_admin_account("root"),
+        axum::extract::Query(
+            serde_json::from_value(serde_json::json!({ "state": query })).unwrap(),
+        ),
+    )
+    .await
+}
+
+/// The ok-to-test reaches the gate runner as an allowance naming the exact
+/// head, in the shape the runner reads; it stops being active once the head
+/// moves or the pull request is no longer a contribution, and a body that is
+/// not `{"head_sha": ...}` is refused instead of read as "any head".
+#[tokio::test]
+async fn an_ok_to_test_is_published_as_the_runners_gate_allowance() {
+    let storage = tempfile::tempdir().expect("git storage dir");
+    let (core, repo, number, head) = forge_with_approved_pull(storage.path(), "allowed");
+    let state = Arc::new(
+        WebState::new_with_git_storage(core.clone(), storage.path().to_path_buf())
+            .with_pull_trust(&["importbot"], &["maintainer"]),
+    );
+    let id = repo.id.to_string();
+    assert_eq!(
+        mark_origin(
+            &state,
+            &id,
+            number,
+            authenticated_account("importbot"),
+            "contributed"
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let listed = response_json(allowances(&state, None).await).await;
+    assert_eq!(listed["allowances"], serde_json::json!([]));
+
+    for body in [
+        "not json".to_string(),
+        serde_json::json!({ "headSha": head }).to_string(),
+        serde_json::json!({ "head_sha": head, "force": true }).to_string(),
+        serde_json::json!({ "head_sha": "abc" }).to_string(),
+    ] {
+        let refused = post_ok_to_test(&state, &id, number, "maintainer", &body).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(response_json(refused).await["code"], "invalid_request");
+    }
+    let listed = response_json(allowances(&state, Some("active")).await).await;
+    assert_eq!(listed["allowances"], serde_json::json!([]));
+
+    let allowed = post_ok_to_test(
+        &state,
+        &id,
+        number,
+        "maintainer",
+        &serde_json::json!({ "head_sha": head }).to_string(),
+    )
+    .await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    let listed = response_json(allowances(&state, Some("active")).await).await;
+    let rows = listed["allowances"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(rows[0]["repo"], "acme/allowed");
+    assert_eq!(rows[0]["number"], number);
+    assert_eq!(rows[0]["head_sha"], head);
+    assert_eq!(rows[0]["label"], "ok-to-test");
+    assert_eq!(rows[0]["allowed_by"], "maintainer");
+    assert!(
+        rows[0]["allowed_at"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z'))
+    );
+
+    // Marked internal again: no longer an active contribution allowance.
+    state
+        .pull_origin
+        .set(
+            "acme",
+            "allowed",
+            number,
+            crate::web::pull_origin::PullOrigin::Internal,
+            "root",
+            1,
+        )
+        .unwrap();
+    let listed = response_json(allowances(&state, None).await).await;
+    assert_eq!(listed["allowances"], serde_json::json!([]));
+    let listed = response_json(allowances(&state, Some("all")).await).await;
+    assert_eq!(listed["allowances"].as_array().unwrap().len(), 1);
+
+    let bad = allowances(&state, Some("pending")).await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+}
+
+/// A head the forge cannot read fails the DCO check closed, but that verdict
+/// is this host's problem, not the contributor's, so it is not cached: the
+/// next read tries again. A verdict about the commits themselves is cached.
+#[test]
+fn an_unreadable_head_fails_dco_without_being_cached() {
+    let storage = tempfile::tempdir().expect("git storage dir");
+    let (core, _repo, number, _head) = forge_with_approved_pull(storage.path(), "unread");
+    let state = WebState::new_with_git_storage(core.clone(), storage.path().to_path_buf());
+    let mut pr = core.get_pull_request("acme", "unread", number).unwrap();
+    let readable = crate::web::pull_contrib::dco_verdict(&state, &pr);
+    assert_eq!(state.dco_cache.len(), 1, "{readable:?}");
+    pr.head.sha = "e".repeat(40);
+    let verdict = crate::web::pull_contrib::dco_verdict(&state, &pr);
+    match verdict {
+        crate::web::pull_contrib::DcoVerdict::Fail(message) => {
+            assert!(message.contains("could not read"), "{message}");
+        }
+        crate::web::pull_contrib::DcoVerdict::Pass => panic!("an unreadable head passed DCO"),
+    }
+    assert_eq!(state.dco_cache.len(), 1);
+}
+
 /// A push to a contribution branch does not wake the gate runner.
 #[test]
 fn a_push_to_a_contribution_branch_sends_no_gate_signal() {

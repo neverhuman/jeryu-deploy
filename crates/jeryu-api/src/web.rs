@@ -1341,6 +1341,11 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ("/api/v1/repos/:id/automation", get(repo_automation::show)),
         ("/api/v1/merge-queue", get(merge_queue::list_all)),
         ("/api/v1/gate-regate", get(regate::list)),
+        // ok-to-test allowances on contributed heads, read by the gate runner.
+        (
+            "/api/v1/gate-allowances",
+            get(pull_contrib::gate_allowances),
+        ),
         // A deployer asks for a release step; the release host claims and runs it.
         (
             "/api/v1/release-actions",

@@ -3,9 +3,16 @@
 //!
 //! A contribution is a stranger's code, so its gate does not start on its own.
 //! A login on the site's maintainer list (`JERYU_PULL_MAINTAINERS`) says
-//! `ok-to-test` for one exact head; only then does the forge tell the gate
-//! runner the head is wanted (`gate_wanted`) or honour a re-gate. A new head
-//! needs a new `ok-to-test`, so a force-push cannot ride an earlier one.
+//! `ok-to-test` for one exact head. The forge publishes that allowance at
+//! `GET /api/v1/gate-allowances?state=active`, the route the gate runner reads
+//! each tick (jeryu-ci-runner `ops/pr-gate/README.md`, "Contributions"): the
+//! runner executes nothing of a pull request labelled `origin:contributed`
+//! unless an allowance from one of its own configured maintainers names the
+//! head it is about to run, and it fails closed when the route does not
+//! answer. That runner check is the control; the forge also stops waking the
+//! runner for the head (`gate_wanted`) and refuses a re-gate until the head is
+//! allowed. A new head needs a new `ok-to-test`, so a force-push cannot ride an
+//! earlier one.
 //!
 //! Outside contributors sign the DCO instead of a CLA: every commit of a
 //! contributed head must carry a `Signed-off-by: Name <email>` trailer that
@@ -18,7 +25,11 @@
 //!
 //! - `POST /api/v1/repos/:id/pulls/:number/ok-to-test`: a maintainer allows the
 //!   gate on the pull request's current head. Optional body
-//!   `{"head_sha": "<40 hex>"}` names the head the maintainer looked at.
+//!   `{"head_sha": "<40 hex>"}` names the head the maintainer looked at; any
+//!   other body is refused rather than read as "no expectation".
+//! - `GET /api/v1/gate-allowances?state=active|all`: the allowances, one per
+//!   pull request, in the shape the gate runner reads. `active` (the default)
+//!   lists only those that still name an open contribution's current head.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,13 +37,13 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use jeryu_core::{AccountSummary, PullRequest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::pull_origin;
 use super::{WebState, api_error};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Extension, Path as AxumPath, State};
+use axum::extract::{Extension, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 
@@ -45,6 +56,10 @@ const MAX_CACHED: usize = 256;
 const MAX_COMMITS: usize = 500;
 /// Most offending commits a failure message names.
 const MAX_NAMED: usize = 5;
+
+/// The label an allowance carries: the runner's `PR_GATE_OK_TO_TEST_LABEL`
+/// default, which it compares with exactly.
+pub(crate) const OK_TO_TEST_LABEL: &str = "ok-to-test";
 
 /// Commit status context the DCO result is reported under.
 pub(crate) const DCO_CONTEXT: &str = "jeryu/dco";
@@ -94,6 +109,14 @@ impl OkToTestStore {
         );
     }
 
+    /// Every record, by (owner, repo, number).
+    fn all(&self) -> Vec<((String, String, u64), OkToTest)> {
+        self.lock()
+            .iter()
+            .map(|(key, record)| (key.clone(), record.clone()))
+            .collect()
+    }
+
     /// Who allowed this exact head, if anybody has.
     pub(crate) fn allowed_by(&self, pr: &PullRequest) -> Option<String> {
         self.lock()
@@ -128,10 +151,16 @@ impl DcoCache {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.lock().len()
+    }
 }
 
-/// The DCO verdict for a pull request's head. A head is immutable, so the
-/// verdict is cached by (repository, base, head).
+/// The DCO verdict for a pull request's head. A head is immutable, so a
+/// verdict about its commits is cached by (repository, base, head). A head the
+/// forge could not read fails closed but is not cached: that is this host's
+/// problem, not the contributor's, and the next read tries again.
 pub(crate) fn dco_verdict(state: &WebState, pr: &PullRequest) -> DcoVerdict {
     let key = (
         format!("{}/{}", pr.owner, pr.repo),
@@ -141,7 +170,10 @@ pub(crate) fn dco_verdict(state: &WebState, pr: &PullRequest) -> DcoVerdict {
     if let Some(known) = state.dco_cache.lock().get(&key) {
         return known.clone();
     }
-    let verdict = compute_dco(state, pr);
+    let verdict = match compute_dco(state, pr) {
+        Ok(verdict) => verdict,
+        Err(unreadable) => return DcoVerdict::Fail(unreadable),
+    };
     let mut cache = state.dco_cache.lock();
     if cache.len() >= MAX_CACHED {
         cache.clear();
@@ -150,9 +182,10 @@ pub(crate) fn dco_verdict(state: &WebState, pr: &PullRequest) -> DcoVerdict {
     verdict
 }
 
-fn compute_dco(state: &WebState, pr: &PullRequest) -> DcoVerdict {
+/// The verdict on the head's commits, or why they could not be read.
+fn compute_dco(state: &WebState, pr: &PullRequest) -> Result<DcoVerdict, String> {
     let unreadable = |why: &str| {
-        DcoVerdict::Fail(format!(
+        Err(format!(
             "the forge could not read this head's commits to check their sign-offs ({why})"
         ))
     };
@@ -166,8 +199,8 @@ fn compute_dco(state: &WebState, pr: &PullRequest) -> DcoVerdict {
     };
     let git_bin = state.repo_manager.config().git_bin.clone();
     match commits_without_sign_off(&git_bin, &resolved.path, &pr.base.sha, &pr.head.sha) {
-        Ok(missing) if missing.is_empty() => DcoVerdict::Pass,
-        Ok(missing) => DcoVerdict::Fail(dco_failure_message(&missing)),
+        Ok(missing) if missing.is_empty() => Ok(DcoVerdict::Pass),
+        Ok(missing) => Ok(DcoVerdict::Fail(dco_failure_message(&missing))),
         Err(why) => unreadable(&why),
     }
 }
@@ -319,9 +352,10 @@ pub(super) async fn ok_to_test(
             "only a contributed pull request waits for ok-to-test",
         );
     }
-    let expected = serde_json::from_slice::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|value| value.get("head_sha")?.as_str().map(str::to_string));
+    let expected = match expected_head(&body) {
+        Ok(expected) => expected,
+        Err(message) => return api_error(StatusCode::BAD_REQUEST, "invalid_request", message),
+    };
     if let Some(expected) = expected
         && expected != pr.head.sha
     {
@@ -349,6 +383,104 @@ pub(super) async fn ok_to_test(
         },
     })
     .into_response()
+}
+
+/// The head an `ok-to-test` body names: none for an empty body, else the one
+/// `head_sha` field, a full commit id. Anything else is refused, so a typo'd
+/// key or a malformed body never turns a pinned ok-to-test into an unpinned one.
+fn expected_head(body: &[u8]) -> Result<Option<String>, &'static str> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_slice(body) else {
+        return Err("the body must be empty or {\"head_sha\": \"<40 hex>\"}");
+    };
+    if fields.keys().any(|key| key != "head_sha") {
+        return Err("ok-to-test takes one field, head_sha");
+    }
+    match fields.get("head_sha") {
+        None => Ok(None),
+        Some(serde_json::Value::String(sha))
+            if crate::github::pulls::is_hex40(&sha.to_ascii_lowercase()) =>
+        {
+            Ok(Some(sha.to_ascii_lowercase()))
+        }
+        Some(_) => Err("head_sha must be a full 40-hex commit id"),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AllowanceQuery {
+    state: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct Allowance {
+    repo: String,
+    number: u64,
+    head_sha: String,
+    label: &'static str,
+    allowed_by: String,
+    allowed_at: String,
+}
+
+/// `GET /api/v1/gate-allowances?state=active|all`: the `ok-to-test`
+/// allowances in the shape the gate runner reads (jeryu-ci-runner
+/// `ops/pr-gate/README.md`), limited to repositories the caller can read.
+/// `active` keeps only an allowance that still names an open contribution's
+/// current head and came from a login still on the maintainer list.
+pub(super) async fn gate_allowances(
+    State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
+    Query(query): Query<AllowanceQuery>,
+) -> AxumResponse {
+    let active = match query.state.as_deref() {
+        None | Some("active") => true,
+        Some("all") => false,
+        Some(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_query",
+                "state is active or all",
+            );
+        }
+    };
+    let mut allowances: Vec<Allowance> = state
+        .ok_to_test
+        .all()
+        .into_iter()
+        .filter(|((owner, repo, _), _)| {
+            account.role == jeryu_core::UserRole::Admin
+                || state.core.user_can_read_repo(&account.login, owner, repo)
+        })
+        .filter(|((owner, repo, number), record)| {
+            !active
+                || (state
+                    .pull_maintainers
+                    .iter()
+                    .any(|login| login == &record.by)
+                    && state
+                        .core
+                        .get_pull_request(owner, repo, *number)
+                        .is_ok_and(|pr| {
+                            super::merge_queue::is_open_pull(&pr)
+                                && pr.head.sha == record.head_sha
+                                && pull_origin::is_contributed(&state, &pr)
+                        }))
+        })
+        .map(|((owner, repo, number), record)| Allowance {
+            repo: format!("{owner}/{repo}"),
+            number,
+            head_sha: record.head_sha,
+            label: OK_TO_TEST_LABEL,
+            allowed_by: record.by,
+            allowed_at: chrono::DateTime::from_timestamp_millis(record.at_ms)
+                .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                .unwrap_or_default(),
+        })
+        .collect();
+    allowances.sort_by(|a, b| (&a.repo, a.number).cmp(&(&b.repo, b.number)));
+    Json(serde_json::json!({ "allowances": allowances })).into_response()
 }
 
 #[cfg(test)]
@@ -397,5 +529,27 @@ mod tests {
         assert!(message.contains("abc0"));
         assert!(message.contains("and 2 more"));
         assert!(message.contains("git commit -s"));
+    }
+
+    #[test]
+    fn an_ok_to_test_body_is_empty_or_names_one_full_head() {
+        let sha = "ab".repeat(20);
+        assert_eq!(expected_head(b""), Ok(None));
+        assert_eq!(expected_head(b"  \n"), Ok(None));
+        assert_eq!(expected_head(b"{}"), Ok(None));
+        assert_eq!(
+            expected_head(format!("{{\"head_sha\":\"{}\"}}", sha.to_uppercase()).as_bytes()),
+            Ok(Some(sha.clone()))
+        );
+        for refused in [
+            "not json".to_string(),
+            "[]".to_string(),
+            format!("{{\"headSha\":\"{sha}\"}}"),
+            format!("{{\"head_sha\":\"{sha}\",\"extra\":1}}"),
+            "{\"head_sha\":\"abc123\"}".to_string(),
+            "{\"head_sha\":7}".to_string(),
+        ] {
+            assert!(expected_head(refused.as_bytes()).is_err(), "{refused}");
+        }
     }
 }

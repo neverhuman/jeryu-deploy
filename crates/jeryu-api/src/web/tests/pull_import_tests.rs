@@ -385,6 +385,32 @@ async fn a_mirror_pull_request_is_imported_as_a_contributed_forge_pull_request()
     assert_eq!(imported(&again, 7).action, ImportAction::Unchanged);
     assert_eq!(github.statuses().len(), 2);
     assert_eq!(github.comments().len(), 1);
+
+    // A gate result the head already has is reported as it is, even before
+    // ok-to-test: a run that failed is never hidden behind the wait.
+    fixture
+        .core
+        .create_check_run(
+            "acme",
+            "widget",
+            jeryu_core::CreateCheckRunRequest {
+                name: "acme/widget/required".to_string(),
+                head_sha: head.clone(),
+                status: Some(jeryu_core::CheckRunStatus::Completed),
+                conclusion: Some(jeryu_core::CheckConclusion::Failure),
+                ..jeryu_core::CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    crate::web::pull_import::import_once(&state);
+    let gate = github
+        .statuses()
+        .into_iter()
+        .rev()
+        .find(|(_, status)| status.context == "jeryu/forge-gate")
+        .unwrap();
+    assert_eq!(gate.1.state.wire_name(), "failure", "{:?}", gate.1);
+    assert!(gate.1.description.contains("failed"), "{:?}", gate.1);
 }
 
 /// A mirror PR carries only branch names from GitHub. The imported forge PR

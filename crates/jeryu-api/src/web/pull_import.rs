@@ -616,46 +616,47 @@ fn close_reason(state: &WebState, pr: &PullRequest) -> String {
 
 /// The forge gate's answer for a head, as a GitHub commit status.
 fn gate_status(state: &WebState, pr: &PullRequest) -> GithubStatus {
-    if !pull_origin::posture(state, pr).gate_may_start() {
-        return GithubStatus {
-            state: GithubStatusState::Pending,
-            context: GATE_STATUS_CONTEXT.to_string(),
-            description: "waiting for a maintainer to say ok-to-test".to_string(),
-        };
-    }
     let checks = state
         .github
         .core()
         .list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha))
         .map(|list| list.check_runs)
         .unwrap_or_default();
-    let (state_value, description) = if checks.is_empty() {
-        (
-            GithubStatusState::Pending,
-            "the forge gate has not run on this head yet".to_string(),
-        )
-    } else if let Some(failed) = checks.iter().find(|check| {
-        check.status == CheckRunStatus::Completed
-            && check.conclusion != Some(CheckConclusion::Success)
-    }) {
-        (
-            GithubStatusState::Failure,
-            format!("the forge gate failed: {}", failed.name),
-        )
-    } else if checks
-        .iter()
-        .any(|check| check.status != CheckRunStatus::Completed)
-    {
-        (
-            GithubStatusState::Pending,
-            "the forge gate is running".to_string(),
-        )
-    } else {
-        (
-            GithubStatusState::Success,
-            format!("the forge gate passed ({} checks)", checks.len()),
-        )
-    };
+    // A gate result the head already has is reported as it is: a run that
+    // failed is never hidden behind the ok-to-test wait.
+    let (state_value, description) =
+        if checks.is_empty() && !pull_origin::posture(state, pr).gate_may_start() {
+            (
+                GithubStatusState::Pending,
+                "waiting for a maintainer to say ok-to-test".to_string(),
+            )
+        } else if checks.is_empty() {
+            (
+                GithubStatusState::Pending,
+                "the forge gate has not run on this head yet".to_string(),
+            )
+        } else if let Some(failed) = checks.iter().find(|check| {
+            check.status == CheckRunStatus::Completed
+                && check.conclusion != Some(CheckConclusion::Success)
+        }) {
+            (
+                GithubStatusState::Failure,
+                format!("the forge gate failed: {}", failed.name),
+            )
+        } else if checks
+            .iter()
+            .any(|check| check.status != CheckRunStatus::Completed)
+        {
+            (
+                GithubStatusState::Pending,
+                "the forge gate is running".to_string(),
+            )
+        } else {
+            (
+                GithubStatusState::Success,
+                format!("the forge gate passed ({} checks)", checks.len()),
+            )
+        };
     GithubStatus {
         state: state_value,
         context: GATE_STATUS_CONTEXT.to_string(),
