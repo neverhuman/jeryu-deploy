@@ -1473,6 +1473,7 @@ fn closure_reconciliation_preserves_observed_metrics_and_changes_only_current_in
             repo: None,
             pr: None,
             hold: None,
+            family: None,
         })
         .collect();
     let request = Request {
@@ -2347,4 +2348,197 @@ async fn flow_route_reports_the_configured_family_topology_and_its_pin_chain() {
     assert_eq!(topology["families"][0]["repos"], 2);
     assert_eq!(topology["families"][0]["work"]["active_lots"], 1);
     assert_eq!(topology["families"][0]["work"]["changes"], 1);
+}
+
+/// `stations[].wip` counts every open visit while `lots[]` is a page; the
+/// answer says how many it lists and whether more exist, and a caller can page
+/// one station (the live 2026-10-26 answer had wip totals of 1797 visits and
+/// 129 lots, with nothing saying the list was cut).
+#[test]
+fn lots_are_a_page_of_what_the_station_counts_and_say_so() {
+    let visits: Vec<Visit> = (0..25)
+        .map(|n| Visit {
+            lot_id: format!("lot-{n:02}"),
+            station: Station::Queue,
+            entered_ms: START + n * MINUTE,
+            started_ms: None,
+            left_ms: None,
+            direction: "open".into(),
+            rework_to: None,
+            repo: None,
+            pr: None,
+            hold: None,
+            family: Some("acme".into()),
+        })
+        .collect();
+    let request = Request {
+        family: None,
+        days: 28,
+        now_ms: START + 60 * MINUTE,
+    };
+    let reached = BTreeSet::from([Station::Queue]);
+    let first = build(&request, &visits, &reached);
+    let queue = first.stations.iter().find(|s| s.id == "queue").unwrap();
+    assert_eq!(queue.wip.waiting, 25);
+    assert_eq!(queue.lots_listed, 20);
+    assert_eq!(first.lots.len(), 20);
+    assert_eq!(first.lots_total, 25);
+    assert!(first.lots_truncated);
+    assert_eq!(first.lots[0].lot_id, "lot-00", "oldest first");
+
+    let page = super::LotsPage {
+        station: Some("queue"),
+        offset: 20,
+        limit: 10,
+    };
+    let rest = super::report::build_paged(&request, &visits, &reached, &|_| true, page);
+    let ids: Vec<&str> = rest.lots.iter().map(|lot| lot.lot_id.as_str()).collect();
+    assert_eq!(ids, ["lot-20", "lot-21", "lot-22", "lot-23", "lot-24"]);
+    assert!(!rest.lots_truncated, "the last page lists the rest");
+    assert_eq!(rest.lots_total, 25, "totals never shrink to the page");
+    assert_eq!(rest.stations, {
+        let mut expected = first.stations.clone();
+        for station in &mut expected {
+            station.lots_listed = if station.id == "queue" { 5 } else { 0 };
+        }
+        expected
+    });
+
+    let other = super::report::build_paged(
+        &request,
+        &visits,
+        &reached,
+        &|_| true,
+        super::LotsPage {
+            station: Some("gate"),
+            offset: 0,
+            limit: 20,
+        },
+    );
+    assert!(other.lots.is_empty());
+    assert!(!other.lots_truncated, "only the named station is paged");
+}
+
+/// The route pages lots, refuses a page it cannot honour, and says which
+/// claims at Work a live worker backs, from real heartbeats.
+#[tokio::test]
+async fn flow_route_pages_lots_and_marks_claims_from_heartbeats() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    let admin = core
+        .create_personal_access_token("alice", "t", None)
+        .unwrap()
+        .secret;
+    let state = WebState::new_with_git_storage(core, dir.path().to_path_buf())
+        .with_auth(true, false, false);
+    let now = chrono::Utc::now().timestamp_millis();
+    let live = "20260101-000001-aaaa01";
+    let stale = "20260101-000002-aaaa02";
+    for (index, todo) in [live, stale].into_iter().enumerate() {
+        let at = now - (10 - index as i64) * 60 * MINUTE;
+        for (kind, offset) in [("todo.filed", 0), ("todo.claimed", 1), ("worker.stage", 2)] {
+            post(
+                &state.events,
+                &Post {
+                    kind,
+                    outcome: None,
+                    todo: Some(todo),
+                    pr: None,
+                    shift: None,
+                    at_ms: at + offset * MINUTE,
+                },
+            );
+        }
+    }
+    let beat = |slot: &str, todo: Option<&str>| crate::web::shift::Heartbeat {
+        operator: "dana".into(),
+        host: "build-1".into(),
+        slot: slot.into(),
+        family: "acme".into(),
+        state: if todo.is_some() { "working" } else { "idle" }.into(),
+        todo_id: todo.map(str::to_string),
+        stage: None,
+        lease_until: None,
+        shift: None,
+        planned_slots: None,
+        schedule: None,
+        version: None,
+        kind: "todoq".into(),
+        detail: None,
+        capacity: None,
+        active: None,
+        usage: None,
+    };
+    state
+        .shift
+        .heartbeats
+        .insert("operator", &beat("w1", Some(live)), now - 10_000)
+        .unwrap();
+    // w2 named the stale claim, then stopped beating half an hour ago.
+    state
+        .shift
+        .heartbeats
+        .insert("operator", &beat("w2", Some(stale)), now - 30 * MINUTE)
+        .unwrap();
+    let router = app(state, Path::new("/tmp/jeryu-no-spa"));
+    let call = |uri: &str| router.clone().oneshot(get(uri, &admin));
+
+    let body = json_of(call("/api/v1/flow?days=7").await.unwrap()).await;
+    let work = station(&body, "work");
+    assert_eq!(work["wip"]["active"], 2);
+    assert_eq!(
+        work["claims"],
+        serde_json::json!({"live": 1, "no_live_worker": 1, "unknown": 0})
+    );
+    assert_eq!(station(&body, "gate")["claims"], Value::Null);
+    let claim = |lot: &str| {
+        body["lots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["lot_id"] == lot)
+            .map(|row| row["claim"].clone())
+            .unwrap()
+    };
+    assert_eq!(claim(live), "live");
+    assert_eq!(claim(stale), "no_live_worker");
+    assert_eq!(body["lots_total"], 2);
+    assert_eq!(body["lots_truncated"], false);
+    assert_eq!(body["topology"]["families_truncated"], false);
+
+    let page = json_of(
+        call("/api/v1/flow?days=7&station=work&lots_limit=1")
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(page["lots"].as_array().unwrap().len(), 1);
+    assert_eq!(page["lots"][0]["lot_id"], live, "oldest first");
+    assert_eq!(page["lots_truncated"], true);
+    assert_eq!(
+        page["lots_page"],
+        serde_json::json!({"station": "work", "offset": 0, "limit": 1})
+    );
+    let next = json_of(
+        call("/api/v1/flow?days=7&station=work&lots_limit=1&lots_offset=1")
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(next["lots"][0]["lot_id"], stale);
+    assert_eq!(next["lots_truncated"], false);
+
+    for bad in [
+        "/api/v1/flow?station=nowhere",
+        "/api/v1/flow?lots_limit=0",
+        "/api/v1/flow?lots_limit=101",
+        "/api/v1/flow?lots_offset=-1",
+        "/api/v1/flow?lots_offset=many",
+    ] {
+        let response = call(bad).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+        assert_eq!(json_of(response).await["code"], "invalid_query", "{bad}");
+    }
 }

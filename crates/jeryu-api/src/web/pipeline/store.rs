@@ -875,6 +875,7 @@ impl EventStore {
             Option<String>,
             Option<i64>,
             Option<(String, String, i64)>,
+            Option<String>,
         );
         let rows: Vec<Row> = {
             let inner = self.inner.lock().expect("pipeline event mutex poisoned");
@@ -882,7 +883,7 @@ impl EventStore {
                 .conn
                 .prepare_cached(
                     "SELECT lot_id, station, entered_ms, started_ms, left_ms, direction, rework_to,
-                            repo, pr, hold_reason, hold_by, hold_since_ms
+                            repo, pr, hold_reason, hold_by, hold_since_ms, family
                        FROM flow_ledger
                       WHERE (?1 IS NULL OR family = ?1) AND (?3 IS NULL OR repo=?3)
                         AND lot_id IN (
@@ -913,6 +914,7 @@ impl EventStore {
                                 _ => None,
                             }
                         },
+                        row.get(12)?,
                     ))
                 })
                 .map_err(|err| err.to_string())?;
@@ -931,6 +933,7 @@ impl EventStore {
             repo,
             pr,
             hold,
+            family,
         ) in rows
         {
             // A row naming a station this binary does not know is left out
@@ -955,6 +958,7 @@ impl EventStore {
                         since_ms,
                     },
                 ),
+                family,
             });
         }
         Ok(visits)

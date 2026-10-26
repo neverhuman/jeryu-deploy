@@ -357,3 +357,33 @@ fn only_a_plain_lock_path_is_read() {
         assert!(!lock_name_ok(refused), "{refused:?} must be refused");
     }
 }
+
+/// An unscoped answer describes every family. The old cap of eight cut the
+/// list alphabetically, so families late in the alphabet (and their
+/// products) vanished from the forge-wide view while `families_truncated`
+/// was the only trace.
+#[test]
+fn an_unscoped_answer_describes_every_family_however_many() {
+    let names = [
+        "acme", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet",
+        "kilo", "lima",
+    ];
+    let inputs = Inputs {
+        scope: None,
+        repos: names
+            .iter()
+            .map(|family| repo(&format!("{family}/{family}-app"), family))
+            .collect(),
+        ..Inputs::default()
+    };
+    let shape = plan(&inputs, &[]);
+    let described: Vec<&str> = shape
+        .families
+        .iter()
+        .map(|family| family.family.as_str())
+        .collect();
+    assert_eq!(described, names.to_vec());
+    assert_eq!(shape.families_total, 12);
+    assert!(!shape.families_truncated);
+    assert_eq!(shape.products.len(), 12, "every family's product is listed");
+}

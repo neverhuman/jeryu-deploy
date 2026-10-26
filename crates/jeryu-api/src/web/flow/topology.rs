@@ -37,8 +37,6 @@ use super::closure::OpenVisit;
 
 /// The pin lock a product uses when it names none.
 pub(crate) const DEFAULT_PIN_LOCK: &str = "jeryu-split.lock.toml";
-/// How many families one answer describes, so an unscoped read stays bounded.
-const MAX_FAMILIES: usize = 8;
 /// How long parsed manifests and read pin locks are reused.
 const CONFIG_TTL: Duration = Duration::from_secs(60);
 
@@ -222,8 +220,12 @@ pub(crate) struct Topology {
     /// no product. Counted in no product's totals.
     pub unscoped_active_lots: u32,
     pub unknown: Vec<UnknownNote>,
-    /// True when more families exist than one answer describes.
+    /// Always false: every family the forge hosts is described. An unscoped
+    /// read is bounded by the hosted repositories, which `inputs` reads in
+    /// full anyway. Kept so readers of the old field keep parsing.
     pub families_truncated: bool,
+    /// How many families `families` describes.
+    pub families_total: u32,
 }
 
 /// What a lot's furthest open visit says it is.
@@ -277,10 +279,9 @@ pub(crate) fn plan(inputs: &Inputs, open: &[OpenVisit]) -> Topology {
             families.push(scope.clone());
         }
     }
-    if families.len() > MAX_FAMILIES {
-        families.truncate(MAX_FAMILIES);
-        topology.families_truncated = true;
-    }
+    // Every family is described: cutting the list alphabetically used to drop
+    // whole families (and their products) from an unscoped answer.
+    topology.families_total = u32::try_from(families.len()).unwrap_or(u32::MAX);
 
     for family in families {
         let repos: Vec<&RepoFacts> = inputs

@@ -85,7 +85,8 @@ evidence only -- never from a repository's name:
   "unscoped_active_lots": 0,
   "unknown": [ { "scope": "studio", "field": "integration_repo",
                  "reason": "no_pin_lock_or_declaration" } ],
-  "families_truncated": false
+  "families_truncated": false,
+  "families_total": 1
 }
 ```
 
@@ -351,6 +352,33 @@ flow_ledger(lot_id, family, repo, pr, todo_id, shift, station, entered_ms,
 spellings disagreeing, or a key the route does not read is
 `422 invalid_query`; an unknown family is `422 family_unknown`.
 
+Paging the lots: `station` (a station id) lists only that station's lots,
+`lots_offset` skips that many of each listed station's lots (oldest first) and
+`lots_limit` (1 to 100, default 20) lists at most that many per station.
+Out-of-range values are refused, never clamped. The counts never shrink to the
+page: `stations[].wip` counts every open visit, `stations[].lots_listed` says
+how many of them this answer lists, `lots_total` is the sum of the stations'
+`waiting + active + held`, and `lots_truncated` is true when a paged station
+has more lots past this page. A lot open at two stations at once (Review and
+Gate run in parallel) counts at both, so `lots_total` can exceed `line.wip`,
+which counts lots.
+
+Claims at Work: an open Work visit is a claim, and only
+`todo.attempt_finished` or a landing closes it, so a worker that died or
+stopped leaves it open. Each unheld Work lot carries `claim`, read from the
+shift heartbeats only: `live` when a slot whose newest beat is healthy
+(within two minutes) names the todo; `no_live_worker` when slots of the lot's
+family have reported within the heartbeat retention (14 days) and none of
+them is working it now; `unknown` when nothing of the family has reported, or
+the ledger has no family for the lot. Every other lot has `claim: null`. The
+Work station's `claims` is `{live, no_live_worker, unknown}` over all its
+unheld claims, not just the listed ones (`null` at other stations). The
+`wip` split is unchanged.
+
+`topology.families` describes every family the forge hosts;
+`topology.families_total` counts them and `families_truncated` is always
+`false` (kept for older readers).
+
 ```jsonc
 {
   "schema_version": "jeryu.flow/v1",
@@ -373,7 +401,10 @@ spellings disagreeing, or a key the route does not read is
               "since": "...", "eta_s": { "p50": 0, "p90": 0 },
               "eta_partial": true, "eta_unknown_stations": [ "pin" ],
               "slowest_ahead": "deploy",
-              "href": "/work/<id>" } ]   // the oldest 20 per station
+              "href": "/work/<id>",
+              "claim": null } ],   // a page per station, oldest first
+  "lots_total": 0, "lots_truncated": false,
+  "lots_page": { "station": null, "offset": 0, "limit": 20 }
 }
 ```
 

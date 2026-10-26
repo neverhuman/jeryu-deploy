@@ -9,6 +9,7 @@
 //! arithmetic is in [`report`]; the station list in [`stations`] is shared
 //! with `GET /api/v1/flow/layout`. Contract: `docs/flow.md`, ADR 0013.
 
+pub(crate) mod claims;
 pub(crate) mod closure;
 pub(crate) mod delivery;
 pub(crate) mod history;
@@ -38,7 +39,7 @@ use super::WebState;
 use super::strict_query::{StrictFields, StrictQuery, one_of};
 use super::workcells_support::{TypedError, typed_error};
 pub(crate) use layout::layout;
-pub(crate) use report::{Request, Visit};
+pub(crate) use report::{LotsPage, Request, Visit};
 pub(crate) use stations::Station;
 
 const DOCS: &str = "docs/flow.md";
@@ -56,11 +57,26 @@ pub(crate) struct FlowQuery {
     pub days: Option<String>,
     /// The same window as the design spells it (`7d`, `28d`, `90d`).
     pub window: Option<String>,
+    /// List only this station's lots (a station id such as `work`).
+    pub station: Option<String>,
+    /// Skip this many of each listed station's lots, oldest first.
+    pub lots_offset: Option<String>,
+    /// List at most this many lots per station (1 to 100, default 20).
+    pub lots_limit: Option<String>,
 }
 
 impl StrictFields for FlowQuery {
-    const KEYS: &'static [&'static str] = &["family", "repo", "days", "window"];
-    const REPAIR_HINT: &'static str = "send days as 7, 28 or 90 (or window as 7d, 28d or 90d)";
+    const KEYS: &'static [&'static str] = &[
+        "family",
+        "repo",
+        "days",
+        "window",
+        "station",
+        "lots_offset",
+        "lots_limit",
+    ];
+    const REPAIR_HINT: &'static str = "send days as 7, 28 or 90 (or window as 7d, 28d or 90d); \
+         station is a station id, lots_offset a whole number, lots_limit 1 to 100";
 
     fn check_values(&self) -> Result<(), String> {
         if self.repo.as_ref().is_some_and(|r| {
@@ -68,8 +84,57 @@ impl StrictFields for FlowQuery {
         }) {
             return Err("repo must be owner/name".into());
         }
+        lots_page(self)?;
         days(self).map(|_| ())
     }
+}
+
+/// The page of lots one query names. Out-of-range values are refused, not
+/// clamped: a clamped page would list lots the caller did not ask for.
+pub(crate) fn lots_page(query: &FlowQuery) -> Result<LotsPage, String> {
+    let text = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    };
+    let station = match text(&query.station) {
+        None => None,
+        Some(id) => Some(
+            Station::parse(&id)
+                .ok_or_else(|| {
+                    let ids: Vec<&str> = Station::ALL.iter().map(|s| s.id()).collect();
+                    format!("station: {id:?} is not one of {}", ids.join(", "))
+                })?
+                .id(),
+        ),
+    };
+    let number = |key: &str, value: Option<String>, max: u32| -> Result<Option<u32>, String> {
+        let Some(value) = value else { return Ok(None) };
+        let parsed: u32 = value
+            .parse()
+            .map_err(|_| format!("{key}: {value:?} is not a whole number"))?;
+        if parsed > max {
+            return Err(format!("{key}: {parsed} is more than {max}"));
+        }
+        Ok(Some(parsed))
+    };
+    let offset = number("lots_offset", text(&query.lots_offset), 1_000_000)?.unwrap_or(0);
+    let limit = number(
+        "lots_limit",
+        text(&query.lots_limit),
+        report::MAX_LOTS_PER_STATION as u32,
+    )?
+    .unwrap_or(report::LOTS_PER_STATION as u32);
+    if limit == 0 {
+        return Err("lots_limit: 0 lists nothing; send 1 to 100".to_string());
+    }
+    Ok(LotsPage {
+        station,
+        offset,
+        limit,
+    })
 }
 
 /// The window one query names. `days=7` and `window=7d` are the same window;
@@ -143,6 +208,17 @@ pub(crate) async fn flow(
             );
         }
     };
+    let page = match lots_page(&query) {
+        Ok(page) => page,
+        Err(reason) => {
+            return refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                super::strict_query::CODE,
+                &reason,
+                FlowQuery::REPAIR_HINT,
+            );
+        }
+    };
     let repo = query.repo.clone();
     let read_repo = repo.clone();
     let now = Utc::now().timestamp_millis();
@@ -183,25 +259,29 @@ pub(crate) async fn flow(
             &topology::inputs(&worker_state, read_family.as_deref()),
             &active,
         );
-        Ok::<_, String>((visits, reached, lifecycle, shape))
+        // Every slot's newest beat inside the retention: what says whether a
+        // claim at Work has a live worker behind it.
+        let beats = worker_state
+            .shift
+            .heartbeats
+            .latest(now - super::shift::HEARTBEAT_RETENTION_MS)?;
+        let evidence = claims::Evidence::from_heartbeats(&beats, now);
+        Ok::<_, String>((visits, reached, lifecycle, shape, evidence))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((visits, reached, lifecycle, shape)) => {
+        Ok((visits, reached, lifecycle, shape, evidence)) => {
             let request = Request {
                 family,
                 days,
                 now_ms: now,
             };
-            let mut body = serde_json::to_value(report::build_reconciled(
-                &request,
-                &visits,
-                &reached,
-                &|v| lifecycle.is_current(v),
-            ))
-            .expect("flow serializes");
+            let is_current = |v: &Visit| lifecycle.is_current(v);
+            let mut report = report::build_paged(&request, &visits, &reached, &is_current, page);
+            claims::mark(&mut report, &visits, &is_current, &evidence);
+            let mut body = serde_json::to_value(report).expect("flow serializes");
             body["repository_wip"] = lifecycle.repositories;
             body["closure_record_count"] = serde_json::json!(lifecycle.total_records);
             body["merged_upstream_record_count"] =

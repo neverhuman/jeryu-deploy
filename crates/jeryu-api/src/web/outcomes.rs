@@ -66,6 +66,7 @@ fn window_days(query: &OutcomesQuery) -> Result<i64, String> {
         family: None,
         days: query.days.clone(),
         window: query.window.clone(),
+        ..FlowQuery::default()
     })
 }
 

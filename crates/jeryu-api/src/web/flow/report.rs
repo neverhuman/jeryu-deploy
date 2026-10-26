@@ -18,8 +18,10 @@ use crate::web::shift::rfc3339_ms;
 
 /// `schema_version` of every `/api/v1/flow` answer.
 pub(crate) const FLOW_SCHEMA: &str = "jeryu.flow/v1";
-/// How many lots a station lists.
+/// How many lots a station lists when the caller names no page.
 pub(crate) const LOTS_PER_STATION: usize = 20;
+/// The most lots one station lists in one answer (`lots_limit`).
+pub(crate) const MAX_LOTS_PER_STATION: usize = 100;
 
 /// One visit of one lot to one station, as `flow_ledger` stores it.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,6 +38,8 @@ pub(crate) struct Visit {
     pub pr: Option<i64>,
     /// Why a held visit stopped, when the producer said (`project::Cause`).
     pub hold: Option<HoldRecord>,
+    /// The family `flow_ledger` recorded for the lot, when an event named one.
+    pub family: Option<String>,
 }
 
 /// What `flow_ledger` records about a hold.
@@ -120,6 +124,13 @@ pub(crate) struct StationReport {
     pub utilization: Option<f64>,
     pub bottleneck: bool,
     pub unknown: Vec<Unknown>,
+    /// How many of this station's open visits (`waiting + active + held`)
+    /// `lots[]` lists in this answer. Less than that sum when the page is
+    /// smaller than the station: see `lots_truncated`.
+    pub lots_listed: u32,
+    /// Work only: whether a live worker backs each unheld claim
+    /// (`waiting + active`). `null` at every other station.
+    pub claims: Option<super::claims::ClaimCounts>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -152,6 +163,11 @@ pub(crate) struct LotReport {
     pub pr_href: Option<String>,
     /// Set while the lot is held for a named reason; null otherwise.
     pub hold: Option<HoldReport>,
+    /// Work only, for an unheld lot: `live` when a healthy worker heartbeat
+    /// names this todo now, `no_live_worker` when the lot's family has slots
+    /// that report heartbeats and none of them is working it now, `unknown`
+    /// when nothing reports for the family. `null` elsewhere.
+    pub claim: Option<&'static str>,
 }
 
 /// Where a lot stopped and who holds it. Read by the Live page.
@@ -189,6 +205,35 @@ pub(crate) struct FlowReport {
     pub stations: Vec<StationReport>,
     pub line: Line,
     pub lots: Vec<LotReport>,
+    /// Every open visit `lots[]` could list: the sum of the stations'
+    /// `waiting + active + held`. A lot open at two stations at once (Review
+    /// and Gate run in parallel) counts at both, so this may exceed
+    /// `line.wip`, which counts lots.
+    pub lots_total: u32,
+    /// True when `lots[]` lists fewer than `lots_total` for the stations
+    /// this answer pages (all of them, or the one `station` names).
+    pub lots_truncated: bool,
+    /// The page of lots this answer lists, per station.
+    pub lots_page: LotsPage,
+}
+
+/// Which lots one answer lists: up to `limit` per station, oldest first,
+/// after skipping `offset`; only `station`'s when it names one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct LotsPage {
+    pub station: Option<&'static str>,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Default for LotsPage {
+    fn default() -> Self {
+        Self {
+            station: None,
+            offset: 0,
+            limit: LOTS_PER_STATION as u32,
+        }
+    }
 }
 
 /// What a report is asked for.
@@ -279,6 +324,17 @@ pub(crate) fn build_reconciled(
     reached: &BTreeSet<Station>,
     is_current: &impl Fn(&Visit) -> bool,
 ) -> FlowReport {
+    build_paged(request, visits, reached, is_current, LotsPage::default())
+}
+
+/// [`build_reconciled`], listing the lots `page` names.
+pub(crate) fn build_paged(
+    request: &Request,
+    visits: &[Visit],
+    reached: &BTreeSet<Station>,
+    is_current: &impl Fn(&Visit) -> bool,
+    page: LotsPage,
+) -> FlowReport {
     let since_ms = window_start(request.now_ms, request.days);
     let in_window = |ms: i64| ms >= since_ms && ms <= request.now_ms;
     let hours = request.days as f64 * 24.0;
@@ -303,6 +359,18 @@ pub(crate) fn build_reconciled(
         })
         .collect();
     mark_bottleneck(&mut stations);
+    let lots = lots(visits, &mut stations, request.now_ms, is_current, page);
+    let lots_total: u32 = stations
+        .iter()
+        .map(|station| station.wip.waiting + station.wip.active + station.wip.held)
+        .sum();
+    let lots_truncated = stations
+        .iter()
+        .filter(|station| page.station.is_none_or(|id| id == station.id))
+        .any(|station| {
+            let open = station.wip.waiting + station.wip.active + station.wip.held;
+            page.offset.saturating_add(station.lots_listed) < open
+        });
 
     FlowReport {
         schema_version: FLOW_SCHEMA,
@@ -314,7 +382,10 @@ pub(crate) fn build_reconciled(
             until: rfc3339_ms(request.now_ms),
         },
         line: line(visits, request.now_ms, &in_window, is_current),
-        lots: lots(visits, &stations, request.now_ms, is_current),
+        lots,
+        lots_total,
+        lots_truncated,
+        lots_page: page,
         stations,
     }
 }
@@ -347,6 +418,8 @@ fn station_report(
             metric: "capacity",
             reason: "no_heartbeat",
         }],
+        lots_listed: 0,
+        claims: None,
     };
     if !ever {
         report.unknown.insert(
@@ -542,15 +615,20 @@ fn line(
     }
 }
 
-/// The oldest [`LOTS_PER_STATION`] lots at each station, with their ETA.
+/// The lots `page` names at each station, oldest first, with their ETA;
+/// each station's `lots_listed` says how many it got.
 fn lots(
     visits: &[Visit],
-    stations: &[StationReport],
+    stations: &mut [StationReport],
     now_ms: i64,
     is_current: &impl Fn(&Visit) -> bool,
+    page: LotsPage,
 ) -> Vec<LotReport> {
     let mut lots = Vec::new();
     for station in Station::ALL {
+        if page.station.is_some_and(|id| id != station.id()) {
+            continue;
+        }
         let mut open: Vec<&Visit> = visits
             .iter()
             .filter(|visit| {
@@ -558,7 +636,15 @@ fn lots(
             })
             .collect();
         open.sort_by_key(|visit| (visit.entered_ms, visit.lot_id.clone()));
-        for visit in open.into_iter().take(LOTS_PER_STATION) {
+        let listed: Vec<&Visit> = open
+            .into_iter()
+            .skip(page.offset as usize)
+            .take(page.limit as usize)
+            .collect();
+        if let Some(report) = stations.iter_mut().find(|report| report.id == station.id()) {
+            report.lots_listed = u32::try_from(listed.len()).unwrap_or(u32::MAX);
+        }
+        for visit in listed {
             let eta = if visit.held() {
                 // A held lot's next step is a person, not a station.
                 Eta::default()
@@ -595,6 +681,7 @@ fn lots(
                 href: lot_href(&visit.lot_id),
                 pr_href,
                 hold,
+                claim: None,
             });
         }
     }
