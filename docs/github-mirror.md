@@ -137,6 +137,31 @@ queue will not land it. An approval from anybody else — including an agent
 reviewer — is advice and clears nothing. With no maintainer list configured, no
 contribution merges at all.
 
+### Maintainers, ok-to-test and the DCO
+
+The maintainer list is site configuration, not code: `JERYU_PULL_MAINTAINERS`
+(comma-separated logins, read at startup). It is empty by default, and while it
+is empty the importer stays off. On this site the operator sets
+`JERYU_PULL_MAINTAINERS=alton,jepsont` in the forge environment file.
+
+- **ok-to-test.** A contributed head's gate does not start by itself. A
+  maintainer calls `POST /api/v1/repos/:id/pulls/:number/ok-to-test` (optional
+  body `{"head_sha": "<40 hex>"}`, refused with `head_moved` if the head is not
+  the one they looked at). Until then the forge sends the gate runner no
+  `gate-wanted` signal for the branch and refuses `POST .../regate`, and the
+  merge passport carries `passport_blocked_contributed_not_ok_to_test`. The
+  record is bound to that exact head, so a force-push needs a new ok-to-test,
+  and it is kept in memory, so a forge restart asks for it again. Anybody not
+  on the list gets `403 pull_maintainer_required`.
+- **Approval.** Only a maintainer's approval on the exact head counts for
+  merging a contribution (see above).
+- **DCO.** Outside contributors sign the DCO, not a CLA: every commit of a
+  contributed head needs a `Signed-off-by: Name <email>` line matching its
+  author (`git commit -s`). The forge reads the commits itself, so the check
+  cannot be argued with in the description. A missing sign-off blocks the merge
+  with `passport_blocked_contributed_dco`, names the commits and the fix, and is
+  reported on the GitHub head as the `jeryu/dco` status.
+
 The pull request's title, description and diff are the contributor's words:
 they are data everywhere they are read, and nothing in them changes the
 marking, the maintainer list, or what the gate decides.

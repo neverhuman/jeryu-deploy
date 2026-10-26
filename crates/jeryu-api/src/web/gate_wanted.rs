@@ -49,6 +49,7 @@ const MAX_WAIT: Duration = Duration::from_secs(60);
 pub(crate) const SOURCE_PUSH: &str = "push";
 pub(crate) const SOURCE_QUEUE: &str = "queue";
 pub(crate) const SOURCE_REGATE: &str = "regate";
+pub(crate) const SOURCE_OK_TO_TEST: &str = "ok_to_test";
 
 /// One "this head can be gated now". `seq` is assigned by the store and is
 /// what a reader asks for more than.
@@ -211,6 +212,15 @@ pub(crate) fn record_push(
 ) {
     let repo = repo.trim_end_matches(".git");
     for update in updates {
+        // A contribution's branch is gated only after a maintainer says
+        // ok-to-test, which records its own signal.
+        if update
+            .ref_name
+            .strip_prefix("refs/heads/")
+            .is_some_and(|branch| crate::github_pull_import::contrib_number(branch).is_some())
+        {
+            continue;
+        }
         state.gate_wanted.record(NewGateWanted {
             repo: format!("{owner}/{repo}"),
             ref_name: Some(update.ref_name.clone()),
@@ -242,5 +252,16 @@ pub(crate) fn record_regate(state: &WebState, repo: &str, number: u64, sha: &str
         number: Some(number),
         sha: sha.to_string(),
         source: SOURCE_REGATE,
+    });
+}
+
+/// A maintainer said ok-to-test for `repo#number`'s head: the gate may start.
+pub(crate) fn record_ok_to_test(state: &WebState, repo: &str, number: u64, sha: &str) {
+    state.gate_wanted.record(NewGateWanted {
+        repo: repo.to_string(),
+        ref_name: None,
+        number: Some(number),
+        sha: sha.to_string(),
+        source: SOURCE_OK_TO_TEST,
     });
 }

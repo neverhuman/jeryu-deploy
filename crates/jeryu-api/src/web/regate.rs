@@ -112,6 +112,13 @@ pub(super) async fn request(
             "only an open pull request has a head to gate again",
         );
     }
+    if !super::pull_contrib::gate_may_start(&state, &pr) {
+        return api_error(
+            StatusCode::CONFLICT,
+            "ok_to_test_required",
+            "a contributed head is gated only after a maintainer says ok-to-test for it",
+        );
+    }
     let request = RegateRequest {
         repo: format!("{}/{}", repo.owner, repo.name),
         number,
@@ -163,7 +170,9 @@ pub(super) async fn list(
                 .core
                 .get_pull_request(owner, name, request.number)
                 .is_ok_and(|pr| {
-                    super::merge_queue::is_open_pull(&pr) && pr.head.sha == request.head_sha
+                    super::merge_queue::is_open_pull(&pr)
+                        && pr.head.sha == request.head_sha
+                        && super::pull_contrib::gate_may_start(&state, &pr)
                 })
         })
         .collect();

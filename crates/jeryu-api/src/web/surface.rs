@@ -313,13 +313,13 @@ async fn github_forward_request(
                     status: StatusCode::CONFLICT,
                     code: "merge_blocked",
                     purpose: "merge contributed pull request",
-                    reason: "a configured maintainer must approve the exact live head before it can merge",
+                    reason: "a configured maintainer must say ok-to-test and approve the exact live head, and every commit needs a DCO sign-off, before it can merge",
                     common_fixes: &[
-                        "configure JERYU_PULL_MAINTAINERS and obtain an approval on this head",
+                        "configure JERYU_PULL_MAINTAINERS, then obtain an ok-to-test and an approval on this head, and sign off every commit (git commit -s)",
                     ],
                     docs_url: "docs/github-mirror.md",
                     repair_hint: "refresh the PR origin and merge passport, then resolve its maintainer hold",
-                    message: "Contributed pull request requires a maintainer approval",
+                    message: "Contributed pull request requires a maintainer ok-to-test, a maintainer approval and DCO sign-offs",
                 },
             );
             super::merge_attempts::record_edge(

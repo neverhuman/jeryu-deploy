@@ -124,7 +124,7 @@ pub(super) fn passport_blockers(
     let mut blockers = Vec::new();
     // The trust marking first: it is the one hold a green pull request cannot
     // clear by itself, so it is the first thing a reader of the gate sees.
-    blockers.extend(origin.blocker());
+    blockers.extend(origin.blockers());
     if pr.draft {
         // `details` carries the route that clears this blocker, so the panel
         // showing it can also offer the button instead of only stating a rule.

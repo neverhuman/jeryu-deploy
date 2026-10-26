@@ -14,8 +14,9 @@
 //! data, not instructions: nothing in them changes what this module decides.
 //!
 //! What `contributed` costs a pull request: it cannot merge until a login on
-//! the configured maintainer list (`JERYU_PULL_MAINTAINERS`) has an effective
-//! approval on the exact head. The hold is a merge-passport blocker, so the
+//! the configured maintainer list (`JERYU_PULL_MAINTAINERS`) has said
+//! ok-to-test and approved the exact head, and every commit carries a DCO
+//! sign-off (`pull_contrib`). The hold is a merge-passport blocker, so the
 //! pull request page states it, `POST .../merge` refuses it, and the merge
 //! queue will not land it. An approval from anybody else — including an agent
 //! reviewer — is advice and does not clear it. With no maintainer list
@@ -39,6 +40,7 @@ use jeryu_readmodel::contracts::MergePassportBlocker;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use super::pull_contrib::{self, DCO_CONTEXT, DcoVerdict};
 use super::shift::{migrate_shift_store, rfc3339_ms};
 use super::{WebState, api_error};
 
@@ -55,6 +57,11 @@ const MAINTAINERS_ENV: &str = "JERYU_PULL_MAINTAINERS";
 /// blocker code, not an error-envelope code: the merge refusal itself answers
 /// `merge_blocked` and lists this among its blockers.
 const CONTRIBUTED_BLOCKER: &str = "passport_blocked_contributed_origin";
+
+/// Passport blockers for a contribution a maintainer has not said ok-to-test
+/// for, and one with commits lacking a DCO sign-off.
+const NOT_OK_TO_TEST_BLOCKER: &str = "passport_blocked_contributed_not_ok_to_test";
+const DCO_BLOCKER: &str = "passport_blocked_contributed_dco";
 
 /// Where a pull request came from. A pull request the importer has not marked
 /// is `Internal`: that is what everything written inside the forge is, and the
@@ -203,6 +210,9 @@ fn may_mark(account: &AccountSummary, importers: &[String]) -> bool {
 /// Where a pull request's origin leaves its merge gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::web) struct OriginPosture {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
     pub origin: PullOrigin,
     pub set_by: Option<String>,
     pub set_at: Option<String>,
@@ -211,6 +221,10 @@ pub(in crate::web) struct OriginPosture {
     /// Maintainer logins the site configured, so a reader of a hold can tell
     /// "nobody has approved yet" from "no maintainer list exists".
     pub maintainers: Vec<String>,
+    /// The maintainer who said `ok-to-test` for this exact head, if any.
+    pub ok_to_test_by: Option<String>,
+    /// The DCO sign-off check, computed only for a contributed head.
+    pub dco: Option<DcoVerdict>,
 }
 
 impl OriginPosture {
@@ -221,11 +235,49 @@ impl OriginPosture {
     /// True while a contributed pull request has no maintainer approval on
     /// this head. Internal pull requests are never held by this gate.
     pub(in crate::web) fn blocks_merge(&self) -> bool {
-        self.contributed() && self.maintainer_approvals == 0
+        self.contributed()
+            && (self.maintainer_approvals == 0
+                || self.ok_to_test_by.is_none()
+                || self.dco.as_ref().is_some_and(|dco| !dco.passed()))
     }
 
-    pub(in crate::web) fn blocker(&self) -> Option<MergePassportBlocker> {
-        if !self.blocks_merge() {
+    /// Whether the gate may start on this head: an internal pull request
+    /// always, a contribution only after a maintainer's `ok-to-test`.
+    pub(in crate::web) fn gate_may_start(&self) -> bool {
+        !self.contributed() || self.ok_to_test_by.is_some()
+    }
+
+    pub(in crate::web) fn blockers(&self) -> Vec<MergePassportBlocker> {
+        let mut blockers = Vec::new();
+        if !self.contributed() {
+            return blockers;
+        }
+        if self.ok_to_test_by.is_none() {
+            blockers.push(MergePassportBlocker {
+                code: NOT_OK_TO_TEST_BLOCKER.to_string(),
+                message: "This pull request came from outside the forge: its gate does not \
+                          start until a configured maintainer says ok-to-test for this exact \
+                          head."
+                    .to_string(),
+                details: Some(format!(
+                    "POST /api/v1/repos/{}/{}/pulls/{}/ok-to-test",
+                    self.owner, self.repo, self.number
+                )),
+            });
+        }
+        if let Some(DcoVerdict::Fail(message)) = &self.dco {
+            blockers.push(MergePassportBlocker {
+                code: DCO_BLOCKER.to_string(),
+                message: message.clone(),
+                details: Some(DCO_CONTEXT.to_string()),
+            });
+        }
+        blockers.extend(self.approval_blocker());
+        blockers
+    }
+
+    fn approval_blocker(&self) -> Option<MergePassportBlocker> {
+        if self.maintainer_approvals > 0 {
             return None;
         }
         let details = if self.maintainers.is_empty() {
@@ -244,7 +296,14 @@ impl OriginPosture {
     }
 
     pub(in crate::web) fn reason(&self) -> Option<String> {
-        self.blocks_merge().then(|| {
+        if !self.blocks_merge() {
+            return None;
+        }
+        Some(if self.ok_to_test_by.is_none() {
+            "contributed pull request without a maintainer's ok-to-test on this head".to_string()
+        } else if self.dco.as_ref().is_some_and(|dco| !dco.passed()) {
+            "contributed pull request with commits missing a DCO sign-off".to_string()
+        } else {
             "contributed pull request without a maintainer approval on this head".to_string()
         })
     }
@@ -254,26 +313,14 @@ impl OriginPosture {
 /// treated as a contribution: a trust marking nobody can read is not a reason
 /// to let a merge through.
 pub(in crate::web) fn posture(state: &WebState, pr: &PullRequest) -> OriginPosture {
-    let stored = match state.pull_origin.get(&pr.owner, &pr.repo, pr.number) {
-        Ok(stored) => stored,
-        Err(_) => Some(StoredOrigin {
-            origin: PullOrigin::Contributed,
-            set_by: String::new(),
-            set_ms: 0,
-        }),
-    };
-    let origin = stored.as_ref().map_or_else(
-        || {
-            if crate::github_pull_import::contrib_number(&pr.head.ref_name).is_some() {
-                PullOrigin::Contributed
-            } else {
-                PullOrigin::Internal
-            }
-        },
-        |row| row.origin,
-    );
+    let stored = stored_origin(state, pr);
+    let origin = origin_of(stored.as_ref(), pr);
     let maintainers = state.pull_maintainers.as_ref().clone();
+    let contributed = origin == PullOrigin::Contributed;
     OriginPosture {
+        owner: pr.owner.clone(),
+        repo: pr.repo.clone(),
+        number: pr.number,
         origin,
         set_by: stored
             .as_ref()
@@ -285,7 +332,43 @@ pub(in crate::web) fn posture(state: &WebState, pr: &PullRequest) -> OriginPostu
             .map(|row| rfc3339_ms(row.set_ms)),
         maintainer_approvals: maintainer_approvals(state, pr, &maintainers),
         maintainers,
+        ok_to_test_by: contributed
+            .then(|| state.ok_to_test.allowed_by(pr))
+            .flatten(),
+        dco: contributed.then(|| pull_contrib::dco_verdict(state, pr)),
     }
+}
+
+/// The stored marking. A store that cannot be read reads as a contribution:
+/// a trust marking nobody can read is not a reason to let a merge through.
+fn stored_origin(state: &WebState, pr: &PullRequest) -> Option<StoredOrigin> {
+    match state.pull_origin.get(&pr.owner, &pr.repo, pr.number) {
+        Ok(stored) => stored,
+        Err(_) => Some(StoredOrigin {
+            origin: PullOrigin::Contributed,
+            set_by: String::new(),
+            set_ms: 0,
+        }),
+    }
+}
+
+fn origin_of(stored: Option<&StoredOrigin>, pr: &PullRequest) -> PullOrigin {
+    stored.map_or_else(
+        || {
+            if crate::github_pull_import::contrib_number(&pr.head.ref_name).is_some() {
+                PullOrigin::Contributed
+            } else {
+                PullOrigin::Internal
+            }
+        },
+        |row| row.origin,
+    )
+}
+
+/// Whether this pull request is a contribution, without the review and
+/// sign-off reads a full [`posture`] does.
+pub(in crate::web) fn is_contributed(state: &WebState, pr: &PullRequest) -> bool {
+    origin_of(stored_origin(state, pr).as_ref(), pr) == PullOrigin::Contributed
 }
 
 /// Effective approvals on the exact head whose author is a configured
@@ -318,6 +401,12 @@ struct OriginResponse {
     maintainer_approved: bool,
     maintainer_approvals: u32,
     maintainers: Vec<String>,
+    /// The maintainer who said ok-to-test for this exact head, if any. The
+    /// gate does not start on a contribution until then.
+    ok_to_test_by: Option<String>,
+    /// `pass` or `fail` for a contribution's DCO sign-offs; `None` otherwise.
+    dco: Option<&'static str>,
+    dco_detail: Option<String>,
     /// Why the merge is held by this gate, or `None`.
     merge_hold: Option<String>,
     head_sha: String,
@@ -332,6 +421,15 @@ fn origin_response(posture: &OriginPosture, pr: &PullRequest) -> OriginResponse 
         maintainer_approved: posture.maintainer_approvals > 0,
         maintainer_approvals: posture.maintainer_approvals,
         maintainers: posture.maintainers.clone(),
+        ok_to_test_by: posture.ok_to_test_by.clone(),
+        dco: posture
+            .dco
+            .as_ref()
+            .map(|dco| if dco.passed() { "pass" } else { "fail" }),
+        dco_detail: match &posture.dco {
+            Some(DcoVerdict::Fail(message)) => Some(message.clone()),
+            _ => None,
+        },
         merge_hold: posture.reason(),
         head_sha: pr.head.sha.clone(),
     }

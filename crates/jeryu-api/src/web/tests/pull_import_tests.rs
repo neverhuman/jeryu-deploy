@@ -363,10 +363,15 @@ async fn a_mirror_pull_request_is_imported_as_a_contributed_forge_pull_request()
 
     // GitHub hears the gate's answer and the review posture.
     let statuses = github.statuses();
-    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses.len(), 2);
     assert_eq!(statuses[0].0, head);
     assert_eq!(statuses[0].1.context, "jeryu/forge-gate");
     assert_eq!(statuses[0].1.state.wire_name(), "pending");
+    assert_eq!(
+        statuses[0].1.description,
+        "waiting for a maintainer to say ok-to-test"
+    );
+    assert_eq!(statuses[1].1.context, "jeryu/dco");
     let comments = github.comments();
     assert_eq!(comments.len(), 1);
     assert!(
@@ -378,7 +383,7 @@ async fn a_mirror_pull_request_is_imported_as_a_contributed_forge_pull_request()
     // A second pass with nothing new changes nothing and says nothing twice.
     let again = crate::web::pull_import::import_once(&state);
     assert_eq!(imported(&again, 7).action, ImportAction::Unchanged);
-    assert_eq!(github.statuses().len(), 1);
+    assert_eq!(github.statuses().len(), 2);
     assert_eq!(github.comments().len(), 1);
 }
 
@@ -648,7 +653,7 @@ async fn a_dependabot_pull_request_is_imported_like_any_other_contribution() {
     assert_eq!(origin["maintainer_approved"], false);
     assert_eq!(
         origin["merge_hold"],
-        "contributed pull request without a maintainer approval on this head"
+        "contributed pull request without a maintainer's ok-to-test on this head"
     );
 }
 

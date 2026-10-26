@@ -138,7 +138,7 @@ fn build_bare_repo_with_main_and_feature(
         .expect("create feature file dir");
     std::fs::write(&path, feature_contents).expect("write feature file");
     git(&["add", feature_path], &work);
-    git(&["commit", "--quiet", "-m", "feature"], &work);
+    git(&["commit", "--quiet", "-s", "-m", "feature"], &work);
     let head_sha = git(&["rev-parse", "HEAD"], &work);
     git(
         &[

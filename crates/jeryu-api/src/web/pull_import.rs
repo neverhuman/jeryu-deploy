@@ -139,6 +139,7 @@ pub(crate) struct ImportReportStore {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Reported {
     gate: Option<String>,
+    dco: Option<String>,
     review: Option<String>,
     settled: bool,
 }
@@ -193,6 +194,11 @@ fn interval_from(raw: Option<&str>) -> Option<Duration> {
 /// Walk every enrolled repository once: import what is open on its mirror and
 /// settle what the forge has finished.
 pub(crate) fn import_once(state: &WebState) -> Vec<ImportOutcome> {
+    // With no maintainer to say ok-to-test or approve, an imported contribution
+    // could never be gated or merged, so the importer stays off.
+    if state.pull_maintainers.is_empty() {
+        return Vec::new();
+    }
     let Some(api) = state.github_api.clone() else {
         return Vec::new();
     };
@@ -436,6 +442,7 @@ fn report_back(
     };
     let gate = gate_status(state, &forge_pr);
     let review = review_summary(state, &forge_pr);
+    let dco = dco_status(state, &forge_pr);
     let mut reported = state.import_reports.get(&target.github_slug, pull.number);
     let mut failures = Vec::new();
     let gate_line = format!("{}:{}", gate.state.wire_name(), gate.description);
@@ -443,6 +450,13 @@ fn report_back(
         match api.set_commit_status(&target.github_slug, &pull.head_sha, &gate) {
             Ok(()) => reported.gate = Some(gate_line),
             Err(error) => failures.push(format!("commit status: {error}")),
+        }
+    }
+    let dco_line = format!("{}:{}", dco.state.wire_name(), dco.description);
+    if reported.dco.as_deref() != Some(dco_line.as_str()) {
+        match api.set_commit_status(&target.github_slug, &pull.head_sha, &dco) {
+            Ok(()) => reported.dco = Some(dco_line),
+            Err(error) => failures.push(format!("dco status: {error}")),
         }
     }
     if reported.review.as_deref() != Some(review.as_str()) {
@@ -602,6 +616,13 @@ fn close_reason(state: &WebState, pr: &PullRequest) -> String {
 
 /// The forge gate's answer for a head, as a GitHub commit status.
 fn gate_status(state: &WebState, pr: &PullRequest) -> GithubStatus {
+    if !pull_origin::posture(state, pr).gate_may_start() {
+        return GithubStatus {
+            state: GithubStatusState::Pending,
+            context: GATE_STATUS_CONTEXT.to_string(),
+            description: "waiting for a maintainer to say ok-to-test".to_string(),
+        };
+    }
     let checks = state
         .github
         .core()
@@ -642,6 +663,27 @@ fn gate_status(state: &WebState, pr: &PullRequest) -> GithubStatus {
     }
 }
 
+/// The DCO sign-off check as a GitHub commit status, so the contributor sees
+/// what to fix where they opened the pull request.
+fn dco_status(state: &WebState, pr: &PullRequest) -> GithubStatus {
+    let (state_value, description) = match super::pull_contrib::dco_verdict(state, pr) {
+        super::pull_contrib::DcoVerdict::Pass => (
+            GithubStatusState::Success,
+            "every commit is signed off".to_string(),
+        ),
+        super::pull_contrib::DcoVerdict::Fail(message) => {
+            // GitHub truncates a status description at 140 characters.
+            let short: String = message.chars().take(140).collect();
+            (GithubStatusState::Failure, short)
+        }
+    };
+    GithubStatus {
+        state: state_value,
+        context: super::pull_contrib::DCO_CONTEXT.to_string(),
+        description,
+    }
+}
+
 /// What the maintainers have said, as the comment posted on GitHub.
 fn review_summary(state: &WebState, pr: &PullRequest) -> String {
     let posture = pull_origin::posture(state, pr);
@@ -677,6 +719,16 @@ fn review_summary(state: &WebState, pr: &PullRequest) -> String {
     ));
     if !changes.is_empty() {
         lines.push(format!("- changes requested by: {}", changes.join(", ")));
+    }
+    if !posture.gate_may_start() {
+        lines.push(
+            "- the gate has not started: a configured maintainer has to say ok-to-test for this \
+             exact head."
+                .to_string(),
+        );
+    }
+    if let Some(super::pull_contrib::DcoVerdict::Fail(message)) = &posture.dco {
+        lines.push(format!("- {message}"));
     }
     lines.push(if posture.maintainer_approvals > 0 {
         "- a maintainer has approved this head; it can merge on the forge once the gate is green."
@@ -819,6 +871,9 @@ pub(super) async fn events(
             "the event names no repository or no pull request number",
         );
     };
+    if state.pull_maintainers.is_empty() {
+        return ignored("the importer is off: no JERYU_PULL_MAINTAINERS are configured");
+    }
     let Some(api) = state.github_api.clone() else {
         return ignored("the importer is off on this forge");
     };

@@ -180,6 +180,19 @@ fn path_for(blocker: &MergePassportBlocker, pr: &PullRequest) -> OwnerBlockerPat
              Being an administrator of the repository is not that list."
                 .to_string(),
         ),
+        "passport_blocked_contributed_not_ok_to_test" => (
+            false,
+            "A login on the configured maintainer list has to say ok-to-test for this exact \
+             head (POST .../ok-to-test). Being an administrator of the repository is not that \
+             list."
+                .to_string(),
+        ),
+        "passport_blocked_contributed_dco" => (
+            false,
+            "The contributor has to sign off every commit (`git commit -s`) and push again. \
+             No approval changes it."
+                .to_string(),
+        ),
         "passport_blocked_mergeability" => (
             false,
             format!(

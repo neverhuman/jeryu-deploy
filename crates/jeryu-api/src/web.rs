@@ -44,6 +44,7 @@ mod permissions;
 mod pipeline;
 mod principals;
 mod proxy_trust;
+mod pull_contrib;
 mod pull_import;
 mod pull_origin;
 mod pulls;
@@ -231,6 +232,10 @@ pub(crate) struct WebState {
     /// (`JERYU_PULL_MAINTAINERS`), resolved once at startup. Empty holds every
     /// contribution for a person to look at.
     pub(crate) pull_maintainers: Arc<Vec<String>>,
+    /// Which contributed heads a maintainer has allowed the gate to start on.
+    pub(crate) ok_to_test: pull_contrib::OkToTestStore,
+    /// DCO sign-off verdicts per contributed head.
+    pub(crate) dco_cache: pull_contrib::DcoCache,
     /// The address each account owns and whether it is proved, plus the
     /// single-use recovery and verification links (`<data_dir>/shift.sqlite`,
     /// `account_emails`).
@@ -449,6 +454,8 @@ impl WebState {
             pull_origin,
             pull_importers: Arc::new(pull_origin::importers_from_env()),
             pull_maintainers: Arc::new(pull_origin::maintainers_from_env()),
+            ok_to_test: pull_contrib::OkToTestStore::default(),
+            dco_cache: pull_contrib::DcoCache::default(),
             account_email,
             // A test must never send mail, and must be able to read what the
             // handler built; production reads the operator's configuration.
@@ -1310,6 +1317,11 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         (
             "/api/v1/repos/:id/pulls/:number/owner-paths",
             get(pulls::owner_paths::show),
+        ),
+        // A maintainer lets the gate start on a contributed head.
+        (
+            "/api/v1/repos/:id/pulls/:number/ok-to-test",
+            post(pull_contrib::ok_to_test),
         ),
         // Where this pull request came from. The importer marks a contribution
         // brought in from a mirror; the marking is never the author's.

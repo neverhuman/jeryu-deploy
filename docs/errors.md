@@ -126,6 +126,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `forge_validation` | 422 | the forge rejected the request fields |
 | `git_error` | 500 | a git operation failed |
 | `git_source_failed` | 500 | reading repository source from git failed |
+| `head_moved` | 409 | the pull request head moved since you looked at it |
 | `host_launch_denied` | 403 | managed agent or terminal execution on the host is denied |
 | `human_minutes_read_failed` | 500 | the change outcome ledger behind the human minutes report could not be read |
 | `idempotency_conflict` | 409 | the Idempotency-Key was used with a different request |
@@ -168,12 +169,14 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `not_a_file` | 422 | the path names a directory, not a file |
 | `not_acceptable` | 406 | the Accept header excludes the JSON this route answers |
 | `not_claimed` | 409 | a claim needs the caller's live repository poller; a result needs the original claimant |
+| `not_contributed` | 409 | only a contributed pull request waits for ok-to-test |
 | `not_found` | 404 | the requested entity was not found |
 | `not_open` | 409 | the pull request is not open |
 | `not_queued` | 409 | the pull request is not in the merge queue |
 | `not_retryable` | 409 | auto-pin has not requested a human retry for this repository and head |
 | `release_queue_full` | 429 | cancel a pending release ask or wait for an outcome; the queue is bounded |
 | `not_staged` | 409 | the forge has no record of this release being staged for the repository |
+| `ok_to_test_required` | 409 | a contributed head is gated only after a maintainer says ok-to-test |
 | `origin_denied` | 403 | a cookie-authenticated WebSocket came from another origin |
 | `outcomes_read_failed` | 500 | the outcome ledger behind the change outcomes report could not be read |
 | `password_change_required` | 403 | the account must change its password first |
@@ -202,6 +205,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `pull_import_github_unreachable` | 502 | the pull request could not be read from GitHub |
 | `pull_import_importer_required` | 403 | only an admin or a JERYU_PULL_IMPORTERS login may deliver mirror pull request events |
 | `pull_import_invalid_request` | 422 | the mirror pull request event body failed validation |
+| `pull_maintainer_required` | 403 | only a login on the JERYU_PULL_MAINTAINERS list may say ok-to-test |
 | `pull_merge_invalid_request` | 422 | the merge body failed validation |
 | `pull_origin_author_forbidden` | 403 | a pull request's own author may not mark its origin |
 | `pull_origin_importer_required` | 403 | only an admin or a JERYU_PULL_IMPORTERS login may mark a pull request's origin |

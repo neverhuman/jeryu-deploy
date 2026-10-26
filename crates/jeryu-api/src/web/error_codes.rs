@@ -281,6 +281,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "reading repository source from git failed",
     ),
     entry(
+        "head_moved",
+        409,
+        "the pull request head moved since you looked at it",
+    ),
+    entry(
         "host_launch_denied",
         403,
         "managed agent or terminal execution on the host is denied",
@@ -462,6 +467,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         409,
         "only a claimed release action takes a result",
     ),
+    entry(
+        "not_contributed",
+        409,
+        "only a contributed pull request waits for ok-to-test",
+    ),
     entry("not_found", 404, "the requested entity was not found"),
     entry("not_open", 409, "the pull request is not open"),
     entry(
@@ -478,6 +488,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "not_staged",
         409,
         "the forge has no record of this release being staged for the repository",
+    ),
+    entry(
+        "ok_to_test_required",
+        409,
+        "a contributed head is gated only after a maintainer says ok-to-test",
     ),
     entry(
         "origin_denied",
@@ -618,6 +633,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "pull_import_invalid_request",
         422,
         "the mirror pull request event body failed validation",
+    ),
+    entry(
+        "pull_maintainer_required",
+        403,
+        "only a login on the JERYU_PULL_MAINTAINERS list may say ok-to-test",
     ),
     entry(
         "pull_merge_invalid_request",

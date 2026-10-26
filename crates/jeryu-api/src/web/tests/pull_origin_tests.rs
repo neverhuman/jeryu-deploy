@@ -23,6 +23,7 @@ async fn both_rest_merge_edges_require_a_maintainer() {
             chrono::Utc::now().timestamp_millis(),
         )
         .unwrap();
+    say_ok_to_test(&state, "edge-hold", number);
     let base = bare_ref(storage.path(), "acme", "edge-hold", "refs/heads/main");
     for prefix in ["", "/api/v3"] {
         let uri = format!("{prefix}/repos/acme/edge-hold/pulls/{number}/merge")
@@ -172,6 +173,16 @@ async fn mark_origin(
     .await
 }
 
+/// A maintainer says ok-to-test for the pull request's current head.
+fn say_ok_to_test(state: &WebState, name: &str, number: u64) {
+    let pr = state
+        .github
+        .core()
+        .get_pull_request("acme", name, number)
+        .unwrap();
+    state.ok_to_test.record(&pr, "maintainer");
+}
+
 fn blocker_codes(detail: &Value) -> Vec<String> {
     detail["merge_passport"]["blockers"]
         .as_array()
@@ -217,6 +228,7 @@ async fn a_contributed_pull_waits_for_a_maintainer_however_clean_its_review() {
     assert_eq!(marked["contributed"], true);
     assert_eq!(marked["set_by"], "importbot");
     assert_eq!(marked["maintainer_approved"], false);
+    say_ok_to_test(&state, "widget", number);
 
     // `bob`'s approval is on the exact head and nothing else blocks, but bob
     // is not a maintainer, so the gate holds and says why.
@@ -468,12 +480,294 @@ async fn without_a_maintainer_list_no_contribution_merges() {
     .await;
     assert_eq!(detail["merge_passport"]["status"], "blocked");
     let blockers = detail["merge_passport"]["blockers"].as_array().unwrap();
-    assert_eq!(blockers[0]["code"], "passport_blocked_contributed_origin");
+    let approval = blockers
+        .iter()
+        .find(|blocker| blocker["code"] == "passport_blocked_contributed_origin")
+        .expect("the approval hold is listed");
     assert!(
-        blockers[0]["details"]
+        approval["details"]
             .as_str()
             .unwrap()
             .contains("JERYU_PULL_MAINTAINERS"),
         "{blockers:?}",
     );
+}
+
+async fn post_ok_to_test(
+    state: &Arc<WebState>,
+    id: &str,
+    number: u64,
+    login: &str,
+    body: &str,
+) -> AxumResponse {
+    crate::web::pull_contrib::ok_to_test(
+        State(state.clone()),
+        authenticated_account(login),
+        AxumPath((id.to_string(), number)),
+        axum::body::Bytes::from(body.to_string()),
+    )
+    .await
+}
+
+/// The gate waits for a maintainer: only a login on the list can say
+/// ok-to-test, the word is bound to the exact head, and until it is said the
+/// forge neither signals the runner nor honours a re-gate.
+#[tokio::test]
+async fn only_a_maintainers_ok_to_test_starts_a_contributed_gate() {
+    let storage = tempfile::tempdir().expect("git storage dir");
+    let (core, repo, number, head) = forge_with_approved_pull(storage.path(), "gated");
+    let state = Arc::new(
+        WebState::new_with_git_storage(core.clone(), storage.path().to_path_buf())
+            .with_pull_trust(&["importbot"], &["maintainer"]),
+    );
+    let id = repo.id.to_string();
+    assert_eq!(
+        mark_origin(
+            &state,
+            &id,
+            number,
+            authenticated_account("importbot"),
+            "contributed"
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let pr = core.get_pull_request("acme", "gated", number).unwrap();
+    assert!(!crate::web::pull_contrib::gate_may_start(&state, &pr));
+    let detail = response_json(
+        crate::web::pulls::detail(
+            State(state.clone()),
+            authenticated_account("bob"),
+            AxumPath((id.clone(), number)),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        blocker_codes(&detail).contains(&"passport_blocked_contributed_not_ok_to_test".to_string()),
+        "{detail:?}"
+    );
+
+    // A re-gate is refused while nobody has said ok-to-test.
+    let regate = crate::web::regate::request(
+        State(state.clone()),
+        authenticated_admin_account("root"),
+        AxumPath((id.clone(), number)),
+    )
+    .await;
+    assert_eq!(regate.status(), StatusCode::CONFLICT);
+
+    // The author, an admin and an ordinary reviewer are not maintainers.
+    for login in ["outsider", "bob", "root"] {
+        let refused = post_ok_to_test(&state, &id, number, login, "").await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{login}");
+        assert_eq!(
+            response_json(refused).await["code"],
+            "pull_maintainer_required"
+        );
+    }
+    assert!(!crate::web::pull_contrib::gate_may_start(&state, &pr));
+
+    // A head the maintainer did not look at is refused.
+    let moved = post_ok_to_test(
+        &state,
+        &id,
+        number,
+        "maintainer",
+        &serde_json::json!({ "head_sha": "0".repeat(40) }).to_string(),
+    )
+    .await;
+    assert_eq!(moved.status(), StatusCode::CONFLICT);
+    assert_eq!(response_json(moved).await["code"], "head_moved");
+
+    let seq = state.gate_wanted.seq();
+    let allowed = post_ok_to_test(
+        &state,
+        &id,
+        number,
+        "maintainer",
+        &serde_json::json!({ "head_sha": head }).to_string(),
+    )
+    .await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    let allowed = response_json(allowed).await;
+    assert_eq!(allowed["ok_to_test_by"], "maintainer");
+    assert_eq!(allowed["dco"], "pass");
+    assert!(crate::web::pull_contrib::gate_may_start(&state, &pr));
+    let (_, signals) = state.gate_wanted.since(seq);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].source, "ok_to_test");
+    assert_eq!(signals[0].sha, head);
+
+    // A new head is a new question: the earlier word does not carry over.
+    let mut moved_pr = pr.clone();
+    moved_pr.head.sha = "1".repeat(40);
+    assert!(!crate::web::pull_contrib::gate_may_start(&state, &moved_pr));
+
+    // An internal pull request never waits.
+    let mut internal = pr.clone();
+    internal.head.ref_name = "feature".to_string();
+    state
+        .pull_origin
+        .set(
+            "acme",
+            "gated",
+            number,
+            crate::web::pull_origin::PullOrigin::Internal,
+            "root",
+            1,
+        )
+        .unwrap();
+    let denied = post_ok_to_test(&state, &id, number, "maintainer", "").await;
+    assert_eq!(denied.status(), StatusCode::CONFLICT);
+    assert!(crate::web::pull_contrib::gate_may_start(&state, &internal));
+}
+
+/// A push to a contribution branch does not wake the gate runner.
+#[test]
+fn a_push_to_a_contribution_branch_sends_no_gate_signal() {
+    let storage = tempfile::tempdir().expect("git storage dir");
+    let state = WebState::new_with_git_storage(ForgeCore::new(), storage.path().to_path_buf());
+    let update = |branch: &str| crate::ci_bridge::RefUpdate {
+        ref_name: format!("refs/heads/{branch}"),
+        old_oid: crate::ci_bridge::ZERO_OID.to_string(),
+        new_oid: "a".repeat(40),
+    };
+    crate::web::gate_wanted::record_push(
+        &state,
+        "acme",
+        "gated.git",
+        &[update("contrib/gh-7"), update("topic")],
+    );
+    let (_, signals) = state.gate_wanted.since(0);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].ref_name.as_deref(), Some("refs/heads/topic"));
+}
+
+/// A contribution whose commit has no matching sign-off is held with a message
+/// that names the commit and the fix; a matching sign-off clears it.
+#[tokio::test]
+async fn an_unsigned_contribution_fails_the_dco_check() {
+    let storage = tempfile::tempdir().expect("git storage dir");
+    let core = ForgeCore::new();
+    let repo = core
+        .create_repository(
+            "acme",
+            CreateRepositoryRequest {
+                name: "unsigned".to_string(),
+                private: false,
+                description: None,
+                default_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    let (base_sha, _) = build_bare_repo_with_main_and_feature(
+        storage.path(),
+        "acme",
+        "unsigned",
+        "src/a.rs",
+        "pub fn a() {}\n",
+    );
+    // Two more commits on the bare repository's feature branch: one signed by
+    // somebody other than its author, one signed by its author.
+    let bare = storage.path().join("acme").join("unsigned.git");
+    let work = storage.path().join("dco-work");
+    git_in(
+        storage.path(),
+        &[
+            "clone",
+            "--quiet",
+            bare.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    git_in(&work, &["checkout", "--quiet", "feature"]);
+    write_file(&work, "src/b.rs", "pub fn b() {}\n");
+    git_in(&work, &["add", "src/b.rs"]);
+    git_in(
+        &work,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "add b\n\nSigned-off-by: Someone Else <else@example.test>",
+        ],
+    );
+    let unsigned_head = git_in(&work, &["rev-parse", "HEAD"]);
+    git_in(&work, &["push", "--quiet", "origin", "feature"]);
+    let pr = core
+        .create_pull_request(
+            "acme",
+            "unsigned",
+            "outsider",
+            CreatePullRequestRequest {
+                title: "add b".to_string(),
+                head: "contrib/gh-9".to_string(),
+                base: "main".to_string(),
+                head_sha: Some(unsigned_head.clone()),
+                base_sha: Some(base_sha.clone()),
+                changed_files: vec!["src/b.rs".to_string()],
+                ..CreatePullRequestRequest::default()
+            },
+        )
+        .unwrap();
+    let state = Arc::new(
+        WebState::new_with_git_storage(core.clone(), storage.path().to_path_buf())
+            .with_pull_trust(&["importbot"], &["maintainer"]),
+    );
+    let id = repo.id.to_string();
+    let allowed =
+        response_json(post_ok_to_test(&state, &id, pr.number, "maintainer", "").await).await;
+    assert_eq!(allowed["dco"], "fail");
+    let message = allowed["dco_detail"].as_str().unwrap();
+    assert!(message.contains(&unsigned_head[..12]), "{message}");
+    assert!(message.contains("git commit -s"), "{message}");
+
+    let detail = response_json(
+        crate::web::pulls::detail(
+            State(state.clone()),
+            authenticated_account("bob"),
+            AxumPath((id.clone(), pr.number)),
+        )
+        .await,
+    )
+    .await;
+    let dco = detail["merge_passport"]["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|blocker| blocker["code"] == "passport_blocked_contributed_dco")
+        .expect("the DCO blocker is listed");
+    assert!(
+        dco["message"]
+            .as_str()
+            .unwrap()
+            .contains("DCO sign-off missing")
+    );
+
+    // The mismatched sign-off is amended to the author's own: the check passes.
+    git_in(
+        &work,
+        &["commit", "--quiet", "--amend", "-s", "-m", "add b"],
+    );
+    let signed_head = git_in(&work, &["rev-parse", "HEAD"]);
+    git_in(&work, &["push", "--quiet", "--force", "origin", "feature"]);
+    let mut signed = core
+        .get_pull_request("acme", "unsigned", pr.number)
+        .unwrap();
+    signed.head.sha = signed_head;
+    assert_eq!(
+        crate::web::pull_contrib::dco_verdict(&state, &signed),
+        crate::web::pull_contrib::DcoVerdict::Pass
+    );
+}
+
+/// With no maintainers the importer does nothing at all.
+#[test]
+fn the_importer_is_off_without_maintainers() {
+    let storage = tempfile::tempdir().expect("git storage dir");
+    let state = WebState::new_with_git_storage(ForgeCore::new(), storage.path().to_path_buf())
+        .with_pull_trust(&["importbot"], &[]);
+    assert!(crate::web::pull_import::import_once(&state).is_empty());
 }
