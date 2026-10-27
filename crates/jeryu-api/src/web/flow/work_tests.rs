@@ -199,6 +199,21 @@ fn work_shows_only_what_the_queue_and_the_ledger_say_is_in_progress() {
                 rework_to: None,
                 pr: Some(8),
             },
+            // Landed, staged, the deployment failed and sent it back to
+            // Stage; meanwhile a follow-up waits at Review. The re-entered
+            // Stage visit is no landing, so the follow-up stays.
+            Row {
+                left: Some(T0 + 11 * H),
+                ..todo_row("t-restaged", "stage", T0 + 10 * H, None)
+            },
+            Row {
+                left: Some(T0 + 13 * H),
+                direction: "rework",
+                rework_to: Some("stage"),
+                ..todo_row("t-restaged", "deploy", T0 + 11 * H, None)
+            },
+            todo_row("t-restaged", "review", T0 + 12 * H, None),
+            todo_row("t-restaged", "stage", T0 + 13 * H, None),
         ],
     );
     // t-merged's ghost was closed by today's landing.
@@ -287,6 +302,11 @@ fn work_shows_only_what_the_queue_and_the_ledger_say_is_in_progress() {
     assert_eq!(
         lots("shift"),
         [("t-shift".to_string(), "waiting".to_string())]
+    );
+    assert_eq!(
+        lots("review"),
+        [("t-restaged".to_string(), "waiting".to_string())],
+        "a Stage visit re-entered after a failed deployment is no landing"
     );
     let mut gate = lots("gate");
     gate.sort();

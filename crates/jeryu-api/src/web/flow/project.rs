@@ -218,7 +218,8 @@ pub(crate) struct EventView<'a> {
     pub sha: Option<&'a str>,
     pub summary: Option<&'a str>,
     /// The producer's `detail` object, which the outcome ledger reads
-    /// (`web/outcomes/project.rs`); the flow fold ignores it.
+    /// (`web/outcomes/project.rs`). The flow fold reads `state` and
+    /// `todo_status` from it ([`event_steps`]) and the holder of a hold.
     pub detail: Option<&'a serde_json::Value>,
 }
 
@@ -244,6 +245,20 @@ pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), Stri
     }
     for (lot, joined) in lots_for(conn, event)? {
         release_on_new_head(conn, event, &lot)?;
+        // A claim of a todo held at Work is a new attempt: the hold ended
+        // when the todo went back to the queue, so the held visit closes as
+        // rework to Queue and the claim opens a fresh Work visit, its own
+        // start and process time.
+        if event.kind == "todo.claimed" && held_at(conn, &lot.id, Station::Work)? {
+            close(
+                conn,
+                event,
+                &lot,
+                Station::Work,
+                "rework",
+                Some(Station::Queue),
+            )?;
+        }
         // A lot that joins an open pull request's new head leaves Shift and
         // waits for review of that head, as it would have had it been on the
         // branch when the pull request opened.
@@ -852,6 +867,17 @@ fn open_visit(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )
     .optional()
+    .map_err(|err| err.to_string())
+}
+
+/// The lot's open visit to the station is held.
+fn held_at(conn: &Connection, lot_id: &str, station: Station) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM flow_ledger WHERE lot_id = ?1 AND station = ?2
+            AND left_ms IS NULL AND direction = 'hold')",
+        params![lot_id, station.id()],
+        |row| row.get(0),
+    )
     .map_err(|err| err.to_string())
 }
 

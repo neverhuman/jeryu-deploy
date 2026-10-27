@@ -173,7 +173,8 @@ impl EventStore {
         let inner = self.inner.lock().expect("pipeline event mutex poisoned");
         // `landed`: a landing entered the lot at Stage after this visit
         // entered (today's fold leaves every upstream station on a landing;
-        // binaries before that left Queue..Shift open). `back_from`: the
+        // binaries before that left Queue..Shift open). A Stage visit a
+        // failed staging or deployment sent the lot back to is no landing. `back_from`: the
         // station whose rework arc sent the lot to Work.
         let mut stmt = inner
             .conn
@@ -183,7 +184,10 @@ impl EventStore {
                         v.todo_id IS NOT NULL,
                         EXISTS(SELECT 1 FROM flow_ledger s
                                 WHERE s.lot_id = v.lot_id AND s.station = 'stage'
-                                  AND s.seq > v.seq AND s.entered_ms >= v.entered_ms),
+                                  AND s.seq > v.seq AND s.entered_ms >= v.entered_ms
+                                  AND NOT EXISTS(SELECT 1 FROM flow_ledger r
+                                       WHERE r.lot_id = s.lot_id AND r.rework_to = 'stage'
+                                         AND r.left_ms = s.entered_ms)),
                         (SELECT r.station FROM flow_ledger r
                           WHERE r.lot_id = v.lot_id AND r.rework_to = 'work'
                             AND r.left_ms <= v.entered_ms

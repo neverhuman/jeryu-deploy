@@ -109,6 +109,11 @@ pub(crate) fn read(visit: &OpenVisit, todo: Option<&ShiftTodo>, elsewhere: bool)
         return Reading::Current;
     }
     if !visit.todo {
+        // Only a pull request is not Work's; a row that names neither a
+        // todo nor a pull request keeps its recorded state.
+        if visit.pr.is_none() {
+            return Reading::Current;
+        }
         if elsewhere {
             return Reading::Leaves(Why::PullRequestElsewhere);
         }
@@ -306,5 +311,10 @@ mod tests {
             read(&visit, None, false),
             Reading::Leaves(Why::PullRequestNotWork)
         );
+        // A row naming neither a todo nor a pull request is left as recorded.
+        visit.pr = None;
+        visit.repo = None;
+        visit.back_from = Some("gate".into());
+        assert_eq!(read(&visit, None, true), Reading::Current);
     }
 }

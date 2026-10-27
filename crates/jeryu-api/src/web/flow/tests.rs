@@ -2793,3 +2793,42 @@ fn an_attempt_that_left_its_todo_blocked_holds_it_at_work() {
             .any(|visit| visit.left_ms.is_none())
     );
 }
+
+/// A todo held at Work after giving up, unblocked in the queue (no event) and
+/// claimed again: the claim is a new attempt. The held visit closes as rework
+/// to Queue and the new Work visit starts on the new attempt's beat, so live
+/// work is not read as held and its process time is its own.
+#[test]
+fn a_claim_of_a_held_todo_opens_a_fresh_work_visit() {
+    let (_dir, store) = store();
+    let todo = "20261013-215619-d47080";
+    post_detail(&store, todo, "todo.claimed", None, serde_json::json!({}), 0);
+    beat(&store, todo, "working", Some("agent"), 1);
+    post_detail(
+        &store,
+        todo,
+        "todo.attempt_finished",
+        Some("retry"),
+        serde_json::json!({"todo_status": "blocked"}),
+        400,
+    );
+    post_detail(
+        &store,
+        todo,
+        "todo.claimed",
+        None,
+        serde_json::json!({}),
+        9_000,
+    );
+    beat(&store, todo, "working", Some("agent"), 9_010);
+    let visits = visits_of(&store);
+    let work = at(&visits, Station::Work);
+    assert_eq!(work.len(), 2, "{visits:?}");
+    assert_eq!(work[0].direction, "rework");
+    assert_eq!(work[0].rework_to, Some(Station::Queue));
+    assert_eq!(work[0].left_ms, Some(START + 9_000_000));
+    assert!(work[1].left_ms.is_none());
+    assert_eq!(work[1].direction, "open");
+    assert_eq!(work[1].entered_ms, START + 9_000_000);
+    assert_eq!(work[1].started_ms, Some(START + 9_010_000));
+}

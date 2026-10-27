@@ -533,9 +533,18 @@ A closed todo stays with the closure overlay: its raw `merged` flag is no proof
 that its work landed. `work_reconciled` counts the visits this changed, scoped
 to the repository filter: `landed_left`, `done_left`, `blocked_held`,
 `open_waiting`, `pull_requests_held_where_stopped` and `pull_requests_left`. A
-visit already in the state it is read as is not counted. Station WIP, lots,
-`repository_wip` and topology all read the same answer; history bars and the
-Scorecard still read the ledger as recorded.
+visit already in the state it is read as is not counted. Station WIP, lots and
+`repository_wip` read the same answer, with one exception: a visit already held
+for a recorded reason (`superseded`) keeps that hold in station WIP and lots,
+where `repository_wip` counts it waiting. Topology only drops visits that left;
+a pull request shown held at Gate or Review is still at Work in its station set.
+A visit read as waiting, or moved to the station that stopped it, loses its
+recorded start in the report, so it no longer gives a queue-wait sample, and a
+moved visit's arrival counts toward its new station's oldest wait. History
+bars and the Scorecard still read the ledger as recorded. A Stage visit that a
+failed staging or deployment sent the lot back to is not a landing. A claim of
+a todo held at Work closes the hold as rework to Queue and opens a fresh Work
+visit for the new attempt.
 
 ## Closed work and disposition
 
