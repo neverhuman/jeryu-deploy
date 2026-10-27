@@ -602,8 +602,8 @@ refresh_bump() {
     && detail="$(api GET "/api/v1/repos/$repo_path/pulls/$n")" \
     && required_failed "$n" "$row" "$detail" \
     && refresh_unqueued "$n" "$detail" \
-    && [ "$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)" = "$sha" ] \
-    && [ "$(git ls-remote "$remote" refs/heads/main | cut -f1)" = "$main" ] \
+    && [ "$(remote_ref "$remote" "refs/heads/$branch")" = "$sha" ] \
+    && [ "$(remote_ref "$remote" refs/heads/main)" = "$main" ] \
     || { say "bump #$n or main changed during refresh; skipping"; return 0; }
   git -C "$co" push -q "$remote" "HEAD:refs/heads/$branch" \
     || { say "bump #$n refresh push refused; will reconsider next tick"; return 1; }

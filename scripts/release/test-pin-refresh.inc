@@ -2,6 +2,8 @@
 refresh_main="$(git -C "$P/deploy.git" rev-parse main)"
 refresh_before="$(git -C "$P/deploy.git" rev-parse "$b1")"
 git -C "$P/web.git" update-ref refs/heads/main "$h1"
+refresh_green="$(git -C "$P/web.git" rev-parse refs/green/main)"
+git -C "$P/web.git" update-ref refs/green/main "$h1" # the gate proved this web head
 echo 'security fix' >"$P/deploy/Cargo.lock"
 g "$P/deploy" add Cargo.lock; g "$P/deploy" commit -q -m 'fix audited dependency'
 g "$P/deploy" push -q "$P/deploy.git" main
@@ -124,5 +126,6 @@ git -C "$P/deploy.git" update-ref "refs/heads/$b1" "$refresh_after^1"
 git -C "$P/deploy.git" update-ref refs/heads/main "$refresh_main"
 git -C "$P/deploy" checkout -q -B main "$refresh_main"
 git -C "$P/web.git" update-ref refs/heads/main "$h2"
+git -C "$P/web.git" update-ref refs/green/main "$refresh_green"
 undo_bump
 ok "same-head failed bumps incorporate main without rewriting history or losing ownership, rebuild on a recipe change, and back off"
