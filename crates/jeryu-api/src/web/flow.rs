@@ -18,6 +18,7 @@ pub(crate) mod project;
 pub(crate) mod report;
 pub(crate) mod stations;
 pub(crate) mod topology;
+pub(crate) mod work;
 
 #[cfg(test)]
 mod hold_tests;
@@ -25,6 +26,8 @@ mod hold_tests;
 mod tests;
 #[cfg(test)]
 mod topology_tests;
+#[cfg(test)]
+mod work_tests;
 
 use std::sync::Arc;
 
@@ -258,6 +261,9 @@ pub(crate) async fn flow(
             .events
             .flow_open_lifecycle(read_family.as_deref())?;
         let lifecycle = closure::snapshot(&worker_state, &open, read_repo.as_deref());
+        // Work follows the todo's recorded state (`work`): a held todo is
+        // held, an unclaimed one waits, and a done or landed one has left.
+        lifecycle.settle(&mut visits);
         // Topology is configuration, so it covers the family scope whatever the
         // repository filter is: a drilldown must not hide the other repositories
         // a product delivers. Only current visits count as work in flight.
@@ -300,6 +306,7 @@ pub(crate) async fn flow(
                 serde_json::json!(lifecycle.total_records > lifecycle.items.len());
             body["closures"] = serde_json::json!(lifecycle.items);
             body["lifecycle_problems"] = serde_json::json!(lifecycle.problems);
+            body["work_reconciled"] = serde_json::json!(lifecycle.work);
             body["topology"] = serde_json::json!(shape);
             body["repo"] = serde_json::json!(repo);
             Json(body).into_response()

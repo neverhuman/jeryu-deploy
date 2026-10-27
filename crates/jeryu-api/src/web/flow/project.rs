@@ -162,6 +162,40 @@ pub(crate) fn steps(kind: &str, outcome: Option<&str>) -> Vec<Step> {
     }
 }
 
+/// What one stored event means for the route: [`steps`], refined by the two
+/// facts the event's own `detail` carries that its kind and outcome do not.
+///
+/// - A `worker.stage` beat moves a lot only while the slot says it is
+///   `working`. The forge names the todo the slot *was* on when a slot goes
+///   idle, stops or pauses (`shift::visibility::stage_event`), and that beat
+///   arrives right after `todo.attempt_finished` closed the Work visit, so
+///   reading it as a claim opened a second Work visit that nothing ever
+///   closed. A beat that does not say which state the slot is in is read as
+///   before.
+/// - A finished attempt that left its todo `blocked` (`detail.todo_status`,
+///   which todoq records after a `retry` or `incomplete` gave up) is a hold
+///   at Work, not a trip back to Queue: no slot will claim it until a person
+///   acts. An `incomplete` attempt that left the todo claimable goes back to
+///   Queue like a retry.
+pub(crate) fn event_steps(event: &EventView<'_>) -> Vec<Step> {
+    let detail = |key: &str| {
+        event
+            .detail
+            .and_then(|d| d.get(key))
+            .and_then(serde_json::Value::as_str)
+    };
+    match event.kind {
+        "worker.stage" if detail("state").is_some_and(|state| state != "working") => Vec::new(),
+        "todo.attempt_finished" if detail("todo_status") == Some("blocked") => {
+            vec![Step::Hold(Station::Work)]
+        }
+        "todo.attempt_finished" if event.outcome == Some("incomplete") => {
+            vec![Step::Rework(Station::Work, Station::Queue)]
+        }
+        _ => steps(event.kind, event.outcome),
+    }
+}
+
 /// The event fields the projection reads. Built from a `NewEvent` on the
 /// insert path and from a stored row on the replay path, so both folds see
 /// exactly the same thing.
@@ -201,7 +235,7 @@ pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), Stri
         )
         .map_err(|e| e.to_string())?;
     }
-    let steps = steps(event.kind, event.outcome);
+    let steps = event_steps(event);
     if steps.is_empty() {
         return Ok(());
     }

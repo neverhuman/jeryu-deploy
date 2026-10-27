@@ -2611,3 +2611,185 @@ fn a_station_with_no_work_in_progress_is_never_the_bottleneck() {
     assert!(!of("deploy").bottleneck);
     assert!(of("gate").bottleneck);
 }
+
+/// Post a todoq or forge event about `todo` with the `detail` its producer
+/// writes, `at_s` seconds after [`START`].
+fn post_detail(
+    store: &EventStore,
+    todo: &str,
+    kind: &str,
+    outcome: Option<&str>,
+    detail: Value,
+    at_s: i64,
+) {
+    let forge = kind == "worker.stage";
+    store
+        .insert(
+            if forge { "forge" } else { "operator" },
+            &NewEvent {
+                source: if forge { "forge" } else { "todoq" }.to_string(),
+                kind: kind.to_string(),
+                summary: format!("{kind} on {todo}"),
+                outcome: outcome.map(str::to_string),
+                family: Some("acme".to_string()),
+                repo: (kind == "todo.attempt_finished").then(|| "acme/widget".to_string()),
+                todo_id: Some(todo.to_string()),
+                shift: Some(format!("todo/{todo}")),
+                event_id: (!forge).then(|| format!("todoq:{todo}:{kind}:{at_s}")),
+                detail: Some(detail),
+                ..NewEvent::default()
+            },
+            START + at_s * 1000,
+        )
+        .unwrap();
+}
+
+/// The beats a slot sends through one attempt, as the forge turns them into
+/// `worker.stage` events: working through prepare..record, then idle on the
+/// same todo once the attempt is recorded.
+fn beat(store: &EventStore, todo: &str, state: &str, stage: Option<&str>, at_s: i64) {
+    post_detail(
+        store,
+        todo,
+        "worker.stage",
+        None,
+        serde_json::json!({"host": "build-1", "state": state, "stage": stage}),
+        at_s,
+    );
+}
+
+/// The live sequence of one finished attempt (2026-10-26, a jeryu todo):
+/// `todo.attempt_finished` `done`, then 3 s later the slot's `record -> idle on
+/// <todo>` beat. Older binaries read that beat as a claim and opened a second
+/// Work visit nothing closed; it must leave the lot at Shift only.
+#[test]
+fn a_slot_going_idle_after_its_attempt_does_not_reopen_work() {
+    let (_dir, store) = store();
+    let todo = "20261026-204743-068333";
+    post_detail(&store, todo, "todo.claimed", None, serde_json::json!({}), 0);
+    for (stage, at) in [
+        ("prepare", 0),
+        ("agent", 1),
+        ("gate", 139),
+        ("land", 141),
+        ("record", 144),
+    ] {
+        beat(&store, todo, "working", Some(stage), at);
+    }
+    post_detail(
+        &store,
+        todo,
+        "todo.attempt_finished",
+        Some("done"),
+        serde_json::json!({"todo_status": "done"}),
+        145,
+    );
+    beat(&store, todo, "idle", None, 148);
+    let visits = visits_of(&store);
+    let work = at(&visits, Station::Work);
+    assert_eq!(work.len(), 1, "{visits:?}");
+    assert_eq!(work[0].left_ms, Some(START + 145_000));
+    assert_eq!(work[0].direction, "forward");
+    let shift = at(&visits, Station::Shift);
+    assert_eq!(shift.len(), 1);
+    assert!(shift[0].left_ms.is_none());
+
+    // A paused or stopping slot names its todo too, and says nothing more.
+    beat(&store, todo, "paused", None, 200);
+    beat(&store, todo, "stopping", None, 201);
+    assert_eq!(at(&visits_of(&store), Station::Work).len(), 1);
+}
+
+/// A beat that does not say what state the slot is in is read as it always
+/// was: the slot is on the todo.
+#[test]
+fn a_beat_without_a_state_still_starts_work() {
+    let (_dir, store) = store();
+    post_detail(
+        &store,
+        "t-1",
+        "todo.claimed",
+        None,
+        serde_json::json!({}),
+        0,
+    );
+    post_detail(
+        &store,
+        "t-1",
+        "worker.stage",
+        None,
+        serde_json::json!({}),
+        1,
+    );
+    let visits = visits_of(&store);
+    let work = at(&visits, Station::Work);
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].started_ms, Some(START + 1000));
+}
+
+/// The live sequence of a todo that gave up (2026-10-14): `retry` with
+/// `detail.todo_status = "blocked"` ("blocked after repeated failures"). It is
+/// held at Work, not sent to Queue where no slot will claim it. An
+/// `incomplete` attempt that left the todo claimable goes back to Queue.
+#[test]
+fn an_attempt_that_left_its_todo_blocked_holds_it_at_work() {
+    let (_dir, store) = store();
+    let todo = "20261013-215619-d47080";
+    post_detail(&store, todo, "todo.claimed", None, serde_json::json!({}), 0);
+    beat(&store, todo, "working", Some("agent"), 1);
+    post_detail(
+        &store,
+        todo,
+        "todo.attempt_finished",
+        Some("retry"),
+        serde_json::json!({"todo_status": "blocked"}),
+        400,
+    );
+    beat(&store, todo, "idle", None, 401);
+    let visits = visits_of(&store);
+    let work = at(&visits, Station::Work);
+    assert_eq!(work.len(), 1, "{visits:?}");
+    assert!(work[0].left_ms.is_none());
+    assert_eq!(work[0].direction, "hold");
+    assert!(
+        at(&visits, Station::Queue)
+            .iter()
+            .all(|visit| visit.left_ms.is_some()),
+        "a blocked todo is not back in the queue"
+    );
+
+    let other = "20261021-140225-e5a884";
+    post_detail(
+        &store,
+        other,
+        "todo.claimed",
+        None,
+        serde_json::json!({}),
+        500,
+    );
+    beat(&store, other, "working", Some("agent"), 501);
+    post_detail(
+        &store,
+        other,
+        "todo.attempt_finished",
+        Some("incomplete"),
+        serde_json::json!({"todo_status": "open"}),
+        900,
+    );
+    beat(&store, other, "idle", None, 901);
+    let visits = visits_of(&store);
+    let mine = |station| -> Vec<&Visit> {
+        at(&visits, station)
+            .into_iter()
+            .filter(|visit| visit.lot_id == other)
+            .collect()
+    };
+    assert_eq!(mine(Station::Work).len(), 1);
+    assert_eq!(mine(Station::Work)[0].direction, "rework");
+    assert_eq!(mine(Station::Work)[0].rework_to, Some(Station::Queue));
+    assert!(
+        mine(Station::Queue)
+            .iter()
+            .any(|visit| visit.left_ms.is_none())
+    );
+}

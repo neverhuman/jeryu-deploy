@@ -18,6 +18,12 @@ pub(crate) struct OpenVisit {
     pub family: Option<String>,
     pub started: bool,
     pub held: bool,
+    /// The ledger names a todo for the lot (not a bare pull request).
+    pub todo: bool,
+    /// A landing entered the lot at Stage after this visit entered.
+    pub landed: bool,
+    /// For a Work visit: the station whose rework arc sent the lot there.
+    pub back_from: Option<String>,
 }
 impl OpenVisit {
     fn key(&self) -> (String, String, i64) {
@@ -45,6 +51,11 @@ pub(crate) struct Closure {
 }
 pub(crate) struct Snapshot {
     pub excluded: BTreeSet<(String, String, i64)>,
+    /// Open visits the todo's recorded state moves ([`super::work`]); a
+    /// visit that leaves is in `excluded` instead.
+    pub readings: BTreeMap<(String, String, i64), super::work::Reading>,
+    /// What [`super::work`] changed, scoped to the repository filter.
+    pub work: super::work::Reconciled,
     pub items: Vec<Closure>,
     pub repositories: serde_json::Value,
     pub problems: Vec<String>,
@@ -251,14 +262,20 @@ pub(crate) fn snapshot(
     }
     let families: BTreeSet<_> = open
         .iter()
-        .filter(|v| v.pr.is_none())
+        .filter(|v| v.pr.is_none() || (v.todo && v.station == "work"))
         .filter_map(|v| v.family.as_deref().map(canonical))
         .collect();
     let facts = state.events.flow_lifecycle_cache().get(state, &families);
     let todos = &facts.todos;
     let problems = facts.problems.clone();
+    let mut open_per_lot: BTreeMap<&str, usize> = BTreeMap::new();
+    for v in open {
+        *open_per_lot.entry(v.lot.as_str()).or_default() += 1;
+    }
     let mut result = Snapshot {
         excluded: BTreeSet::new(),
+        readings: BTreeMap::new(),
+        work: super::work::Reconciled::default(),
         items: Vec::new(),
         repositories: serde_json::json!([]),
         problems,
@@ -346,15 +363,41 @@ pub(crate) fn snapshot(
                     needs_attention,
                 });
             }
-        } else if let Some(repo) = &v.repo {
-            let row = counts.entry((repo.clone(), v.station.clone())).or_default();
-            row[if v.held {
-                2
-            } else if v.started {
-                1
-            } else {
-                0
-            }] += 1;
+        } else {
+            use super::work::Reading;
+            let todo = v
+                .family
+                .as_ref()
+                .filter(|_| v.todo)
+                .and_then(|f| todos.get(&(canonical(f), v.lot.clone())));
+            let elsewhere = open_per_lot.get(v.lot.as_str()).is_some_and(|n| *n > 1);
+            let reading = super::work::read(v, todo, elsewhere);
+            if repo_filter.is_none_or(|r| v.repo.as_deref() == Some(r)) {
+                result.work.count(reading);
+            }
+            let (station, held, started) = match reading {
+                Reading::Leaves(_) => {
+                    result.excluded.insert(v.key());
+                    continue;
+                }
+                Reading::Current => (v.station.clone(), v.held, v.started),
+                Reading::Held => (v.station.clone(), true, v.started),
+                Reading::Waiting => (v.station.clone(), false, false),
+                Reading::HeldAt(at) => (at.id().to_string(), true, false),
+            };
+            if reading != Reading::Current {
+                result.readings.insert(v.key(), reading);
+            }
+            if let Some(repo) = &v.repo {
+                let row = counts.entry((repo.clone(), station)).or_default();
+                row[if held {
+                    2
+                } else if started {
+                    1
+                } else {
+                    0
+                }] += 1;
+            }
         }
     }
     if !missing.is_empty() {
@@ -374,6 +417,29 @@ impl Snapshot {
     /// [`Snapshot::is_current`] applies to a report visit.
     pub fn is_current_open(&self, v: &OpenVisit) -> bool {
         !self.excluded.contains(&v.key())
+    }
+    /// Apply [`Self::readings`] to the report's visits: a held todo is held,
+    /// an unclaimed one waits, and a pull request no todo carries is held at
+    /// the station that stopped it. A recorded hold reason is kept; a visit
+    /// already held for a reason (`superseded`) is not made to wait.
+    pub fn settle(&self, visits: &mut [Visit]) {
+        use super::work::Reading;
+        for v in visits.iter_mut().filter(|v| v.left_ms.is_none()) {
+            let key = (v.lot_id.clone(), v.station.id().to_string(), v.entered_ms);
+            match self.readings.get(&key) {
+                Some(Reading::Held) => v.direction = "hold".to_string(),
+                Some(Reading::Waiting) if v.hold.is_none() => {
+                    v.direction = "open".to_string();
+                    v.started_ms = None;
+                }
+                Some(Reading::HeldAt(station)) => {
+                    v.station = *station;
+                    v.direction = "hold".to_string();
+                    v.started_ms = None;
+                }
+                _ => {}
+            }
+        }
     }
     pub fn is_current(&self, v: &Visit) -> bool {
         !self
@@ -418,6 +484,9 @@ mod tests {
             family: Some("acme".into()),
             started: true,
             held: false,
+            todo: true,
+            landed: false,
+            back_from: None,
         };
         for family in ["acme", "Acme-split"] {
             open.family = Some(family.into());
@@ -464,7 +533,10 @@ mod tests {
         let reopened = snapshot(&state, &[open], None);
         assert!(reopened.excluded.is_empty());
         assert!(reopened.problems.is_empty());
-        assert_eq!(reopened.repositories[0]["active"], 1);
+        // Reopened and unclaimed: back in the line, waiting for a slot.
+        assert_eq!(reopened.repositories[0]["waiting"], 1);
+        assert_eq!(reopened.repositories[0]["active"], 0);
+        assert_eq!(reopened.work.open_waiting, 1);
     }
 
     #[test]

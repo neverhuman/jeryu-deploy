@@ -171,7 +171,28 @@ impl EventStore {
         family: Option<&str>,
     ) -> Result<Vec<crate::web::flow::closure::OpenVisit>, String> {
         let inner = self.inner.lock().expect("pipeline event mutex poisoned");
-        let mut stmt = inner.conn.prepare("SELECT lot_id,station,entered_ms,repo,pr,family,started_ms IS NOT NULL,direction='hold' FROM flow_ledger WHERE left_ms IS NULL AND (?1 IS NULL OR family=?1) ORDER BY entered_ms,seq").map_err(|e|e.to_string())?;
+        // `landed`: a landing entered the lot at Stage after this visit
+        // entered (today's fold leaves every upstream station on a landing;
+        // binaries before that left Queue..Shift open). `back_from`: the
+        // station whose rework arc sent the lot to Work.
+        let mut stmt = inner
+            .conn
+            .prepare(
+                "SELECT v.lot_id, v.station, v.entered_ms, v.repo, v.pr, v.family,
+                        v.started_ms IS NOT NULL, v.direction = 'hold',
+                        v.todo_id IS NOT NULL,
+                        EXISTS(SELECT 1 FROM flow_ledger s
+                                WHERE s.lot_id = v.lot_id AND s.station = 'stage'
+                                  AND s.seq > v.seq AND s.entered_ms >= v.entered_ms),
+                        (SELECT r.station FROM flow_ledger r
+                          WHERE r.lot_id = v.lot_id AND r.rework_to = 'work'
+                            AND r.left_ms <= v.entered_ms
+                          ORDER BY r.left_ms DESC, r.seq DESC LIMIT 1)
+                   FROM flow_ledger v
+                  WHERE v.left_ms IS NULL AND (?1 IS NULL OR v.family = ?1)
+                  ORDER BY v.entered_ms, v.seq",
+            )
+            .map_err(|e| e.to_string())?;
         stmt.query_map(params![family], |r| {
             Ok(crate::web::flow::closure::OpenVisit {
                 lot: r.get(0)?,
@@ -182,11 +203,21 @@ impl EventStore {
                 family: r.get(5)?,
                 started: r.get(6)?,
                 held: r.get(7)?,
+                todo: r.get(8)?,
+                landed: r.get(9)?,
+                back_from: r.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())
+    }
+    /// Test-only: run `f` on the store's connection, to seed ledger rows in
+    /// the shapes older binaries wrote.
+    #[cfg(test)]
+    pub(crate) fn with_conn_for_test<R>(&self, f: impl FnOnce(&Connection) -> R) -> R {
+        let inner = self.inner.lock().expect("pipeline event mutex poisoned");
+        f(&inner.conn)
     }
     #[cfg(test)]
     pub(crate) fn flow_repositories(

@@ -29,6 +29,9 @@ fn visit(lot: &str, station: &str, at: Option<&str>, pr: Option<u64>) -> OpenVis
         family: Some("jeryu".into()),
         started: false,
         held: false,
+        todo: false,
+        landed: false,
+        back_from: None,
     }
 }
 

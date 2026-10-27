@@ -232,7 +232,7 @@ numbers.
 | # | Station | Trace stages | Enters when | Starts when | Leaves when | Tool (runner label) | Rework back to |
 |---|---|---|---|---|---|---|---|
 | 1 | Queue | `filed` | `todo.filed` | `todo.claimed` | `todo.claimed` | worker slots (shift heartbeats) | — |
-| 2 | Work | `claimed`, `done` | `todo.claimed` | `worker.stage` → agent | `todo.attempt_finished` `done` | worker slots | Queue on `retry`, `killed`, `ratelimit`, `retarget` |
+| 2 | Work | `claimed`, `done` | `todo.claimed` | `worker.stage` (slot `working`) → agent | `todo.attempt_finished` `done` | worker slots | Queue on `retry`, `incomplete`, `killed`, `ratelimit`, `retarget`; held when the attempt left the todo `blocked` |
 | 3 | Shift | `shift` | landed on a shift branch | — | `pr.opened` for the shift | shift PR opener | — |
 | 4 | Review | `review` | `pr.opened` / new head | `review.started` | `review.finished` / `pr.review` | reviewer (`redteam`) | Work when a new head follows a hold |
 | 5 | Gate | `gate` | head needs its required context | `gate.started` | `gate.finished` | gate slots (no label) | Work when a new head follows a failure |
@@ -492,6 +492,50 @@ membership. A valid lock without a web entry correlates the direct deploy tip.
 An unreadable lock or invalid declared web pin defers correlation; a
 partial direct-deploy match cannot be cached as complete.
 
+
+## Work follows the todo
+
+Work shows a lot as in progress only while the queue and the ledger say it is.
+Two gaps in older projections left Work visits open that no event closes:
+
+- **A slot going idle reopened Work.** When a slot goes idle, stops or pauses,
+  the forge's `worker.stage` event names the todo the slot was on
+  (`record -> idle on <todo>`), a few seconds after `todo.attempt_finished`
+  closed the visit. The projection read that beat as a claim and opened a
+  second Work visit. Now only a beat whose `detail.state` is `working` enters
+  or starts Work; a beat that names no state is read as before.
+- **Landings left upstream stations open.** Until every upstream station was
+  left on a landing (`queue.landed`, `pr.merged`, `todo.merged`), a landing only
+  entered Stage, so Queue, Work and Shift stayed open beside it. Migration
+  0020's repair joined on the pull request and so missed `todo.merged`, which
+  names none.
+
+A finished attempt that left its todo `blocked` (`detail.todo_status`, after a
+`retry` or `incomplete` that gave up) now holds the lot at Work instead of
+sending it to Queue, and an `incomplete` attempt that left the todo claimable
+goes back to Queue like a retry.
+
+The ledger is never rewritten for this. Like the closure overlay below, the
+response reads each open visit against the ledger and the family's queue (the
+same 30-second todo cache), and nothing it cannot prove changes:
+
+| What is recorded | What Flow shows |
+|---|---|
+| a landing entered the lot at Stage after the visit entered (any station Queue to Merge) | left: today's projection closes it on the landing |
+| the todo is `done` | left Work: it waits at Shift or Review on its shift pull request, or is off the line once that lands |
+| the todo is `blocked`, `handoff` or `parked` | held at Work |
+| the todo is `open`, or `claimed` with a lapsed lease | waiting at Work |
+| the todo is `claimed` with a live lease | active, as recorded (`claim` says whether a live slot backs it) |
+| a pull request no todo carries | not at Work. Direct pull requests enter at Review, and no worker claims them. Older projections sent one to Work on a red gate, a held review or a refused replay; today's holds it where it stopped. So it is shown held at the station whose rework arc sent it, or left out when the lot already sits at another station |
+| the queue does not answer for the todo | as recorded |
+
+A closed todo stays with the closure overlay: its raw `merged` flag is no proof
+that its work landed. `work_reconciled` counts the visits this changed, scoped
+to the repository filter: `landed_left`, `done_left`, `blocked_held`,
+`open_waiting`, `pull_requests_held_where_stopped` and `pull_requests_left`. A
+visit already in the state it is read as is not counted. Station WIP, lots,
+`repository_wip` and topology all read the same answer; history bars and the
+Scorecard still read the ledger as recorded.
 
 ## Closed work and disposition
 
