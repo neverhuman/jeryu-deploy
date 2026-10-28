@@ -6,7 +6,7 @@
 //! account that comes out holds its address already proved.
 
 use super::account_email_tests::{
-    Forge, audited_forge, forge, forge_with_mailer, forge_with_policy, json_reply,
+    Forge, audited_forge, forge, forge_with_mailer, forge_with_policy, forgot, json_reply,
     newest_link_secret, send, verify_address,
 };
 use super::*;
@@ -94,14 +94,7 @@ async fn start_then_signup_creates_an_account_with_a_proved_address() {
     assert!(stored.is_verified(), "the address arrives proved");
 
     let before = forge.mailer.sent().len();
-    let (status, _) = json_reply(
-        &forge.router,
-        HttpMethod::POST,
-        "/api/v1/auth/password/forgot",
-        None,
-        Some(&json!({ "email": "grace@example.com" })),
-    )
-    .await;
+    let (status, _) = forgot(&forge, "grace@example.com").await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let sent = forge.mailer.sent();
     assert_eq!(sent.len(), before + 1, "the proved address can recover");

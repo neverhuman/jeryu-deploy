@@ -217,11 +217,45 @@ impl MailTransport for SpoolTransport {
 #[derive(Default)]
 struct RecordingTransport {
     sent: std::sync::Mutex<Vec<(String, String)>>,
+    /// When set, a message is not recorded until the test lets it through.
+    gate: Option<MailGate>,
+}
+
+/// Test-only: holds a message inside the transport until a test releases it,
+/// so the test can prove a route answered without waiting for the send.
+///
+/// `deliver` runs on a blocking thread (see [`Mailer::send`]), so waiting
+/// here holds no asynchronous task.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct MailGate {
+    inner: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+#[cfg(test)]
+impl MailGate {
+    fn wait(&self) {
+        let (released, waiters) = &*self.inner;
+        let mut released = released.lock().expect("mail gate mutex poisoned");
+        while !*released {
+            released = waiters.wait(released).expect("mail gate mutex poisoned");
+        }
+    }
+
+    /// Let every held message, and every later one, through.
+    pub(crate) fn release(&self) {
+        let (released, waiters) = &*self.inner;
+        *released.lock().expect("mail gate mutex poisoned") = true;
+        waiters.notify_all();
+    }
 }
 
 #[cfg(test)]
 impl MailTransport for RecordingTransport {
     fn deliver(&self, rendered: &str, to: &str) -> Result<(), String> {
+        if let Some(gate) = &self.gate {
+            gate.wait();
+        }
         self.sent
             .lock()
             .expect("recording mail mutex poisoned")
@@ -360,6 +394,27 @@ impl Mailer {
             })),
             recording: Some(recording),
         }
+    }
+
+    /// Test-only: a recording mailer that holds each message in its transport
+    /// until the returned gate is released.
+    #[cfg(test)]
+    pub(crate) fn recording_held() -> (Self, MailGate) {
+        let gate = MailGate::default();
+        let recording = Arc::new(RecordingTransport {
+            sent: std::sync::Mutex::default(),
+            gate: Some(gate.clone()),
+        });
+        let mailer = Self {
+            inner: Some(Arc::new(Configured {
+                from: "jeryu <no-reply@jeryu.test>".to_string(),
+                base_url: "https://jeryu.test".to_string(),
+                brand: MailBrand::default(),
+                transport: recording.clone(),
+            })),
+            recording: Some(recording),
+        };
+        (mailer, gate)
     }
 
     /// Test-only: a configured mailer whose transport refuses every message,

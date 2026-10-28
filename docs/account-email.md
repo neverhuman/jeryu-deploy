@@ -179,6 +179,13 @@ message actually left are all invisible to the caller and recorded in the
 audit log instead. A malformed address is the same answer, because refusing it
 would tell a caller which of its guesses this forge would even store.
 
+The answer carries no timing of any of that either. Once the rate limits are
+checked, the handler spawns the look-up, the link and the hand-over to the
+host's mailer and answers at once (`crates/jeryu-api/src/web/background.rs`),
+so an address nobody has proved costs a caller the same wait as one that just
+received a link. An operator reads the outcome in the audit log, never in the
+response.
+
 An unspendable link — expired, already spent, never issued, or offered for the
 wrong purpose — is one refusal: `422 reset_link_invalid` or
 `422 verification_link_invalid`.
@@ -197,7 +204,10 @@ wrong purpose — is one refusal: `422 reset_link_invalid` or
   or proved owner still gives an authenticated claimant `409`; password
   recovery continues to answer identically for known and unknown addresses.
 - A reset link is only ever sent to a **proved** address, so taking over an
-  unproved address takes over no account.
+  unproved address takes over no account. It is never in a response body:
+  only the message carries it.
+- The answer to a reset request is sent before the message is, so its timing
+  reveals nothing about the address.
 - Claiming an address, proving one, or finishing a reset retires that
   account's other outstanding links.
 - A finished reset goes through core's administrative reset, which rotates the

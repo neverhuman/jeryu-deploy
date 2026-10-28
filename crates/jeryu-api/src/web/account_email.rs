@@ -17,7 +17,9 @@
 //!   in, and the link already names the account.
 //! - `POST /api/v1/auth/password/forgot`: send a reset link. Open, and
 //!   answers `202 {"result":"sent"}` for every well-formed request, so the
-//!   response says nothing about whether an account has that address.
+//!   response says nothing about whether an account has that address. It
+//!   answers before the sending starts, so the response time says nothing
+//!   either (`web/background.rs`).
 //! - `POST /api/v1/auth/password/reset`: spend a reset link and set the
 //!   password.
 //!
@@ -36,6 +38,8 @@
 //!   links, so an older link in an older mailbox stops working.
 //! - Nothing here writes a secret or an address to a log, and the rate-limit
 //!   keys hold a digest of the address rather than the address.
+//! - Recovery is rate limited before anything is looked up, and a reset link
+//!   never reaches the caller: it goes only to the address an account proved.
 //!
 //! Sign-up from a proved address (`super::signup`) and the administrator's
 //! mailed reset (`super::admin_reset`) are built on this store.
@@ -669,6 +673,12 @@ pub(super) async fn verify_email(
 /// actually left are all invisible to the caller. A malformed address is the
 /// same answer, because refusing it would tell a caller which of its guesses
 /// are even addresses this forge would store.
+///
+/// The answer also carries no *timing* of any of that: looking the address
+/// up, issuing a link and handing a message to the host's mailer all happen
+/// after the response, on a spawned task (`web/background.rs`). An address no
+/// account has proved therefore costs a caller the same wait as one that just
+/// received a link.
 pub(super) async fn forgot_password(
     State(state): State<Arc<WebState>>,
     peer: Option<ConnectInfo<SocketAddr>>,
@@ -680,7 +690,10 @@ pub(super) async fn forgot_password(
         return rate_limited();
     }
     if let Some(address) = address {
-        issue_reset(&state, &address).await;
+        let worker = Arc::clone(&state);
+        state
+            .background
+            .spawn(async move { issue_reset(&worker, &address).await });
     }
     (StatusCode::ACCEPTED, Json(json!({ "result": "sent" }))).into_response()
 }

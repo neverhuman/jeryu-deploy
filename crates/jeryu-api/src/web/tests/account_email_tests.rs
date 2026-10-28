@@ -10,6 +10,7 @@
 
 use super::*;
 use crate::web::account_email::{AccountEmailStore, LinkPurpose};
+use crate::web::background::Background;
 use crate::web::mail::Mailer;
 use crate::web::signup_policy::SignupPolicy;
 use axum::body::Body;
@@ -27,6 +28,8 @@ pub(super) struct Forge {
     pub(super) core: ForgeCore,
     /// A personal access token for `ada`, the account under test.
     pub(super) ada: String,
+    /// The sending that `POST …/password/forgot` answers without waiting for.
+    pub(super) background: Background,
 }
 
 pub(super) fn forge() -> Forge {
@@ -63,6 +66,7 @@ pub(super) fn forge_with_policy(mailer: Mailer, core: ForgeCore, policy: SignupP
     state.mailer = mailer.clone();
     state.signup_policy = policy;
     let store = state.account_email.clone();
+    let background = state.background.clone();
     let router = app(state, Path::new("/tmp/jeryu-no-spa"));
     Forge {
         router,
@@ -70,6 +74,7 @@ pub(super) fn forge_with_policy(mailer: Mailer, core: ForgeCore, policy: SignupP
         mailer,
         core,
         ada,
+        background,
     }
 }
 
@@ -127,6 +132,31 @@ pub(super) fn newest_link_secret(mailer: &Mailer) -> String {
         .next()
         .expect("the link carries a secret")
         .to_string()
+}
+
+/// Ask for a reset link, then wait for the sending the request deliberately
+/// did not wait for, so the test reads what the request caused
+/// (`web/background.rs`).
+pub(super) async fn forgot(forge: &Forge, email: &str) -> (StatusCode, Value) {
+    let (status, _, bytes) = forgot_raw(forge, email).await;
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// [`forgot`], with the whole answer, for the proofs about its bytes.
+pub(super) async fn forgot_raw(forge: &Forge, email: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let answer = send(
+        &forge.router,
+        HttpMethod::POST,
+        "/api/v1/auth/password/forgot",
+        None,
+        Some(&json!({ "email": email })),
+    )
+    .await;
+    forge.background.settled().await;
+    answer
 }
 
 /// Claim an address and follow its verification link, as a person does.
@@ -189,14 +219,7 @@ async fn a_person_verifies_an_address_then_recovers_with_it() {
         "the verified state is persisted and read back: {body}"
     );
 
-    let (status, body) = json_reply(
-        &forge.router,
-        HttpMethod::POST,
-        "/api/v1/auth/password/forgot",
-        None,
-        Some(&json!({ "email": "ADA@example.com" })),
-    )
-    .await;
+    let (status, body) = forgot(&forge, "ADA@example.com").await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let sent = forge.mailer.sent();
     let (to, rendered) = sent.last().expect("a reset message was sent");
@@ -237,14 +260,7 @@ async fn a_person_verifies_an_address_then_recovers_with_it() {
 async fn a_replayed_reset_link_fails_and_leaves_the_password_alone() {
     let forge = forge();
     verify_address(&forge, "ada@example.com").await;
-    json_reply(
-        &forge.router,
-        HttpMethod::POST,
-        "/api/v1/auth/password/forgot",
-        None,
-        Some(&json!({ "email": "ada@example.com" })),
-    )
-    .await;
+    forgot(&forge, "ada@example.com").await;
     let secret = newest_link_secret(&forge.mailer);
     let (status, _) = json_reply(
         &forge.router,
@@ -409,14 +425,7 @@ async fn the_reset_answer_discloses_no_account_and_an_unproved_address_sends_not
 
     let mut replies = Vec::new();
     for address in ["ada@example.com", "nobody@example.com", "not-an-address"] {
-        let (status, mut headers, bytes) = send(
-            &forge.router,
-            HttpMethod::POST,
-            "/api/v1/auth/password/forgot",
-            None,
-            Some(&json!({ "email": address })),
-        )
-        .await;
+        let (status, mut headers, bytes) = forgot_raw(&forge, address).await;
         // The edge mints a fresh request id per request; everything else must
         // match, so it is the one header dropped before comparing.
         headers.remove("x-request-id");
@@ -460,14 +469,7 @@ async fn reset_requests_are_rate_limited_per_client() {
     verify_address(&forge, "ada@example.com").await;
     let mut statuses = Vec::new();
     for _ in 0..8 {
-        let (status, headers, _) = send(
-            &forge.router,
-            HttpMethod::POST,
-            "/api/v1/auth/password/forgot",
-            None,
-            Some(&json!({ "email": "ada@example.com" })),
-        )
-        .await;
+        let (status, headers, _) = forgot_raw(&forge, "ada@example.com").await;
         statuses.push((status, headers));
     }
     let (limited, headers) = statuses
@@ -507,14 +509,7 @@ async fn spending_a_link_is_rate_limited_per_client() {
 async fn a_refused_password_leaves_the_link_spendable() {
     let forge = forge();
     verify_address(&forge, "ada@example.com").await;
-    json_reply(
-        &forge.router,
-        HttpMethod::POST,
-        "/api/v1/auth/password/forgot",
-        None,
-        Some(&json!({ "email": "ada@example.com" })),
-    )
-    .await;
+    forgot(&forge, "ada@example.com").await;
     let secret = newest_link_secret(&forge.mailer);
     let (status, body) = json_reply(
         &forge.router,
@@ -543,14 +538,7 @@ async fn a_refused_password_leaves_the_link_spendable() {
 async fn a_reset_retires_the_accounts_sessions_and_tokens() {
     let forge = forge();
     verify_address(&forge, "ada@example.com").await;
-    json_reply(
-        &forge.router,
-        HttpMethod::POST,
-        "/api/v1/auth/password/forgot",
-        None,
-        Some(&json!({ "email": "ada@example.com" })),
-    )
-    .await;
+    forgot(&forge, "ada@example.com").await;
     let secret = newest_link_secret(&forge.mailer);
     let (status, _) = json_reply(
         &forge.router,
@@ -651,7 +639,35 @@ async fn an_account_from_before_this_surface_signs_in_and_cannot_recover() {
         None,
         "no backfill may invent an address"
     );
-    let (status, body) = json_reply(
+    let (status, body) = forgot(&forge, "ada@example.com").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert!(
+        forge.mailer.sent().is_empty(),
+        "nothing may be sent for an account with no address"
+    );
+}
+
+/// The answer must not wait for the sending. Looking the address up, issuing
+/// a link and handing the message to the host's mailer all take longer for an
+/// address an account has proved than for one nobody holds, so a caller with
+/// a stopwatch would read from the response time what the body never says.
+#[tokio::test]
+async fn the_forgot_answer_arrives_before_the_message_is_sent() {
+    let (mailer, gate) = Mailer::recording_held();
+    let forge = forge_with_mailer(mailer);
+    // Proved through the store, not through the verification link: that link
+    // would be held by the same gate.
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    forge
+        .store
+        .claim("ada", "ada@example.com", now_ms)
+        .expect("claim the address");
+    forge
+        .store
+        .mark_verified("ada", "ada@example.com", now_ms)
+        .expect("prove the address");
+
+    let (status, _, bytes) = send(
         &forge.router,
         HttpMethod::POST,
         "/api/v1/auth/password/forgot",
@@ -659,10 +675,24 @@ async fn an_account_from_before_this_surface_signs_in_and_cannot_recover() {
         Some(&json!({ "email": "ada@example.com" })),
     )
     .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).expect("a json answer"),
+        json!({ "result": "sent" })
+    );
     assert!(
         forge.mailer.sent().is_empty(),
-        "nothing may be sent for an account with no address"
+        "the answer must not have waited for the message to be handed over"
+    );
+
+    gate.release();
+    forge.background.settled().await;
+    let sent = forge.mailer.sent();
+    let (to, rendered) = sent.last().expect("the held message was then sent");
+    assert_eq!(to, "ada@example.com");
+    assert!(
+        rendered.contains("Subject: Reset your jeryu password"),
+        "{rendered}"
     );
 }
 
@@ -680,14 +710,7 @@ async fn an_unconfigured_mailer_answers_exactly_as_a_configured_one() {
         .store
         .mark_verified("ada", "ada@example.com", now_ms)
         .expect("prove the address");
-    let (status, body) = json_reply(
-        &forge.router,
-        HttpMethod::POST,
-        "/api/v1/auth/password/forgot",
-        None,
-        Some(&json!({ "email": "ada@example.com" })),
-    )
-    .await;
+    let (status, body) = forgot(&forge, "ada@example.com").await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(body, json!({ "result": "sent" }), "{body}");
     let records = forge
@@ -814,14 +837,7 @@ async fn claiming_a_malformed_address_is_refused() {
 async fn no_answer_or_audit_record_carries_the_link() {
     let (forge, _dir) = audited_forge(Mailer::recording());
     verify_address(&forge, "ada@example.com").await;
-    let (_, _, bytes) = send(
-        &forge.router,
-        HttpMethod::POST,
-        "/api/v1/auth/password/forgot",
-        None,
-        Some(&json!({ "email": "ada@example.com" })),
-    )
-    .await;
+    let (_, _, bytes) = forgot_raw(&forge, "ada@example.com").await;
     let secret = newest_link_secret(&forge.mailer);
     assert_eq!(secret.len(), 64);
     let answered = String::from_utf8(bytes).expect("utf-8 body");

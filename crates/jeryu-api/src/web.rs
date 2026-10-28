@@ -5,6 +5,7 @@ mod admin_reset;
 mod agent_presence;
 mod agent_runs;
 pub(crate) mod auth;
+mod background;
 pub(crate) mod bot_token;
 pub(crate) mod bots;
 mod ci_evidence;
@@ -248,6 +249,9 @@ pub(crate) struct WebState {
     /// single-use recovery and verification links (`<data_dir>/shift.sqlite`,
     /// `account_emails`).
     pub(crate) account_email: account_email::AccountEmailStore,
+    /// Work a request started and deliberately did not wait for, so its own
+    /// answer carries no timing of it (`web/background.rs`).
+    pub(crate) background: background::Background,
     /// How a recovery or verification link reaches a person. Unconfigured by
     /// default, in which case those routes answer as they always do and
     /// record that nothing was sent (`docs/account-email.md`).
@@ -457,6 +461,7 @@ impl WebState {
             ok_to_test: pull_contrib::OkToTestStore::default(),
             dco_cache: pull_contrib::DcoCache::default(),
             account_email,
+            background: background::Background::default(),
             // A test must never send mail, and must be able to read what the
             // handler built; production reads the operator's configuration.
             #[cfg(test)]
