@@ -13,8 +13,8 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jeryu_core::{
-    AccountSummary, CheckConclusion, CheckRun, CheckRunStatus, ForgeError, PullRequest,
-    PullRequestState, RecordJankuraiScoreRequest, RepoBranches, Repository, UserRole,
+    AccountSummary, CheckConclusion, CheckRun, CheckRunStatus, CommitStatusState, ForgeError,
+    PullRequest, PullRequestState, RecordJankuraiScoreRequest, RepoBranches, Repository, UserRole,
 };
 use jeryu_gitd::RepoManager;
 use jeryu_gitd::refs::RefService;
@@ -984,38 +984,10 @@ fn summary(
             .latest_jankurai_score(&repo.owner, &repo.name, &repo.default_branch)
     });
     let current = current_check_runs(&pulls, &checks, default_head.as_deref());
-    let required = required_check_names(state, repo);
-    // Mirror bookkeeping has its own field and is on neither side of the count.
-    let scored: Vec<&CheckRun> = current
-        .iter()
-        .copied()
-        .filter(|check| check.name != GITHUB_MIRROR_CHECK)
-        .collect();
-    let is_required = |check: &CheckRun| {
-        required
-            .as_ref()
-            .is_none_or(|names| names.contains(&check.name))
-    };
-    let failing_checks = scored
-        .iter()
-        .filter(|check| is_required(check) && check.conclusion == Some(CheckConclusion::Failure))
-        .count() as u32;
-    // Only a readable protection rule says which checks are advisory; with no
-    // rule to read there is nothing to report apart.
-    let advisory_checks = required.as_ref().map(|_| RepositoryAdvisoryChecks {
-        failing: scored
-            .iter()
-            .filter(|check| {
-                !is_required(check) && check.conclusion == Some(CheckConclusion::Failure)
-            })
-            .count() as u32,
-        passing: scored
-            .iter()
-            .filter(|check| {
-                !is_required(check) && check.conclusion == Some(CheckConclusion::Success)
-            })
-            .count() as u32,
-    });
+    let CheckTally {
+        failing: failing_checks,
+        advisory: advisory_checks,
+    } = check_tally(state, repo, &pulls, &current, default_head.as_deref());
     let running_jobs = current
         .iter()
         .filter(|check| check.status == CheckRunStatus::InProgress)
@@ -1143,26 +1115,169 @@ pub(super) fn family_for_slug(state: &WebState, slug: &str) -> Option<String> {
     effective_family(state, &repo)
 }
 
-/// The check names the default branch's protection rule requires, plus
-/// `jankurai/proof` when the rule or the site insists on it.
+/// How a listing counts the checks on a repository's current heads.
+struct CheckTally {
+    /// Required contexts failing on a current head, one per (head, context).
+    failing: u32,
+    /// Checks a readable rule does not require. `None` when no current head
+    /// is judged by such a rule.
+    advisory: Option<RepositoryAdvisoryChecks>,
+}
+
+/// Count the checks on every current head (each open pull request's head and
+/// the default branch's head) against the protection rule of the base that
+/// head is judged on: a pull request's own base, the default branch for its
+/// head. Rules are read once per base.
 ///
-/// `None` when the rule names nothing it requires — there is no rule, it could
-/// not be read, or it lists no contexts (the auto-protect rule a new
-/// repository gets lists none). Nothing then tells required from advisory, so
-/// the caller counts every current check as required, as the listing did
-/// before advisory results were reported apart; a repository with failing
-/// checks must never read as healthy merely because its rule is silent.
-fn required_check_names(state: &WebState, repo: &Repository) -> Option<BTreeSet<String>> {
+/// A required context resolves the way merge posture resolves it
+/// (`pulls::posture`): from the newest commit status for that context on the
+/// head and base, else the newest check run with that name on the head. It
+/// fails on a `failure`/`error` status or a `failure` check run.
+///
+/// Under a rule that names nothing it requires, nothing tells required from
+/// advisory, so every failing current check run on that head counts as
+/// failing, as the listing did before advisory results were reported apart.
+///
+/// The advisory tally counts only failing and passing check runs, the two
+/// fields `RepositoryAdvisoryChecks` (jeryu-core contract) carries; neutral,
+/// cancelled, skipped, timed-out and running advisory checks are in neither
+/// count. Mirror bookkeeping is on neither side.
+fn check_tally(
+    state: &WebState,
+    repo: &Repository,
+    pulls: &[PullRequest],
+    current: &[&CheckRun],
+    default_head: Option<&str>,
+) -> CheckTally {
+    let mut heads: BTreeSet<(&str, &str)> = pulls
+        .iter()
+        .filter(|pr| pull_is_open(pr))
+        .map(|pr| (pr.head.sha.as_str(), pr.base.ref_name.as_str()))
+        .collect();
+    if let Some(sha) = default_head {
+        heads.insert((sha, repo.default_branch.as_str()));
+    }
+    let core = state.github.core();
+    let mut rules: BTreeMap<&str, Option<BTreeSet<String>>> = BTreeMap::new();
+    let mut failing: BTreeSet<(&str, String)> = BTreeSet::new();
+    let mut advisory_failing: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut advisory_passing: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut any_rule = false;
+    for (sha, base) in heads {
+        let required = rules
+            .entry(base)
+            .or_insert_with(|| required_check_names(state, repo, base));
+        let runs: Vec<&CheckRun> = current
+            .iter()
+            .copied()
+            .filter(|run| run.head_sha == sha && run.name != GITHUB_MIRROR_CHECK)
+            .collect();
+        let Some(names) = required else {
+            for run in runs {
+                if run.conclusion == Some(CheckConclusion::Failure) {
+                    failing.insert((sha, run.name.clone()));
+                }
+            }
+            continue;
+        };
+        any_rule = true;
+        // An unreadable status list leaves every required context unproven,
+        // which the listing counts as failing rather than as healthy.
+        let statuses = core
+            .combined_status_for_base(&repo.owner, &repo.name, sha, base)
+            .map(|combined| combined.statuses);
+        for name in names.iter() {
+            let failed = match &statuses {
+                Err(_) => true,
+                Ok(statuses) => match statuses
+                    .iter()
+                    .filter(|status| status.context == *name)
+                    .max_by_key(|status| status.updated_at)
+                {
+                    Some(status) => matches!(
+                        status.state,
+                        CommitStatusState::Failure | CommitStatusState::Error
+                    ),
+                    None => runs.iter().any(|run| {
+                        run.name == *name && run.conclusion == Some(CheckConclusion::Failure)
+                    }),
+                },
+            };
+            if failed {
+                failing.insert((sha, name.clone()));
+            }
+        }
+        for run in runs.iter().filter(|run| !names.contains(&run.name)) {
+            match run.conclusion {
+                Some(CheckConclusion::Failure) => {
+                    advisory_failing.insert((sha, run.name.as_str()));
+                }
+                Some(CheckConclusion::Success) => {
+                    advisory_passing.insert((sha, run.name.as_str()));
+                }
+                _ => {}
+            }
+        }
+    }
+    CheckTally {
+        failing: failing.len() as u32,
+        advisory: any_rule.then_some(RepositoryAdvisoryChecks {
+            failing: advisory_failing.len() as u32,
+            passing: advisory_passing.len() as u32,
+        }),
+    }
+}
+
+/// The check names `branch`'s protection rule requires, plus `jankurai/proof`
+/// when the rule or the site insists on it.
+///
+/// `None` when the rule itself names nothing it requires: there is no rule, it
+/// could not be read, or it lists no contexts and does not require
+/// `jankurai/proof` (the auto-protect rule a new repository gets lists none).
+/// Silence is decided from the rule alone, before the site-wide audit gate adds
+/// `jankurai/proof`, so a silent rule still falls back to counting every check.
+/// A repository with failing checks must never read as healthy merely because
+/// its rule is silent.
+fn required_check_names(
+    state: &WebState,
+    repo: &Repository,
+    branch: &str,
+) -> Option<BTreeSet<String>> {
     let rule = state
         .github
         .core()
-        .get_branch_protection(&repo.owner, &repo.name, &repo.default_branch)
+        .get_branch_protection(&repo.owner, &repo.name, branch)
         .ok()?;
-    let mut required: BTreeSet<String> = rule.required_status_checks.into_iter().collect();
-    if rule.require_jankurai_proof || super::audit_gate_enforced_for(&repo.owner, &repo.name) {
+    required_from_rule(
+        &rule,
+        super::audit_gate_enforced_for(&repo.owner, &repo.name),
+    )
+}
+
+/// [`required_check_names`] for one rule, with the site-wide audit gate
+/// (`JERYU_AUDIT_ENFORCE_MERGE` / `JERYU_AUDIT_GATE_REPOS`) given as
+/// `audit_gate`. The gate adds `jankurai/proof` only to a rule that is not
+/// already silent.
+pub(in crate::web) fn required_from_rule(
+    rule: &jeryu_core::BranchProtectionRule,
+    audit_gate: bool,
+) -> Option<BTreeSet<String>> {
+    let mut required: BTreeSet<String> = rule
+        .required_status_checks
+        .iter()
+        .filter(|name| name.as_str() != GITHUB_MIRROR_CHECK)
+        .cloned()
+        .collect();
+    if rule.require_jankurai_proof {
         required.insert(crate::ci_bridge::JANKURAI_PROOF_CHECK.to_string());
     }
-    (!required.is_empty()).then_some(required)
+    if required.is_empty() {
+        return None;
+    }
+    if audit_gate {
+        required.insert(crate::ci_bridge::JANKURAI_PROOF_CHECK.to_string());
+    }
+    Some(required)
 }
 
 /// Push-mirror bookkeeping check. A mirror hiccup is surfaced through the

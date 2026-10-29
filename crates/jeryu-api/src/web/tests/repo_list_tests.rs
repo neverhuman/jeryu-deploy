@@ -1258,3 +1258,235 @@ fn repo_summary_counts_every_check_without_a_protection_rule() {
     assert_eq!(summary.advisory_checks, None);
     assert_eq!(summary.health, "warning");
 }
+
+/// A repository with one open pull request on `base` at `live-sha`, `main` as
+/// its default branch, and `rule_contexts` required on `base`.
+fn repo_with_pull_on(base: &str, rule_contexts: &[&str]) -> ForgeCore {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "jeryu",
+        base,
+        SetBranchProtectionRequest {
+            required_status_checks: rule_contexts.iter().map(|name| name.to_string()).collect(),
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: base.to_string(),
+            head_sha: Some("live-sha".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    core
+}
+
+fn status(core: &ForgeCore, sha: &str, context: &str, state: CommitStatusState) {
+    core.create_commit_status(
+        "alice",
+        "jeryu",
+        sha,
+        "gate-runner",
+        CreateCommitStatusRequest {
+            base: None,
+            state,
+            context: context.to_string(),
+            description: None,
+            target_url: None,
+        },
+    )
+    .unwrap();
+}
+
+fn check(core: &ForgeCore, sha: &str, name: &str, conclusion: CheckConclusion) {
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: name.to_string(),
+            head_sha: sha.to_string(),
+            conclusion: Some(conclusion),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+}
+
+/// Required contexts arrive as commit statuses in this deployment
+/// (`<repo>/required` from the gate runner). They resolve the way merge
+/// posture resolves them: the newest status first, else a check run.
+#[test]
+fn repo_summary_counts_required_contexts_delivered_as_commit_statuses() {
+    let core = repo_with_pull_on("main", &["jeryu/required"]);
+    status(
+        &core,
+        "live-sha",
+        "jeryu/required",
+        CommitStatusState::Failure,
+    );
+    check(&core, "live-sha", "jeryu/lint", CheckConclusion::Failure);
+    let state = WebState::new(core);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(
+        summary.failing_checks, 1,
+        "the failing required status counts"
+    );
+    assert_eq!(summary.health, "warning");
+    let advisory = summary.advisory_checks.as_ref().expect("advisory reported");
+    assert_eq!((advisory.failing, advisory.passing), (1, 0), "jeryu/lint");
+
+    // The newest status decides: a later green clears it.
+    let core = repo_with_pull_on("main", &["jeryu/required"]);
+    status(
+        &core,
+        "live-sha",
+        "jeryu/required",
+        CommitStatusState::Error,
+    );
+    status(
+        &core,
+        "live-sha",
+        "jeryu/required",
+        CommitStatusState::Success,
+    );
+    let state = WebState::new(core);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(summary.failing_checks, 0);
+    assert_eq!(summary.health, "healthy");
+
+    // A status wins over a check run of the same name, as in posture.
+    let core = repo_with_pull_on("main", &["jeryu/required"]);
+    check(
+        &core,
+        "live-sha",
+        "jeryu/required",
+        CheckConclusion::Failure,
+    );
+    status(
+        &core,
+        "live-sha",
+        "jeryu/required",
+        CommitStatusState::Success,
+    );
+    let state = WebState::new(core);
+    assert_eq!(repo_list_response(&state).repositories[0].failing_checks, 0);
+
+    // With no status, the check run of that name decides.
+    let core = repo_with_pull_on("main", &["jeryu/required"]);
+    check(
+        &core,
+        "live-sha",
+        "jeryu/required",
+        CheckConclusion::Failure,
+    );
+    let state = WebState::new(core);
+    assert_eq!(repo_list_response(&state).repositories[0].failing_checks, 1);
+}
+
+/// A pull request is judged by its own base's rule, not the default branch's.
+#[test]
+fn repo_summary_judges_each_pull_request_by_its_own_base_rule() {
+    let core = repo_with_pull_on("release", &["jeryu/release-gate"]);
+    core.set_branch_protection(
+        "alice",
+        "jeryu",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["jeryu/required".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    // Failing on the release PR: main's required context is advisory there,
+    // the release rule's own context is required.
+    check(
+        &core,
+        "live-sha",
+        "jeryu/required",
+        CheckConclusion::Failure,
+    );
+    status(
+        &core,
+        "live-sha",
+        "jeryu/release-gate",
+        CommitStatusState::Failure,
+    );
+    let state = WebState::new(core);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(
+        summary.failing_checks, 1,
+        "only jeryu/release-gate is required here"
+    );
+    let advisory = summary.advisory_checks.as_ref().expect("advisory reported");
+    assert_eq!(
+        (advisory.failing, advisory.passing),
+        (1, 0),
+        "jeryu/required"
+    );
+}
+
+/// Silence is the rule's own: the site-wide audit gate adds `jankurai/proof`
+/// to a rule that requires something, and never turns a silent rule into one
+/// that hides every other failure as advisory.
+#[test]
+fn the_site_audit_gate_does_not_make_a_silent_rule_speak() {
+    let core = repo_with_pull_on("main", &[]);
+    let silent = core
+        .get_branch_protection("alice", "jeryu", "main")
+        .unwrap();
+    assert_eq!(
+        crate::web::repositories::required_from_rule(&silent, true),
+        None
+    );
+    assert_eq!(
+        crate::web::repositories::required_from_rule(&silent, false),
+        None
+    );
+
+    let core = repo_with_pull_on("main", &["jeryu/required", "jeryu/github-mirror"]);
+    let rule = core
+        .get_branch_protection("alice", "jeryu", "main")
+        .unwrap();
+    let gated = crate::web::repositories::required_from_rule(&rule, true).unwrap();
+    assert_eq!(
+        gated.into_iter().collect::<Vec<_>>(),
+        vec!["jankurai/proof".to_string(), "jeryu/required".to_string()]
+    );
+    let plain = crate::web::repositories::required_from_rule(&rule, false).unwrap();
+    assert_eq!(
+        plain.into_iter().collect::<Vec<_>>(),
+        vec!["jeryu/required".to_string()]
+    );
+
+    // A silent rule falls back to counting every failing current check.
+    let core = repo_with_pull_on("main", &[]);
+    check(&core, "live-sha", "jeryu/lint", CheckConclusion::Failure);
+    check(
+        &core,
+        "live-sha",
+        "jankurai/proof",
+        CheckConclusion::Failure,
+    );
+    let state = WebState::new(core);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(summary.failing_checks, 2);
+    assert_eq!(summary.advisory_checks, None);
+}
