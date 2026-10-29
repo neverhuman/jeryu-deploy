@@ -35,7 +35,21 @@ cat >"$T/systemctl" <<EOF
 # stand-in: --user {start|stop|show ... --value} jeryu.service
 pidfile="$T/pid"
 case "\$2" in
-  start) "$JERYU_HOME/bin/jeryu" 300 & echo \$! >"\$pidfile" ;;
+  start)
+    # Exercise startup ordering: health must not pass while this wrapper runs.
+    bash -c 'sleep 0.05; exec "\$1" 300' _ "$JERYU_HOME/bin/jeryu" &
+    pid=\$!
+    echo \$pid >"\$pidfile"
+    want="\$(readlink -f "$JERYU_HOME/bin/jeryu")"
+    for ((attempt = 0; attempt < 1000; attempt++)); do
+      exe="\$(readlink "/proc/\$pid/exe" || true)"
+      [[ "\$exe" == "\$want" ]] && exit 0
+      kill -0 "\$pid" 2>/dev/null || break
+      sleep 0.01
+    done
+    echo "fixture service did not exec \$want (last exe: \$exe)" >&2
+    exit 1
+    ;;
   stop) [[ -s "\$pidfile" ]] && kill "\$(cat "\$pidfile")" 2>/dev/null; rm -f "\$pidfile"; true ;;
   show) cat "\$pidfile" ;;
 esac
@@ -72,6 +86,9 @@ ok "switch refuses a stage whose checksums fail, and changes nothing"
 # an unbounded forge is what takes a host down, so it is never what gets installed.
 stage
 "$JERYU_SYSTEMCTL" --user start jeryu.service
+[[ "$(readlink "/proc/$(cat "$T/pid")/exe")" == "$JERYU_HOME/bin/jeryu-$PREV" ]] \
+  || fail "fixture start returned before the delayed service exec"
+ok "fixture start waits for the release executable before the static health answer is used"
 mv "$JERYU_FORGE_LIMITS_ENV" "$T/limits.aside"
 rc=0; bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-unbudgeted.log" 2>&1 || rc=$?
 [[ $rc != 0 ]] || fail "switch installed a release for a site with no limits file"
