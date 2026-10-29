@@ -322,7 +322,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             "jeryu-release-ops-v5.0.0-split.10",
             &["jeryu-bench", "jeryu-obs", "jeryu-wsversion"][..],
         ),
-        ("jeryu-jira-v5.0.0-split.5", &["jeryu-jira"][..]),
+        ("jeryu-jira-v5.0.0-split.6", &["jeryu-jira"][..]),
     ];
     let expected_count: usize = expected_groups
         .iter()

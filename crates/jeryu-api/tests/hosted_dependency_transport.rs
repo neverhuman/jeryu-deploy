@@ -71,9 +71,9 @@ const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
     ),
     (
         "jeryu-jira",
-        "jeryu-jira-v5.0.0-split.5",
-        "2a7f7ee3baa56d724216e59a4b483fa176840d10",
-        "refs/heads/preserve/hosted-cargo/jeryu-jira-v5.0.0-split.5",
+        "jeryu-jira-v5.0.0-split.6",
+        "7d1d7552fa74c3d8070f2ee3682fa73ac188631d",
+        "refs/heads/preserve/hosted-cargo/jeryu-jira-v5.0.0-split.6",
     ),
     (
         "jeryu-release-ops",
