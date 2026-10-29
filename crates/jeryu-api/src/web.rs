@@ -846,6 +846,18 @@ impl WsHub {
 }
 
 pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(config.bind).await?;
+    serve_on(listener, config).await
+}
+
+/// Run the web server on an already-bound listener, retaining its port throughout startup.
+/// The listener's actual address determines the loopback trust check; `config.bind`
+/// is used only by `serve` to create a listener.
+pub async fn serve_on(
+    listener: TcpListener,
+    mut config: WebServerConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    config.bind = listener.local_addr()?;
     if config.trust_local_dev && !config.bind.ip().is_loopback() {
         return Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -935,7 +947,6 @@ pub async fn serve(config: WebServerConfig) -> Result<(), Box<dyn std::error::Er
     mirror_reconcile::spawn(state.clone());
     pull_import::spawn(state.clone());
     let app = router(state);
-    let listener = TcpListener::bind(config.bind).await?;
     // ConnectInfo gives the git handlers the peer address so the gitd auth layer
     // can apply its loopback-permissive policy.
     axum::serve(

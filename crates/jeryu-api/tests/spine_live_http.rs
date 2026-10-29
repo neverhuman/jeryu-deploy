@@ -1,5 +1,5 @@
 #![cfg(feature = "web")]
-//! S4 live-HTTP e2e: boot `serve()` on a real loopback socket, create a repo
+//! S4 live-HTTP e2e: boot `serve_on()` on a real loopback socket, create a repo
 //! over HTTP (which materializes a bare repo on disk), then clone, commit, push
 //! an allowed branch over smart-HTTP, and prove a direct client push to
 //! `refs/heads/main` is rejected. This exercises create-repo-to-disk (S3), the
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use jeryu_api::web::{WebServerConfig, serve};
+use jeryu_api::web::{WebServerConfig, serve_on};
 use sha2::Digest;
 
 mod common;
@@ -335,10 +335,9 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
     write_spa_shell(&spa_dir);
     std::fs::create_dir_all(&work).unwrap();
 
-    // Reserve a free loopback port, then release it for serve() to bind.
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    // Keep the loopback port bound through server startup.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     let config = WebServerConfig {
         bind: addr,
@@ -350,7 +349,7 @@ async fn s4_create_repo_to_disk_and_git_push_over_http_blocks_main() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    let mut server = tokio::spawn(async move { serve_on(listener, config).await.unwrap() });
     wait_until_listening(addr, &mut server).await;
 
     // 1. Create the repo over HTTP -> materializes a bare repo on disk.
@@ -485,9 +484,8 @@ async fn s4_git_pack_rpc_routes_decode_gzip_before_git() {
     let spa_dir = base.join("spa");
     write_spa_shell(&spa_dir);
 
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     let config = WebServerConfig {
         bind: addr,
@@ -499,7 +497,7 @@ async fn s4_git_pack_rpc_routes_decode_gzip_before_git() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    let mut server = tokio::spawn(async move { serve_on(listener, config).await.unwrap() });
     wait_until_listening(addr, &mut server).await;
 
     let client = reqwest::Client::new();
@@ -587,9 +585,8 @@ async fn s4_git_lfs_batch_and_locks_verify_routes_return_protocol_json() {
     let spa_dir = base.join("spa");
     write_spa_shell(&spa_dir);
 
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     let config = WebServerConfig {
         bind: addr,
@@ -601,7 +598,7 @@ async fn s4_git_lfs_batch_and_locks_verify_routes_return_protocol_json() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    let mut server = tokio::spawn(async move { serve_on(listener, config).await.unwrap() });
     wait_until_listening(addr, &mut server).await;
 
     let client = reqwest::Client::new();
@@ -684,9 +681,8 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
     write_spa_shell(&spa_dir);
     std::fs::create_dir_all(&work).unwrap();
 
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     let config = WebServerConfig {
         bind: addr,
@@ -698,7 +694,7 @@ async fn s4_git_lfs_cpkt_versions_roundtrip_over_http() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    let mut server = tokio::spawn(async move { serve_on(listener, config).await.unwrap() });
     wait_until_listening(addr, &mut server).await;
 
     let client = reqwest::Client::new();
@@ -823,9 +819,8 @@ async fn s4_real_git_client_negotiates_protocol_v2_over_http() {
     write_spa_shell(&spa_dir);
     std::fs::create_dir_all(&work).unwrap();
 
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = WebServerConfig {
         bind: addr,
         spa_dir,
@@ -836,7 +831,7 @@ async fn s4_real_git_client_negotiates_protocol_v2_over_http() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    let mut server = tokio::spawn(async move { serve_on(listener, config).await.unwrap() });
     wait_until_listening(addr, &mut server).await;
 
     let create = reqwest::Client::new()
@@ -938,9 +933,8 @@ async fn s4_clone_by_old_url_after_rename() {
     write_spa_shell(&spa_dir);
     std::fs::create_dir_all(&work).unwrap();
 
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = WebServerConfig {
         bind: addr,
         spa_dir,
@@ -951,7 +945,7 @@ async fn s4_clone_by_old_url_after_rename() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    let mut server = tokio::spawn(async move { serve_on(listener, config).await.unwrap() });
     wait_until_listening(addr, &mut server).await;
 
     let client = reqwest::Client::new();
@@ -1113,9 +1107,8 @@ async fn waitlist_signup_leaves_login_and_admin_authz_intact() {
     let spa_dir = base.join("spa");
     write_spa_shell(&spa_dir);
 
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     let config = WebServerConfig {
         bind: addr,
@@ -1127,7 +1120,7 @@ async fn waitlist_signup_leaves_login_and_admin_authz_intact() {
         trust_local_dev: false,
         secure_cookies: false,
     };
-    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    let mut server = tokio::spawn(async move { serve_on(listener, config).await.unwrap() });
     wait_until_listening(addr, &mut server).await;
 
     let client = reqwest::Client::new();
@@ -1240,9 +1233,8 @@ async fn s4_a_push_to_a_merged_pull_requests_branch_is_refused() {
     write_spa_shell(&spa_dir);
     std::fs::create_dir_all(&work).unwrap();
 
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     let config = WebServerConfig {
         bind: addr,
@@ -1254,7 +1246,7 @@ async fn s4_a_push_to_a_merged_pull_requests_branch_is_refused() {
         trust_local_dev: true,
         secure_cookies: false,
     };
-    let mut server = tokio::spawn(async move { serve(config).await.unwrap() });
+    let mut server = tokio::spawn(async move { serve_on(listener, config).await.unwrap() });
     wait_until_listening(addr, &mut server).await;
 
     let client = reqwest::Client::new();
