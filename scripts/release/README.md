@@ -283,9 +283,11 @@ Then one bump stack: for every repository whose newest tag is ahead of the pin i
 main, `release: pin <repo> <tag>` from `auto/pin-<repo>-<n>-<sha12>`, in dependency order and each
 based on the previous branch, so the merge queue cannot land a mismatched pair. A stack is built
 only when none of its pull requests is already open. The edit itself is `bump-hosted-pin.sh` taken
-from jeryu-deploy main (`git archive`), so the recipe is always the reviewed one; it moves the
-`tag =` lines whose `git` URL names the repository, the `Cargo.lock` git source identity and the
-`.cargo/hosted-pin-refs.tsv` row, reads every edit back, and refuses anything else — including a
+from jeryu-deploy main (`git archive`, with the `ops/ci/hosted-git-env.sh` transport and its
+`.cargo/hosted-gitconfig` overlay), so the recipe and what it runs are always the reviewed ones; it
+moves the `tag =` lines whose `git` URL names the repository and the `.cargo/hosted-pin-refs.tsv`
+row, has cargo re-resolve `Cargo.lock` (which can add or drop packages the new tag needs, so the
+bump PR asks review to read the lock diff), reads every edit back, and refuses anything else — including a
 `-split.0` pin, which is also what `[patch]` redirects. `jeryu-split.lock.toml` is not a cargo pin
 and is not touched. The pin tests (`crates/jeryu-api/tests/hosted_dependency_transport.rs`,
 `jankurai_governance.rs`) read each tag and commit from `.cargo/hosted-pin-refs.tsv` and check the

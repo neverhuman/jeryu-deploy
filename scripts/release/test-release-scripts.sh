@@ -1703,6 +1703,7 @@ EOF
 mkdir -p "$D/crates/jeryu-api/src"
 : >"$D/crates/jeryu-api/src/lib.rs"
 cp "$here/../../ops/ci/hosted-git-env.sh" "$D/ops/ci/"
+mkdir -p "$D/.cargo"; cp "$here/../../.cargo/hosted-gitconfig" "$D/.cargo/"
 # Cargo uses real local Git remotes through the same transport setup as production.
 export CARGO_HOME="$G/cargo-home"
 export GIT_CONFIG_GLOBAL="$G/gitconfig"
@@ -1988,15 +1989,24 @@ rc=0; bump jeryu-core jeryu-core-v5.0.0-split.0 "$core_c3" >"$G/bump.log" 2>&1 |
 rc=0; bump jeryu-core jeryu-core-v5.1.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
 [[ $rc == 1 ]] && grep -q "version line" "$G/bump.log" || fail "bump-hosted-pin changed a version line"
 [[ -z "$(git -C "$BP" status --porcelain)" ]] || fail "a refused bump left the checkout edited"
-# Resolution errors and a tag/commit mismatch must refuse before policy changes.
+# Resolution errors and a tag/commit mismatch must refuse before policy changes. A failed
+# resolution leaves the manifests (and at most the lock) edited for a person, nothing else, and
+# never runs the checkout's own transport script: the recipe sources the one beside it.
+printf 'touch %q\n' "$G/checkout-transport-ran" >"$BP/ops/ci/hosted-git-env.sh"
 for target in jeryu-core-v5.0.0-split.8 jeryu-core-v5.0.0-split.2; do
   rc=0; bump jeryu-core "$target" "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
   [[ $rc == 1 ]] || fail "bump-hosted-pin accepted an unresolved or mismatched tag"
   git -C "$BP" diff --exit-code -- .cargo/hosted-pin-refs.tsv >/dev/null \
     || fail "a failed resolution updated the pin policy"
+  left="$(git -C "$BP" diff --name-only -- . ':!ops/ci/hosted-git-env.sh' | LC_ALL=C sort | tr '\n' ' ')"
+  [[ "$left" == "Cargo.lock Cargo.toml crates/jeryu-api/Cargo.toml " \
+     || "$left" == "Cargo.toml crates/jeryu-api/Cargo.toml " ]] \
+    || fail "a failed resolution left more than the manifests and the lock: $left"
   git -C "$BP" restore Cargo.toml crates/jeryu-api/Cargo.toml Cargo.lock
 done
-ok "bump-hosted-pin refuses a missing tag and a tag at the wrong commit"
+[[ ! -e "$G/checkout-transport-ran" ]] || fail "the bump ran the checkout's own hosted-git-env.sh"
+git -C "$BP" checkout -q -- ops/ci/hosted-git-env.sh
+ok "bump-hosted-pin refuses a missing tag and a tag at the wrong commit, running only its own transport"
 git -C "$G/remotes/jeryu-core.git" tag jeryu-core-v5.0.0-split.9 "$core_c3"
 bump jeryu-core jeryu-core-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 \
   || { cat "$G/bump.log" >&2; fail "bump-hosted-pin refused a forward bump"; }

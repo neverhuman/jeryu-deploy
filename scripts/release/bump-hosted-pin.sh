@@ -34,6 +34,12 @@ repo="$1" tag="$2" commit="$3"
   || { echo "not a $repo split tag: $tag" >&2; exit 64; }
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "not a 40-hex commit: $commit" >&2; exit 64; }
 
+# The recipe's own tree: auto-tag.sh archives scripts/release, ops/ci/hosted-git-env.sh and
+# .cargo/hosted-gitconfig from main together, so the Cargo transport the bump resolves through is
+# the reviewed one, never whatever the checkout being bumped carries. By hand it is the checkout.
+recipe_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+transport="$recipe_root/ops/ci/hosted-git-env.sh"
+[[ -f "$transport" && ! -L "$transport" ]] || die "the recipe has no ops/ci/hosted-git-env.sh beside it: $transport"
 root="$(git rev-parse --show-toplevel)" || die "not inside a git checkout"
 cd "$root"
 pin_policy=.cargo/hosted-pin-refs.tsv
@@ -95,11 +101,14 @@ lock_lines() { # TAG COMMIT -> how many lock sources name this repository at tha
 }
 lock_count="$(lock_lines "$old_tag" "$old_commit")"
 (( lock_count > 0 )) || die "Cargo.lock has no $repo source at $old_tag#${old_commit:0:12}"
-# Let Cargo resolve the new manifests, retaining unrelated locked dependencies. Rewriting
-# source strings alone misses dependencies added or removed by the new tag.
-source "$root/ops/ci/hosted-git-env.sh"
+# Let Cargo re-resolve the lock for the new manifests, keeping unrelated locked versions.
+# Rewriting source strings alone misses dependencies the new tag adds or drops, so the lock diff
+# can carry more than this repository's source lines: the bump PR says so, and review reads it.
+# `cargo metadata` runs no build script. The second call only confirms the written lock is
+# complete; what proves the requested commit landed is the source count below.
+source "$transport"
 cargo metadata --format-version 1 > /dev/null || die "Cargo could not resolve the bumped pin"
-cargo metadata --locked --format-version 1 > /dev/null || die "Cargo.lock failed locked readback"
+cargo metadata --locked --format-version 1 > /dev/null || die "Cargo.lock is not complete after resolution"
 [[ "$(lock_lines "$old_tag" "$old_commit")" == 0 ]] || die "Cargo.lock still names $repo at $old_tag"
 lock_count="$(lock_lines "$tag" "$commit")"
 (( lock_count > 0 )) || die "Cargo.lock did not resolve $tag at $commit"
