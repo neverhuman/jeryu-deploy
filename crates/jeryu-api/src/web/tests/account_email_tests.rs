@@ -128,7 +128,9 @@ pub(super) fn newest_link_secret(mailer: &Mailer) -> String {
         .expect("a message was handed to the transport");
     let start = rendered.find("token=").expect("the message carries a link") + "token=".len();
     rendered[start..]
-        .split(|ch: char| !ch.is_ascii_hexdigit())
+        // A verification link is hex; a reset link is core's recovery secret
+        // (`jrr_<id>.<base64url>`).
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
         .next()
         .expect("the link carries a secret")
         .to_string()
@@ -839,7 +841,10 @@ async fn no_answer_or_audit_record_carries_the_link() {
     verify_address(&forge, "ada@example.com").await;
     let (_, _, bytes) = forgot_raw(&forge, "ada@example.com").await;
     let secret = newest_link_secret(&forge.mailer);
-    assert_eq!(secret.len(), 64);
+    assert!(
+        secret.starts_with(jeryu_core::PASSWORD_RECOVERY_PREFIX),
+        "a reset link carries core's recovery secret: {secret}"
+    );
     let answered = String::from_utf8(bytes).expect("utf-8 body");
     assert!(!answered.contains(&secret), "{answered}");
     let records = format!(
@@ -853,5 +858,214 @@ async fn no_answer_or_audit_record_carries_the_link() {
     assert!(
         !records.contains("ada@example.com"),
         "an address reached the audit log: {records}"
+    );
+}
+
+/// Sign `login` in through the router and return its session cookie.
+async fn session_cookie(forge: &Forge, login: &str, password: &str) -> String {
+    let (status, headers, _) = send(
+        &forge.router,
+        HttpMethod::POST,
+        "/api/v1/auth/login",
+        None,
+        Some(&json!({ "login": login, "password": password })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "sign in as {login}");
+    headers
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .expect("sign-in sets a session cookie")
+        .to_string()
+}
+
+/// `GET /api/v1/auth/me` with a session cookie.
+async fn me_with_cookie(forge: &Forge, cookie: &str) -> StatusCode {
+    let request = Request::builder()
+        .method(HttpMethod::GET)
+        .uri("/api/v1/auth/me")
+        .header(header::COOKIE, cookie)
+        .body(Body::empty())
+        .expect("build the request");
+    forge
+        .router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("route")
+        .status()
+}
+
+async fn reset_with(forge: &Forge, token: &str, password: &str) -> (StatusCode, Value) {
+    json_reply(
+        &forge.router,
+        HttpMethod::POST,
+        "/api/v1/auth/password/reset",
+        None,
+        Some(&json!({ "token": token, "newPassword": password })),
+    )
+    .await
+}
+
+/// A self-service recovery revokes what core's recovery revokes: the old
+/// browser session and the personal access token answer 401, while a team
+/// bot of the account's organization keeps its token (it is no account, so
+/// `/auth/me` answers it the same before and after), and the new password
+/// signs in.
+#[tokio::test]
+async fn a_recovery_ends_sessions_and_tokens_and_leaves_team_bots_working() {
+    let forge = forge();
+    forge
+        .core
+        .create_account("root", PASSWORD, UserRole::Admin)
+        .expect("create an administrator");
+    forge
+        .core
+        .create_organization_as("root", "acme", None, &["ada".to_string()])
+        .expect("create the organization");
+    forge
+        .core
+        .create_team_as("ada", "acme", "Stewards", None, &["ada".to_string()])
+        .expect("create the team");
+    let bot = forge
+        .core
+        .enroll_team_bot(
+            "ada",
+            "acme",
+            "stewards",
+            "reviewer",
+            "Reviewer",
+            jeryu_core::BotKind::default(),
+            jeryu_core::BotReach::General,
+        )
+        .expect("enroll a team bot")
+        .bot;
+    let team_bot_token = forge
+        .core
+        .issue_bot_access_token("ada", bot.id, None, None)
+        .expect("issue a team bot token")
+        .token;
+    let cookie = session_cookie(&forge, "ada", PASSWORD).await;
+    assert_eq!(me_with_cookie(&forge, &cookie).await, StatusCode::OK);
+    let me = |token: String| {
+        let router = forge.router.clone();
+        async move {
+            json_reply(
+                &router,
+                HttpMethod::GET,
+                "/api/v1/auth/me",
+                Some(&token),
+                None,
+            )
+            .await
+            .0
+        }
+    };
+    assert_eq!(me(forge.ada.clone()).await, StatusCode::OK);
+    let team_bot_answer = me(team_bot_token.clone()).await;
+    assert_ne!(team_bot_answer, StatusCode::UNAUTHORIZED);
+
+    verify_address(&forge, "ada@example.com").await;
+    forgot(&forge, "ada@example.com").await;
+    let secret = newest_link_secret(&forge.mailer);
+    let (status, body) = reset_with(&forge, &secret, NEW_PASSWORD).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(
+        me_with_cookie(&forge, &cookie).await,
+        StatusCode::UNAUTHORIZED,
+        "the old session must end"
+    );
+    assert_eq!(
+        me(forge.ada.clone()).await,
+        StatusCode::UNAUTHORIZED,
+        "the personal access token must be revoked"
+    );
+    assert_eq!(
+        me(team_bot_token.clone()).await,
+        team_bot_answer,
+        "a team bot is not the account's credential and keeps working"
+    );
+    forge
+        .core
+        .authenticate_bot_access_token(&team_bot_token)
+        .expect("the team bot token still authenticates");
+    let cookie = session_cookie(&forge, "ada", NEW_PASSWORD).await;
+    assert_eq!(me_with_cookie(&forge, &cookie).await, StatusCode::OK);
+}
+
+/// An account an administrator forced to change its password recovers like
+/// any other: core's recovery clears the flag, and the new password signs in
+/// without asking for another.
+#[tokio::test]
+async fn recovering_a_forced_change_account_clears_the_flag() {
+    let forge = forge();
+    verify_address(&forge, "ada@example.com").await;
+    forge
+        .core
+        .force_password_change("ada", true)
+        .expect("force a password change");
+    assert!(
+        forge
+            .core
+            .authenticate_password("ada", PASSWORD)
+            .expect("the old password still signs in")
+            .must_change_password
+    );
+    forgot(&forge, "ada@example.com").await;
+    let secret = newest_link_secret(&forge.mailer);
+    let (status, body) = reset_with(&forge, &secret, NEW_PASSWORD).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let signed_in = forge
+        .core
+        .authenticate_password("ada", NEW_PASSWORD)
+        .expect("the new password signs in");
+    assert!(
+        !signed_in.must_change_password,
+        "the forced change is cleared"
+    );
+}
+
+/// The reset route is limited per client too, so a recovery secret cannot be
+/// guessed at speed.
+#[tokio::test]
+async fn spending_a_reset_link_is_rate_limited_per_client() {
+    let forge = forge();
+    let mut limited = false;
+    for _ in 0..12 {
+        let (status, _) = reset_with(&forge, "jrr_0000000000AB.guess", NEW_PASSWORD).await;
+        limited |= status == StatusCode::TOO_MANY_REQUESTS;
+    }
+    assert!(limited, "guessing a reset link was never limited");
+}
+
+/// Every request-supplied value is bounded before core sees it: an oversized
+/// secret is refused as an invalid link and an oversized password as invalid
+/// input, and neither spends the real link.
+#[tokio::test]
+async fn oversized_reset_values_are_refused_before_core() {
+    let forge = forge();
+    verify_address(&forge, "ada@example.com").await;
+    forgot(&forge, "ada@example.com").await;
+    let secret = newest_link_secret(&forge.mailer);
+
+    let (status, body) = reset_with(
+        &forge,
+        &format!("{secret}{}", "A".repeat(200)),
+        NEW_PASSWORD,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "reset_link_invalid", "{body}");
+    let (status, body) = reset_with(&forge, &secret, &"p".repeat(1025)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "invalid_input", "{body}");
+
+    let (status, body) = reset_with(&forge, &secret, NEW_PASSWORD).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the real link is still spendable: {body}"
     );
 }

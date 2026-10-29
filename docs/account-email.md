@@ -210,11 +210,18 @@ wrong purpose — is one refusal: `422 reset_link_invalid` or
   reveals nothing about the address.
 - Claiming an address, proving one, or finishing a reset retires that
   account's other outstanding links.
-- A finished reset goes through core's administrative reset, which rotates the
-  account's auth epoch and drops its sessions, personal access tokens and
-  bots. Recovering therefore signs the account out everywhere.
-- A password below core's floor is refused *before* the link is spent, so a
-  rejected password does not burn the person's one link.
+- The secret in a reset link is the recovery secret core issues
+  (`ForgeCore::issue_password_recovery`). The forge binds it to the proved
+  address it was mailed to, and core spends it (`recover_password`).
+- A finished reset is core's self-service recovery: it rotates the account's
+  auth epoch, ends every browser session, deletes every personal access token,
+  revokes the account's own bots' keys, refresh tokens and agent tokens, and
+  clears a forced password change. Recovering therefore signs the account out
+  everywhere. Team bots of the account's organizations are untouched, so an
+  agent that must survive a recovery should use a team bot token.
+- A password below core's floor or above 1024 bytes, and a link secret above
+  128 bytes, are refused *before* the link is spent, so a rejected request
+  does not burn the person's one link.
 - Nothing logs a secret, a message body, or an address: the rate-limit keys
   hold a digest of the address rather than the address, and `OutgoingMail`'s
   `Debug` redacts the body.

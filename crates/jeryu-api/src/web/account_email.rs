@@ -21,12 +21,18 @@
 //!   answers before the sending starts, so the response time says nothing
 //!   either (`web/background.rs`).
 //! - `POST /api/v1/auth/password/reset`: spend a reset link and set the
-//!   password.
+//!   password through core's self-service recovery
+//!   (`ForgeCore::recover_password`), which ends every session and revokes
+//!   every personal access token and the account's own bots' credentials,
+//!   and clears a forced password change. Team bots are untouched.
 //!
 //! What keeps a link safe:
 //!
 //! - The secret is 32 bytes of operating-system randomness, and only its
-//!   sha256 is stored, so the database holds nothing spendable.
+//!   sha256 is stored, so the database holds nothing spendable. A reset
+//!   link's secret is the recovery secret core issued
+//!   (`ForgeCore::issue_password_recovery`); this store binds it to the proved
+//!   address it was mailed to, and core spends it.
 //! - Spending is one `UPDATE ... WHERE consumed_ms IS NULL AND expires_ms >
 //!   now` under the store's mutex, so a replay of a spent link, an expired
 //!   link, and a link that never existed are one indistinguishable refusal.
@@ -101,6 +107,12 @@ pub(super) const ACCOUNT_EMAIL_BODY_MAX: usize = 4096;
 /// Core's own floor, checked here so a weak password is refused before the
 /// one-use link is spent on it.
 pub(super) const PASSWORD_MIN_BYTES: usize = 12;
+/// The longest new password the reset route hashes. The body cap already
+/// bounds it; this names the bound before anything reaches core.
+pub(super) const PASSWORD_MAX_BYTES: usize = 1024;
+/// The longest link secret the reset route reads: core's recovery secrets
+/// are well under it and core refuses longer ones itself.
+const LINK_SECRET_MAX: usize = 128;
 
 const EMAIL_MAX: usize = 254;
 const LOCAL_MAX: usize = 64;
@@ -317,7 +329,19 @@ impl AccountEmailStore {
         address: &str,
         now_ms: i64,
     ) -> Result<IssuedLink, String> {
-        let secret = random_secret();
+        self.issue_secret(purpose, login, address, random_secret(), now_ms)
+    }
+
+    /// As [`Self::issue`], for a secret minted elsewhere: a reset link carries
+    /// the recovery secret core issued, and this row binds it to `address`.
+    pub(crate) fn issue_secret(
+        &self,
+        purpose: LinkPurpose,
+        login: &str,
+        address: &str,
+        secret: String,
+        now_ms: i64,
+    ) -> Result<IssuedLink, String> {
         let hash = digest(&secret);
         let mut conn = self.conn();
         let tx = conn.transaction().map_err(|err| err.to_string())?;
@@ -754,10 +778,28 @@ async fn issue_reset(state: &Arc<WebState>, address: &str) {
             return;
         }
     }
-    let link = match state
-        .account_email
-        .issue(LinkPurpose::Reset, &login, address, now_ms)
-    {
+    // Core mints the recovery secret and is the one that spends it; an
+    // account that cannot sign in is refused there, and gets no message.
+    let recovery = match state.core.issue_password_recovery(&login) {
+        Ok(recovery) => recovery,
+        Err(error) => {
+            audit(
+                state,
+                &login,
+                "account.password_reset.requested",
+                "failed",
+                json!({ "reason": format!("core refused the recovery: {error}") }),
+            );
+            return;
+        }
+    };
+    let link = match state.account_email.issue_secret(
+        LinkPurpose::Reset,
+        &login,
+        address,
+        recovery.token,
+        now_ms,
+    ) {
         Ok(link) => link,
         Err(error) => {
             audit(
@@ -840,11 +882,19 @@ pub(super) async fn reset_password(
             "password must be at least 12 bytes",
         );
     }
+    if request.new_password.len() > PASSWORD_MAX_BYTES {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_input",
+            "password must be at most 1024 bytes",
+        );
+    }
+    let token = request.token.trim();
+    if token.is_empty() || token.len() > LINK_SECRET_MAX {
+        return link_refused("reset_link_invalid");
+    }
     let now_ms = Utc::now().timestamp_millis();
-    let spent = match state
-        .account_email
-        .spend(LinkPurpose::Reset, request.token.trim(), now_ms)
-    {
+    let spent = match state.account_email.spend(LinkPurpose::Reset, token, now_ms) {
         Ok(Some(spent)) => spent,
         Ok(None) => return link_refused("reset_link_invalid"),
         Err(error) => return storage_failed("could not read the reset link", &error),
@@ -856,25 +906,16 @@ pub(super) async fn reset_password(
         Ok(_) => return link_refused("reset_link_invalid"),
         Err(error) => return storage_failed("could not read the account address", &error),
     }
-    // `reset_account_password` is core's administrative reset: it rotates the
-    // auth epoch and drops every session, token and bot of the account, which
-    // is exactly right for a recovery, and then forces a password change,
-    // which is not — the person just chose this password. The second call
-    // clears that flag without rotating the epoch again.
-    if let Err(error) = state
-        .core
-        .reset_account_password(&spent.login, &request.new_password)
-    {
-        return match error {
-            ForgeError::Validation(reason) => {
-                api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_input", &reason)
-            }
-            ForgeError::NotFound(_) => link_refused("reset_link_invalid"),
-            error => storage_failed("could not set the new password", &error.to_string()),
-        };
-    }
-    if let Err(error) = state.core.force_password_change(&spent.login, false) {
-        return storage_failed("could not finish the password reset", &error.to_string());
+    // Core spends the same secret: it ends every session, revokes every
+    // personal access token and the account's own bots' credentials, and
+    // clears a forced password change, in one transaction. Its refusals
+    // (spent, expired, account changed since issue) are one answer, as here.
+    match state.core.recover_password(token, &request.new_password) {
+        Ok(_) => {}
+        Err(ForgeError::Validation(_) | ForgeError::NotFound(_)) => {
+            return link_refused("reset_link_invalid");
+        }
+        Err(error) => return storage_failed("could not set the new password", &error.to_string()),
     }
     if let Err(error) = state.account_email.drop_outstanding(&spent.login, now_ms) {
         return storage_failed("could not retire the remaining links", &error);
