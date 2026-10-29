@@ -170,6 +170,7 @@ mod tests {
             host: "build-1".to_string(),
             slot: 0,
             labels: Vec::new(),
+            capabilities: Vec::new(),
             interval_seconds: None,
             current: current.map(|repo| GateRunnerTask {
                 repo: repo.to_string(),

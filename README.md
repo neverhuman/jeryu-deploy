@@ -192,3 +192,13 @@ binds every immutable tag target to an advertised hosted preservation ref; the
 refs contain no bytes beyond their existing release tags. Finally,
 `bash ops/ci/dependency-sources.sh` rejects an unlisted source, mutable pin,
 missing mapping/ref, or non-hosted effective destination.
+
+## Gate host capability reporting
+
+`POST /api/v1/runners/heartbeat` accepts an optional `capabilities` array.
+Currently `host-ci` is the only recognized capability; unknown or repeated
+names return 422 without replacing the runner's last accepted heartbeat.
+Absent or empty means no special capability. Reporter/admin authorization is
+unchanged. `/api/v1/control-plane/runners` exposes the advertised array on
+each node so operators can inspect it. This reports capacity; lease admission
+and repository capability policy enforcement are not yet implemented.

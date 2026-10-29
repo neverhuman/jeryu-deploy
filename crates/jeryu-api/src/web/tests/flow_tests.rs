@@ -63,6 +63,7 @@ async fn layout_is_admin_only_and_rejects_unknown_query_parameters() {
                 host: "build-1".to_string(),
                 slot: 0,
                 labels: Vec::new(),
+                capabilities: Vec::new(),
                 interval_seconds: None,
                 current: None,
                 last: Some(GateRunnerResult {

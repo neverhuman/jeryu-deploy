@@ -314,6 +314,7 @@ pub(crate) struct RunnerNodeSummary {
     pub capacity: u32,
     pub in_flight: u32,
     pub labels: Vec<String>,
+    pub capabilities: Vec<String>,
     pub classes: Vec<String>,
     pub active_task_count: u32,
     pub last_updated: Option<String>,

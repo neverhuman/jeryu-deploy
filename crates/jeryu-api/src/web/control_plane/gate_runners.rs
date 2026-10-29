@@ -99,6 +99,9 @@ pub(crate) struct GateRunnerHeartbeat {
     pub slot: u32,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Special gate environments available on this host. Empty for ordinary gates.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     /// How often this runner beats, 30 to 86400. Stretches the offline
     /// threshold for slow tickers; absent means the flat 180 seconds.
     #[serde(default)]
@@ -392,6 +395,7 @@ fn normalize_gate_conclusion(heartbeat: &mut GateRunnerHeartbeat) {
 }
 
 fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
+    validate_capabilities(&heartbeat.capabilities)?;
     check_token("runnerId", &heartbeat.runner_id, 128, "._/-")?;
     check_token("host", &heartbeat.host, 64, ".-")?;
     if heartbeat.labels.len() > 16 {
@@ -454,6 +458,22 @@ fn validate(heartbeat: &GateRunnerHeartbeat) -> Result<(), String> {
         check_code(code)?;
     }
     check_tools(&heartbeat.tools)
+}
+
+/// Capability names are a closed vocabulary: a typo must not advertise capacity.
+pub(crate) fn validate_capabilities(capabilities: &[String]) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for capability in capabilities {
+        if capability != "host-ci" {
+            return Err(format!(
+                "capabilities: unknown capability {capability:?}; expected host-ci"
+            ));
+        }
+        if !seen.insert(capability) {
+            return Err(format!("capabilities: duplicate capability {capability:?}"));
+        }
+    }
+    Ok(())
 }
 
 fn check_tools(tools: &[RunnerTool]) -> Result<(), String> {
@@ -580,6 +600,7 @@ mod tests {
             host: "node-2".to_string(),
             slot: 0,
             labels: vec!["pr-gate".to_string()],
+            capabilities: Vec::new(),
             interval_seconds: None,
             current: Some(GateRunnerTask {
                 repo: "veox/jain-web".to_string(),

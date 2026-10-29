@@ -1904,6 +1904,7 @@ fn runner(
             host: "node-2".to_string(),
             slot: 0,
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            capabilities: Vec::new(),
             interval_seconds: None,
             current: None,
             last: last.map(|(conclusion, pr)| GateRunnerResult {

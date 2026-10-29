@@ -50,6 +50,7 @@ fn reviewing(state: &WebState, pr: u64, sha: &str, seconds_ago: i64) {
         host: "node-0".to_string(),
         slot: 0,
         labels: vec!["redteam".to_string()],
+        capabilities: Vec::new(),
         interval_seconds: None,
         current: Some(GateRunnerTask {
             repo: "jeryu/jeryu-ci-runner".to_string(),

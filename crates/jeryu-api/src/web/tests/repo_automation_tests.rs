@@ -201,6 +201,7 @@ fn a_deploy_timer_reports_what_it_shipped_and_where() {
         host: "buildhost1".to_string(),
         slot: 0,
         labels: vec![DEPLOY_LABEL.to_string()],
+        capabilities: Vec::new(),
         interval_seconds: Some(300),
         current: None,
         last: Some(GateRunnerResult {

@@ -394,6 +394,7 @@ mod tests {
                     host: "build-1".to_string(),
                     slot: 0,
                     labels,
+                    capabilities: Vec::new(),
                     interval_seconds: None,
                     current: None,
                     last: Some(GateRunnerResult {
