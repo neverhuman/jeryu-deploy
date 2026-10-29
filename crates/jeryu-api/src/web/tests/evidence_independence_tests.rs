@@ -63,6 +63,7 @@ fn green_status(state: &WebState, repo: &str, head: &str, creator: &str) {
             head,
             creator,
             CreateCommitStatusRequest {
+                base: None,
                 state: CommitStatusState::Success,
                 context: REQUIRED_CONTEXT.to_string(),
                 description: Some("gate green".to_string()),
@@ -339,4 +340,52 @@ async fn an_audit_report_from_the_change_author_is_refused() {
             .is_some(),
         "the refusal left the open ticket claimable"
     );
+}
+
+/// A green `jeryu/required` proved against another base says nothing about a
+/// merge into this one: the merge panel reads only the statuses that answer
+/// for the pull request's base, so the context stays unanswered until a result
+/// for `main` (or a base-agnostic one) is recorded.
+#[test]
+fn a_required_status_proved_against_another_base_is_not_evidence() {
+    let head = "evidence-other-base-head";
+    let (state, number) = repo_with_required_context("evidence-other-base", "mina", head);
+    let proved_against = |base: &str| {
+        state
+            .github
+            .core()
+            .create_commit_status(
+                "alice",
+                "evidence-other-base",
+                head,
+                "gatebot",
+                CreateCommitStatusRequest {
+                    base: Some(base.to_string()),
+                    state: CommitStatusState::Success,
+                    context: REQUIRED_CONTEXT.to_string(),
+                    description: Some("gate green".to_string()),
+                    target_url: None,
+                },
+            )
+            .unwrap();
+    };
+    let detail = || {
+        serde_json::to_value(crate::web::pulls::detail_for_pr_with_audit_enforcement(
+            &state,
+            &pull(&state, "evidence-other-base", number),
+            false,
+        ))
+        .unwrap()
+    };
+
+    proved_against("release/v1");
+    let other_base = detail();
+    assert_eq!(
+        other_base["merge_passport"]["status"], "blocked",
+        "{other_base}"
+    );
+
+    proved_against("refs/heads/main");
+    let this_base = detail();
+    assert_eq!(this_base["merge_passport"]["status"], "pass", "{this_base}");
 }

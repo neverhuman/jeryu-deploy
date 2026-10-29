@@ -291,16 +291,17 @@ pub(super) fn required_contexts_with_enforcement(
         }
     }
 
-    let statuses = match core.combined_status(&pr.owner, &pr.repo, &pr.head.sha) {
-        Ok(statuses) => statuses.statuses,
-        Err(_) => {
-            return vec![RequiredContextPosture {
-                name: "required-context/status-readback".to_string(),
-                state: RequiredContextState::Failing,
-                details: Some("could not read exact-head commit statuses".to_string()),
-            }];
-        }
-    };
+    let statuses =
+        match core.combined_status_for_base(&pr.owner, &pr.repo, &pr.head.sha, &pr.base.ref_name) {
+            Ok(statuses) => statuses.statuses,
+            Err(_) => {
+                return vec![RequiredContextPosture {
+                    name: "required-context/status-readback".to_string(),
+                    state: RequiredContextState::Failing,
+                    details: Some("could not read exact-head commit statuses".to_string()),
+                }];
+            }
+        };
     let check_runs = match core.list_check_runs(&pr.owner, &pr.repo, Some(&pr.head.sha)) {
         Ok(runs) => runs.check_runs,
         Err(_) => {
@@ -522,10 +523,11 @@ pub(super) fn checks_for_pr_as(
         Ok(list) => latest_check_runs_by_name(list.check_runs),
         Err(_) => Vec::new(),
     };
-    let history = match core.combined_status(&pr.owner, &pr.repo, &pr.head.sha) {
-        Ok(combined) => combined.statuses,
-        Err(_) => Vec::new(),
-    };
+    let history =
+        match core.combined_status_for_base(&pr.owner, &pr.repo, &pr.head.sha, &pr.base.ref_name) {
+            Ok(combined) => combined.statuses,
+            Err(_) => Vec::new(),
+        };
     let statuses = latest_statuses_by_context(history.clone());
     let required = required_context_names(state, pr);
     let expected = expected::expected_contexts(state, pr, &required);

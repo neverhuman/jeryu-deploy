@@ -120,7 +120,12 @@ impl Fixture {
                 },
             )
             .unwrap();
-        core.finalize_merge("alice", "repo", pull.number, old.clone(), None)
+        let base = core
+            .evaluate_merge_readiness("alice", "repo", pull.number, None)
+            .expect("readiness")
+            .merge_base()
+            .expect("ready to merge");
+        core.finalize_merge("alice", "repo", pull.number, old.clone(), None, &base)
             .unwrap();
         let state = Arc::new(WebState::authenticated_git_test_state(
             core,
@@ -240,9 +245,16 @@ async fn admin_override_is_exact_audited_and_does_not_grant_writer_privileges() 
             },
         )
         .unwrap();
+    let base = f
+        .state
+        .core
+        .evaluate_merge_readiness("alice", "repo", another.number, None)
+        .expect("readiness")
+        .merge_base()
+        .expect("ready to merge");
     f.state
         .core
-        .finalize_merge("alice", "repo", another.number, f.old.clone(), None)
+        .finalize_merge("alice", "repo", another.number, f.old.clone(), None, &base)
         .unwrap();
     let (_, reply) = f.push(&f.admin, Some(f.permit()), f.body(2)).await;
     assert!(reply.contains("ng refs/heads/extra-1"), "{reply}");

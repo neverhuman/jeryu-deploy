@@ -2,8 +2,8 @@
 //! GitHub-shaped renderers.
 
 use jeryu_core::{
-    ChangeSet, CreatePullRequestRequest, ForgeError, MergePullRequestRequest, MergeReadiness,
-    OpenPr, OverlapConfig, OverlapDecision, PullRequest, PullRequestState,
+    ChangeSet, CreatePullRequestRequest, ForgeError, MergeBase, MergePullRequestRequest,
+    MergeReadiness, OpenPr, OverlapConfig, OverlapDecision, PullRequest, PullRequestState,
     UpdatePullRequestRequest, decide,
 };
 use serde_json::{Value, json};
@@ -553,25 +553,29 @@ impl GithubRouter {
                     "message": "Pull Request already merged",
                 }),
             ),
-            // `base_sha` is intentionally ignored here: the git merge path
-            // resolves the LIVE base tip rather than trusting a possibly-stale
-            // stored sha. It remains part of the readiness disclosure for
-            // callers/inspection.
+            // The git merge path resolves the LIVE base tip rather than
+            // trusting a possibly-stale stored `base_sha`; the disclosed base
+            // still goes back to `finalize_merge` (as `merge_base`), which
+            // refuses when the pull request's base moved in between.
             MergeReadiness::Ready {
-                base_ref,
-                head_ref,
-                head_sha,
+                ref base_ref,
+                ref base_sha,
+                ref head_ref,
+                ref head_sha,
                 require_linear_history,
-                ..
             } => self.merge_ready_pull(MergeReady {
                 owner,
                 repo,
                 number,
                 req: &req,
-                base_ref,
-                head_ref,
+                base_ref: base_ref.clone(),
+                merge_base: MergeBase {
+                    base_ref: base_ref.clone(),
+                    base_sha: base_sha.clone(),
+                },
+                head_ref: head_ref.clone(),
                 source_repository: self.pull_source_repository(owner, repo, number),
-                head_sha,
+                head_sha: head_sha.clone(),
                 require_linear_history,
             }),
         }
@@ -636,6 +640,7 @@ impl GithubRouter {
             ready.number,
             merge_sha,
             ready.req.sha.as_deref(),
+            &ready.merge_base,
         ) {
             Ok(result) => merge_success_response(&result),
             Err(ForgeError::BranchProtection(reason)) => json_response(
@@ -740,6 +745,7 @@ impl GithubRouter {
                     ready.number,
                     base_oid,
                     ready.req.sha.as_deref(),
+                    &ready.merge_base,
                 ) {
                     Ok(result) => {
                         let head =
@@ -913,6 +919,7 @@ impl GithubRouter {
             ready.number,
             outcome.merge_oid.clone(),
             ready.req.sha.as_deref(),
+            &ready.merge_base,
         ) {
             Ok(result) => {
                 // Merge landed on the real ref: mirror the (possibly
@@ -1006,6 +1013,7 @@ impl GithubRouter {
             ready.number,
             head_oid.to_string(),
             ready.req.sha.as_deref(),
+            &ready.merge_base,
         ) {
             Ok(result) => {
                 self.mirror_merged_main(rm, resolved, ready, head_oid);
@@ -1097,11 +1105,17 @@ impl GithubRouter {
             ) {
                 Ok(MergeReadiness::Ready {
                     base_ref,
+                    base_sha,
                     head_ref,
                     head_sha,
                     require_linear_history,
-                    ..
-                }) => ready.push((member, base_ref, head_ref, head_sha, require_linear_history)),
+                }) => ready.push((
+                    member,
+                    MergeBase { base_ref, base_sha },
+                    head_ref,
+                    head_sha,
+                    require_linear_history,
+                )),
                 Ok(MergeReadiness::AlreadyMerged { sha }) => {
                     return Err(LandRefusal::Member(
                         member.number,
@@ -1122,8 +1136,11 @@ impl GithubRouter {
                 }
             }
         }
-        let base_ref = ready[0].1.clone();
-        if let Some((member, ..)) = ready.iter().find(|(_, other, ..)| *other != base_ref) {
+        let base_ref = ready[0].1.base_ref.clone();
+        if let Some((member, ..)) = ready
+            .iter()
+            .find(|(_, other, ..)| other.base_ref != base_ref)
+        {
             return Err(LandRefusal::Member(
                 member.number,
                 MemberProblem::NotReady(format!("#{} does not target {base_ref}", member.number)),
@@ -1202,7 +1219,7 @@ impl GithubRouter {
         // so the rest always runs and a member the forge cannot record is
         // reported, not hidden behind a refusal.
         let mut unrecorded = Vec::new();
-        for (member, ..) in &ready {
+        for (member, merge_base, ..) in &ready {
             let merged_at = if member.number == top.number {
                 outcome.merge_oid.clone()
             } else {
@@ -1214,18 +1231,20 @@ impl GithubRouter {
                 member.number,
                 merged_at,
                 Some(&member.pr_head),
+                merge_base,
             ) {
                 unrecorded.push((member.number, err.to_string()));
             }
         }
         let mut mirrored = false;
-        for (member, base_ref, head_ref, head_sha, require_linear_history) in ready {
+        for (member, merge_base, head_ref, head_sha, require_linear_history) in ready {
             let ready = MergeReady {
                 owner,
                 repo,
                 number: member.number,
                 req: &req,
-                base_ref,
+                base_ref: merge_base.base_ref.clone(),
+                merge_base,
                 head_ref,
                 source_repository: self.pull_source_repository(owner, repo, member.number),
                 head_sha,
@@ -1470,6 +1489,8 @@ struct MergeReady<'a> {
     req: &'a MergePullRequestRequest,
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     base_ref: String,
+    /// The base readiness disclosed, handed back to `finalize_merge` as is.
+    merge_base: MergeBase,
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     head_ref: String,
     /// Repository full name the head lives in; a FORK when it differs from

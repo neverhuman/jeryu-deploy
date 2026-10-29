@@ -105,6 +105,7 @@ fn main_health_uses_current_main_and_normalizes_the_log_digest() {
                 sha,
                 "gate-bot",
                 CreateCommitStatusRequest {
+                    base: None,
                     state: CommitStatusState::Failure,
                     context: "health/main-health".into(),
                     description: Some(format!(
@@ -137,6 +138,7 @@ fn main_health_uses_current_main_and_normalizes_the_log_digest() {
             &head,
             "gate-bot",
             CreateCommitStatusRequest {
+                base: None,
                 state: CommitStatusState::Failure,
                 context: "health/main-health".into(),
                 description: Some(format!(
@@ -1218,6 +1220,7 @@ async fn pulls_mutations_allow_record_only_autonomy_advisory() {
             &head_sha,
             "ci",
             CreateCommitStatusRequest {
+                base: None,
                 state: CommitStatusState::Failure,
                 context: "ci/fast".to_string(),
                 description: Some("required lane regressed".to_string()),
@@ -1947,6 +1950,7 @@ async fn pull_checks_explain_each_failure_and_why_it_is_not_required() {
         "deadbeef",
         "ci-bot",
         CreateCommitStatusRequest {
+            base: None,
             state: CommitStatusState::Failure,
             context: "jeryu/required".to_string(),
             description: Some("cargo test failed".to_string()),
@@ -2070,6 +2074,7 @@ fn publish_status(core: &ForgeCore, state: CommitStatusState) {
         "9667497c8ea8",
         "gatebot",
         CreateCommitStatusRequest {
+            base: None,
             state,
             context: "jain-math/required".to_string(),
             description: None,
@@ -2466,6 +2471,7 @@ async fn a_running_gate_check_says_when_it_started_and_what_to_expect() {
             "deadbeef",
             "gatebot",
             CreateCommitStatusRequest {
+                base: None,
                 state,
                 context: "widgets/required".to_string(),
                 description: None,
@@ -2544,6 +2550,7 @@ async fn a_running_gate_check_says_when_it_started_and_what_to_expect() {
         "deadbeef",
         "mirror-bot",
         CreateCommitStatusRequest {
+            base: None,
             state: CommitStatusState::Pending,
             context: "mirror/ci".to_string(),
             description: None,
@@ -2985,6 +2992,7 @@ async fn checks_list_a_required_context_nobody_reported() {
             "deadbeef",
             "gatebot",
             CreateCommitStatusRequest {
+                base: None,
                 state: posted,
                 context: "widgets/required".to_string(),
                 description: None,
@@ -3047,6 +3055,7 @@ async fn checks_list_declared_lanes_and_mark_unexpected_reports_optional() {
         &head_sha,
         "gatebot",
         CreateCommitStatusRequest {
+            base: None,
             state: CommitStatusState::Success,
             context: "widgets/docs".to_string(),
             description: None,
@@ -3060,6 +3069,7 @@ async fn checks_list_declared_lanes_and_mark_unexpected_reports_optional() {
         &head_sha,
         "gatebot",
         CreateCommitStatusRequest {
+            base: None,
             state: CommitStatusState::Failure,
             context: "coverage/report".to_string(),
             description: None,

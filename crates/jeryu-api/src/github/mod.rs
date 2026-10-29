@@ -435,7 +435,7 @@ impl GithubRouter {
 
             // Commit status --------------------------------------------------
             (Get, ["repos", owner, repo, "commits", reference, "status"]) => {
-                Ok(self.commit_status(owner, repo, reference))
+                Ok(self.commit_status(owner, repo, reference, query))
             }
             (Post, ["repos", owner, repo, "statuses", sha]) => {
                 Ok(self.create_status(owner, repo, sha, body))

@@ -118,9 +118,16 @@ impl Fixture {
     fn merge(&self) {
         let head = git(&self.bare, &["rev-parse", "refs/heads/feature"]);
         git(&self.bare, &["update-ref", "refs/heads/main", &head]);
+        let base = self
+            .state
+            .core
+            .evaluate_merge_readiness("alice", "jeryu", self.number, None)
+            .expect("readiness")
+            .merge_base()
+            .expect("ready to merge");
         self.state
             .core
-            .finalize_merge("alice", "jeryu", self.number, head, None)
+            .finalize_merge("alice", "jeryu", self.number, head, None, &base)
             .expect("merge the pull request");
     }
 
@@ -301,10 +308,17 @@ fn fork_pull_requests_do_not_own_upstream_branch_names() {
         )
         .unwrap();
     fixture.close();
+    let base = fixture
+        .state
+        .core
+        .evaluate_merge_readiness("alice", "jeryu", fork_pull.number, None)
+        .expect("readiness")
+        .merge_base()
+        .expect("ready to merge");
     fixture
         .state
         .core
-        .finalize_merge("alice", "jeryu", fork_pull.number, head, None)
+        .finalize_merge("alice", "jeryu", fork_pull.number, head, None, &base)
         .unwrap();
     assert!(merged_pull_request_branch(&fixture.state, "alice", "jeryu", "feature").is_none());
     // A fork PR cannot suppress a same-repository closed-branch notice either.

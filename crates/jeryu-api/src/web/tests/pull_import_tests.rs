@@ -548,11 +548,18 @@ async fn a_merged_contribution_closes_its_github_pull_request_with_the_sha() {
         .forge_number
         .expect("a forge pull request number");
 
+    let base = fixture
+        .core
+        .evaluate_merge_readiness("acme", "widget", number, None)
+        .expect("readiness")
+        .merge_base()
+        .expect("ready to merge");
+
     // The forge merges it: the merge commit is a descendant of the head, which
     // is what a fast-forward of the contributor's commits looks like.
     fixture
         .core
-        .finalize_merge("acme", "widget", number, head.clone(), None)
+        .finalize_merge("acme", "widget", number, head.clone(), None, &base)
         .expect("merge the forge pull request");
 
     // Before the mirror push, GitHub is not told anything: the commits are not

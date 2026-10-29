@@ -2225,3 +2225,47 @@ fn v3_link_relations_are_followable_urls_with_the_right_relation_set() {
     );
     assert!(link.contains("per_page=1&page=1>; rel=\"first\""), "{link}");
 }
+
+/// A status may name the base it was proved against. The POST echoes it, and
+/// `?base=` reads the rollup as it answers for a merge into that base: a
+/// result for another base is left out, a base-agnostic one still counts.
+#[test]
+fn commit_status_carries_and_filters_by_its_proof_base() {
+    let router = router_with_repo();
+    let main = router.post(
+        "/repos/alice/jeryu/statuses/cafe",
+        r#"{"state":"failure","context":"jeryu/required","base":"main","actor":"alice"}"#,
+    );
+    assert_eq!(main.status, 201, "create status: {}", main.body);
+    assert_eq!(body(&main)["base"], "main");
+    let release = router.post(
+        "/repos/alice/jeryu/statuses/cafe",
+        r#"{"state":"success","context":"jeryu/required","base":"release/v1","actor":"alice"}"#,
+    );
+    assert_eq!(release.status, 201, "create status: {}", release.body);
+    let agnostic = router.post(
+        "/repos/alice/jeryu/statuses/cafe",
+        r#"{"state":"success","context":"ci/lint","actor":"alice"}"#,
+    );
+    assert_eq!(agnostic.status, 201, "create status: {}", agnostic.body);
+    assert_eq!(body(&agnostic)["base"], Value::Null);
+
+    let all = body(&router.get("/repos/alice/jeryu/commits/cafe/status"));
+    assert_eq!(all["total_count"], 3);
+
+    let for_release = body(&router.get("/repos/alice/jeryu/commits/cafe/status?base=release%2Fv1"));
+    assert_eq!(for_release["state"], "success", "{for_release}");
+    assert_eq!(for_release["total_count"], 2);
+    assert!(
+        for_release["statuses"]
+            .as_array()
+            .expect("statuses")
+            .iter()
+            .all(|status| status["base"] != "main"),
+        "{for_release}"
+    );
+
+    let for_main = body(&router.get("/repos/alice/jeryu/commits/cafe/status?base=main"));
+    assert_eq!(for_main["state"], "failure", "{for_main}");
+    assert_eq!(for_main["total_count"], 2);
+}

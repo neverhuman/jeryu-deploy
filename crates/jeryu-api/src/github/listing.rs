@@ -300,7 +300,7 @@ fn non_empty(value: String) -> Option<String> {
 
 /// The query's `key=value` pairs with the value percent-decoded, so a
 /// `?head=acme%3Afeature-x` reads the same as `?head=acme:feature-x`.
-fn pairs(query: &str) -> impl Iterator<Item = (String, String)> + '_ {
+pub(super) fn pairs(query: &str) -> impl Iterator<Item = (String, String)> + '_ {
     query
         .split('&')
         .filter(|pair| !pair.is_empty())

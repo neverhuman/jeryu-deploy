@@ -136,7 +136,12 @@ impl Fixture {
                 },
             )
             .unwrap();
-        core.finalize_merge("alice", "jeryu", closed.number, closed_pr_head, None)
+        let base = core
+            .evaluate_merge_readiness("alice", "jeryu", closed.number, None)
+            .expect("readiness")
+            .merge_base()
+            .expect("ready to merge");
+        core.finalize_merge("alice", "jeryu", closed.number, closed_pr_head, None, &base)
             .unwrap();
         let state = Arc::new(WebState::new_with_git_storage(
             core,
@@ -560,10 +565,17 @@ fn a_closed_pull_whose_replacement_merged_is_landed() {
     // Replacement still open: its branch is carried, the replaced one is not
     // yet landed.
     assert!(fixture.stranded_names().contains(&"replaced".to_string()));
+    let base = fixture
+        .state
+        .core
+        .evaluate_merge_readiness("alice", "jeryu", replacement, None)
+        .expect("readiness")
+        .merge_base()
+        .expect("ready to merge");
     fixture
         .state
         .core
-        .finalize_merge("alice", "jeryu", replacement, new_tip, None)
+        .finalize_merge("alice", "jeryu", replacement, new_tip, None, &base)
         .unwrap();
     let names = fixture.stranded_names();
     assert!(!names.contains(&"replaced".to_string()), "{names:?}");

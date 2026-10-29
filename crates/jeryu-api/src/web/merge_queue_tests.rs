@@ -205,6 +205,7 @@ impl Fixture {
                 sha,
                 "ci-bot",
                 CreateCommitStatusRequest {
+                    base: None,
                     state,
                     context: "ci/fast".to_string(),
                     description: None,
@@ -877,6 +878,7 @@ fn pending(fx: &Fixture, sha: &str, context: &str) {
             sha,
             "ci-bot",
             CreateCommitStatusRequest {
+                base: None,
                 state: CommitStatusState::Pending,
                 context: context.to_string(),
                 description: None,
@@ -931,6 +933,7 @@ async fn the_repository_listing_says_when_a_gate_started_on_a_building_entry() {
             &queue_sha,
             "ci-bot",
             CreateCommitStatusRequest {
+                base: None,
                 state: CommitStatusState::Success,
                 context: "ci/slow".to_string(),
                 description: None,

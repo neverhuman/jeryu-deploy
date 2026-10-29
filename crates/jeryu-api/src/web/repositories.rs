@@ -1041,6 +1041,8 @@ fn summary(
         },
         open_pull_requests: pulls.iter().filter(|pr| pull_is_open(pr)).count() as u32,
         failing_checks,
+        // Every current check counts as required here; none is reported apart.
+        advisory_checks: None,
         running_jobs,
         active_agents: 0,
         blocked_agents: 0,
