@@ -13,6 +13,7 @@ pub(crate) mod claims;
 pub(crate) mod closure;
 pub(crate) mod delivery;
 pub(crate) mod history;
+pub(crate) mod identity;
 pub(crate) mod layout;
 pub(crate) mod project;
 pub(crate) mod report;

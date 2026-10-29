@@ -583,6 +583,25 @@ visits whose exact PR already merged, scoped to the repository filter. These
 are not unresolved closures, and their original history remains available.
 Family aliases are canonicalized for queue discovery and todo lookup.
 
+A ledger row keeps the `owner/name` a repository had when the event was
+recorded, so a rename or a transfer would otherwise leave its lots waiting
+forever on a slug whose own URLs 404. Current state for a recorded lot is read
+under the slug the repository is hosted under now, resolved by the forge's own
+old-name redirects, which name the repository by id: a merged or closed pull
+request in the moved repository closes its stale station visits, its closure
+links the repository's current page, and the pull request's title is still
+read. The resolution is the forge's rule, so a repository hosted at the
+recorded slug always wins over a redirect: a different repository that later
+takes a vacated slug answers for it, never the one that moved away. A slug no
+repository hosts and no redirect names keeps its recorded identity and stays in
+recorded work as an unreadable record. A pull request still open in the moved
+repository stays open work, held or waiting as recorded. Replacement chains are
+recorded per slug and not retargeted by a move, so a chain is read under the
+current slug and then under the recorded one. Recorded repository names, lot
+ids and the ledger itself are unchanged by this: station records and
+`repository_wip` stay grouped by the recorded name, and the repository filter
+matches it.
+
 Descriptions and todo notes can record an explicit relation on its own line:
 `Superseded-by: owner/repo#123` (or `#123` in the same repository). Replacement
 status is read from the forge; unavailable targets say unknown. A closed or

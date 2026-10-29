@@ -107,10 +107,11 @@ pub(crate) async fn history(
             .events
             .flow_history(&query, Utc::now().timestamp_millis())?;
         for item in &mut history.items {
+            // The recorded slug may be a repository's earlier name; its
+            // title is read under the slug it is hosted under now.
             if let (Some(repo), Some(pr)) = (&item.repo, item.pr)
-                && let Some((owner, name)) = repo.split_once('/')
                 && let Ok(number) = u64::try_from(pr)
-                && let Ok(pull) = state.core.get_pull_request(owner, name, number)
+                && let Some(pull) = super::identity::pull(&state, repo, number)
             {
                 item.title = Some(pull.title);
             }

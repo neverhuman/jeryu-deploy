@@ -1,4 +1,5 @@
 //! Current lifecycle overlay. Never rewrite event history or infer delivery from closure.
+use super::identity;
 use super::report::Visit;
 use crate::web::family::canonical;
 use crate::web::{WebState, shift};
@@ -175,23 +176,36 @@ fn target(body: &str, repo: &str) -> Option<(String, u64)> {
     let number = number.parse::<u64>().ok().filter(|n| *n > 0)?;
     Some((name.into(), number))
 }
+/// The pull request that replaced this one, if the forge recorded a
+/// replacement chain or the body names one. `recorded` is the slug the ledger
+/// kept, `current` the slug the repository is hosted under now; chain links
+/// are slug-keyed and not retargeted when a repository moves, so a chain
+/// recorded before the move is still read under the recorded slug.
 fn replacement(
     state: &WebState,
     body: &str,
-    repo: &str,
+    recorded: &str,
+    current: &str,
     pr_number: Option<u64>,
     pulls: &BTreeMap<(String, u64), PullRequest>,
 ) -> Option<Replacement> {
     let (repo, number) = pr_number
         .and_then(|number| {
-            let (owner, name) = repo.split_once('/')?;
-            let end = state
-                .github
-                .pull_replacements()
-                .chain_end(owner, name, number)?;
-            Some((repo.to_string(), end))
+            let links = state.github.pull_replacements();
+            let end = [current, recorded].into_iter().find_map(|slug| {
+                let (owner, name) = slug.split_once('/')?;
+                links.chain_end(owner, name, number)
+            })?;
+            Some((current.to_string(), end))
         })
-        .or_else(|| target(body, repo))?;
+        .or_else(|| {
+            let (named, number) = target(body, current)?;
+            // The body may name a slug that has since moved as well.
+            let repo = identity::resolve(state, &named)
+                .map(|(owner, name)| format!("{owner}/{name}"))
+                .unwrap_or(named);
+            Some((repo, number))
+        })?;
     let pr = pulls.get(&(repo.clone(), number));
     Some(Replacement {
         href: format!(
@@ -226,9 +240,25 @@ pub(crate) fn snapshot(
     open: &[OpenVisit],
     repo_filter: Option<&str>,
 ) -> Snapshot {
+    // A ledger row keeps the slug the repository had when the event was
+    // recorded; current state is read under the slug it is hosted under now.
+    let recorded: BTreeSet<String> = open.iter().filter_map(|v| v.repo.clone()).collect();
+    let canonical_repo: BTreeMap<String, String> = recorded
+        .into_iter()
+        .filter_map(|repo| {
+            let (owner, name) = identity::resolve(state, &repo)?;
+            Some((repo, format!("{owner}/{name}")))
+        })
+        .collect();
+    let slug = |repo: &str| {
+        canonical_repo
+            .get(repo)
+            .cloned()
+            .unwrap_or_else(|| repo.to_string())
+    };
     let keys: BTreeSet<_> = open
         .iter()
-        .filter_map(|v| v.repo.clone().zip(v.pr))
+        .filter_map(|v| v.repo.as_deref().map(&slug).zip(v.pr))
         .collect();
     let mut pulls = BTreeMap::new();
     for (repo, number) in keys {
@@ -238,16 +268,35 @@ pub(crate) fn snapshot(
             pulls.insert((repo, number), pr);
         }
     }
+    // The same reading `replacement` makes, so the pull a chain or a body
+    // names is loaded before its state is reported.
+    let mut aliases: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (recorded, canonical) in &canonical_repo {
+        aliases
+            .entry(canonical.as_str())
+            .or_default()
+            .insert(recorded.as_str());
+    }
     let replacements: BTreeSet<_> = pulls
         .iter()
         .filter_map(|((repo, number), pr)| {
-            let (owner, name) = repo.split_once('/')?;
-            state
-                .github
-                .pull_replacements()
-                .chain_end(owner, name, *number)
+            let links = state.github.pull_replacements();
+            let slugs = std::iter::once(repo.as_str())
+                .chain(aliases.get(repo.as_str()).into_iter().flatten().copied());
+            slugs
+                .filter_map(|slug| {
+                    let (owner, name) = slug.split_once('/')?;
+                    links.chain_end(owner, name, *number)
+                })
+                .next()
                 .map(|end| (repo.clone(), end))
-                .or_else(|| target(pr.body.as_deref().unwrap_or(""), repo))
+                .or_else(|| {
+                    let (named, number) = target(pr.body.as_deref().unwrap_or(""), repo)?;
+                    let named = identity::resolve(state, &named)
+                        .map(|(owner, name)| format!("{owner}/{name}"))
+                        .unwrap_or(named);
+                    Some((named, number))
+                })
         })
         .collect();
     for (repo, number) in replacements {
@@ -287,9 +336,9 @@ pub(crate) fn snapshot(
     for v in open {
         let pr = v
             .repo
-            .as_ref()
+            .as_deref()
             .zip(v.pr)
-            .and_then(|(repo, n)| pulls.get(&(repo.clone(), n)));
+            .and_then(|(repo, n)| pulls.get(&(slug(repo), n)));
         if (v.pr.is_some() && pr.is_none())
             || (v.pr.is_none()
                 && v.family
@@ -347,8 +396,9 @@ pub(crate) fn snapshot(
                 if result.items.len() == MAX_CLOSURES {
                     continue;
                 }
+                let recorded = v.repo.as_deref().unwrap_or("");
                 let replacement =
-                    replacement(state, &body, v.repo.as_deref().unwrap_or(""), v.pr, &pulls);
+                    replacement(state, &body, recorded, &slug(recorded), v.pr, &pulls);
                 let (disposition, needs_attention) = disposition(&body, replacement.as_ref());
                 result.items.push(Closure {
                     lot_id: v.lot.clone(),
@@ -744,6 +794,191 @@ mod tests {
             replaced.items[0].replacement.as_ref().unwrap().label,
             format!("acme/widget#{}", later.number)
         );
+    }
+    /// A lot recorded under a repository's earlier slug is reconciled against
+    /// the repository it moved to, and only against that repository: a pull
+    /// still open there stays open, and a different repository that later
+    /// takes the vacated slug answers for it instead of the moved one.
+    #[test]
+    fn a_moved_repository_reconciles_recorded_lots_under_its_current_slug() {
+        use crate::web::pipeline::NewEvent;
+        use jeryu_core::{
+            CreateOrganizationRequest, CreatePullRequestRequest, CreateRepositoryRequest,
+            ForgeCore, UpdatePullRequestRequest,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let core = ForgeCore::new();
+        let repository = |owner: &str, name: &str| {
+            core.create_repository(
+                owner,
+                CreateRepositoryRequest {
+                    name: name.into(),
+                    private: false,
+                    description: None,
+                    default_branch: Some("main".into()),
+                },
+            )
+            .unwrap()
+        };
+        let pull = |owner: &str, name: &str, title: &str, head: &str| {
+            core.create_pull_request(
+                owner,
+                name,
+                "author",
+                CreatePullRequestRequest {
+                    title: title.into(),
+                    head: head.into(),
+                    base: "main".into(),
+                    head_sha: Some("c".repeat(40)),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        repository("nimbus-split", "nimbus-lambda");
+        let landed = pull("nimbus-split", "nimbus-lambda", "lock refresh", "lock");
+        let still_open = pull("nimbus-split", "nimbus-lambda", "held work", "held");
+        core.create_organization(CreateOrganizationRequest {
+            login: "cirrus".into(),
+            display_name: None,
+        })
+        .unwrap();
+        // The move the ledger never saw: the rows keep `nimbus-split/...`.
+        core.rename_repository(
+            "operator",
+            "nimbus-split",
+            "nimbus-lambda",
+            "cirrus",
+            "nimbus-lambda",
+        )
+        .unwrap();
+        core.update_pull_request(
+            "cirrus",
+            "nimbus-lambda",
+            landed.number,
+            UpdatePullRequestRequest {
+                state: Some(PullRequestState::Merged),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let state = WebState::new_with_git_storage(core.clone(), root.path().to_path_buf());
+        state
+            .events
+            .insert(
+                "fixture",
+                &NewEvent {
+                    source: "fixture".into(),
+                    kind: "pr.opened".into(),
+                    summary: "opened".into(),
+                    family: Some("nimbus".into()),
+                    repo: Some("nimbus-split/nimbus-lambda".into()),
+                    pr: Some(landed.number as i64),
+                    ..Default::default()
+                },
+                1000,
+            )
+            .unwrap();
+        let recorded = OpenVisit {
+            lot: "nimbus-split/nimbus-lambda#2".into(),
+            station: "review".into(),
+            entered: 1_568_000_000_000,
+            repo: Some("nimbus-split/nimbus-lambda".into()),
+            pr: Some(landed.number),
+            family: Some("nimbus".into()),
+            started: true,
+            held: false,
+            todo: false,
+            landed: false,
+            back_from: None,
+        };
+        let mut gate = recorded.clone();
+        gate.station = "gate".into();
+        let mut held = recorded.clone();
+        held.pr = Some(still_open.number);
+        held.lot = "nimbus-split/nimbus-lambda#3".into();
+        held.held = true;
+        let visits = vec![recorded.clone(), gate.clone(), held.clone()];
+
+        let moved = snapshot(&state, &visits, None);
+        assert!(
+            moved.excluded.contains(&recorded.key()) && moved.excluded.contains(&gate.key()),
+            "a merged pull closes its stale station visits under the recorded slug"
+        );
+        assert_eq!(moved.merged_upstream_records, 2);
+        assert!(moved.items.is_empty(), "a merge is not unresolved closure");
+        assert!(
+            !moved.excluded.contains(&held.key()),
+            "a pull still open in the moved repository stays open work"
+        );
+        assert!(
+            moved.problems.is_empty(),
+            "the recorded slug resolves, so nothing is unreadable: {:?}",
+            moved.problems
+        );
+        assert_eq!(moved.repositories[0]["repo"], "nimbus-split/nimbus-lambda");
+        assert_eq!(moved.repositories[0]["held"], 1);
+
+        // Closed, not merged: the closure links the repository's current page.
+        core.update_pull_request(
+            "cirrus",
+            "nimbus-lambda",
+            still_open.number,
+            UpdatePullRequestRequest {
+                state: Some(PullRequestState::Closed),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let closed = snapshot(&state, &[held.clone()], None);
+        assert_eq!(closed.items.len(), 1);
+        assert_eq!(
+            closed.items[0].href,
+            format!(
+                "/repos/jeryu/cirrus/nimbus-lambda/pulls/{}",
+                still_open.number
+            )
+        );
+        assert_eq!(closed.items[0].disposition, "needs_disposition");
+
+        // A new repository takes the vacated slug: it is a different
+        // repository, so the moved one's merged pull says nothing about it.
+        repository("nimbus-split", "nimbus-lambda");
+        let fresh = pull("nimbus-split", "nimbus-lambda", "fresh work", "fresh");
+        assert_eq!(fresh.number, landed.number, "same number, other repository");
+        let reoccupied = snapshot(&state, &[recorded.clone(), gate.clone()], None);
+        assert!(
+            reoccupied.excluded.is_empty(),
+            "a live repository at the slug wins over the alias"
+        );
+        assert_eq!(reoccupied.merged_upstream_records, 0);
+    }
+    /// A slug no repository hosts and no alias names keeps its recorded
+    /// identity: the lot stays in recorded work and is reported unreadable,
+    /// never closed on a guess.
+    #[test]
+    fn an_unknown_recorded_slug_is_reported_not_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let state =
+            WebState::new_with_git_storage(jeryu_core::ForgeCore::new(), root.path().to_path_buf());
+        let visit = OpenVisit {
+            lot: "nimbus-split/nimbus-lambda#2".into(),
+            station: "gate".into(),
+            entered: 1_568_000_000_000,
+            repo: Some("nimbus-split/nimbus-lambda".into()),
+            pr: Some(2),
+            family: Some("nimbus".into()),
+            started: true,
+            held: false,
+            todo: false,
+            landed: false,
+            back_from: None,
+        };
+        let snapshot = snapshot(&state, &[visit], None);
+        assert!(snapshot.excluded.is_empty());
+        assert!(snapshot.items.is_empty());
+        assert_eq!(snapshot.problems.len(), 1);
+        assert!(snapshot.problems[0].contains("remain in recorded work"));
     }
     #[test]
     fn queue_reads_share_a_short_cache_and_closure_output_has_a_limit() {
