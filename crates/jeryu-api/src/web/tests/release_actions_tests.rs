@@ -30,7 +30,7 @@ async fn a_real_server_id_round_trips_through_the_release_host_poller() {
     let ran = dir.path().join("ran");
     std::fs::write(&queue, json!({"actions": [body]}).to_string()).unwrap();
     let curl = bin.join("curl");
-    std::fs::write(
+    crate::test_script::write(
         &curl,
         r##"#!/bin/sh
 case "$*" in
@@ -44,7 +44,7 @@ esac
     )
     .unwrap();
     let systemctl = bin.join("systemctl");
-    std::fs::write(
+    crate::test_script::write(
         &systemctl,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RA_TEST_RAN\"\necho fixture-ran\n",
     )

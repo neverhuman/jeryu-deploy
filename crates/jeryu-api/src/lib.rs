@@ -22,6 +22,8 @@ mod read_model;
 pub mod routes;
 #[cfg(all(test, feature = "web"))]
 mod test_git;
+#[cfg(all(test, feature = "web"))]
+mod test_script;
 pub mod tool_access;
 #[cfg(feature = "web")]
 pub mod web;

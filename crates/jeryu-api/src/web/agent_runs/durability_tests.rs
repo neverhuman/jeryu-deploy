@@ -68,7 +68,7 @@ fn repairing_workcell(state: &Arc<WebState>, workspace: &Path, repo_root: &Path)
 fn write_agent_script(repo_root: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let script = repo_root.join("agent.sh");
-    std::fs::write(&script, "#!/bin/sh\nprintf ok\n").expect("write agent script");
+    crate::test_script::write(&script, "#!/bin/sh\nprintf ok\n").expect("write agent script");
     let mut perms = std::fs::metadata(&script)
         .expect("script metadata")
         .permissions();

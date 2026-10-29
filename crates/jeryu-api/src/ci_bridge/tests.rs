@@ -84,7 +84,7 @@ fn clone_bare(work: &Path, bare: &Path) {
 fn install_main_blocking_hook(bare: &Path) {
     let hook = bare.join("hooks").join("pre-receive");
     fs::create_dir_all(hook.parent().expect("hook parent")).unwrap();
-    fs::write(
+    crate::test_script::write(
         &hook,
         "#!/usr/bin/env bash\nset -euo pipefail\nwhile read -r _old _new ref; do\n  if [[ \"$ref\" == \"refs/heads/main\" ]]; then\n    echo 'direct main push blocked by test hook' >&2\n    exit 1\n  fi\ndone\n",
     )

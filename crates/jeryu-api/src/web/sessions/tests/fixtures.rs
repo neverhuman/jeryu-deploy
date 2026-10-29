@@ -155,7 +155,7 @@ pub(super) fn start_warm_count(fake: &FakeContainerRuntime) -> usize {
 
 pub(super) fn write_fake_docker(dir: &Path) -> std::path::PathBuf {
     let path = dir.join("fake-docker.sh");
-    std::fs::write(
+    crate::test_script::write(
         &path,
         "#!/bin/sh\nprintf 'DOCKER-ARGV: %s\\n' \"$*\"\nprintf 'DOCKER-AGENT-LIVE\\n'\n",
     )

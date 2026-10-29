@@ -699,22 +699,29 @@ mod tests {
 
     #[test]
     fn a_recipient_cannot_be_a_sendmail_option() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().expect("mail transport fixture");
         let program = dir.path().join("sendmail");
         std::fs::write(&program,
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv\"\ncat > \"$(dirname \"$0\")/message\"\n")
             .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // The shell reads the fixture instead of executing its inode. Keep a
+        // writer open to prove delivery also works with an inherited writer.
+        let _writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&program)
+            .unwrap();
         let recipient = "-fattack@attacker.test";
         assert_eq!(
             super::super::account_email::normalize_address(recipient).as_deref(),
             Some(recipient)
         );
         let transport = SendmailTransport {
-            program: program.to_str().unwrap().to_string(),
-            args: vec!["-t".to_string(), "-i".to_string()],
+            program: "/bin/sh".to_string(),
+            args: vec![
+                program.to_str().unwrap().to_string(),
+                "-t".to_string(),
+                "-i".to_string(),
+            ],
         };
         transport
             .deliver("From: fixture\r\n\r\nbody\r\n", recipient)

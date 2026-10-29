@@ -208,7 +208,7 @@ impl std::ops::Deref for TempScript {
 fn write_exec_script(label: &str, contents: &str) -> TempScript {
     let dir = tempfile::tempdir().expect("staging script directory");
     let path = dir.path().join(format!("jeryu-r5-{label}.sh"));
-    std::fs::write(&path, contents).expect("write staging script");
+    crate::test_script::write(&path, contents).expect("write staging script");
     #[cfg(unix)]
     {
         let mut perms = std::fs::metadata(&path)

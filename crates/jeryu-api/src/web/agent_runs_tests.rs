@@ -24,7 +24,7 @@ async fn response_json(response: AxumResponse) -> Value {
 
 fn write_agent_script(repo_root: &Path, name: &str, body: &str) -> PathBuf {
     let script = repo_root.join(name);
-    std::fs::write(&script, body).expect("write agent script");
+    crate::test_script::write(&script, body).expect("write agent script");
     let mut perms = std::fs::metadata(&script)
         .expect("script metadata")
         .permissions();
