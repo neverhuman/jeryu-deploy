@@ -22,6 +22,8 @@ pub(crate) mod topology;
 pub(crate) mod work;
 
 #[cfg(test)]
+mod closure_identity_tests;
+#[cfg(test)]
 mod hold_tests;
 #[cfg(test)]
 mod tests;
