@@ -255,26 +255,30 @@ pub(crate) fn queue_head_audit(
     repo: &str,
     update: &RefUpdate,
     origin_base_url: &str,
-) {
+) -> bool {
     if update.new_oid == ZERO_OID {
-        return; // ref delete: nothing to audit
+        return false; // ref delete: nothing to audit
     }
+    let mut queued = false;
     let (status, conclusion, output) =
         match plan_push_audit(core, git_bin, bare, owner, repo, update) {
             // Branch classes nobody gates, and heads already covered by a score
             // or an open ticket, get no check of their own: the head keeps
             // whatever proof its single audit produced.
-            PushAudit::Skipped(_) | PushAudit::AlreadyCovered => return,
+            PushAudit::Skipped(_) | PushAudit::AlreadyCovered => return false,
             PushAudit::Unqueued(reason) => (
                 CheckRunStatus::InProgress,
                 None,
                 jankurai::jankurai_unqueued_output(reason),
             ),
-            PushAudit::Queued { ticket, note } => (
-                CheckRunStatus::InProgress,
-                None,
-                jankurai::jankurai_queued_output(&ticket, note.as_deref()),
-            ),
+            PushAudit::Queued { ticket, note } => {
+                queued = true;
+                (
+                    CheckRunStatus::InProgress,
+                    None,
+                    jankurai::jankurai_queued_output(&ticket, note.as_deref()),
+                )
+            }
         };
     let _ = core.create_check_run(
         owner,
@@ -288,6 +292,98 @@ pub(crate) fn queue_head_audit(
             output: Some(output),
         },
     );
+    queued
+}
+
+/// Record the audit ticket an unchanged head lost, without a push.
+///
+/// The queue lives in process memory, so a forge restart drops every ticket
+/// while the head's `jankurai/proof` still reads pending. This replays what the
+/// push did: a head that already has a score or a ticket is left alone, a head
+/// that needs one gets a fresh ticket against the same merge base. It never
+/// completes a check, so no audit is skipped. Returns whether a ticket was
+/// recorded.
+pub(crate) fn restore_head_audit(
+    core: &ForgeCore,
+    manager: &RepoManager,
+    owner: &str,
+    repo: &str,
+    branch: &str,
+    head_sha: &str,
+    origin_base_url: &str,
+) -> bool {
+    if !jankurai::is_object_id(head_sha) {
+        return false;
+    }
+    let Ok(managed) = manager.open_parts(owner, repo) else {
+        return false;
+    };
+    let update = RefUpdate {
+        ref_name: format!("refs/heads/{branch}"),
+        old_oid: ZERO_OID.to_string(),
+        new_oid: head_sha.to_string(),
+    };
+    queue_head_audit(
+        core,
+        &manager.config().git_bin,
+        &managed.path,
+        owner,
+        repo,
+        &update,
+        origin_base_url,
+    )
+}
+
+/// Give every open pull request head whose `jankurai/proof` is still pending a
+/// claimable ticket. Run once after the forge starts: the proofs were published
+/// before the restart, the tickets did not survive it. Returns the number of
+/// tickets recorded.
+pub(crate) fn restore_pending_audits(
+    core: &ForgeCore,
+    manager: &RepoManager,
+    origin_base_url: &str,
+) -> usize {
+    let mut restored = 0;
+    for repository in core.list_repositories(None) {
+        let (owner, repo) = (&repository.owner, &repository.name);
+        let Ok(pulls) = core.list_pull_requests(owner, repo, None) else {
+            continue;
+        };
+        for pull in pulls {
+            if matches!(
+                pull.state,
+                jeryu_core::PullRequestState::Merged | jeryu_core::PullRequestState::Closed
+            ) {
+                continue;
+            }
+            let proof_pending = core
+                .list_check_runs(owner, repo, Some(&pull.head.sha))
+                .map(|runs| {
+                    let mut proofs = runs
+                        .check_runs
+                        .iter()
+                        .filter(|run| run.name == JANKURAI_PROOF_CHECK)
+                        .peekable();
+                    proofs.peek().is_some()
+                        && proofs.all(|run| run.status != CheckRunStatus::Completed)
+                })
+                .unwrap_or(false);
+            if proof_pending
+                && restore_head_audit(
+                    core,
+                    manager,
+                    owner,
+                    repo,
+                    &pull.head.ref_name,
+                    &pull.head.sha,
+                    origin_base_url,
+                )
+            {
+                restored += 1;
+            }
+        }
+    }
+    restored
 }
 
 /// The head a submitted report is about, and the forge origin its check links

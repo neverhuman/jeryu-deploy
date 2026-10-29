@@ -208,6 +208,9 @@ pub(crate) struct WebState {
     pub(crate) merge_attempts: merge_attempts::MergeAttemptStore,
     /// Re-gate requests the gate runner reads each tick (`regate`).
     pub(crate) regate_requests: regate::RegateStore,
+    /// Runs the post-restart audit ticket restore once per process, on the
+    /// first runner claim or listing (`jankurai::audits`).
+    pub(crate) audit_tickets_restored: Arc<std::sync::Once>,
     /// Release steps a deployer asked for, which the release host's poller
     /// claims and performs (`release_actions`).
     pub(crate) release_actions: release_actions::ReleaseActionStore,
@@ -451,6 +454,7 @@ impl WebState {
             merge_queue: Arc::default(),
             merge_attempts: merge_attempts::MergeAttemptStore::default(),
             regate_requests: regate::RegateStore::default(),
+            audit_tickets_restored: Arc::new(std::sync::Once::new()),
             release_actions: release_actions::ReleaseActionStore::default(),
             gate_wanted: gate_wanted::GateWantedStore::default(),
             review_wanted: review_wanted::ReviewWantedStore::default(),

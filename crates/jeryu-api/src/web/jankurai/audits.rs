@@ -199,9 +199,25 @@ struct ClaimResponse {
     tickets: Vec<AuditTicket>,
 }
 
+/// The audit queue is process memory, so a restarted forge starts with no
+/// tickets while open pull request heads still show a pending proof. The first
+/// runner to ask after a start gives each such head its ticket back.
+fn restore_tickets_once(state: &WebState) {
+    state.audit_tickets_restored.call_once(|| {
+        let restored = crate::ci_bridge::restore_pending_audits(
+            &state.core,
+            &state.repo_manager,
+            &crate::ci_bridge::default_origin_base_url(),
+        );
+        if restored > 0 {
+            eprintln!("jankurai audits: restored {restored} ticket(s) lost across a restart");
+        }
+    });
+}
+
 /// POST /api/v1/jankurai-audits/claim — a gate runner takes audit work.
 pub(crate) async fn claim(
-    State(_state): State<Arc<WebState>>,
+    State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
     body: Bytes,
 ) -> AxumResponse {
@@ -229,6 +245,7 @@ pub(crate) async fn claim(
             "runner_id is required",
         );
     }
+    restore_tickets_once(&state);
     let Ok(mut queue) = audit_queue::queue().lock() else {
         return api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -249,7 +266,7 @@ pub(crate) async fn claim(
 
 /// GET /api/v1/jankurai-audits — what still waits for a runner.
 pub(crate) async fn list(
-    State(_state): State<Arc<WebState>>,
+    State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
 ) -> AxumResponse {
     if !super::super::auth::can_submit_runner_audit(&account) {
@@ -259,6 +276,7 @@ pub(crate) async fn list(
             "the jankurai audit queue is visible to runners and admins",
         );
     }
+    restore_tickets_once(&state);
     let Ok(queue) = audit_queue::queue().lock() else {
         return api_error(
             StatusCode::INTERNAL_SERVER_ERROR,

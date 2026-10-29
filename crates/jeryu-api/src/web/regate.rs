@@ -18,6 +18,9 @@
 //! re-gate and asking again records a newer one. A request whose head has since
 //! moved is no longer pending: the new head is gated because it is new.
 //!
+//! The ask also recreates the head's audit ticket when the forge lost it (the
+//! audit queue is in memory too), so a restart cannot strand `jankurai/proof`.
+//!
 //! The store is in memory, like [`super::merge_attempts`]: a request lives for
 //! one runner tick (a minute), and a forge that restarts in between should be
 //! asked again rather than replay an ask from before the restart.
@@ -126,6 +129,18 @@ pub(super) async fn request(
         requested_at: server_time(),
         requested_by: account.login.clone(),
     };
+    // A forge restart drops the audit queue while the head's proof still reads
+    // pending: re-gating is how an unchanged head gets its ticket back. A head
+    // already scored or ticketed is left alone.
+    crate::ci_bridge::restore_head_audit(
+        &state.core,
+        &state.repo_manager,
+        &repo.owner,
+        &repo.name,
+        &pr.head.ref_name,
+        &pr.head.sha,
+        &crate::ci_bridge::default_origin_base_url(),
+    );
     state.regate_requests.record(request.clone());
     // The ask is work an idle slot can start now, so it wakes one rather than
     // waiting to be found on the next tick.

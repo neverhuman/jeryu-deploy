@@ -1754,3 +1754,87 @@ fn a_push_with_no_moved_branch_leaves_pushed_at_alone() {
         .unwrap();
     assert!(second >= first);
 }
+
+/// The queue is process memory: a restart drops every ticket while the open
+/// pull request's proof still reads pending. Restoring gives the unchanged head
+/// its ticket back, once, and completes nothing.
+#[test]
+fn a_restart_that_lost_the_queue_gets_pending_pull_heads_their_tickets_back() {
+    use jeryu_core::CreatePullRequestRequest;
+    use jeryu_gitd::{GitdConfig, RepoId};
+
+    let storage = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let manager = RepoManager::new(GitdConfig::new(storage.path()));
+    let resolved = manager
+        .create_bare(&RepoId::new("jeryu", "restore-tickets").unwrap())
+        .unwrap();
+    let bare = resolved.path.to_string_lossy().to_string();
+    let w = work.path();
+    git(w, &["init", "-q", "-b", "main"]);
+    git(w, &["config", "user.email", "ci@example.invalid"]);
+    git(w, &["config", "user.name", "CI"]);
+    git(w, &["config", "commit.gpgsign", "false"]);
+    write(w, "README.md", "seed\n");
+    git(w, &["add", "-A"]);
+    git(w, &["commit", "-q", "-m", "seed"]);
+    let main_head = git_out(w, &["rev-parse", "HEAD"]);
+    git(w, &["checkout", "-q", "-b", "feature"]);
+    write(w, "feature.txt", "feature\n");
+    git(w, &["add", "-A"]);
+    git(w, &["commit", "-q", "-m", "feature"]);
+    let head = git_out(w, &["rev-parse", "HEAD"]);
+    git(w, &["push", "-q", &bare, "main", "feature"]);
+
+    let core = core_with_repo("restore-tickets");
+    core.create_pull_request(
+        "jeryu",
+        "restore-tickets",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some(head.clone()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    let update = ref_update("refs/heads/feature", &main_head, &head);
+    assert!(queue_head_audit(
+        &core,
+        "git",
+        &resolved.path,
+        "jeryu",
+        "restore-tickets",
+        &update,
+        "http://forge.test",
+    ));
+    assert_eq!(audit_record(&core, "restore-tickets", &head).0, 1);
+
+    // The restart: the ticket is gone, the pending proof is not.
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("jeryu", "restore-tickets", &head);
+    assert_eq!(audit_record(&core, "restore-tickets", &head).0, 0);
+
+    restore_pending_audits(&core, &manager, "http://forge.test");
+    assert_eq!(audit_record(&core, "restore-tickets", &head).0, 1);
+
+    // A second pass, or a regate, finds the ticket and adds nothing.
+    assert!(!restore_head_audit(
+        &core,
+        &manager,
+        "jeryu",
+        "restore-tickets",
+        "feature",
+        &head,
+        "http://forge.test",
+    ));
+    assert_eq!(audit_record(&core, "restore-tickets", &head).0, 1);
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("jeryu", "restore-tickets", &head);
+}
