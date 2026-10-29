@@ -1014,3 +1014,247 @@ fn repo_list_score_follows_the_default_branch_head_after_a_fast_forward() {
         "the covered head keeps its single audit record"
     );
 }
+
+/// With a protection rule to read, only the contexts it requires count as
+/// failing; every other current check is reported apart as advisory, failing
+/// and passing side by side.
+#[test]
+fn repo_summary_counts_required_checks_and_reports_advisory_apart() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "jeryu",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["jeryu/ci".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some("live-sha".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    for (name, conclusion) in [
+        ("jeryu/ci", CheckConclusion::Failure),
+        ("jeryu/spell", CheckConclusion::Failure),
+        ("jeryu/typos", CheckConclusion::Failure),
+        ("jeryu/docs", CheckConclusion::Success),
+        // Mirror bookkeeping is on neither side of the count.
+        ("jeryu/github-mirror", CheckConclusion::Failure),
+    ] {
+        core.create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: name.to_string(),
+                head_sha: "live-sha".to_string(),
+                conclusion: Some(conclusion),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    }
+
+    let state = WebState::new(core);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(
+        summary.failing_checks, 1,
+        "only the required jeryu/ci failure counts as failing"
+    );
+    let advisory = summary
+        .advisory_checks
+        .as_ref()
+        .expect("a readable rule tells advisory from required");
+    assert_eq!(advisory.failing, 2, "jeryu/spell and jeryu/typos");
+    assert_eq!(advisory.passing, 1, "jeryu/docs");
+    assert_eq!(summary.health, "warning");
+}
+
+/// A repository whose required checks all pass is healthy even while advisory
+/// checks fail: the advisory failures are still reported, apart.
+#[test]
+fn repo_summary_stays_healthy_when_only_advisory_checks_fail() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "jeryu",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["jeryu/ci".to_string()],
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some("live-sha".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    for (name, conclusion) in [
+        ("jeryu/ci", CheckConclusion::Success),
+        ("jeryu/spell", CheckConclusion::Failure),
+    ] {
+        core.create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: name.to_string(),
+                head_sha: "live-sha".to_string(),
+                conclusion: Some(conclusion),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    }
+
+    let state = WebState::new(core);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(summary.failing_checks, 0);
+    assert_eq!(summary.health, "healthy");
+    let advisory = summary.advisory_checks.as_ref().expect("advisory reported");
+    assert_eq!((advisory.failing, advisory.passing), (1, 0));
+}
+
+/// `jankurai/proof` is required when the rule insists on it even though it is
+/// not listed as a status-check context.
+#[test]
+fn repo_summary_treats_required_jankurai_proof_as_required() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.set_branch_protection(
+        "alice",
+        "jeryu",
+        "main",
+        SetBranchProtectionRequest {
+            require_jankurai_proof: true,
+            ..SetBranchProtectionRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some("live-sha".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        CreateCheckRunRequest {
+            name: "jankurai/proof".to_string(),
+            head_sha: "live-sha".to_string(),
+            conclusion: Some(CheckConclusion::Failure),
+            ..CreateCheckRunRequest::default()
+        },
+    )
+    .unwrap();
+
+    let state = WebState::new(core);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(summary.failing_checks, 1);
+    let advisory = summary.advisory_checks.as_ref().expect("advisory reported");
+    assert_eq!((advisory.failing, advisory.passing), (0, 0));
+}
+
+/// No protection rule means nothing tells required from advisory: every
+/// current check keeps counting as failing and nothing is reported apart.
+#[test]
+fn repo_summary_counts_every_check_without_a_protection_rule() {
+    let core = ForgeCore::new();
+    core.create_repository(
+        "alice",
+        CreateRepositoryRequest {
+            name: "jeryu".to_string(),
+            private: true,
+            description: None,
+            default_branch: Some("main".to_string()),
+        },
+    )
+    .unwrap();
+    core.create_pull_request(
+        "alice",
+        "jeryu",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some("live-sha".to_string()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    for name in ["jeryu/ci", "jeryu/spell"] {
+        core.create_check_run(
+            "alice",
+            "jeryu",
+            CreateCheckRunRequest {
+                name: name.to_string(),
+                head_sha: "live-sha".to_string(),
+                conclusion: Some(CheckConclusion::Failure),
+                ..CreateCheckRunRequest::default()
+            },
+        )
+        .unwrap();
+    }
+
+    let state = WebState::new(core);
+    let summary = &repo_list_response(&state).repositories[0];
+    assert_eq!(summary.failing_checks, 2);
+    assert_eq!(summary.advisory_checks, None);
+    assert_eq!(summary.health, "warning");
+}
