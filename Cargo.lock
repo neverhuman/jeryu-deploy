@@ -1341,7 +1341,7 @@ dependencies = [
 [[package]]
 name = "jeryu-bench"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.9#74447d074d40ba9844ac9761dd257bd23b2dcd1d"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.10#b1be4914d01fb1f6d65d32dcf68b1fe9a135247e"
 
 [[package]]
 name = "jeryu-ci-compiler"
@@ -1541,7 +1541,7 @@ dependencies = [
 [[package]]
 name = "jeryu-obs"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.9#74447d074d40ba9844ac9761dd257bd23b2dcd1d"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.10#b1be4914d01fb1f6d65d32dcf68b1fe9a135247e"
 
 [[package]]
 name = "jeryu-proof"
@@ -1565,7 +1565,7 @@ dependencies = [
 [[package]]
 name = "jeryu-repogate"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.9#74447d074d40ba9844ac9761dd257bd23b2dcd1d"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.10#b1be4914d01fb1f6d65d32dcf68b1fe9a135247e"
 dependencies = [
  "anyhow",
  "clap",
@@ -1703,7 +1703,7 @@ dependencies = [
 [[package]]
 name = "jeryu-wsversion"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.9#74447d074d40ba9844ac9761dd257bd23b2dcd1d"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-release-ops-v5.0.0-split.10#b1be4914d01fb1f6d65d32dcf68b1fe9a135247e"
 dependencies = [
  "anyhow",
  "chrono",
