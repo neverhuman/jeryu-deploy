@@ -132,6 +132,11 @@ The flow, per head:
    is recorded under its own decision, `no-base-diff` — proof title *no base to
    diff against* — never as a pass and no longer hidden inside a generic
    `tool-failed`.
+   The one report with nothing to audit that does pass is the exact
+   no-changes report Jankurai 1.7.5 writes when the head equals its base
+   (`result: "no-changes"`, `score: 100`, and `changed_count`, `caps_applied`
+   and `hard_findings` all `0`, no `decision`): it is scored 100 with the proof
+   title *no changes to score*. `ops/ci/jankurai-gate.sh` renders it the same.
 
 3. **The gate host does the work.** `pr-gate-audit.sh` (jeryu-ci-runner
    `ops/pr-gate`, installed and kept current with the gate itself) claims jobs

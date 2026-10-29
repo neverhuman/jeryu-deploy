@@ -1483,6 +1483,17 @@ fn jankurai_gate_script_prints_the_hosted_proof_verdict() {
         // An audit whose report the host cannot read fails closed, with the reason.
         serde_json::json!({"score": 101}),
         serde_json::json!({"host_error": "the auditor exited 101: thread panicked"}),
+        // A head equal to its base: the report the governed Jankurai 1.7.5 really
+        // writes for `diff-audit --base-ref HEAD` on a clean checkout. Nothing
+        // changed, so it passes.
+        no_changes_report(),
+        // Anything short of that exact shape is not that report and fails closed.
+        no_changes_with("changed_count", serde_json::json!(3)),
+        no_changes_with("hard_findings", serde_json::json!(1)),
+        no_changes_with("caps_applied", serde_json::json!(1)),
+        no_changes_with("score", serde_json::json!(90)),
+        no_changes_with("changed_count", serde_json::json!("0")),
+        no_changes_with("decision", serde_json::json!({"hard_findings": 0})),
     ];
 
     for (index, report) in cases.iter().enumerate() {
@@ -1520,6 +1531,46 @@ fn jankurai_gate_script_prints_the_hosted_proof_verdict() {
             pass,
             "report {index} exit status must be the hosted verdict: {printed}"
         );
+    }
+}
+
+fn no_changes_report() -> serde_json::Value {
+    serde_json::json!({
+        "base_ref": "HEAD", "caps_applied": 0, "changed_count": 0, "hard_findings": 0,
+        "kind": "diff-audit", "result": "no-changes", "score": 100
+    })
+}
+
+fn no_changes_with(key: &str, value: serde_json::Value) -> serde_json::Value {
+    let mut report = no_changes_report();
+    report[key] = value;
+    report
+}
+
+/// A head with nothing to audit against its base (main gating its own head)
+/// passes as "no changes to score"; a mutated no-changes report is a tool failure.
+#[test]
+fn a_no_changes_audit_passes_and_its_mutations_fail_closed() {
+    let (request, pass) = jankurai_score_request("main", "abc", Some(no_changes_report()), 0);
+    assert!(pass);
+    assert_eq!(request.decision, "scored");
+    assert_eq!(request.score, Some(100));
+    assert_eq!(
+        jankurai_proof_output(&request, pass).title,
+        "no changes to score"
+    );
+    // The auditor exiting nonzero is never a pass, whatever it wrote.
+    assert!(!jankurai_score_request("main", "abc", Some(no_changes_report()), 1).1);
+    for report in [
+        no_changes_with("changed_count", serde_json::json!(3)),
+        no_changes_with("hard_findings", serde_json::json!(1)),
+        no_changes_with("caps_applied", serde_json::json!(1)),
+        no_changes_with("result", serde_json::json!("scored")),
+        no_changes_with("host_error", serde_json::json!("the auditor exited 101")),
+    ] {
+        let (request, pass) = jankurai_score_request("main", "abc", Some(report.clone()), 0);
+        assert!(!pass, "{report}");
+        assert_eq!(request.decision, "tool-failed", "{report}");
     }
 }
 

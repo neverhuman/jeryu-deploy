@@ -274,7 +274,9 @@ pub(crate) fn jankurai_proof_output(
         .unwrap_or(0)
         .max(HOST_JANKURAI_MINIMUM_SCORE);
     let hard_findings = request.hard_findings.unwrap_or(0);
-    let title = if pass {
+    let title = if pass && request.report.as_ref().is_some_and(is_no_changes_report) {
+        NO_CHANGES_TITLE.to_string()
+    } else if pass {
         format!("score {score} >= floor {floor}")
     } else if score < floor {
         format!("score {score} < floor {floor}")
@@ -298,6 +300,25 @@ pub(crate) fn jankurai_proof_output(
         ),
         text: (!pass).then(|| top_findings_text(request.report.as_ref())),
     }
+}
+
+/// The report `jankurai diff-audit` writes when the head changes nothing against
+/// its base (main gating its own head, or a checkout whose HEAD is the base):
+/// `{"result":"no-changes","changed_count":0,"score":100,"caps_applied":0,
+/// "hard_findings":0}`, with no `decision` block. Nothing changed, so nothing can
+/// fail; only that exact shape passes, and anything else short of a full diff
+/// score stays a tool failure.
+const NO_CHANGES_TITLE: &str = "no changes to score";
+
+fn is_no_changes_report(report: &serde_json::Value) -> bool {
+    let zero = |key: &str| report.get(key).and_then(serde_json::Value::as_u64) == Some(0);
+    report.get("result").and_then(serde_json::Value::as_str) == Some("no-changes")
+        && report.get("score").and_then(serde_json::Value::as_u64) == Some(100)
+        && zero("changed_count")
+        && zero("caps_applied")
+        && zero("hard_findings")
+        && report.get("decision").is_none()
+        && report.get("host_error").is_none()
 }
 
 /// A clean exit with a report that carries no verdict at all: no score, and a
@@ -409,6 +430,9 @@ pub(super) fn jankurai_score_request_with_reason(
     let parsed = report.as_ref().and_then(|report| {
         if exit_code != 0 {
             return None;
+        }
+        if is_no_changes_report(report) {
+            return Some((100, 0, 0, Vec::new()));
         }
         let score = u32::try_from(report.get("score")?.as_u64()?).ok()?;
         let decision = report.get("decision")?;

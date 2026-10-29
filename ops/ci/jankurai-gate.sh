@@ -118,10 +118,30 @@ def truncate(reason):
     return reason if len(reason) <= MAX_REASON_CHARS else reason[:MAX_REASON_CHARS] + "..."
 
 
+def is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def no_changes(report):
+    """The exact report diff-audit writes when the head changes nothing against its
+    base (ci_bridge::jankurai::is_no_changes_report): nothing changed, so it passes."""
+    return (
+        isinstance(report, dict)
+        and report.get("result") == "no-changes"
+        and is_int(report.get("score")) and report.get("score") == 100
+        and all(is_int(report.get(key)) and report.get(key) == 0
+                for key in ("changed_count", "caps_applied", "hard_findings"))
+        and "decision" not in report
+        and "host_error" not in report
+    )
+
+
 def scored(report):
     """The fields a verdict needs, or None when the report is not a diff score."""
     if not isinstance(report, dict):
         return None
+    if no_changes(report):
+        return 100, 0, 0, []
     decision = report.get("decision")
     caps = report.get("caps_applied")
     if not isinstance(decision, dict) or not isinstance(caps, list):
@@ -197,7 +217,9 @@ if parsed is None:
 score, hard, minimum, caps = parsed
 floor = max(minimum, HOST_MINIMUM_SCORE)
 passed = score >= floor and hard == 0 and not caps
-if passed:
+if passed and no_changes(report):
+    title = "no changes to score"
+elif passed:
     title = f"score {score} >= floor {floor}"
 elif score < floor:
     title = f"score {score} < floor {floor}"
