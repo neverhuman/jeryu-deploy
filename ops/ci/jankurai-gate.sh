@@ -186,6 +186,27 @@ def top_findings_text(report):
 
 parsed = None if host_error else scored(report)
 if parsed is None:
+    # Match ci_bridge::jankurai::is_verdictless_report, including absent versus
+    # null fields: a partial verdict remains a tool failure.
+    decision = report.get("decision") if isinstance(report, dict) else None
+    if (
+        not host_error
+        and os.environ["JANKURAI_GATE_TOOL_EXIT"] == "0"
+        and isinstance(report, dict)
+        and "host_error" not in report
+        and "score" not in report
+        and (not isinstance(decision, dict)
+             or not any(key in decision for key in ("minimum_score", "hard_findings")))
+    ):
+        print("no base to diff against")
+        print()
+        print(
+            "The auditor found nothing to audit against the base it was given and "
+            "returned a report with no verdict in it, so there is no score. The "
+            "base a head with no commit base is audited against is the empty root "
+            "commit; see docs/governed-jankurai.md."
+        )
+        sys.exit(1)
     # Fails closed, naming what went wrong: "tool-failed" alone tells a reader
     # nothing (ci_bridge::jankurai::tool_failure_reason).
     if host_error:

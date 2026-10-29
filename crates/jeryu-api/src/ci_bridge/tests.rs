@@ -1483,6 +1483,16 @@ fn jankurai_gate_script_prints_the_hosted_proof_verdict() {
         // An audit whose report the host cannot read fails closed, with the reason.
         serde_json::json!({"score": 101}),
         serde_json::json!({"host_error": "the auditor exited 101: thread panicked"}),
+        // Verdictless reports use the hosted no-base-diff wording and fail closed.
+        serde_json::json!({"result": "no-changes"}),
+        serde_json::json!({}),
+        serde_json::json!({"decision": {}}),
+        serde_json::json!({"decision": null}),
+        // Present fields, even null ones, remain malformed verdicts/tool failures.
+        serde_json::json!({"score": null}),
+        serde_json::json!({"decision": {"minimum_score": null}}),
+        serde_json::json!({"decision": {"hard_findings": 0}}),
+        serde_json::json!({"host_error": null}),
         // A head equal to its base: the report the governed Jankurai 1.7.5 really
         // writes for `diff-audit --base-ref HEAD` on a clean checkout. Nothing
         // changed, so it passes.
