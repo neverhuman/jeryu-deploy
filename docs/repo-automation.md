@@ -185,6 +185,29 @@ A head whose patch is upstream but which removes something main has fails
 the tree check. A head with no commits of its own is not a cleanup candidate.
 This cleanup does not establish a gate result or approval on another head.
 
+## Who gates a head: the forge-held claim
+
+Gate hosts used to be partitioned by owner by hand, so a host that hung left
+its share ungated until an operator moved those owners. The forge now holds the
+claim on each gated head, and every host gates every repository it reaches:
+
+- `POST /api/v1/gate-claims {repo, number, head_sha|queue_sha, runner_id,
+  host}` leases one head for `ttl_seconds`. A slot asks after admission and
+  before it posts `pending`; a second host asking is refused `409 claim_held`,
+  so one head gets one host's `<repo>/required`.
+- The holder repeats the ask as a renewal while the gate runs, and
+  `POST /api/v1/gate-claims/release` gives the head back on publication. A
+  lease nobody renews expires, so a dead host's heads are claimed by a live
+  host within one TTL.
+- A repository declares what its gate needs in its own `.jeryu/repo.toml`
+  (`[gate] capabilities = ["host-ci"]`), read at the gated head's base branch
+  and never at the pull request's head, and matched against the
+  `capabilities` a host advertises in its heartbeat. A host without them is
+  refused `409 capability_missing`.
+
+Both routes take the credential heartbeats take, and `README.md` has the whole
+contract, including what needs-you says when no capable host is alive.
+
 ## Starting a gate on the push
 
 A gate runner slot used to learn about work only when its own timer fired, so

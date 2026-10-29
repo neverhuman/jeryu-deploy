@@ -21,6 +21,7 @@ mod error_codes;
 mod error_envelope;
 pub(crate) mod family;
 pub(crate) mod flow;
+pub(crate) mod gate_claims;
 pub(crate) mod gate_wanted;
 mod headline;
 pub(crate) mod human_time;
@@ -200,6 +201,10 @@ pub(crate) struct WebState {
     pub(crate) agent_presence: agent_presence::AgentPresenceState,
     /// Live PR gate runners, fed by `POST /api/v1/runners/heartbeat`.
     pub(crate) gate_runners: control_plane::GateRunnerStore,
+    /// The forge-held lease on each gated head, so several gate hosts gate
+    /// at once and only one of them posts a head's required check
+    /// (`gate_claims`).
+    pub(crate) gate_claims: gate_claims::GateClaimStore,
     /// Family release boards, fed by `PUT /api/v1/release-board/:family`.
     pub(crate) release_boards: release_board::ReleaseBoardStore,
     /// Merge queue index; the queue itself lives in `refs/queue*` of each repo.
@@ -450,6 +455,7 @@ impl WebState {
                 .expect("open agent run intent store"),
             agent_presence: agent_presence::AgentPresenceState::open(&shift_path),
             gate_runners: control_plane::GateRunnerStore::from_env(),
+            gate_claims: gate_claims::GateClaimStore::default(),
             release_boards: release_board::ReleaseBoardStore::from_env(),
             merge_queue: Arc::default(),
             merge_attempts: merge_attempts::MergeAttemptStore::default(),
@@ -1421,6 +1427,8 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         // Heads that became gateable since the runner last asked, long-polled.
         ("/api/v1/gate-wanted", get(gate_wanted::list)),
+        ("/api/v1/gate-claims", post(gate_claims::acquire)),
+        ("/api/v1/gate-claims/release", post(gate_claims::release)),
         // Pull request heads that became reviewable since the reviewer last
         // asked, long-polled.
         ("/api/v1/review-wanted", get(review_wanted::list)),

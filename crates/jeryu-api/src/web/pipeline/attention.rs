@@ -65,8 +65,8 @@ pub(crate) use flow::gate_definition_paths;
 pub(crate) use flow::shift_of_head;
 pub(crate) use flow::{
     DraftFacts, LatestDeployment, MainRedFacts, ProductionFacts, PullFacts,
-    ReviewerOfflineThresholds, Superseded, SupersededPullFacts, draft_items,
-    drop_shadowed_pull_rows, main_red_items, pull_items, queue_items, release_items,
+    ReviewerOfflineThresholds, RunnerFacts, StaleGateClaim, Superseded, SupersededPullFacts,
+    draft_items, drop_shadowed_pull_rows, main_red_items, pull_items, queue_items, release_items,
     review_hold_explanation, runner_items, stamp_hold_since, superseded_pull_items,
 };
 pub(crate) use hosts::Hosts;
@@ -165,6 +165,7 @@ impl Severity {
 /// match nothing, so a reader who filters by it hears so.
 pub(crate) const KINDS: &[&str] = &[
     "deploy_failed",
+    "gate_claim_stale",
     "gate_runner_down",
     "main_red",
     "merger_stalled",
@@ -1355,12 +1356,31 @@ pub(crate) fn collect(state: &WebState, now: DateTime<Utc>) -> AttentionResponse
     items.extend(superseded_pull_items(&superseded_pulls));
     items.extend(draft_items(&draft_facts(state), draft_idle_days(), now));
     items.extend(queue_items(&entries, &open, now));
+    // Gate claims whose holder stopped renewing: a head that was being gated
+    // and now is not. Only the ones no live host can take over become rows.
+    let stale_claims: Vec<StaleGateClaim> = state
+        .gate_claims
+        .stale(now)
+        .into_iter()
+        .map(|claim| StaleGateClaim {
+            repo: claim.repo,
+            number: claim.number,
+            head: claim.head,
+            host: claim.host,
+            runner_id: claim.runner_id,
+            expired_at: claim.expires_at,
+            required_capabilities: claim.required_capabilities,
+        })
+        .collect();
     items.extend(runner_items(
         &state.gate_runners.snapshot(),
-        &open_heads,
-        waiting_review_count,
-        building,
-        reviewer_offline_thresholds(),
+        &RunnerFacts {
+            open_heads: &open_heads,
+            stale_claims: &stale_claims,
+            waiting_review_count,
+            queue_building: building,
+            reviewer_thresholds: reviewer_offline_thresholds(),
+        },
         now,
         &hosts,
     ));

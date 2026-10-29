@@ -11,13 +11,13 @@ use tower::ServiceExt;
 use super::attention::{
     ATTENTION_SCHEMA, ApiCall, AttentionResponse, BoardFacts, BoardLane, Counts, Draft, DraftFacts,
     Filter, Hosts, Item, KINDS, LatestDeployment, MainRedFacts, MirrorDrift, MirrorFailure,
-    ProductionFacts, PullFacts, PushedAfterMergeFacts, ReviewerOfflineThresholds, Severity,
-    StrandedBranchFacts, SupersededPullFacts, board_items, budget_items, digest_items,
-    divergence_items, draft_items, drop_shadowed_pull_rows, gate_definition_paths, main_red_items,
-    mirror_items, only_matching, order, pin_items, pull_items, pushed_after_merge_items,
-    queue_items, release_items, runner_items, shift_items, split_backlog, stamp_hold_since,
-    stranded_backlog_items, stranded_branch_items, superseded_pull_items, todo_items, web_routes,
-    worker_items,
+    ProductionFacts, PullFacts, PushedAfterMergeFacts, ReviewerOfflineThresholds, RunnerFacts,
+    Severity, StaleGateClaim, StrandedBranchFacts, SupersededPullFacts, board_items, budget_items,
+    digest_items, divergence_items, draft_items, drop_shadowed_pull_rows, gate_definition_paths,
+    main_red_items, mirror_items, only_matching, order, pin_items, pull_items,
+    pushed_after_merge_items, queue_items, release_items, runner_items, shift_items, split_backlog,
+    stamp_hold_since, stranded_backlog_items, stranded_branch_items, superseded_pull_items,
+    todo_items, web_routes, worker_items,
 };
 use super::pins::{BumpPr, Consumer, Pin, Unreleased};
 use super::tests::{body_json, request, shift_forge};
@@ -1729,10 +1729,13 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
             // A live gate slot, so the inbox has nothing else to say.
             runner("xbabe2/slot0", &["pr-gate"], 30, None),
         ],
-        &heads_at(&open, TEST_HEAD),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     ));
@@ -1762,10 +1765,13 @@ fn a_reviewer_that_requested_changes_and_gave_up_is_one_row() {
             // A live gate slot, so the inbox has nothing else to say.
             runner("xbabe2/slot0", &["pr-gate"], 30, None),
         ],
-        &heads_at(&open, TEST_HEAD),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     ));
@@ -1979,10 +1985,13 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
 
     let healthy = runner_items(
         &[stuck.clone(), approved, closed_pr, gate, stale_gate.clone()],
-        &heads_at(&open, TEST_HEAD),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -1997,10 +2006,13 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     // Only a reviewer and a gate slot silent for ten minutes are left.
     let down = runner_items(
         &[stuck, stale_gate.clone()],
-        &heads_at(&open, TEST_HEAD),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -2016,24 +2028,30 @@ fn a_reviewer_without_a_verdict_and_a_gate_with_no_runner() {
     assert!(
         runner_items(
             only_stale,
-            &BTreeMap::new(),
-            0,
-            false,
-            reviewer_thresholds(),
+            &RunnerFacts {
+                open_heads: &BTreeMap::new(),
+                stale_claims: &[],
+                waiting_review_count: 0,
+                queue_building: false,
+                reviewer_thresholds: reviewer_thresholds(),
+            },
             now(),
-            &hosts()
+            &hosts(),
         )
         .is_empty()
     );
     assert_eq!(
         kinds(&runner_items(
             only_stale,
-            &BTreeMap::new(),
-            0,
-            true,
-            reviewer_thresholds(),
+            &RunnerFacts {
+                open_heads: &BTreeMap::new(),
+                stale_claims: &[],
+                waiting_review_count: 0,
+                queue_building: true,
+                reviewer_thresholds: reviewer_thresholds(),
+            },
             now(),
-            &hosts()
+            &hosts(),
         )),
         ["gate_runner_down"],
         "the merge queue waiting on a gate counts"
@@ -2052,10 +2070,13 @@ fn a_silent_gate_host_is_raised_while_another_is_alive() {
     let run = |records: &[GateRunnerRecord], open: &BTreeMap<(String, u64), String>| {
         runner_items(
             records,
-            open,
-            0,
-            false,
-            reviewer_thresholds(),
+            &RunnerFacts {
+                open_heads: open,
+                stale_claims: &[],
+                waiting_review_count: 0,
+                queue_building: false,
+                reviewer_thresholds: reviewer_thresholds(),
+            },
             now(),
             &hosts(),
         )
@@ -2073,7 +2094,8 @@ fn a_silent_gate_host_is_raised_while_another_is_alive() {
     assert!(rows[0].action.command.is_some());
     assert_eq!(
         rows[0].action.run_in.as_deref(),
-        Some("host-a, any directory")
+        Some("host-b, any directory"),
+        "the command inspects the silent host's own timers"
     );
     assert!(rows[0].since.is_some());
     // One live slot keeps a host alive; nothing open means nothing is ungated.
@@ -2108,10 +2130,13 @@ fn a_hold_on_a_head_that_has_been_replaced_is_not_a_stuck_reviewer() {
     // Head B, the reviewer holding head A and already reading head B.
     let moved = runner_items(
         &[rereviewing("node-0/pr-redteam", 35, NEW_HEAD), gate.clone()],
-        &heads_at(&open, NEW_HEAD),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, NEW_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -2142,10 +2167,13 @@ fn a_hold_on_a_head_that_has_been_replaced_is_not_a_stuck_reviewer() {
             runner("node-0/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
             gate.clone(),
         ],
-        &heads_at(&open, NEW_HEAD),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, NEW_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -2157,10 +2185,13 @@ fn a_hold_on_a_head_that_has_been_replaced_is_not_a_stuck_reviewer() {
             runner("node-0/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
             gate.clone(),
         ],
-        &heads_at(&open, TEST_HEAD),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -2171,10 +2202,13 @@ fn a_hold_on_a_head_that_has_been_replaced_is_not_a_stuck_reviewer() {
     // The pull request is closed: the inbox has nothing to say either way.
     let closed = runner_items(
         &[rereviewing("node-0/pr-redteam", 35, NEW_HEAD), gate],
-        &BTreeMap::new(),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &BTreeMap::new(),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -2227,10 +2261,13 @@ fn reviewer_offline_is_critical_when_reviewers_stop_reporting() {
 
     let stale_items = runner_items(
         &[stale, gate.clone()],
-        &heads_at(&open, TEST_HEAD),
-        2,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 2,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -2257,10 +2294,13 @@ fn reviewer_offline_is_critical_when_reviewers_stop_reporting() {
 
     let fresh_items = runner_items(
         &[fresh, gate],
-        &heads_at(&open, TEST_HEAD),
-        2,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 2,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -2281,10 +2321,13 @@ fn reviewer_offline_fires_when_review_passes_stop_completing() {
 
     let items = runner_items(
         &[quiet, gate],
-        &heads_at(&open, TEST_HEAD),
-        1,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 1,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     );
@@ -3880,6 +3923,7 @@ async fn finishing_a_todo_removes_its_item() {
 /// answers by sending the reader somewhere else — fails here.
 const KIND_ROUTES: &[(&str, &str)] = &[
     ("deploy_failed", "/releases"),
+    ("gate_claim_stale", "/runners"),
     ("gate_runner_down", "/runners"),
     ("main_red", "/repos/:provider/:owner/*"),
     ("merger_stalled", "/repos"),
@@ -4493,19 +4537,25 @@ fn one_of_every_kind() -> Vec<Item> {
             // A gate slot silent for ten minutes is a gate with no runner.
             runner("gate-1", &["pr-gate"], 600, None),
         ],
-        &heads_at(&open, TEST_HEAD),
-        1,
-        true,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 1,
+            queue_building: true,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     ));
     items.extend(runner_items(
         &[runner("gate-2", &["pr-gate"], 30, None)],
-        &heads_at(&open, TEST_HEAD),
-        1,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 1,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     ));
@@ -4516,10 +4566,36 @@ fn one_of_every_kind() -> Vec<Item> {
             rereviewing("review-2", 35, NEW_HEAD),
             runner("gate-3", &["pr-gate"], 30, None),
         ],
-        &heads_at(&open, NEW_HEAD),
-        1,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, NEW_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 1,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
+        now(),
+        &hosts(),
+    ));
+
+    // A gate claim whose holder stopped renewing while no live host has the
+    // capability the repository requires: a head nothing takes over by itself.
+    items.extend(runner_items(
+        &[runner("gate-4", &["pr-gate"], 30, None)],
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[StaleGateClaim {
+                repo: repo.to_string(),
+                number: 14,
+                head: TEST_HEAD.to_string(),
+                host: "node-9".to_string(),
+                runner_id: "node-9/slot0".to_string(),
+                expired_at: now() - Duration::minutes(5),
+                required_capabilities: vec!["host-ci".to_string()],
+            }],
+            waiting_review_count: 1,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     ));
@@ -4916,10 +4992,13 @@ fn a_hold_row_is_as_old_as_the_oldest_changes_requested_review() {
             runner("acme/pr-redteam", &["redteam"], 30, Some(("hold", 35))),
             runner("globex/slot0", &["pr-gate"], 30, None),
         ],
-        &heads_at(&open, TEST_HEAD),
-        0,
-        false,
-        reviewer_thresholds(),
+        &RunnerFacts {
+            open_heads: &heads_at(&open, TEST_HEAD),
+            stale_claims: &[],
+            waiting_review_count: 0,
+            queue_building: false,
+            reviewer_thresholds: reviewer_thresholds(),
+        },
         now(),
         &hosts(),
     ));

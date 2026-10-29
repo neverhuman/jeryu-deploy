@@ -139,7 +139,17 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         413,
         "the requested blob is too large to render",
     ),
+    entry(
+        "capability_missing",
+        409,
+        "no gate capability this repository requires is advertised by the asking host",
+    ),
     entry("ci_run_id_required", 422, "a CI run id is required"),
+    entry(
+        "claim_held",
+        409,
+        "another gate runner holds the claim on this head",
+    ),
     entry(
         "claim_live",
         409,
@@ -398,6 +408,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "an owners reach needs 1 to 20 distinct owners that exist on this forge",
     ),
     entry("invalid_ref", 422, "the git ref is not valid"),
+    entry(
+        "invalid_repo_config",
+        422,
+        "the repository's own .jeryu/repo.toml could not be read as a policy",
+    ),
     entry(
         "invalid_request",
         422,

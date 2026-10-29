@@ -93,7 +93,9 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `bad_head` | 409 | the pull request head does not match the queued head |
 | `bad_request` | 422 | the request was rejected before it reached a handler |
 | `blob_too_large` | 413 | the requested blob is too large to render |
+| `capability_missing` | 409 | no gate capability this repository requires is advertised by the asking host |
 | `ci_run_id_required` | 422 | a CI run id is required |
+| `claim_held` | 409 | another gate runner holds the claim on this head |
 | `claim_live` | 409 | the todo's claim lease is still live, so a worker is running it |
 | `codegraph_index_failed` | 500 | the codegraph index could not be built |
 | `codegraph_invalid_request` | 422 | the codegraph query failed validation |
@@ -152,6 +154,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_query` | 422 | the query string does not match this route |
 | `invalid_reach_owners` | 422 | an owners reach needs 1 to 20 distinct owners that exist on this forge |
 | `invalid_ref` | 422 | the git ref is not valid |
+| `invalid_repo_config` | 422 | the repository's own .jeryu/repo.toml could not be read as a policy |
 | `invalid_request` | 422 | credentials must not be passed as query parameters |
 | `invalid_session_id` | 422 | an agent_id or run_id has a character a ref may not carry |
 | `invalid_token` | 401 | invalid bot credential |

@@ -193,12 +193,55 @@ refs contain no bytes beyond their existing release tags. Finally,
 `bash ops/ci/dependency-sources.sh` rejects an unlisted source, mutable pin,
 missing mapping/ref, or non-hosted effective destination.
 
-## Gate host capability reporting
+## Active-active PR gate hosts
 
-`POST /api/v1/runners/heartbeat` accepts an optional `capabilities` array.
-Currently `host-ci` is the only recognized capability; unknown or repeated
-names return 422 without replacing the runner's last accepted heartbeat.
-Absent or empty means no special capability. Reporter/admin authorization is
-unchanged. `/api/v1/control-plane/runners` exposes the advertised array on
-each node so operators can inspect it. This reports capacity; lease admission
-and repository capability policy enforcement are not yet implemented.
+Gate hosts gate every repository they can reach, at the same time. The forge
+holds the claim on each gated head, so only one host ever posts a head's
+`<repo>/required`, and a host that dies loses its heads to a live one without
+an operator moving anything.
+
+- `POST /api/v1/gate-claims {repo, number, head_sha|queue_sha, runner_id,
+  host}` takes an exclusive lease on one head for 180 seconds, answering `201`
+  with `ttl_seconds`. The same ask repeated by the holder is the renewal: it
+  keeps `granted_at` and moves `expires_at`, and the runner sends it every
+  third of the TTL while the gate runs. Another runner asking for a head that
+  is leased is refused `409 claim_held`.
+- `POST /api/v1/gate-claims/release` gives a head back on publication, so the
+  next host does not wait out the TTL. Only the holder may release a live
+  lease; releasing one the forge has already forgotten answers `200 absent`,
+  which is what a publication retry does. A lease nobody renews expires, and
+  the head becomes claimable by any live host.
+- Both routes need the credential heartbeats need (a `JERYU_RUNNER_REPORTERS`
+  login or a forge admin), so an ordinary account can neither park a lease on
+  a head nor clear one. A repeat carrying an `Idempotency-Key` replays the
+  first answer, like every other `POST` on `/api/v1`.
+- The leases are in memory, like the heartbeats they are matched against: a
+  restart loses them and the first host to ask takes the head again.
+
+Capability matching replaces the hand-maintained owner partition. A repository
+declares what a gate of it needs in its own `.jeryu/repo.toml`:
+
+```toml
+[gate]
+capabilities = ["host-ci"]
+```
+
+The file is read at the gated head's base branch -- the default branch for a
+head with no pull request -- and never at the pull request's own head, so a
+pull request cannot change what its own gate requires. `host-ci` is the only
+recognized capability; a file that names an unknown or repeated one, or that
+cannot be read as a policy, refuses every claim (`422 invalid_repo_config`)
+rather than quietly requiring nothing. A host advertises what it has in its
+heartbeat's optional `capabilities` array (validated the same way, shown per
+node by `/api/v1/control-plane/runners`, and ignorable by an older forge),
+and a claim is granted only to a host whose advertised set covers the
+repository's required set; otherwise `409 capability_missing` names what is
+missing.
+
+needs-you raises `gate_claim_stale` for a head whose lease expired while no
+live gate host advertises every capability its repository requires: nothing
+will pick that head up, and `gate_runner_down` stays quiet because other hosts
+are beating. An expired lease any live host could take is not a row.
+
+`veox/jain`, whose gate needs the host-ci sandbox, is not one of this
+repository's files; its `.jeryu/repo.toml` has to be committed there.

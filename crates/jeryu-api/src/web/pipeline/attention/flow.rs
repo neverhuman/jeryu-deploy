@@ -1179,13 +1179,17 @@ fn rereview_item(
 /// read as a pull request nobody could move.
 pub(crate) fn runner_items(
     runners: &[GateRunnerRecord],
-    open_heads: &BTreeMap<(String, u64), String>,
-    waiting_review_count: usize,
-    queue_building: bool,
-    reviewer_thresholds: ReviewerOfflineThresholds,
+    facts: &RunnerFacts<'_>,
     now: DateTime<Utc>,
     hosts: &Hosts,
 ) -> Vec<Item> {
+    let RunnerFacts {
+        open_heads,
+        stale_claims,
+        waiting_review_count,
+        queue_building,
+        reviewer_thresholds,
+    } = *facts;
     let mut items = Vec::new();
     let reviewers: Vec<&GateRunnerRecord> = runners
         .iter()
@@ -1290,14 +1294,108 @@ pub(crate) fn runner_items(
             now,
         ));
     }
+    items.extend(stale_claim_items(runners, stale_claims, now));
     items
 }
 
-/// Gate hosts are partitioned by owner, so a host that hangs while another
-/// beats leaves its share ungated with the any-slot-online rule still quiet.
-/// One row per host whose slots have all been silent past the offline
-/// threshold. A heartbeat names its host but not the owners it gates, so the
-/// share is every open pull request and the row says so.
+/// What the runner rules read besides the heartbeats: the open heads and
+/// their current shas, the gate claims nobody renewed, how much work waits on
+/// the reviewer, whether the merge queue is waiting on a gate, and the site's
+/// reviewer-silence thresholds.
+#[derive(Clone, Copy)]
+pub(crate) struct RunnerFacts<'a> {
+    pub(crate) open_heads: &'a BTreeMap<(String, u64), String>,
+    pub(crate) stale_claims: &'a [StaleGateClaim],
+    pub(crate) waiting_review_count: usize,
+    pub(crate) queue_building: bool,
+    pub(crate) reviewer_thresholds: ReviewerOfflineThresholds,
+}
+
+/// A gate claim nobody renewed: the host that held the head stopped without
+/// publishing, and the forge let the lease expire.
+#[derive(Clone, Debug)]
+pub(crate) struct StaleGateClaim {
+    /// `owner/name`.
+    pub(crate) repo: String,
+    /// The pull request the head belongs to, or 0 for a head without one.
+    pub(crate) number: u64,
+    pub(crate) head: String,
+    pub(crate) host: String,
+    pub(crate) runner_id: String,
+    pub(crate) expired_at: DateTime<Utc>,
+    /// What the repository requires of a gate host for this head.
+    pub(crate) required_capabilities: Vec<String>,
+}
+
+/// An expired lease is ordinarily nobody's problem: any live host with the
+/// head's capabilities claims it on its next tick, which is the whole point
+/// of the lease. It needs a person only when no live gate host has every
+/// capability the repository requires -- then nothing will pick the head up,
+/// however long one waits, while `gate_runner_down` stays quiet because other
+/// hosts are beating.
+fn stale_claim_items(
+    runners: &[GateRunnerRecord],
+    stale_claims: &[StaleGateClaim],
+    now: DateTime<Utc>,
+) -> Vec<Item> {
+    let mut items = Vec::new();
+    for claim in stale_claims {
+        if crate::web::gate_claims::capable_host_alive(runners, &claim.required_capabilities, now) {
+            continue;
+        }
+        let needs = if claim.required_capabilities.is_empty() {
+            "no gate host is alive at all".to_string()
+        } else {
+            format!(
+                "no live gate host advertises {}",
+                claim.required_capabilities.join(", ")
+            )
+        };
+        let mut item = Draft {
+            id: format!("gate-claim-stale:{}:{}", claim.repo, claim.head),
+            kind: "gate_claim_stale",
+            severity: Severity::Critical,
+            title: format!(
+                "The gate of {}@{} stopped and nothing can take it over",
+                claim.repo,
+                &claim.head[..claim.head.len().min(12)]
+            ),
+            reason: format!(
+                "{} on {} held the gate claim on this head until {} and did not publish or \
+                 renew it. The lease has expired, so any capable host could gate the head \
+                 again, but {}: the repository declares the gate capabilities it needs in \
+                 {}, and until a host that has them reports, this head gets no required \
+                 check.",
+                claim.runner_id,
+                claim.host,
+                claim.expired_at.to_rfc3339(),
+                needs,
+                crate::web::gate_claims::REPO_DECLARATION_PATH,
+            ),
+            href: "/runners".to_string(),
+            label: "Start a gate host with the capabilities this repository needs",
+            api: None,
+            command: None,
+        }
+        .build();
+        item.since = Some(claim.expired_at.to_rfc3339());
+        item.repo = Some(claim.repo.clone());
+        if claim.number > 0 {
+            item.pr = Some(claim.number);
+        }
+        item.sha = Some(claim.head.clone());
+        items.push(item);
+    }
+    items
+}
+
+/// A host that hangs while another beats leaves the any-slot-online rule
+/// quiet, so there is one row per host whose slots have all been silent past
+/// the offline threshold. Its heads are not stranded by that alone: the forge
+/// holds the claim on each gated head (`gate_claims`), so a live host with the
+/// head's capabilities claims it within one lease TTL. The row is there
+/// because a host nobody notices stays down, and because its capacity -- and
+/// any capability only it has -- is gone while it is.
 fn silent_gate_host_items(
     gate_slots: &[&GateRunnerRecord],
     open_count: usize,
@@ -1330,19 +1428,19 @@ fn silent_gate_host_items(
                 title: format!("Gate host {host} is not reporting"),
                 reason: format!(
                     "No gate runner slot on {host} has sent a heartbeat in the last 3 \
-                     minutes (last at {seen}) while {live} is alive, so the owners {host} \
-                     gates have no required check. Heartbeats do not name those owners: up \
-                     to {open_count} open pull request(s) may be waiting on {host}. Move \
-                     its owners into GATE_RUNNER_OWNERS on {live}, then restart its \
-                     runner timers; the command shows where that is set."
+                     minutes (last at {seen}) while {live} is alive. Heads {host} was \
+                     gating become claimable again within one gate-claim lease, so up to \
+                     {open_count} open pull request(s) are gated more slowly rather than \
+                     not at all -- unless {host} is the only host with a capability a \
+                     repository requires, which gets its own row. Bring its runner timers \
+                     back; the command shows what they are doing."
                 ),
                 href: "/runners".to_string(),
-                label: "Move the silent host's owners to a live gate host",
+                label: "Bring the silent gate host's runner timers back",
                 api: None,
                 command: Some(Shell {
-                    line: "systemctl --user show 'pr-gate-runner@*' -p Environment -p EnvironmentFiles"
-                        .to_string(),
-                    run_in: Hosts::anywhere(live),
+                    line: "systemctl --user list-timers 'pr-gate-runner@*'".to_string(),
+                    run_in: Hosts::anywhere(host),
                 }),
             }
             .build();
