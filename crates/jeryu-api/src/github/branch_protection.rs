@@ -11,6 +11,29 @@ use super::GithubRouter;
 use super::support::{error_response, json_response, parse_body};
 
 impl GithubRouter {
+    pub(super) fn delete_protection(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        body: &str,
+    ) -> Response {
+        let branch = match decode_branch(branch) {
+            Ok(branch) => branch,
+            Err(response) => return response,
+        };
+        match self
+            .core
+            .delete_branch_protection(&super::support::actor(body), owner, repo, &branch)
+        {
+            Ok(_) => Response {
+                status: 204,
+                ..Response::default()
+            },
+            Err(err) => error_response(err),
+        }
+    }
+
     pub(super) fn get_protection(&self, owner: &str, repo: &str, branch: &str) -> Response {
         let branch = match decode_branch(branch) {
             Ok(branch) => branch,

@@ -24,7 +24,16 @@ pub(super) fn bootstrap_public_accounts(
         Err(std::env::VarError::NotPresent) => None,
         Err(error) => return Err(Box::new(error)),
     };
-    bootstrap_public_accounts_with_admin_password(state, data_dir, admin_password.as_deref())
+    bootstrap_public_accounts_with_admin_password(state, data_dir, admin_password.as_deref())?;
+    // Run once before serving requests. Core persists changes and leaves an
+    // already-repaired rule untouched on subsequent starts.
+    state.core.rekey_encoded_branch_protections(
+        BOOTSTRAP_ADMIN_LOGIN,
+        &repositories::ManagedRepoBranches {
+            manager: state.repo_manager.clone(),
+        },
+    )?;
+    Ok(())
 }
 
 pub(super) fn bootstrap_public_accounts_with_admin_password(

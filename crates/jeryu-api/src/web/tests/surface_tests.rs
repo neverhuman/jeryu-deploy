@@ -151,7 +151,11 @@ fn map_method_covers_supported_verbs_only() {
     ));
     assert!(matches!(map_method(&HttpMethod::POST), Some(Method::Post)));
     assert!(matches!(map_method(&HttpMethod::PUT), Some(Method::Put)));
-    assert!(map_method(&HttpMethod::DELETE).is_none());
+    assert!(matches!(
+        map_method(&HttpMethod::DELETE),
+        Some(Method::Delete)
+    ));
+    assert!(map_method(&HttpMethod::TRACE).is_none());
 }
 
 #[test]

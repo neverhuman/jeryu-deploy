@@ -79,6 +79,7 @@ pub enum Method {
     Patch,
     Post,
     Put,
+    Delete,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -452,6 +453,9 @@ impl GithubRouter {
                 Ok(self.create_check_run(owner, repo, body))
             }
 
+            (Method::Delete, ["repos", owner, repo, "branches", branch, "protection"]) => {
+                Ok(self.delete_protection(owner, repo, branch, body))
+            }
             // Branch protection ----------------------------------------------
             (Get, ["repos", owner, repo, "branches", branch, "protection"]) => {
                 Ok(self.get_protection(owner, repo, branch))

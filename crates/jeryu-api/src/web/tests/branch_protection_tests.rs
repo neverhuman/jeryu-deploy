@@ -162,7 +162,7 @@ fn branch_protection_rejects_invalid_decoded_refs() {
         "x..y",
         "x%5Cy",
     ] {
-        for method in [Method::Get, Method::Put] {
+        for method in [Method::Get, Method::Put, Method::Delete] {
             assert_eq!(
                 router
                     .handle(

@@ -122,6 +122,7 @@ pub const V3_ROUTES: &[&str] = &[
     "GET /repos/{owner}/{repo}/check-runs?per_page=1-100&page=N",
     "POST /repos/{owner}/{repo}/check-runs (name, head_sha, optional status, conclusion)",
     "GET /repos/{owner}/{repo}/commits/{ref}/check-runs?per_page=1-100&page=N",
+    "DELETE /repos/{owner}/{repo}/branches/{branch}/protection (admin only)",
     "GET /repos/{owner}/{repo}/branches/{branch}/protection",
     "PUT /repos/{owner}/{repo}/branches/{branch}/protection (required_status_checks, required_pull_request_reviews, ...; admin only)",
     "GET /repos/{owner}/{repo}/deployments?sha=&ref=&environment=&per_page=1-100&page=N",

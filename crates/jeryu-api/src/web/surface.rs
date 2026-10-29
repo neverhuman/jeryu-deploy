@@ -204,12 +204,19 @@ async fn github_forward_request(
     body: Bytes,
 ) -> AxumResponse {
     let http_method = method.clone();
-    let Some(method) = map_method(&method) else {
+    let supported = map_method(&method).filter(|method| {
+        *method != Method::Delete
+            || matches!(
+                edge_segments(uri.path()).as_slice(),
+                ["repos", _, _, "branches", _, "protection"]
+            )
+    });
+    let Some(method) = supported else {
         return guided_github_edge_response(
             StatusCode::METHOD_NOT_ALLOWED,
             "Method Not Allowed",
             "route unsupported GitHub-compatible REST method",
-            "the Jeryu GitHub edge accepts GET, PATCH, POST, and PUT for the guided compatibility subset",
+            "the Jeryu GitHub edge accepts GET, PATCH, POST, PUT, and branch-protection DELETE for the guided compatibility subset",
             uri.path(),
         );
     };
@@ -277,7 +284,13 @@ async fn github_forward_request(
         return github_response(state.github.user_for_account(&account));
     }
     let body = std::str::from_utf8(&body).unwrap_or_default();
-    let body = bind_authenticated_actor(body, &account.login);
+    // DELETE has no request document; always supply the authenticated actor
+    // so a missing body or caller-supplied JSON cannot change audit attribution.
+    let body = if method == Method::Delete {
+        json!({ "actor": account.login }).to_string()
+    } else {
+        bind_authenticated_actor(body, &account.login)
+    };
     let route = normalize_github_edge_path(&path_and_query)
         .split('?')
         .next()
@@ -552,6 +565,13 @@ fn authorize_github_repo_request(
                 "recording deployments requires global-admin access and a JERYU_DEPLOYERS identity",
             ))
         }
+        (Method::Delete, ["repos", _, _, "branches", _, "protection"])
+            if account.role != UserRole::Admin =>
+        {
+            Some(github_forbidden(
+                "branch-protection deletion requires admin access",
+            ))
+        }
         (Method::Put, ["repos", owner, repo, "branches", _, "protection"])
             if account.role != UserRole::Admin
                 && !state.core.user_can_admin_repo(&account.login, owner, repo) =>
@@ -581,7 +601,7 @@ fn authorize_github_repo_request(
                     account.role == UserRole::Admin
                         || state.core.user_can_read_repo(&account.login, owner, repo)
                 }
-                Method::Patch | Method::Post | Method::Put => {
+                Method::Patch | Method::Post | Method::Put | Method::Delete => {
                     account.role == UserRole::Admin
                         || state.core.user_can_write_repo(&account.login, owner, repo)
                 }
@@ -816,6 +836,7 @@ pub(super) fn map_method(method: &HttpMethod) -> Option<Method> {
         HttpMethod::PATCH => Some(Method::Patch),
         HttpMethod::POST => Some(Method::Post),
         HttpMethod::PUT => Some(Method::Put),
+        HttpMethod::DELETE => Some(Method::Delete),
         _ => None,
     }
 }

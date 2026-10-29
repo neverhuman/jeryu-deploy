@@ -2053,6 +2053,7 @@ fn every_published_v3_route_dispatches() {
             "POST" => Method::Post,
             "PATCH" => Method::Patch,
             "PUT" => Method::Put,
+            "DELETE" => Method::Delete,
             other => panic!("{published:?} names an unsupported method {other}"),
         };
         let concrete = path

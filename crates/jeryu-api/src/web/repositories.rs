@@ -137,8 +137,8 @@ pub(super) async fn repo_detail(
 /// can refuse a default branch that git does not have. A repository with no
 /// bare storage (a metadata-only import) has no branches at all.
 #[derive(Debug)]
-struct ManagedRepoBranches {
-    manager: std::sync::Arc<RepoManager>,
+pub(super) struct ManagedRepoBranches {
+    pub(super) manager: std::sync::Arc<RepoManager>,
 }
 
 impl RepoBranches for ManagedRepoBranches {
