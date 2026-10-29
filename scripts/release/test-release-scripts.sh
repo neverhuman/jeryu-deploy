@@ -1703,7 +1703,7 @@ EOF
 mkdir -p "$D/crates/jeryu-api/src"
 : >"$D/crates/jeryu-api/src/lib.rs"
 cp "$here/../../ops/ci/hosted-git-env.sh" "$D/ops/ci/"
-mkdir -p "$D/.cargo"; cp "$here/../../.cargo/hosted-gitconfig" "$D/.cargo/"
+mkdir -p "$D/.cargo"; cp "$here/../../.cargo/hosted-gitconfig" "$here/../../.cargo/config.toml" "$D/.cargo/"
 # Cargo uses real local Git remotes through the same transport setup as production.
 export CARGO_HOME="$G/cargo-home"
 export GIT_CONFIG_GLOBAL="$G/gitconfig"
@@ -2007,6 +2007,42 @@ done
 [[ ! -e "$G/checkout-transport-ran" ]] || fail "the bump ran the checkout's own hosted-git-env.sh"
 git -C "$BP" checkout -q -- ops/ci/hosted-git-env.sh
 ok "bump-hosted-pin refuses a missing tag and a tag at the wrong commit, running only its own transport"
+
+# Cargo's own configuration is part of the boundary: a checkout whose .cargo/config.toml is not
+# the recipe's, or a Cargo config in a directory above the checkout, is refused before any edit.
+printf '[build]\nrustc = "%s"\n' "$G/evil-rustc" >>"$BP/.cargo/config.toml"
+rc=0; bump jeryu-core jeryu-core-v5.0.0-split.2 "$core_c2" >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "differs from the reviewed one" "$G/bump.log" \
+  || fail "bump-hosted-pin resolved under the checkout's own Cargo config"
+git -C "$BP" checkout -q -- .cargo/config.toml
+mkdir -p "$G/above/.cargo"; printf '[build]\njobs = 1\n' >"$G/above/.cargo/config.toml"
+git clone -q "$BP" "$G/above/checkout" 2>/dev/null
+# A copy of the reviewed config above the checkout is what a nested lane sees; it passes the check
+# (and the bump then fails later, at the missing tag, which is not this case's point).
+cp "$here/../../.cargo/config.toml" "$G/above/.cargo/config.toml"
+rc=0; ( cd "$G/above/checkout" && bash "$here/bump-hosted-pin.sh" jeryu-core jeryu-core-v5.0.0-split.8 "$core_c2" ) \
+  >"$G/bump.log" 2>&1 || rc=$?
+! grep -q "Cargo would read" "$G/bump.log" || fail "the reviewed config above a nested checkout was refused"
+git -C "$G/above/checkout" checkout -q -- .
+printf '[build]\njobs = 1\n' >"$G/above/.cargo/config.toml"
+rc=0; ( cd "$G/above/checkout" && bash "$here/bump-hosted-pin.sh" jeryu-core jeryu-core-v5.0.0-split.2 "$core_c2" ) \
+  >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "Cargo would read $G/above/.cargo/config.toml" "$G/bump.log" \
+  || fail "bump-hosted-pin resolved under a Cargo config above the checkout"
+[[ -z "$(git -C "$BP" status --porcelain)" && -z "$(git -C "$G/above/checkout" status --porcelain)" ]] \
+  || fail "a Cargo config refusal left the checkout edited"
+rm -rf "$G/above"
+# The archived overlay: with no caller GIT_CONFIG_GLOBAL the transport needs the recipe tree's own
+# .cargo/hosted-gitconfig, and a recipe tree without it refuses rather than fall back.
+R="$G/recipe-no-overlay"; mkdir -p "$R/scripts/release" "$R/ops/ci"
+mkdir -p "$R/.cargo"; cp "$here/../../.cargo/config.toml" "$R/.cargo/"
+cp "$here/bump-hosted-pin.sh" "$R/scripts/release/"; cp "$here/../../ops/ci/hosted-git-env.sh" "$R/ops/ci/"
+rc=0; ( cd "$BP" && env -u GIT_CONFIG_GLOBAL bash "$R/scripts/release/bump-hosted-pin.sh" \
+  jeryu-core jeryu-core-v5.0.0-split.2 "$core_c2" ) >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "hosted Git overlay must be a one-link regular file: $R/.cargo/hosted-gitconfig" "$G/bump.log" \
+  || fail "a recipe tree without its overlay did not refuse: $(cat "$G/bump.log")"
+[[ -z "$(git -C "$BP" status --porcelain)" ]] || fail "an overlay refusal left the checkout edited"
+ok "bump-hosted-pin refuses an unreviewed Cargo config and a recipe tree without its overlay"
 git -C "$G/remotes/jeryu-core.git" tag jeryu-core-v5.0.0-split.9 "$core_c3"
 bump jeryu-core jeryu-core-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 \
   || { cat "$G/bump.log" >&2; fail "bump-hosted-pin refused a forward bump"; }

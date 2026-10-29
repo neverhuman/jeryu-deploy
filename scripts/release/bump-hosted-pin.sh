@@ -46,6 +46,45 @@ pin_policy=.cargo/hosted-pin-refs.tsv
 [[ -f "$pin_policy" && ! -L "$pin_policy" ]] || die "$pin_policy is not a regular file"
 [[ -f Cargo.lock && ! -L Cargo.lock ]] || die "Cargo.lock is not a regular file"
 
+# Cargo also takes configuration from the checkout and from every directory above it (auto-tag's
+# checkout sits under mktemp -d), and `build.rustc`, `[env]` or `[source]` there would steer what
+# the resolution runs and fetches. Only the reviewed .cargo/config.toml may: the checkout's must
+# be byte-identical to the recipe tree's (auto-tag archives it from main), and a directory above
+# the checkout may carry only that same file (a lane nested in its main checkout does) and no
+# legacy `config`. CARGO_HOME's own config is the runner's.
+same_file() { # A B: both absent, or both regular files with the same bytes
+  if [[ ! -e "$1" && ! -L "$1" ]]; then [[ ! -e "$2" && ! -L "$2" ]]; return; fi
+  [[ -f "$1" && ! -L "$1" && -f "$2" && ! -L "$2" ]] && cmp -s -- "$1" "$2"
+}
+same_file .cargo/config.toml "$recipe_root/.cargo/config.toml" \
+  || die ".cargo/config.toml differs from the reviewed one beside the recipe"
+[[ ! -e .cargo/config && ! -L .cargo/config ]] || die "the checkout carries a legacy .cargo/config"
+cargo_home="$(cd "${CARGO_HOME:-$HOME/.cargo}" 2>/dev/null && pwd -P || true)"
+dir="$(dirname "$(pwd -P)")"
+while :; do
+  if [[ "$dir/.cargo" != "$cargo_home" ]]; then
+    [[ ! -e "$dir/.cargo/config" && ! -L "$dir/.cargo/config" ]] \
+      || die "Cargo would read $dir/.cargo/config above the checkout"
+    [[ ! -e "$dir/.cargo/config.toml" && ! -L "$dir/.cargo/config.toml" ]] \
+      || same_file "$dir/.cargo/config.toml" "$recipe_root/.cargo/config.toml" \
+      || die "Cargo would read $dir/.cargo/config.toml above the checkout"
+  fi
+  [[ "$dir" == / ]] && break
+  dir="$(dirname "$dir")"
+done
+
+# The lock must already be complete under this runner's cargo before anything is edited, so the
+# re-resolution below changes what the new tag needs and not the lock's format.
+source "$transport"
+cargo metadata --locked --format-version 1 > /dev/null \
+  || die "Cargo.lock is not complete under this cargo before the bump; that is a person's fix"
+registry_packages() { # the crates.io name/version set of Cargo.lock
+  awk '/^\[\[package\]\]/ { name = ""; version = "" }
+    /^name = / { name = $3 } /^version = / { version = $3 }
+    /^source = "registry\+/ { print name, version }' Cargo.lock | tr -d '"' | LC_ALL=C sort
+}
+registry_before="$(registry_packages)"
+
 rows="$(awk -F '|' -v repo="$repo" '!/^[[:space:]]*(#|$)/ && $1 == repo { print }' "$pin_policy")"
 [[ "$(grep -c . <<<"$rows")" == 1 && -n "$rows" ]] || die "$pin_policy has no single $repo row"
 IFS='|' read -r _ old_tag old_commit old_ref extra <<<"$rows"
@@ -104,9 +143,9 @@ lock_count="$(lock_lines "$old_tag" "$old_commit")"
 # Let Cargo re-resolve the lock for the new manifests, keeping unrelated locked versions.
 # Rewriting source strings alone misses dependencies the new tag adds or drops, so the lock diff
 # can carry more than this repository's source lines: the bump PR says so, and review reads it.
-# `cargo metadata` runs no build script. The second call only confirms the written lock is
-# complete; what proves the requested commit landed is the source count below.
-source "$transport"
+# `cargo metadata` runs no build script. The --locked call after it only confirms the written lock
+# is complete; what proves the requested commit landed is the source count below, and the
+# crates.io package set must not move at all.
 cargo metadata --format-version 1 > /dev/null || die "Cargo could not resolve the bumped pin"
 cargo metadata --locked --format-version 1 > /dev/null || die "Cargo.lock is not complete after resolution"
 [[ "$(lock_lines "$old_tag" "$old_commit")" == 0 ]] || die "Cargo.lock still names $repo at $old_tag"
@@ -118,6 +157,12 @@ tag_count="$(awk -v repo="$repo" -v tag="$tag" '
   /^source = "git\+/ && index($0, "/" repo ".git?tag=" tag "#") > 0 { n++ }
   END { print n + 0 }' Cargo.lock)"
 [[ "$tag_count" == "$lock_count" ]] || die "Cargo.lock resolved $tag at an unexpected commit"
+# Hosted Git sources are inventoried by ops/ci/dependency-sources.sh; crates.io packages are not.
+# A bump that adds, drops or moves one is a person's, so an automated bump never carries one.
+registry_after="$(registry_packages)"
+[[ "$registry_after" == "$registry_before" ]] \
+  || die "the new tag changes crates.io packages in Cargo.lock; that bump is a person's: $(diff \
+    <(printf '%s\n' "$registry_before") <(printf '%s\n' "$registry_after") | grep '^[<>]' | tr '\n' ' ')"
 changed+=(Cargo.lock)
 
 # The pin policy row the gate reads back from the forge.

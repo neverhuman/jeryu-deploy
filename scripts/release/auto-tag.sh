@@ -402,6 +402,7 @@ git clone -q --no-hardlinks "$cache" "$co" 2>/dev/null || { say "could not clone
 git -C "$co" checkout -q "$main" 2>/dev/null || { say "could not check out main ${main:0:12}"; exit 1; }
 mkdir -p "$work/recipe"
 git -C "$cache" archive "$main" scripts/release ops/ci/hosted-git-env.sh .cargo/hosted-gitconfig \
+    .cargo/config.toml \
   | tar -x -C "$work/recipe" \
   || { say "could not take the bump recipe from main"; exit 1; }
 recipe="$work/recipe/scripts/release/bump-hosted-pin.sh"
@@ -425,8 +426,8 @@ for row in "${behind[@]}"; do
     git -C "$co" -c user.name="$git_name" -c user.email="$git_email" commit -q -am "release: pin $repo $tag
 
 Moves the hosted $repo pin from $pinned to $tag (${commit:0:12}): the manifests,
-.cargo/hosted-pin-refs.tsv, and Cargo.lock, which cargo re-resolved for the new tag (it can
-add or drop packages the tag needs), and nothing else.
+.cargo/hosted-pin-refs.tsv, and Cargo.lock, which cargo re-resolved for the new tag (hosted
+Git packages the tag needs can come or go; the crates.io package set is unchanged), and nothing else.
 
 Prepared by scripts/release/bump-hosted-pin.sh, taken from jeryu-deploy main, after
 auto-tag.sh cut $tag from a $repo main whose $repo/required passed." 2>>"$log" \
@@ -453,7 +454,7 @@ auto-tag.sh cut $tag from a $repo main whose $repo/required passed." 2>>"$log" \
 
 Changed: the \`tag =\` lines whose \`git\` URL names \`$repo\`, \`Cargo.lock\`, and the \`.cargo/hosted-pin-refs.tsv\` row (tag, commit, \`refs/heads/preserve/hosted-cargo/$tag\`). \`jeryu-split.lock.toml\` is not a cargo pin and is not touched.
 
-**Read the \`Cargo.lock\` diff.** Cargo re-resolved the lock for the new tag, so besides the \`$repo\` source lines it can add, drop or move packages the tag needs. \`ops/ci/dependency-sources.sh\` refuses any Git source outside the hosted inventory; crates.io packages are not inventoried.
+**Read the \`Cargo.lock\` diff.** Cargo re-resolved the lock for the new tag, so besides the \`$repo\` source lines it can add or drop hosted Git packages the tag needs; \`ops/ci/dependency-sources.sh\` refuses any Git source outside the hosted inventory. The recipe refuses a bump that changes any crates.io package, so none is in this diff.
 
 **Evidence for review.**
 - The tag: [\`$tag\`]($base/repos/$owner/$repo/src/tag/$tag) at [\`$commit\`]($base/repos/$owner/$repo/commit/$commit). \`auto-tag.sh\` cut it from \`$repo\` main only after the forge reported \`$repo/required\` success on exactly that commit, and pushed the tag and its \`preserve/hosted-cargo\` branch in one atomic push.
