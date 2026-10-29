@@ -2832,3 +2832,42 @@ fn a_claim_of_a_held_todo_opens_a_fresh_work_visit() {
     assert_eq!(work[1].entered_ms, START + 9_000_000);
     assert_eq!(work[1].started_ms, Some(START + 9_010_000));
 }
+
+/// A todo merged by a shift trailer posts `todo.merged` with no pull request
+/// events before it: the lot never entered Merge, and the landing must not
+/// open it there.
+#[test]
+fn a_merged_todo_that_never_entered_merge_leaves_merge() {
+    let (_dir, store) = store();
+    for (kind, outcome, offset) in [
+        ("todo.filed", None, 0),
+        ("todo.claimed", None, 1),
+        ("todo.attempt_finished", Some("done"), 10),
+        ("todo.merged", None, 20),
+    ] {
+        post(
+            &store,
+            &Post {
+                kind,
+                outcome,
+                todo: Some("20261015-000001-aaaaaa"),
+                pr: None,
+                shift: None,
+                at_ms: START + offset * MINUTE,
+            },
+        );
+    }
+    let visits = visits_of(&store);
+    assert!(
+        at(&visits, Station::Merge).is_empty(),
+        "no Merge visit for a lot that never queued"
+    );
+    let stage = at(&visits, Station::Stage);
+    assert_eq!(stage.len(), 1);
+    assert_eq!(stage[0].left_ms, None, "the lot waits at Stage");
+    assert!(
+        visits
+            .iter()
+            .all(|v| v.station != Station::Merge || v.left_ms.is_some())
+    );
+}

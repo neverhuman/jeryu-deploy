@@ -272,12 +272,16 @@ pub(crate) fn apply(conn: &Connection, event: &EventView<'_>) -> Result<(), Stri
         }
         // Merge is entered when the head is approved and green, which is two
         // events apart: whichever of Review and Gate finishes second opens it.
-        if steps.iter().any(|step| {
-            matches!(
-                step,
-                Step::Leave(Station::Review) | Step::Leave(Station::Gate)
-            )
-        }) && left_forward(conn, &lot.id, Station::Review)?
+        // An event that itself leaves Merge (a landing) is not an approval, so
+        // a lot that never entered Merge must not be opened there by it.
+        if !steps.contains(&Step::Leave(Station::Merge))
+            && steps.iter().any(|step| {
+                matches!(
+                    step,
+                    Step::Leave(Station::Review) | Step::Leave(Station::Gate)
+                )
+            })
+            && left_forward(conn, &lot.id, Station::Review)?
             && left_forward(conn, &lot.id, Station::Gate)?
             && open_visit(conn, &lot.id, Station::Merge)?.is_none()
             && !left_forward(conn, &lot.id, Station::Merge)?
