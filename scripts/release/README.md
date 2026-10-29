@@ -284,9 +284,13 @@ main, `release: pin <repo> <tag>` from `auto/pin-<repo>-<n>-<sha12>`, in depende
 based on the previous branch, so the merge queue cannot land a mismatched pair. A stack is built
 only when none of its pull requests is already open. The edit itself is `bump-hosted-pin.sh` taken
 from jeryu-deploy main (`git archive`, with the `ops/ci/hosted-git-env.sh` transport, its
-`.cargo/hosted-gitconfig` overlay and `.cargo/config.toml`), so the recipe and what it runs are
-always the reviewed ones: it refuses a checkout whose `.cargo/config.toml` differs from that copy
-or any Cargo config above the checkout. It moves the `tag =` lines whose `git` URL names the
+`.cargo/hosted-gitconfig` overlay, `.cargo/config.toml` and `rust-toolchain.toml`), so the recipe
+and what it runs are always the reviewed ones: it refuses a checkout whose `.cargo/config.toml` or
+`rust-toolchain.toml` differs from that copy, any Cargo config above the checkout, and pins
+`RUSTUP_TOOLCHAIN` to the reviewed channel. The recipe runs only in auto-tag's own checkout of
+main and its earlier bumps, never in a branch somebody pushed: a branch already pushed by an
+earlier tick is adopted only when its tree is byte-identical to the one the recipe just made, and
+otherwise the stack stops for a person. It moves the `tag =` lines whose `git` URL names the
 repository and the `.cargo/hosted-pin-refs.tsv` row, has cargo re-resolve `Cargo.lock` (hosted Git
 packages the new tag needs can come or go; a change to any crates.io package is refused as a
 person's bump), reads every edit back, and refuses anything else — including a

@@ -34,8 +34,8 @@ repo="$1" tag="$2" commit="$3"
   || { echo "not a $repo split tag: $tag" >&2; exit 64; }
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "not a 40-hex commit: $commit" >&2; exit 64; }
 
-# The recipe's own tree: auto-tag.sh archives scripts/release, ops/ci/hosted-git-env.sh and
-# .cargo/hosted-gitconfig from main together, so the Cargo transport the bump resolves through is
+# The recipe's own tree: auto-tag.sh archives scripts/release, ops/ci/hosted-git-env.sh,
+# .cargo/hosted-gitconfig, .cargo/config.toml and rust-toolchain.toml from main together, so the Cargo transport the bump resolves through is
 # the reviewed one, never whatever the checkout being bumped carries. By hand it is the checkout.
 recipe_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 transport="$recipe_root/ops/ci/hosted-git-env.sh"
@@ -72,6 +72,28 @@ while :; do
   [[ "$dir" == / ]] && break
   dir="$(dirname "$dir")"
 done
+# rustup's cargo proxy takes its toolchain from the first rust-toolchain(.toml) at or above the
+# checkout, and `[toolchain] path` there names any binary to run as cargo. The checkout's must be
+# the reviewed one (auto-tag archives it from main beside the recipe); without one, nothing above
+# the checkout may carry one either. RUSTUP_TOOLCHAIN then pins the reviewed channel outright, so a
+# directory override in rustup's settings does not pick the cargo either.
+same_file rust-toolchain.toml "$recipe_root/rust-toolchain.toml" \
+  || die "rust-toolchain.toml differs from the reviewed one beside the recipe"
+[[ ! -e rust-toolchain && ! -L rust-toolchain ]] || die "the checkout carries a legacy rust-toolchain file"
+if [[ -f rust-toolchain.toml ]]; then
+  channel="$(awk -F '"' '/^channel = "/ { print $2 }' "$recipe_root/rust-toolchain.toml")"
+  [[ "$channel" =~ ^[0-9A-Za-z._-]+$ ]] || die "the reviewed rust-toolchain.toml names no plain channel"
+  export RUSTUP_TOOLCHAIN="$channel"
+else
+  dir="$(dirname "$(pwd -P)")"
+  while :; do
+    for f in "$dir/rust-toolchain" "$dir/rust-toolchain.toml"; do
+      [[ ! -e "$f" && ! -L "$f" ]] || die "rustup would read $f above the checkout"
+    done
+    [[ "$dir" == / ]] && break
+    dir="$(dirname "$dir")"
+  done
+fi
 
 # The lock must already be complete under this runner's cargo before anything is edited, so the
 # re-resolution below changes what the new tag needs and not the lock's format.

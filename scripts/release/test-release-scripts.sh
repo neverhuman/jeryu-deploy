@@ -1704,6 +1704,7 @@ mkdir -p "$D/crates/jeryu-api/src"
 : >"$D/crates/jeryu-api/src/lib.rs"
 cp "$here/../../ops/ci/hosted-git-env.sh" "$D/ops/ci/"
 mkdir -p "$D/.cargo"; cp "$here/../../.cargo/hosted-gitconfig" "$here/../../.cargo/config.toml" "$D/.cargo/"
+cp "$here/../../rust-toolchain.toml" "$D/"
 # Cargo uses real local Git remotes through the same transport setup as production.
 export CARGO_HOME="$G/cargo-home"
 export GIT_CONFIG_GLOBAL="$G/gitconfig"
@@ -1964,6 +1965,39 @@ grep -q "#9 already decided the bump" "$G/run.log" || fail "auto-tag did not nam
 echo '[]' >"$G/pulls.json"
 ok "auto-tag never reopens a bump a person decided, and stops the stack behind it"
 
+# A stack pushed by an earlier tick that never opened its pull requests: the recipe runs again in
+# auto-tag's own checkout, and each pushed branch is adopted only when its tree is the recipe's.
+: >"$G/prs.jsonl"
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed resuming a pushed stack"; }
+[[ "$(jq -s length "$G/prs.jsonl")" == 2 ]] || { cat "$G/run.log" >&2; fail "auto-tag did not reopen the pushed stack"; }
+jq -es --arg core "$core_bump_branch" --arg runner "$runner_branch" \
+  '.[0].head == $core and .[1].head == $runner and .[1].base == $core' "$G/prs.jsonl" >/dev/null \
+  || fail "the resumed stack did not adopt the pushed branches"
+grep -q "is already pushed with the recipe's tree" "$G/run.log" || fail "auto-tag did not say it checked the pushed tree"
+ok "auto-tag resumes a pushed stack only after the recipe reproduces each branch's tree"
+
+# A pushed branch that carries anything else (here a rust-toolchain.toml whose path is a cargo the
+# runner would execute) is never checked out for the next bump, and the stack stops for a person.
+core_bump_sha="$(git -C "$G/remotes/jeryu-deploy.git" rev-parse "refs/heads/$core_bump_branch")"
+mkdir -p "$G/evil-toolchain/bin"
+printf '#!/usr/bin/env bash\ntouch "%s/evil-ran"\n' "$G" >"$G/evil-toolchain/bin/cargo"; chmod +x "$G/evil-toolchain/bin/cargo"
+rm -rf "$G/tamper"; git clone -q "$G/remotes/jeryu-deploy.git" "$G/tamper"
+git -C "$G/tamper" checkout -q "$core_bump_branch"
+printf '[toolchain]\npath = "%s/evil-toolchain"\n' "$G" >"$G/tamper/rust-toolchain.toml"
+gt "$G/tamper" add rust-toolchain.toml; gt "$G/tamper" commit -q -m tamper
+git -C "$G/tamper" push -q -f origin "HEAD:refs/heads/$core_bump_branch"
+: >"$G/prs.jsonl"; : >"$G/events.jsonl"
+rc=0; auto_tag >"$G/run.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] || { cat "$G/run.log" >&2; fail "a tampered pushed bump did not end the tick nonzero"; }
+grep -q "the pushed $core_bump_branch is not the tree the recipe makes" "$G/run.log" \
+  || { cat "$G/run.log" >&2; fail "auto-tag did not refuse the tampered pushed bump"; }
+[[ ! -s "$G/prs.jsonl" ]] || fail "auto-tag opened a pull request for a tampered pushed bump"
+[[ ! -e "$G/evil-ran" ]] || fail "the tampered branch's toolchain ran"
+jq -es '[.[] | select(.kind == "pin.bump_failed")][0] | .needs_human == true and .detail.branch != null' \
+  "$G/events.jsonl" >/dev/null || fail "a tampered pushed bump did not ask for a person"
+git -C "$G/remotes/jeryu-deploy.git" update-ref "refs/heads/$core_bump_branch" "$core_bump_sha"
+ok "auto-tag never runs the recipe in a pushed branch, and refuses one whose tree is not the recipe's"
+
 # Once the stack has landed, every pin is current and the tick is a silent no-op that still beats.
 git -C "$G/remotes/jeryu-deploy.git" update-ref refs/heads/main "$runner_branch"
 for stale in $(deploy_branches); do git -C "$G/remotes/jeryu-deploy.git" update-ref -d "refs/heads/$stale"; done
@@ -2015,6 +2049,17 @@ rc=0; bump jeryu-core jeryu-core-v5.0.0-split.2 "$core_c2" >"$G/bump.log" 2>&1 |
 [[ $rc == 1 ]] && grep -q "differs from the reviewed one" "$G/bump.log" \
   || fail "bump-hosted-pin resolved under the checkout's own Cargo config"
 git -C "$BP" checkout -q -- .cargo/config.toml
+# rustup reads rust-toolchain.toml, whose `[toolchain] path` names any cargo: only the reviewed one.
+printf 'path = "%s"\n' "$G/evil-toolchain" >>"$BP/rust-toolchain.toml"
+rc=0; bump jeryu-core jeryu-core-v5.0.0-split.2 "$core_c2" >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "rust-toolchain.toml differs from the reviewed one" "$G/bump.log" \
+  || fail "bump-hosted-pin resolved under the checkout's own rust-toolchain.toml"
+git -C "$BP" checkout -q -- rust-toolchain.toml
+: >"$BP/rust-toolchain"
+rc=0; bump jeryu-core jeryu-core-v5.0.0-split.2 "$core_c2" >"$G/bump.log" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q "legacy rust-toolchain file" "$G/bump.log" \
+  || fail "bump-hosted-pin resolved beside a legacy rust-toolchain file"
+rm -f "$BP/rust-toolchain"
 mkdir -p "$G/above/.cargo"; printf '[build]\njobs = 1\n' >"$G/above/.cargo/config.toml"
 git clone -q "$BP" "$G/above/checkout" 2>/dev/null
 # A copy of the reviewed config above the checkout is what a nested lane sees; it passes the check
@@ -2036,13 +2081,14 @@ rm -rf "$G/above"
 # .cargo/hosted-gitconfig, and a recipe tree without it refuses rather than fall back.
 R="$G/recipe-no-overlay"; mkdir -p "$R/scripts/release" "$R/ops/ci"
 mkdir -p "$R/.cargo"; cp "$here/../../.cargo/config.toml" "$R/.cargo/"
+cp "$here/../../rust-toolchain.toml" "$R/"
 cp "$here/bump-hosted-pin.sh" "$R/scripts/release/"; cp "$here/../../ops/ci/hosted-git-env.sh" "$R/ops/ci/"
 rc=0; ( cd "$BP" && env -u GIT_CONFIG_GLOBAL bash "$R/scripts/release/bump-hosted-pin.sh" \
   jeryu-core jeryu-core-v5.0.0-split.2 "$core_c2" ) >"$G/bump.log" 2>&1 || rc=$?
 [[ $rc == 1 ]] && grep -q "hosted Git overlay must be a one-link regular file: $R/.cargo/hosted-gitconfig" "$G/bump.log" \
   || fail "a recipe tree without its overlay did not refuse: $(cat "$G/bump.log")"
 [[ -z "$(git -C "$BP" status --porcelain)" ]] || fail "an overlay refusal left the checkout edited"
-ok "bump-hosted-pin refuses an unreviewed Cargo config and a recipe tree without its overlay"
+ok "bump-hosted-pin refuses an unreviewed Cargo config or toolchain file and a recipe tree without its overlay"
 git -C "$G/remotes/jeryu-core.git" tag jeryu-core-v5.0.0-split.9 "$core_c3"
 bump jeryu-core jeryu-core-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 \
   || { cat "$G/bump.log" >&2; fail "bump-hosted-pin refused a forward bump"; }

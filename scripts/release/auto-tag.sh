@@ -402,7 +402,7 @@ git clone -q --no-hardlinks "$cache" "$co" 2>/dev/null || { say "could not clone
 git -C "$co" checkout -q "$main" 2>/dev/null || { say "could not check out main ${main:0:12}"; exit 1; }
 mkdir -p "$work/recipe"
 git -C "$cache" archive "$main" scripts/release ops/ci/hosted-git-env.sh .cargo/hosted-gitconfig \
-    .cargo/config.toml \
+    .cargo/config.toml rust-toolchain.toml \
   | tar -x -C "$work/recipe" \
   || { say "could not take the bump recipe from main"; exit 1; }
 recipe="$work/recipe/scripts/release/bump-hosted-pin.sh"
@@ -413,17 +413,21 @@ for row in "${behind[@]}"; do
   read -r repo tag commit pinned <<<"$row"
   log="$state/logs/$repo-$tag.log"; : >"$log"
   branch="auto/pin-$repo-${tag##*-split.}-${commit:0:12}"
-  if [ -z "$(git ls-remote "$remote" "refs/heads/$branch" 2>/dev/null)" ]; then
-    git -C "$co" checkout -q -B "$branch" 2>>"$log" || { say "$repo: could not cut $branch"; stack_broke=1; break; }
-    if ! ( cd "$co" && bash "$recipe" "$repo" "$tag" "$commit" ) >>"$log" 2>&1; then
-      say "$repo: the bump recipe refused $pinned -> $tag; see $log"
-      emit pin.bump_failed true "auto-tag:bump-failed:$repo:$tag" \
-        "the $owner/$repo pin bump to $tag could not be prepared" \
-        "$(jq -n --arg dep "$owner/$repo" --arg from "$pinned" --arg to "$tag" '{dependency: $dep, from: $from, to: $to}')" \
-        "$commit" "" "bump-hosted-pin.sh refused the edit; a person has to move this pin"
-      stack_broke=1; break
-    fi
-    git -C "$co" -c user.name="$git_name" -c user.email="$git_email" commit -q -am "release: pin $repo $tag
+  # The recipe always runs in this checkout, which holds only main and the recipe's own earlier
+  # bumps: cargo reads the tree it runs in (rust-toolchain.toml, manifests, .cargo), so it never
+  # runs in a branch somebody pushed. An already-pushed branch is adopted only when its tree is
+  # byte-identical to the one the recipe just made here.
+  pushed="$(git ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  git -C "$co" checkout -q -B "$branch" 2>>"$log" || { say "$repo: could not cut $branch"; stack_broke=1; break; }
+  if ! ( cd "$co" && bash "$recipe" "$repo" "$tag" "$commit" ) >>"$log" 2>&1; then
+    say "$repo: the bump recipe refused $pinned -> $tag; see $log"
+    emit pin.bump_failed true "auto-tag:bump-failed:$repo:$tag" \
+      "the $owner/$repo pin bump to $tag could not be prepared" \
+      "$(jq -n --arg dep "$owner/$repo" --arg from "$pinned" --arg to "$tag" '{dependency: $dep, from: $from, to: $to}')" \
+      "$commit" "" "bump-hosted-pin.sh refused the edit; a person has to move this pin"
+    stack_broke=1; break
+  fi
+  git -C "$co" -c user.name="$git_name" -c user.email="$git_email" commit -q -am "release: pin $repo $tag
 
 Moves the hosted $repo pin from $pinned to $tag (${commit:0:12}): the manifests,
 .cargo/hosted-pin-refs.tsv, and Cargo.lock, which cargo re-resolved for the new tag (hosted
@@ -431,15 +435,26 @@ Git packages the tag needs can come or go; the crates.io package set is unchange
 
 Prepared by scripts/release/bump-hosted-pin.sh, taken from jeryu-deploy main, after
 auto-tag.sh cut $tag from a $repo main whose $repo/required passed." 2>>"$log" \
-      || { say "$repo: could not commit the bump"; stack_broke=1; break; }
+    || { say "$repo: could not commit the bump"; stack_broke=1; break; }
+  if [ -z "$pushed" ]; then
     git -C "$co" push -q "$remote" "HEAD:refs/heads/$branch" 2>>"$log" \
       || { say "$repo: could not push $branch"; stack_broke=1; break; }
   else
-    say "$repo: $branch is already pushed; opening its pull request"
-    if ! { git -C "$co" fetch -q "$remote" "+refs/heads/$branch:refs/heads/$branch" 2>>"$log" \
-           && git -C "$co" checkout -q "$branch" 2>>"$log"; }; then
+    if ! git -C "$co" fetch -q "$remote" "+refs/heads/$branch:refs/pushed/$branch" 2>>"$log"; then
       say "$repo: could not read the pushed $branch"; stack_broke=1; break
     fi
+    if [ "$(git -C "$co" rev-parse "refs/pushed/$branch^{tree}")" != "$(git -C "$co" rev-parse "HEAD^{tree}")" ]; then
+      say "$repo: the pushed $branch is not the tree the recipe makes; leaving it and the rest of the stack for a person"
+      emit pin.bump_failed true "auto-tag:pushed-differs:$repo:$tag" \
+        "the pushed $branch differs from the $owner/$repo pin bump to $tag" \
+        "$(jq -n --arg dep "$owner/$repo" --arg from "$pinned" --arg to "$tag" --arg branch "$branch" \
+          '{dependency: $dep, from: $from, to: $to, branch: $branch}')" \
+        "$commit" "" "the branch carries more or other than the reviewed recipe's bump; a person decides it"
+      stack_broke=1; break
+    fi
+    say "$repo: $branch is already pushed with the recipe's tree; opening its pull request"
+    git -C "$co" checkout -q -B "$branch" "refs/pushed/$branch" 2>>"$log" \
+      || { say "$repo: could not check out the pushed $branch"; stack_broke=1; break; }
   fi
 
   # No open bump of this repository can exist here: the tick exits above while one does. A pull
