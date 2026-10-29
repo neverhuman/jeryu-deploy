@@ -36,19 +36,10 @@ cat >"$T/systemctl" <<EOF
 pidfile="$T/pid"
 case "\$2" in
   start)
-    # Exercise startup ordering: health must not pass while this wrapper runs.
-    bash -c 'sleep 0.05; exec "\$1" 300' _ "$JERYU_HOME/bin/jeryu" &
-    pid=\$!
-    echo \$pid >"\$pidfile"
-    want="\$(readlink -f "$JERYU_HOME/bin/jeryu")"
-    for ((attempt = 0; attempt < 1000; attempt++)); do
-      exe="\$(readlink "/proc/\$pid/exe" || true)"
-      [[ "\$exe" == "\$want" ]] && exit 0
-      kill -0 "\$pid" 2>/dev/null || break
-      sleep 0.01
-    done
-    echo "fixture service did not exec \$want (last exe: \$exe)" >&2
-    exit 1
+    # Like Type=simple: return once forked, before the service execs the release,
+    # so switch.sh's MainPID/exe check always meets the pre-exec window.
+    bash -c 'sleep "\$1"; exec "\$2" 300' _ "\${JERYU_TEST_EXEC_DELAY:-0.2}" "$JERYU_HOME/bin/jeryu" &
+    echo \$! >"\$pidfile"
     ;;
   stop) [[ -s "\$pidfile" ]] && kill "\$(cat "\$pidfile")" 2>/dev/null; rm -f "\$pidfile"; true ;;
   show) cat "\$pidfile" ;;
@@ -86,9 +77,6 @@ ok "switch refuses a stage whose checksums fail, and changes nothing"
 # an unbounded forge is what takes a host down, so it is never what gets installed.
 stage
 "$JERYU_SYSTEMCTL" --user start jeryu.service
-[[ "$(readlink "/proc/$(cat "$T/pid")/exe")" == "$JERYU_HOME/bin/jeryu-$PREV" ]] \
-  || fail "fixture start returned before the delayed service exec"
-ok "fixture start waits for the release executable before the static health answer is used"
 mv "$JERYU_FORGE_LIMITS_ENV" "$T/limits.aside"
 rc=0; bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-unbudgeted.log" 2>&1 || rc=$?
 [[ $rc != 0 ]] || fail "switch installed a release for a site with no limits file"
@@ -212,7 +200,7 @@ bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch.log" 2>&1 || { cat "$T/sw
 [[ "$(readlink "$JERYU_HOME/share/web-dist")" == "web-dist-$REL" ]] || fail "web-dist symlink not moved to REL"
 [[ -x "$JERYU_HOME/releases/$REL/rollback.sh" && -s "$JERYU_HOME/releases/$REL/RELEASE.env" ]] || fail "release dir lacks rollback.sh/RELEASE.env"
 grep -q "integrity=ok" "$T/switch.log" || fail "no snapshot integrity line"
-[[ "$(readlink "/proc/$(cat "$T/pid")/exe")" == "$JERYU_HOME/bin/jeryu-$REL" ]] || fail "running exe is not REL"
+[[ "$(readlink -f "/proc/$(cat "$T/pid")/exe")" == "$(readlink -f "$JERYU_HOME/bin/jeryu-$REL")" ]] || fail "running exe is not REL"
 ok "switch installs REL, repoints both symlinks, snapshots every database and proves the running binary"
 
 # The unit the release just installed carries the site's limits, not the repository's.
@@ -318,6 +306,20 @@ grep -q "live store shift.sqlite is missing" "$T/rollback-missing-live.log" || f
 [[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "rollback after an unhealthy switch did not restore PREV"
 REL="$REL_OK"
 ok "switch fails when its health check never passes, and rollback recovers"
+
+# A service that never execs REL within the bounded re-reads fails the switch: the
+# exe check waits for the fork/exec window, it does not skip it.
+REL_OK="$REL"; REL=prod-20260103T000000Z-fffffff-unsigned
+stage
+rc=0; JERYU_TEST_EXEC_DELAY=5 JERYU_EXE_TRIES=3 \
+  bash "$JERYU_HOME/incoming/$REL/switch.sh" >"$T/switch-no-exec.log" 2>&1 || rc=$?
+[[ $rc != 0 ]] || fail "switch reported success though the service never ran REL"
+grep -q "is not $JERYU_HOME/bin/jeryu-$REL after 3 reads" "$T/switch-no-exec.log" \
+  || { cat "$T/switch-no-exec.log" >&2; fail "a switch whose service never ran REL did not say so"; }
+bash "$JERYU_HOME/releases/$REL/rollback.sh" >/dev/null 2>&1 || fail "rollback after a never-exec'd switch failed"
+[[ "$(readlink "$JERYU_HOME/bin/jeryu")" == "jeryu-$PREV" ]] || fail "rollback after a never-exec'd switch did not restore PREV"
+REL="$REL_OK"
+ok "switch waits a bounded time for the service to exec REL, then fails and rollback recovers"
 
 # A release staged while PREV was live, deployed after a newer one went live: it replaces what is
 # live, not what it was staged against, and its rollback returns to what it replaced.

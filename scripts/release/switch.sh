@@ -25,13 +25,19 @@
 # JERYU_HEALTH_TRIES times (default 30). If it never answers, the switch fails
 # (exit 1) with REL installed and live, so run rollback.sh.
 #
+# The unit is Type=simple, so systemctl start returns once the service has forked,
+# and MainPID can briefly be a process that has not exec'd REL yet. The switch
+# re-reads MainPID and /proc/<pid>/exe up to JERYU_EXE_TRIES times, 0.1 s apart
+# (default 50). The exe must then equal bin/jeryu-REL exactly and its digest must
+# match the staged binary. Otherwise the switch fails (exit 1) with REL live.
+#
 # Before it stops anything it renders and installs the forge's systemd user unit
 # from the staged jeryu.service.in with install-forge-unit.sh, so every release
 # also refreshes the forge's memory, task and OOM limits. A site that has not set
 # those numbers is refused there, with nothing stopped and nothing changed.
 #
 # Overridable for tests: JERYU_HOME, JERYU_DATA, JERYU_SYSTEMCTL, JERYU_HEALTH_URL,
-# JERYU_HEALTH_TRIES, JERYU_FORGE_LIMITS_ENV, JERYU_SYSTEMD_USER_DIR.
+# JERYU_HEALTH_TRIES, JERYU_EXE_TRIES, JERYU_FORGE_LIMITS_ENV, JERYU_SYSTEMD_USER_DIR.
 # -h|--help prints this header and exits, before anything else runs.
 case "${1:-}" in -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;; esac
 set -euo pipefail
@@ -49,6 +55,8 @@ HEALTH="${JERYU_HEALTH_URL:-}"
 [ -n "$HEALTH" ] || { echo "JERYU_HEALTH_URL is unset: set it to the forge's health endpoint, for example http://127.0.0.1:8787/health" >&2; exit 1; }
 TRIES="${JERYU_HEALTH_TRIES:-30}"
 [[ "$TRIES" =~ ^[1-9][0-9]*$ ]] || { echo "JERYU_HEALTH_TRIES must be a positive integer, got '$TRIES'" >&2; exit 1; }
+EXE_TRIES="${JERYU_EXE_TRIES:-50}"
+[[ "$EXE_TRIES" =~ ^[1-9][0-9]*$ ]] || { echo "JERYU_EXE_TRIES must be a positive integer, got '$EXE_TRIES'" >&2; exit 1; }
 IN="$J/incoming/$REL" OUT="$J/releases/$REL" SNAP="$J/backups/pre-$REL"
 
 if [[ "$(readlink "$J/bin/jeryu")" == "jeryu-$REL" ]]; then
@@ -102,9 +110,16 @@ for ((i = 1; i <= TRIES; i++)); do
   ((i == TRIES)) || sleep 1
 done
 ((healthy)) || { echo "health check timed out: $HEALTH never answered in $TRIES tries; REL is live, roll back with: bash $OUT/rollback.sh" >&2; exit 1; }
-pid="$($SYSTEMCTL --user show jeryu.service -p MainPID --value)"
-exe="$(readlink "/proc/$pid/exe")" want="$J/bin/jeryu-$REL"
-[[ "$exe" == "$want" ]] || { echo "running exe $exe is not $want" >&2; exit 1; }
+# Type=simple: MainPID may not have exec'd REL yet. Re-read it, bounded; the
+# comparison itself stays exact.
+want="$J/bin/jeryu-$REL" pid="" exe=""
+for ((i = 1; i <= EXE_TRIES; i++)); do
+  pid="$($SYSTEMCTL --user show jeryu.service -p MainPID --value)"
+  exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+  [[ "$exe" == "$want" ]] && break
+  ((i == EXE_TRIES)) || sleep 0.1
+done
+[[ "$exe" == "$want" ]] || { echo "running exe ${exe:-<none>} (pid ${pid:-<none>}) is not $want after $EXE_TRIES reads; REL is live, roll back with: bash $OUT/rollback.sh" >&2; exit 1; }
 [[ "$(sha256sum "$exe" | cut -c1-64)" == "$(sha256sum "$OUT/bundle/jeryu" | cut -c1-64)" ]] \
   || { echo "running binary digest mismatch" >&2; exit 1; }
 echo "[switch] live: pid $pid exe $exe; local health: $(curl -fsS "$HEALTH")"
