@@ -315,7 +315,9 @@ acting login in both `JERYU_EVENT_REPORTERS` and `JERYU_RUNNER_REPORTERS`, then 
 those settings. For releasebot's person-owned agent token, list its owner login; a team bot
 uses `<organization>.<slug>[bot]`. Check the identity with `GET /api/v1/bot/whoami`, not
 `/api/v1/user` (which scoped tokens cannot read). A repository grant or an admin owner alone
-does not grant reporting. Contract:
+does not grant reporting. A report the forge refuses is logged with the answer's status and
+typed code, so `heartbeat: not accepted (ignored) (403 permission_denied)` in the journal names
+the missing permission without a hand-run request. Contract:
 [`docs/pipeline-events.md`](../../docs/pipeline-events.md).
 
 ## Machine-readable output

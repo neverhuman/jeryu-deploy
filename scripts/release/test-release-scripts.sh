@@ -1744,12 +1744,26 @@ echo "not-a-real-tag-token" >"$G/token"; chmod 600 "$G/token"
 cat >"$G/bin/curl" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$G/curl-args"
-url="\${!#}"; method=GET; prev=""
-for arg in "\$@"; do [ "\$prev" = -X ] && method="\$arg"; prev="\$arg"; done
+url="\${!#}"; method=GET; prev=""; write_out=0
+for arg in "\$@"; do
+  [ "\$prev" = -X ] && method="\$arg"
+  [ "\$arg" = --write-out ] && write_out=1
+  prev="\$arg"
+done
+# answer STATUS BODY: a report's answer, with the status written out when curl asked for it, as
+# the forge answers one. refuse-events and refuse-beats hold "<status> <body>" to answer instead.
+answer() {
+  printf '%s' "\$2"
+  [ "\$write_out" = 1 ] && printf '\n%s' "\$1"
+  echo
+}
 case "\$method \$url" in
-  "POST https://git.neverhuman.org/api/v1/events") cat >>"$G/events.jsonl"; echo >>"$G/events.jsonl"; echo '{"ok":true}' ;;
+  "POST https://git.neverhuman.org/api/v1/events")
+    if refusal="\$(cat "$G/refuse-events" 2>/dev/null)"; then answer "\${refusal%% *}" "\${refusal#* }"
+    else cat >>"$G/events.jsonl"; echo >>"$G/events.jsonl"; answer 201 '{"ok":true}'; fi ;;
   "POST https://git.neverhuman.org/api/v1/runners/heartbeat")
-    cat >>"$G/beats.jsonl"; echo >>"$G/beats.jsonl"; echo '{"accepted":true}' ;;
+    if refusal="\$(cat "$G/refuse-beats" 2>/dev/null)"; then answer "\${refusal%% *}" "\${refusal#* }"
+    else cat >>"$G/beats.jsonl"; echo >>"$G/beats.jsonl"; answer 200 '{"accepted":true}'; fi ;;
   "POST https://git.neverhuman.org/api/v3/repos/jeryu/jeryu-deploy/pulls")
     n="\$(cat "$G/pr-number")"; echo \$(( n + 1 )) >"$G/pr-number"
     cat >>"$G/prs.jsonl"; echo >>"$G/prs.jsonl"
@@ -2025,6 +2039,23 @@ auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "an idle tick failed
 grep -q "no tag was cut this tick" "$G/run.log" || fail "an idle tick did not say so"
 [[ "$(jq -s length "$G/beats.jsonl")" == 1 ]] || fail "an idle tick did not beat exactly once"
 ok "an idle auto-tag tick cuts nothing and beats once"
+
+# A refused report says what the forge answered. Reporting needs the token's login in the site's
+# event and runner reporter lists (docs/bots.md), so a tick that is refused names the status and
+# the typed code (docs/errors.md) instead of only saying nobody listened -- and still succeeds.
+echo '403 {"code":"events_reporter_required","message":"this account may not post pipeline events"}' >"$G/refuse-events"
+echo '403 {"code":"permission_denied","message":"runner reporter required"}' >"$G/refuse-beats"
+: >"$G/events.jsonl"; : >"$G/beats.jsonl"
+crate_commit jeryu-core "core change a refused tick still tags" >/dev/null
+auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "a tick failed because its reports were refused"; }
+grep -q "event: posting tag.cut was not acknowledged (ignored) (403 events_reporter_required)" "$G/run.log" \
+  || { cat "$G/run.log" >&2; fail "a refused event does not name the forge's answer"; }
+grep -q "heartbeat: not accepted (ignored) (403 permission_denied)" "$G/run.log" \
+  || { cat "$G/run.log" >&2; fail "a refused heartbeat does not name the forge's answer"; }
+[[ ! -s "$G/events.jsonl" && ! -s "$G/beats.jsonl" ]] || fail "a refused report was recorded as posted"
+if grep -q "not-a-real-tag-token" "$G/run.log"; then fail "the token leaked into the log"; fi
+rm -f "$G/refuse-events" "$G/refuse-beats"
+ok "a refused event or heartbeat names the forge's status and code, and never fails the tick"
 
 # bump-hosted-pin.sh on its own: every refusal, and nothing half-edited.
 BP="$G/bumpcheck"; git clone -q "$G/remotes/jeryu-deploy.git" "$BP" 2>/dev/null

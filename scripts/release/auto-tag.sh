@@ -119,6 +119,31 @@ api() { # METHOD PATH [curl args] [JSON on stdin] -> body on stdout
     -H 'Accept: application/json' -H 'Content-Type: application/json' "$@" "$base$path"
 }
 
+# post_report PATH SECONDS [JSON on stdin] -> reply_body and reply_status, nothing on stdout.
+# The two reporting calls below are best-effort, and a refusal's body is what says why (every
+# refusal carries a typed `code`, docs/errors.md), so this one reads the status itself instead of
+# letting --fail throw the body away. The token still reaches curl only through the config file.
+reply_body="" reply_status=""
+post_report() {
+  local path="$1" seconds="$2" answer
+  reply_body="" reply_status=""
+  answer="$(curl --silent --max-time "$seconds" --config "$cfg" -X POST \
+    -H 'Accept: application/json' -H 'Content-Type: application/json' \
+    --write-out '\n%{http_code}' --data-binary @- "$base$path")" || return 1
+  reply_status="${answer##*$'\n'}"
+  reply_body="${answer%$'\n'*}"
+}
+
+# why -> " (<status> <code>)" for a log line: what the forge answered the last post_report, so a
+# tick says which permission is missing instead of only that nobody listened. Only the status and
+# the refusal's `code` are printed, never the server's prose or the request.
+why() {
+  local code
+  code="$(jq -r 'if type == "object" and (.code | type) == "string" then .code else empty end' \
+    <<<"$reply_body" 2>/dev/null)" || code=""
+  printf ' (%s)' "${reply_status:-no reply}${code:+ $code}"
+}
+
 # did REPO CONCLUSION PR SHA FINISHED_AT -> a heartbeat `last`: what this timer most recently did.
 did() {
   jq -cn --arg repo "$1" --arg conclusion "$2" --arg pr "$3" --arg sha "$4" --arg at "$5" '
@@ -140,9 +165,8 @@ beat() {
   body="$(jq -cn --arg host "$host" --argjson last "${last:-null}" '
     {runnerId: ($host + "/auto-tag"), host: $host, slot: 0, labels: ["automation"], intervalSeconds: 600}
     + (if $last != null then {last: $last} else {} end)')" || { say "heartbeat: could not build (ignored)"; return 0; }
-  curl --silent --fail --max-time 10 --config "$cfg" -X POST -H 'Accept: application/json' \
-    -H 'Content-Type: application/json' --data-binary @- \
-    "$base/api/v1/runners/heartbeat" <<<"$body" >/dev/null 2>&1 || say "heartbeat: not accepted (ignored)"
+  post_report /api/v1/runners/heartbeat 10 <<<"$body" 2>/dev/null || :
+  [ "${reply_status:0:1}" = 2 ] || say "heartbeat: not accepted (ignored)$(why)"
 }
 
 # emit KIND NEEDS_HUMAN EVENT_ID SUMMARY DETAIL_JSON SHA [PR] [REASON]
@@ -160,8 +184,9 @@ emit() {
     + (if $pr != "" then {pr: ($pr | tonumber)} else {} end)
     + (if $reason != "" then {reason: $reason} else {} end)')" \
     || { say "event: could not build $kind (ignored)"; return 0; }
-  api POST /api/v1/events --data-binary @- <<<"$body" 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1 \
-    || say "event: posting $kind was not acknowledged (ignored)"
+  post_report /api/v1/events 60 <<<"$body" 2>/dev/null || :
+  jq -e '.ok == true' >/dev/null 2>&1 <<<"$reply_body" \
+    || say "event: posting $kind was not acknowledged (ignored)$(why)"
 }
 event_repo="$repo_path"
 
