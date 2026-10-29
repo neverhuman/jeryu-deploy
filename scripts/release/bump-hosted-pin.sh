@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # bump-hosted-pin.sh REPO TAG COMMIT — move one hosted crate pin of this jeryu-deploy checkout
 # from the tag it pins now to TAG at COMMIT. It edits files and nothing else: no commit, no push,
-# no network, no forge request. auto-tag.sh runs it from jeryu-deploy main (git archive), so the
-# recipe a bump pull request is built with is always the reviewed one, and a person can run it by
+# no forge request. Cargo may fetch dependencies. auto-tag.sh takes it from jeryu-deploy main
+# (git archive), so a bump uses the reviewed recipe, and a person can run it by
 # hand in a checkout to prepare the same bump.
 #
 # A hosted crate pin lives in three places, and all three move together:
@@ -10,15 +10,15 @@
 #      forge (tag, commit, and the preserve/hosted-cargo support branch of that tag);
 #   2. the manifests (`Cargo.toml`, `crates/*/Cargo.toml`): every `tag = "<pinned>"` on a line
 #      whose `git` URL names this repository;
-#   3. `Cargo.lock`: the `source = "git+…/<repo>.git?tag=<pinned>#<commit>"` lines.
+#   3. `Cargo.lock`: resolved dependency graph and git source identities.
 # `jeryu-split.lock.toml` is not touched: its crate `tag`/`commit` fields are not read by cargo
 # and are not the pin (docs/pipeline-events.md, Pins).
 #
 # The manifests keep deliberately frozen `-split.0` pins that `[patch]` redirects, so only the
 # exact tag string this repository pins today is replaced, and a pin that is itself `-split.0` is
 # refused rather than guessed about. Every edit is read back: the old tag must be gone from the
-# pin's lines, the new one must appear exactly as often as the old one did, and no file outside
-# the three may differ. Any mismatch leaves the checkout for a person and exits nonzero.
+# manifest lines, the new one must appear there exactly as often as the old one did, and the
+# resolved lock must pass --locked with the requested commit. No file outside the three may differ. Any mismatch leaves the checkout for a person and exits nonzero.
 #
 # Exit: 0 and `bumped <repo> <old tag> -> <tag>` on stdout; 64 on a usage error; 1 on anything else.
 # -h|--help prints this header and exits, before anything else runs.
@@ -95,18 +95,20 @@ lock_lines() { # TAG COMMIT -> how many lock sources name this repository at tha
 }
 lock_count="$(lock_lines "$old_tag" "$old_commit")"
 (( lock_count > 0 )) || die "Cargo.lock has no $repo source at $old_tag#${old_commit:0:12}"
-awk -v repo="$repo" -v old="$old_tag" -v oldsha="$old_commit" -v new="$tag" -v sha="$commit" '
-  /^source = "git\+/ {
-    before = "/" repo ".git?tag=" old "#" oldsha "\""
-    if (index($0, before) > 0) {
-      i = index($0, before)
-      $0 = substr($0, 1, i - 1) "/" repo ".git?tag=" new "#" sha "\"" substr($0, i + length(before))
-    }
-  }
-  { print }' Cargo.lock >Cargo.lock.bump
-cat Cargo.lock.bump >Cargo.lock; rm -f Cargo.lock.bump
+# Let Cargo resolve the new manifests, retaining unrelated locked dependencies. Rewriting
+# source strings alone misses dependencies added or removed by the new tag.
+source "$root/ops/ci/hosted-git-env.sh"
+cargo metadata --format-version 1 > /dev/null || die "Cargo could not resolve the bumped pin"
+cargo metadata --locked --format-version 1 > /dev/null || die "Cargo.lock failed locked readback"
 [[ "$(lock_lines "$old_tag" "$old_commit")" == 0 ]] || die "Cargo.lock still names $repo at $old_tag"
-[[ "$(lock_lines "$tag" "$commit")" == "$lock_count" ]] || die "Cargo.lock did not take $tag on all $lock_count sources"
+lock_count="$(lock_lines "$tag" "$commit")"
+(( lock_count > 0 )) || die "Cargo.lock did not resolve $tag at $commit"
+# A multi-package repository can gain or lose packages, but every new-tag source must
+# resolve to the supplied commit, including packages newly added to the graph.
+tag_count="$(awk -v repo="$repo" -v tag="$tag" '
+  /^source = "git\+/ && index($0, "/" repo ".git?tag=" tag "#") > 0 { n++ }
+  END { print n + 0 }' Cargo.lock)"
+[[ "$tag_count" == "$lock_count" ]] || die "Cargo.lock resolved $tag at an unexpected commit"
 changed+=(Cargo.lock)
 
 # The pin policy row the gate reads back from the forge.

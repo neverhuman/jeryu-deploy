@@ -1651,6 +1651,15 @@ mk_crate() { # REPO: a crate repository tagged <repo>-v5.0.0-split.1, with that 
   local repo="$1" d="$G/$1"
   mkdir -p "$d/src" "$d/docs"
   gt "$d" init -q -b main
+  local packages="$repo"
+  [[ "$repo" != jeryu-core ]] || packages="jeryu-core jeryu-proof jeryu-frozen"
+  [[ "$repo" != jeryu-ci-runner ]] || packages="jeryu-runnerd"
+  printf '[workspace]\nmembers = ["crates/*"]\n' >"$d/Cargo.toml"
+  for package in $packages; do
+    mkdir -p "$d/crates/$package/src"
+    printf '[package]\nname = "%s"\nversion = "5.0.0"\nedition = "2021"\n' "$package" >"$d/crates/$package/Cargo.toml"
+    : >"$d/crates/$package/src/lib.rs"
+  done
   printf 'initial\n' >"$d/src/lib.rs"; printf '# %s\n' "$repo" >"$d/docs/readme.md"
   gt "$d" add -A; gt "$d" commit -q -m "initial $repo"
   gt "$d" tag -a -m "$repo-v5.0.0-split.1" "$repo-v5.0.0-split.1"
@@ -1662,7 +1671,7 @@ mk_crate() { # REPO: a crate repository tagged <repo>-v5.0.0-split.1, with that 
 core_c1="$(mk_crate jeryu-core)"
 runner_c1="$(mk_crate jeryu-ci-runner)"
 
-D="$G/deploy"; mkdir -p "$D/.cargo" "$D/crates/jeryu-api" "$D/scripts/release"
+D="$G/deploy"; mkdir -p "$D/.cargo" "$D/crates/jeryu-api" "$D/scripts/release" "$D/ops/ci"
 cat >"$D/.cargo/hosted-pin-refs.tsv" <<EOF
 # repository|immutable tag|commit|hosted support ref
 jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.1|$runner_c1|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.1
@@ -1676,27 +1685,33 @@ members = ["crates/jeryu-api"]
 # A deliberately frozen source that [patch] redirects: a bump must never move it.
 [patch."https://github.com/neverhuman/jeryu-core.git"]
 jeryu-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1" }
-jeryu-proof = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1" }
+jeryu-frozen = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1" }
 
 [patch."https://github.com/neverhuman/jeryu-ci-runner.git"]
 jeryu-runnerd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.1" }
 EOF
 cat >"$D/crates/jeryu-api/Cargo.toml" <<'EOF'
+[package]
+name = "jeryu-api"
+version = "5.0.0"
+edition = "2021"
 [dependencies]
+jeryu-runnerd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.1" }
 jeryu-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.1", package = "jeryu-core" }
 jeryu-frozen = { git = "https://github.com/neverhuman/jeryu-core.git", tag = "jeryu-core-v5.0.0-split.0", package = "jeryu-frozen" }
 EOF
-cat >"$D/Cargo.lock" <<EOF
-[[package]]
-name = "jeryu-core"
-version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.1#$core_c1"
-
-[[package]]
-name = "jeryu-runnerd"
-version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git?tag=jeryu-ci-runner-v5.0.0-split.1#$runner_c1"
-EOF
+mkdir -p "$D/crates/jeryu-api/src"
+: >"$D/crates/jeryu-api/src/lib.rs"
+cp "$here/../../ops/ci/hosted-git-env.sh" "$D/ops/ci/"
+# Cargo uses real local Git remotes through the same transport setup as production.
+export CARGO_HOME="$G/cargo-home"
+export GIT_CONFIG_GLOBAL="$G/gitconfig"
+git config --file "$GIT_CONFIG_GLOBAL" url."file://$G/remotes/".insteadOf http://127.0.0.1:8787/git/jeryu/
+git clone -q --bare "$G/jeryu-core" "$G/frozen/jeryu-core.git"
+git config --file "$GIT_CONFIG_GLOBAL" url."file://$G/frozen/".insteadOf https://github.com/neverhuman/
+# Frozen source tags exist even though patches redirect their packages.
+git -C "$G/frozen/jeryu-core.git" tag jeryu-core-v5.0.0-split.0 "$core_c1"
+(cd "$D" && source ops/ci/hosted-git-env.sh && cargo metadata --format-version 1 >/dev/null)
 cp "$here/bump-hosted-pin.sh" "$D/scripts/release/bump-hosted-pin.sh"
 chmod +x "$D/scripts/release/bump-hosted-pin.sh"
 gt "$D" init -q -b main; gt "$D" add -A; gt "$D" commit -q -m deploy
@@ -1771,6 +1786,10 @@ grep -q "nothing but documentation or a re-render" "$G/run.log" || fail "auto-ta
 ok "auto-tag cuts no tag for documentation-only and re-render commits since the tag"
 
 # A source change that main's required gate has not passed waits.
+mkdir -p "$G/jeryu-core/crates/jeryu-gitd/src"
+printf '[package]\nname = "jeryu-gitd"\nversion = "5.0.0"\nedition = "2021"\n' >"$G/jeryu-core/crates/jeryu-gitd/Cargo.toml"
+: >"$G/jeryu-core/crates/jeryu-gitd/src/lib.rs"
+printf '\n[dependencies]\njeryu-gitd = { path = "../jeryu-gitd" }\n' >>"$G/jeryu-core/crates/jeryu-core/Cargo.toml"
 core_c2="$(crate_commit jeryu-core "add a function")"
 echo pending >"$G/gate"
 auto_tag >"$G/run.log" 2>&1 || { cat "$G/run.log" >&2; fail "auto-tag failed while a gate was pending"; }
@@ -1969,10 +1988,25 @@ rc=0; bump jeryu-core jeryu-core-v5.0.0-split.0 "$core_c3" >"$G/bump.log" 2>&1 |
 rc=0; bump jeryu-core jeryu-core-v5.1.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
 [[ $rc == 1 ]] && grep -q "version line" "$G/bump.log" || fail "bump-hosted-pin changed a version line"
 [[ -z "$(git -C "$BP" status --porcelain)" ]] || fail "a refused bump left the checkout edited"
+# Resolution errors and a tag/commit mismatch must refuse before policy changes.
+for target in jeryu-core-v5.0.0-split.8 jeryu-core-v5.0.0-split.2; do
+  rc=0; bump jeryu-core "$target" "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
+  [[ $rc == 1 ]] || fail "bump-hosted-pin accepted an unresolved or mismatched tag"
+  git -C "$BP" diff --exit-code -- .cargo/hosted-pin-refs.tsv >/dev/null \
+    || fail "a failed resolution updated the pin policy"
+  git -C "$BP" restore Cargo.toml crates/jeryu-api/Cargo.toml Cargo.lock
+done
+ok "bump-hosted-pin refuses a missing tag and a tag at the wrong commit"
+git -C "$G/remotes/jeryu-core.git" tag jeryu-core-v5.0.0-split.9 "$core_c3"
 bump jeryu-core jeryu-core-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 \
   || { cat "$G/bump.log" >&2; fail "bump-hosted-pin refused a forward bump"; }
 grep -q "bumped jeryu-core jeryu-core-v5.0.0-split.1 -> jeryu-core-v5.0.0-split.9" "$G/bump.log" \
   || fail "bump-hosted-pin did not report what it moved"
+(cd "$BP" && cargo metadata --locked --format-version 1) >"$G/metadata.json" \
+  || fail "the dependency-adding tag left Cargo.lock stale"
+jq -e '.packages[] | select(.name == "jeryu-core") | .dependencies[] | select(.name == "jeryu-gitd")' \
+  "$G/metadata.json" >/dev/null || fail "the bumped core is missing its new dependency"
+ok "bump-hosted-pin resolves a tag that adds jeryu-gitd and passes cargo metadata --locked"
 rc=0; bump jeryu-core jeryu-core-v5.0.0-split.9 "$core_c3" >"$G/bump.log" 2>&1 || rc=$?
 [[ $rc == 1 ]] || fail "bump-hosted-pin bumped a pin that was already there"
 ok "bump-hosted-pin refuses a foreign tag, a malformed commit, a backward or version-line move, and leaves nothing half-edited"
