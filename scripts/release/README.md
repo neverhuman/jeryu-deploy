@@ -287,7 +287,9 @@ from jeryu-deploy main (`git archive`), so the recipe is always the reviewed one
 `tag =` lines whose `git` URL names the repository, the `Cargo.lock` git source identity and the
 `.cargo/hosted-pin-refs.tsv` row, reads every edit back, and refuses anything else — including a
 `-split.0` pin, which is also what `[patch]` redirects. `jeryu-split.lock.toml` is not a cargo pin
-and is not touched. auto-tag only proposes: review, pr-redteam and the merge queue land the bump,
+and is not touched. The pin tests (`crates/jeryu-api/tests/hosted_dependency_transport.rs`,
+`jankurai_governance.rs`) read each tag and commit from `.cargo/hosted-pin-refs.tsv` and check the
+manifests and `Cargo.lock` against it, so a bump needs no test edit. auto-tag only proposes: review, pr-redteam and the merge queue land the bump,
 and deploying stays a person's release.
 
 ```sh

@@ -50,37 +50,14 @@ const EXPECTED_MAPPINGS: [(&str, &str); 9] = [
     ),
 ];
 
-const EXPECTED_PINS: [(&str, &str, &str, &str); 5] = [
-    (
-        "jeryu-ci-runner",
-        "jeryu-ci-runner-v5.0.0-split.8",
-        "8ccfa0ce43baf450d4dffb822cad9e65381c563a",
-        "refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.8",
-    ),
-    (
-        "jeryu-core",
-        "jeryu-core-v5.0.0-split.22",
-        "bf9b9f79732c2597866ffb89306342e0cd94fc62",
-        "refs/heads/preserve/hosted-cargo/jeryu-core-v5.0.0-split.22",
-    ),
-    (
-        "jeryu-intelligence",
-        "jeryu-intelligence-v5.0.0-split.10",
-        "749d5bae4d93b6d02daa309042b52244f221ac89",
-        "refs/heads/preserve/hosted-cargo/jeryu-intelligence-v5.0.0-split.10",
-    ),
-    (
-        "jeryu-jira",
-        "jeryu-jira-v5.0.0-split.6",
-        "7d1d7552fa74c3d8070f2ee3682fa73ac188631d",
-        "refs/heads/preserve/hosted-cargo/jeryu-jira-v5.0.0-split.6",
-    ),
-    (
-        "jeryu-release-ops",
-        "jeryu-release-ops-v5.0.0-split.10",
-        "b1be4914d01fb1f6d65d32dcf68b1fe9a135247e",
-        "refs/heads/preserve/hosted-cargo/jeryu-release-ops-v5.0.0-split.10",
-    ),
+// The repositories pinned by `.cargo/hosted-pin-refs.tsv`. Their tags and commits are read from
+// that file, the one place a pin bump edits, and must agree with Cargo.lock below.
+const EXPECTED_PIN_REPOS: [&str; 5] = [
+    "jeryu-ci-runner",
+    "jeryu-core",
+    "jeryu-intelligence",
+    "jeryu-jira",
+    "jeryu-release-ops",
 ];
 
 fn root() -> PathBuf {
@@ -206,21 +183,25 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
 
     let pin_policy = fs::read_to_string(root.join(".cargo/hosted-pin-refs.tsv"))
         .expect("read hosted pin policy");
-    let expected_pins = EXPECTED_PINS
-        .into_iter()
-        .map(|(repo, tag, commit, reference)| {
-            (
-                repo.to_owned(),
-                tag.to_owned(),
-                commit.to_owned(),
-                reference.to_owned(),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    assert_eq!(parse_pins(&pin_policy), expected_pins);
+    let expected_pins = parse_pins(&pin_policy);
+    assert_eq!(
+        expected_pins
+            .iter()
+            .map(|(repo, _, _, _)| repo.as_str())
+            .collect::<Vec<_>>(),
+        EXPECTED_PIN_REPOS,
+        "hosted pin policy must pin exactly the hosted crate repositories, once each"
+    );
     for (repo, tag, commit, reference) in &expected_pins {
-        assert!(repo.starts_with("jeryu-"));
-        assert!(!tag.is_empty());
+        let split = tag
+            .strip_prefix(&format!("{repo}-v"))
+            .and_then(|rest| rest.rsplit_once("-split."))
+            .map(|(_, split)| split)
+            .unwrap_or_else(|| panic!("{tag} must be a {repo} split tag"));
+        assert!(
+            split.parse::<u32>().is_ok_and(|split| split > 0),
+            "{tag} must be a cut split tag, not split.0"
+        );
         assert_eq!(commit.len(), 40);
         assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(
@@ -294,20 +275,37 @@ fn cargo_sources_are_exact_immutable_and_hosted_in_transport() {
     );
     assert_ne!(parse_mappings(&extra), expected_mappings);
 
-    let missing_pin = pin_policy.replacen(
-        "jeryu-ci-runner|jeryu-ci-runner-v5.0.0-split.8|8ccfa0ce43baf450d4dffb822cad9e65381c563a|refs/heads/preserve/hosted-cargo/jeryu-ci-runner-v5.0.0-split.8\n",
-        "",
-        1,
-    );
-    assert_ne!(parse_pins(&missing_pin), expected_pins);
-    let wrong_pin = pin_policy.replacen(
-        "8ccfa0ce43baf450d4dffb822cad9e65381c563a",
-        "0000000000000000000000000000000000000000",
-        1,
-    );
-    assert_ne!(parse_pins(&wrong_pin), expected_pins);
+    // Each mutation must fail the check it targets: the closed repository set, or the
+    // agreement between the pin policy and Cargo.lock.
+    let pinned_repos = |policy: &str| {
+        parse_pins(policy)
+            .into_iter()
+            .map(|(repo, _, _, _)| repo)
+            .collect::<Vec<_>>()
+    };
+    let policy_lock_pins = |policy: &str| {
+        parse_pins(policy)
+            .into_iter()
+            .map(|(_, tag, commit, _)| (tag, commit))
+            .collect::<BTreeSet<_>>()
+    };
+    let (runner_row, runner_commit) = pin_policy
+        .lines()
+        .find(|line| line.starts_with("jeryu-ci-runner|"))
+        .map(|line| {
+            (
+                format!("{line}\n"),
+                line.split('|').nth(2).expect("commit field"),
+            )
+        })
+        .expect("CI Runner pin row");
+    let missing_pin = pin_policy.replacen(&runner_row, "", 1);
+    assert_ne!(pinned_repos(&missing_pin), EXPECTED_PIN_REPOS);
+    let wrong_pin =
+        pin_policy.replacen(runner_commit, "0000000000000000000000000000000000000000", 1);
+    assert_ne!(policy_lock_pins(&wrong_pin), lock_pins);
     let extra_pin = format!(
         "{pin_policy}attacker|attacker-v1.0.0|1111111111111111111111111111111111111111|refs/heads/preserve/hosted-cargo/attacker-v1.0.0\n"
     );
-    assert_ne!(parse_pins(&extra_pin), expected_pins);
+    assert_ne!(pinned_repos(&extra_pin), EXPECTED_PIN_REPOS);
 }

@@ -22,6 +22,31 @@ fn read(relative: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
+/// The pinned tag and commit of a hosted crate repository, from `.cargo/hosted-pin-refs.tsv`.
+/// A pin bump edits that file; hosted_dependency_transport.rs proves it agrees with Cargo.lock.
+fn pinned(repo: &str) -> (String, String) {
+    let policy = read(".cargo/hosted-pin-refs.tsv");
+    let mut rows = policy
+        .lines()
+        .filter(|line| line.split('|').next() == Some(repo))
+        .map(|line| line.split('|').collect::<Vec<_>>());
+    let row = rows
+        .next()
+        .unwrap_or_else(|| panic!("{repo} must have a hosted pin row"));
+    assert!(rows.next().is_none(), "{repo} must be pinned once");
+    assert_eq!(row.len(), 4, "hosted pin row must have four fields");
+    (row[1].to_owned(), row[2].to_owned())
+}
+
+fn pinned_tag(repo: &str) -> String {
+    pinned(repo).0
+}
+
+fn pinned_lock_source(base: &str, repo: &str) -> String {
+    let (tag, commit) = pinned(repo);
+    format!("git+{base}?tag={tag}#{commit}")
+}
+
 #[test]
 fn proptest_equivalent_generated_jankurai_consumers_share_one_closed_identity() {
     // The forge bridge and the sandbox image bake a binary in, so they carry the pin.
@@ -165,7 +190,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
 
     // jeryu-api and the historical Intelligence release both name the GitHub
     // runner source at split.0; the unifier moves every runner package to the
-    // reviewed local-forge split.3 tag (the cgroup capability-probe fix), so the
+    // reviewed local-forge tag pinned in .cargo/hosted-pin-refs.tsv, so the
     // graph has exactly one runner identity.
     let runner_patches = patches
         .get("https://github.com/neverhuman/jeryu-ci-runner.git")
@@ -205,7 +230,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         );
         assert_eq!(
             source.get("tag").and_then(toml::Value::as_str),
-            Some("jeryu-ci-runner-v5.0.0-split.8")
+            Some(pinned_tag("jeryu-ci-runner").as_str())
         );
         assert!(
             source.get("path").is_none(),
@@ -233,7 +258,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         );
         assert_eq!(
             source.get("tag").and_then(toml::Value::as_str),
-            Some("jeryu-core-v5.0.0-split.22")
+            Some(pinned_tag("jeryu-core").as_str())
         );
         assert!(
             source.get("path").is_none(),
@@ -268,7 +293,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
     );
     assert_eq!(
         rustjet_source.get("tag").and_then(toml::Value::as_str),
-        Some("jeryu-intelligence-v5.0.0-split.10")
+        Some(pinned_tag("jeryu-intelligence").as_str())
     );
     assert!(
         rustjet_source.get("path").is_none(),
@@ -294,7 +319,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         .expect("API dependencies must be a table");
     let expected_groups = [
         (
-            "jeryu-core-v5.0.0-split.22",
+            pinned_tag("jeryu-core"),
             &[
                 "jeryu-core",
                 "jeryu-enterprise",
@@ -303,7 +328,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             ][..],
         ),
         (
-            "jeryu-ci-runner-v5.0.0-split.0",
+            "jeryu-ci-runner-v5.0.0-split.0".to_owned(),
             &[
                 "jeryu-agent-stream",
                 "jeryu-agentbridge",
@@ -315,14 +340,14 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             ][..],
         ),
         (
-            "jeryu-intelligence-v5.0.0-split.10",
+            pinned_tag("jeryu-intelligence"),
             &["jeryu-codegraph", "jeryu-mcp"][..],
         ),
         (
-            "jeryu-release-ops-v5.0.0-split.10",
+            pinned_tag("jeryu-release-ops"),
             &["jeryu-bench", "jeryu-obs", "jeryu-wsversion"][..],
         ),
-        ("jeryu-jira-v5.0.0-split.6", &["jeryu-jira"][..]),
+        (pinned_tag("jeryu-jira"), &["jeryu-jira"][..]),
     ];
     let expected_count: usize = expected_groups
         .iter()
@@ -347,7 +372,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
                 dependency_git.is_some(),
                 "{package} must declare a Git source"
             );
-            if tag == "jeryu-core-v5.0.0-split.22" {
+            if tag == pinned_tag("jeryu-core") {
                 assert_eq!(
                     dependency_git,
                     Some("http://127.0.0.1:8787/git/jeryu/jeryu-core.git"),
@@ -356,7 +381,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             }
             assert_eq!(
                 dependency.get("tag").and_then(toml::Value::as_str),
-                Some(tag),
+                Some(tag.as_str()),
                 "{package} must declare the governed immutable tag"
             );
             assert!(
@@ -410,18 +435,27 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             core_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.22#bf9b9f79732c2597866ffb89306342e0cd94fc62"
+                pinned_lock_source(
+                    "http://127.0.0.1:8787/git/jeryu/jeryu-core.git",
+                    "jeryu-core"
+                )
             );
         } else if name == "jeryu-proof" {
             proof_count += 1;
             assert_eq!(
                 source,
-                "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.22#bf9b9f79732c2597866ffb89306342e0cd94fc62"
+                pinned_lock_source(
+                    "http://127.0.0.1:8787/git/jeryu/jeryu-core.git",
+                    "jeryu-core"
+                )
             );
         } else if name == "jeryu-rustjet" {
             assert_eq!(
                 source,
-                "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.10#749d5bae4d93b6d02daa309042b52244f221ac89"
+                pinned_lock_source(
+                    "https://github.com/neverhuman/jeryu-intelligence.git",
+                    "jeryu-intelligence"
+                )
             );
         }
     }
