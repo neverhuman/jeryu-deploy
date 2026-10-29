@@ -49,6 +49,7 @@ mod flow_tests;
 mod gate_capabilities_tests;
 mod gate_claims_tests;
 mod gate_wanted_tests;
+mod gh_pr_create_tests;
 mod gh_pr_view_tests;
 mod git_authorization;
 mod github_rest_tests;

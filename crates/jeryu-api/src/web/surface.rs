@@ -58,17 +58,20 @@ pub(super) async fn graphql(
     authorized_graphql(&state, body, &auth)
 }
 
-/// Only the captured PR read may use scoped credentials. Reuse the REST read
-/// authorization (including task reach) before the trusted adapter executes.
+/// Captured command adapters reuse REST authorization, including task reach,
+/// before the trusted router executes a read or draft creation.
 fn authorized_graphql(
     state: &super::WebState,
     body: &str,
     auth: &super::auth::HeaderAuth,
 ) -> AxumResponse {
+    if let Some(response) = super::gh_pr_create::handle(state, body, auth) {
+        return response;
+    }
     if let Some(bot) = &auth.bot {
         let Some((owner, repo, number)) = crate::github::gh_pr_view_target(body) else {
             return github_forbidden(
-                "insufficient_scope: scoped GraphQL supports only gh 2.45.0 pr view --json number,title,state,isDraft,headRefOid,url; use REST for other reads",
+                "insufficient_scope: scoped GraphQL supports the exact gh 2.45.0 PR read and draft commands in /api/v1/capabilities; use REST for other operations",
             );
         };
         let number = number.to_string();
@@ -373,7 +376,7 @@ async fn github_forward_request(
 /// Replaces any caller-supplied actor with the authenticated principal before
 /// the compatibility router records authorship. Invalid or non-object JSON is
 /// left untouched so the route's normal request validation reports the error.
-fn bind_authenticated_actor(body: &str, login: &str) -> String {
+pub(super) fn bind_authenticated_actor(body: &str, login: &str) -> String {
     let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(body) else {
         return body.to_string();
     };
@@ -527,7 +530,7 @@ fn github_account_from_headers(
         })
 }
 
-fn authorize_github_repo_request(
+pub(super) fn authorize_github_repo_request(
     state: &super::WebState,
     method: Method,
     path_and_query: &str,
@@ -872,7 +875,7 @@ fn guided_github_edge_response(
         .into_response()
 }
 
-fn github_response(response: GithubResponse) -> AxumResponse {
+pub(super) fn github_response(response: GithubResponse) -> AxumResponse {
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut axum_response = (
         status,

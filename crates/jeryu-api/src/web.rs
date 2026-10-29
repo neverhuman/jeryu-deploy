@@ -43,6 +43,7 @@ mod people;
 pub(crate) use merge_queue::{
     building_on_base, gate_verdict, is_queue_owned_ref, rebase_onto, trusted_queue_scores,
 };
+mod gh_pr_create;
 pub(crate) mod line_survival;
 mod mcp_backend;
 mod outcomes;
@@ -1858,6 +1859,10 @@ fn capabilities_payload(
         "gh pr view <number> --repo <forge>/<owner>/<repo> --json number,title,state,isDraft,headRefOid,url",
         "POST /api/graphql (GitHub CLI 2.45.0 tested; bounded read only)",
     );
+    map_rest(
+        "gh pr create --draft --repo <forge>/<owner>/<repo> --base main --head <pushed-branch> --title <title> --body-file <file>",
+        "POST /api/graphql (GitHub CLI 2.45.0 tested; existing same-repository branch only; uses REST PR creation authorization. No browser/login needed with a configured token. Other optional flags and gh pr merge are not supported by this adapter.)",
+    );
     map_rest("gh pr list", "GET /repos/{owner}/{repo}/pulls");
     map_rest(
         "gh workflow list",
@@ -1942,6 +1947,7 @@ fn capabilities_payload(
         "graphql_support": {
             "endpoint": "/graphql",
             "supported_operations": GRAPHQL_SUPPORTED_OPERATIONS,
+            "draft_command_adapter": "See gh_command_map for the exact gh 2.45.0 noninteractive draft command; repository, branch lookup and create requests use REST authorization.",
             "auth": GRAPHQL_AUTH_NOTE,
             "anything_else": "Answered 501 with the REST route that serves the same intent. This forge does not execute arbitrary GitHub GraphQL.",
             "docs": format!("{}/graphql.md", discovery::DOCS_PATH),
@@ -1964,7 +1970,7 @@ fn capabilities_payload(
         },
         "links": links_capability(origin),
         "fast_path_advice":
-            "Prefer an MCP tool from your_mcp_tools where one serves your intent; everything else is the GitHub-compatible REST subset at /api/v3. GraphQL answers only the operations in graphql_support.",
+            "Prefer an MCP tool from your_mcp_tools where one serves your intent; everything else is the GitHub-compatible REST subset at /api/v3. GraphQL answers the read subset and bounded draft command described in graphql_support and gh_command_map.",
     })
 }
 

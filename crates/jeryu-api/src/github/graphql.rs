@@ -66,7 +66,7 @@ pub(crate) const SUPPORTED_OPERATIONS: &[&str] = &[
 ];
 
 /// Authentication guidance shared by all discovery surfaces.
-pub(crate) const AUTH_NOTE: &str = "Authenticate with a web session or personal access token as Authorization: Bearer. Scoped agent tokens (jat_) may run only the captured gh 2.45.0 pr view query, subject to repository and task reach; other GraphQL returns 403 insufficient_scope. The viewer is the authenticated account; an unreadable repository reads as absent.";
+pub(crate) const AUTH_NOTE: &str = "Authenticate with a web session or personal access token as Authorization: Bearer. Scoped agent tokens (jat_) may run the captured gh 2.45.0 pr view query and the web edge draft command adapter named in gh_command_map, subject to REST repository and task authorization; other GraphQL returns 403 insufficient_scope. The viewer is the authenticated account; an unreadable repository reads as absent.";
 
 #[derive(Debug, Deserialize)]
 struct GraphqlRequest {

@@ -1,0 +1,25 @@
+
+	fragment repo on Repository {
+		id
+		name
+		owner { login }
+		hasIssuesEnabled
+		description
+		hasWikiEnabled
+		viewerPermission
+		defaultBranchRef {
+			name
+		}
+	}
+
+	query RepositoryInfo($owner: String!, $name: String!) {
+		repository(owner: $owner, name: $name) {
+			...repo
+			parent {
+				...repo
+			}
+			mergeCommitAllowed
+			rebaseMergeAllowed
+			squashMergeAllowed
+		}
+	}
