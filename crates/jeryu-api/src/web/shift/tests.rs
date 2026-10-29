@@ -1495,6 +1495,22 @@ async fn shifts_resolve_a_family_repo_hosted_under_another_owner() {
         "the veox-hosted repo's shift is listed: {branches:?}"
     );
 
+    // Its branches, heads and PRs are not told to an account that cannot read it.
+    let hidden = body_json(
+        router
+            .clone()
+            .oneshot(request(
+                HttpMethod::GET,
+                "/api/v1/shift/shifts?family=jeryu",
+                &outsider,
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(hidden["shifts"], json!([]), "{hidden}");
+
     let opened = body_json(
         router
             .clone()
@@ -2468,30 +2484,134 @@ fn hosted_owner_prefers_the_declared_owner_when_a_name_is_hosted_twice() {
     );
 }
 
-/// A todo the queue records as merged (a squashed or rewritten replacement
-/// the trailer scan cannot see) or closed (superseded) is not waiting for
-/// review, so its shift commits do not keep the shift live.
+/// A todo whose trailer never reached the base is finished with only when the
+/// queue says so AND git agrees: merged with a commit of this repository that is
+/// on the base, or closed by a person. A bare `merged = true` is not enough.
 #[test]
-fn merged_and_closed_todos_are_settled() {
-    let todo = |id: &str, status: TodoStatus, merged: bool| {
+fn settled_todos_need_a_base_commit_unless_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    run_git(repo, &["init", "-q", "-b", "main", "."]);
+    let commit = |file: &str| {
+        std::fs::write(repo.join(file), file).unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-q", "-m", file]);
+        String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    };
+    let on_base = commit("squashed.txt");
+    run_git(repo, &["checkout", "-q", "-b", "nightshift/2026-10-20"]);
+    let off_base = commit("shift-only.txt");
+    let todo = |id: &str, status: TodoStatus, merged: bool, commits: &[(&str, &str)]| {
         let mut file = TodoFile::parse(CURRENT).unwrap();
         file.id = id.to_string();
         file.status = status;
         file.merged = merged;
+        file.commits = commits
+            .iter()
+            .map(|(r, s)| (r.to_string(), s.to_string()))
+            .collect();
         super::queue::QueuedTodo {
             path: format!("todos/{id}.md"),
             todo: file,
         }
     };
     let todos = [
-        todo("t-merged", TodoStatus::Done, true),
-        todo("t-closed", TodoStatus::Closed, false),
-        todo("t-waiting", TodoStatus::Done, false),
-        todo("t-blocked", TodoStatus::Blocked, false),
+        todo(
+            "t-landed",
+            TodoStatus::Done,
+            true,
+            &[("acme-api", &on_base)],
+        ),
+        todo(
+            "t-flag-only",
+            TodoStatus::Done,
+            true,
+            &[("acme-api", &off_base)],
+        ),
+        todo(
+            "t-other-repo",
+            TodoStatus::Done,
+            true,
+            &[("acme-web", &on_base)],
+        ),
+        todo("t-closed", TodoStatus::Closed, false, &[]),
+        todo(
+            "t-waiting",
+            TodoStatus::Done,
+            false,
+            &[("acme-api", &on_base)],
+        ),
     ];
-    let settled = super::shifts::settled_todos(&todos);
+    let settled = super::shifts::settled_todos("git", repo, "main", "acme-api", &todos);
     assert_eq!(
         settled.into_iter().collect::<Vec<_>>(),
-        ["t-closed", "t-merged"]
+        ["t-closed", "t-landed"]
+    );
+}
+
+/// The queue's own owner still answers first when it hosts the name, and an
+/// owner segment that is not a name is never declared.
+#[test]
+fn the_queue_owner_answers_first_and_a_malformed_owner_is_not_declared() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = ForgeCore::new();
+    core.create_account("alice", "alice-password", UserRole::Admin)
+        .unwrap();
+    for owner in ["jain-split", "veox"] {
+        std::fs::create_dir_all(dir.path().join(owner)).unwrap();
+        run_git(
+            dir.path(),
+            &["init", "-q", "--bare", &format!("{owner}/jain-cli.git")],
+        );
+    }
+    let state = WebState::new_with_git_storage(core, dir.path().to_path_buf());
+    let queue = super::queue::Queue {
+        owner: "jain-split".to_string(),
+        repo: "jain-todo".to_string(),
+        path: dir.path().join("jain-split/jain-todo.git"),
+        head: String::new(),
+        family: super::queue::parse_family_toml(
+            "[[repo]]\nname = \"jain-cli\"\nurl = \"https://git.example.test/git/veox/jain-cli.git\"\n",
+            "jain",
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        super::truth::hosted_owner(&state, &queue, "jain-cli").as_deref(),
+        Some("jain-split")
+    );
+
+    let config = super::queue::parse_family_toml(
+        r#"
+[[repo]]
+name = "jain-cli"
+jeryu_repo = "../jain-cli"
+
+[[repo]]
+name = "jain-web"
+url = "https://git.example.test/git/a b/jain-web.git"
+
+[[repo]]
+name = "jain-core"
+url = 7
+"#,
+        "jain",
+    )
+    .expect("a non-string url reads as unset, not as an invalid family.toml");
+    assert!(
+        config
+            .repos
+            .iter()
+            .all(|repo| repo.declared_owner().is_none())
     );
 }

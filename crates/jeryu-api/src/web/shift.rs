@@ -1353,6 +1353,7 @@ pub(crate) async fn workers_history(
 /// `GET /api/v1/shift/shifts?family=`
 pub(crate) async fn list_shifts(
     State(state): State<Arc<WebState>>,
+    Extension(account): Extension<AccountSummary>,
     Query(query): Query<ShiftsQuery>,
 ) -> AxumResponse {
     if let Some(family) = query.family.as_deref().filter(|f| !f.is_empty())
@@ -1368,7 +1369,36 @@ pub(crate) async fn list_shifts(
             continue;
         }
         let todos = queue_todos(&state, &queue).unwrap_or_default();
-        all.extend(shifts::list(&state, &queue, &todos));
+        // As for the families route: a repo's branches, heads and PRs are told
+        // only to a reader who may read that repo, and a shift with none left
+        // is not listed.
+        let admin = account.role == jeryu_core::UserRole::Admin;
+        let readable: std::collections::BTreeSet<String> = queue
+            .family
+            .repos
+            .iter()
+            .filter(|repo| {
+                admin
+                    || truth::hosted_owner(&state, &queue, &repo.name).is_some_and(|owner| {
+                        state
+                            .core
+                            .get_repository(&owner, &repo.name)
+                            .is_ok_and(|hosted| !hosted.private)
+                            || state
+                                .core
+                                .user_can_read_repo(&account.login, &owner, &repo.name)
+                    })
+            })
+            .map(|repo| repo.name.clone())
+            .collect();
+        all.extend(
+            shifts::list(&state, &queue, &todos)
+                .into_iter()
+                .filter_map(|mut shift| {
+                    shift.repos.retain(|repo| readable.contains(&repo.repo));
+                    (!shift.repos.is_empty()).then_some(shift)
+                }),
+        );
     }
     all.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| a.branch.cmp(&b.branch)));
     Json(ShiftsResponse { shifts: all }).into_response()

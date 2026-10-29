@@ -175,14 +175,29 @@ pub(super) fn review_elsewhere(
         .max_by_key(|(pr, found)| (found.len(), pr.number))
 }
 
-/// The todos the queue itself records as finished with: merged (todoq found
-/// them on the base, or a person recorded a landing the trailer scan cannot
-/// see, such as a squashed replacement) or closed (superseded, dropped).
-/// A shift commit carrying one of them is not work waiting for review.
-pub(super) fn settled_todos(todos: &[QueuedTodo]) -> std::collections::BTreeSet<&str> {
+/// The todos of one repository that are finished with although no base commit
+/// carries their `Todo:` trailer (a squashed or rewritten replacement keeps
+/// none): closed by a person, or recorded as merged with a commit of this
+/// repository that git confirms is on the base. The queue's `merged` flag
+/// alone is not trusted; it must name a base commit here.
+pub(super) fn settled_todos<'a>(
+    git_bin: &str,
+    dir: &std::path::Path,
+    base: &str,
+    repo: &str,
+    todos: &'a [QueuedTodo],
+) -> std::collections::BTreeSet<&'a str> {
+    let base_ref = format!("refs/heads/{base}");
     todos
         .iter()
-        .filter(|queued| queued.todo.merged || queued.todo.status == TodoStatus::Closed)
+        .filter(|queued| {
+            let todo = &queued.todo;
+            todo.status == TodoStatus::Closed
+                || (todo.merged
+                    && todo.commits.iter().any(|(name, sha)| {
+                        name == repo && super::truth::is_ancestor(git_bin, dir, sha, &base_ref)
+                    }))
+        })
         .map(|queued| queued.todo.id.as_str())
         .collect()
 }
@@ -191,7 +206,6 @@ pub(super) fn settled_todos(todos: &[QueuedTodo]) -> std::collections::BTreeSet<
 pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec<ShiftBranch> {
     let git_bin = state.repo_manager.config().git_bin.clone();
     let base = &queue.family.base_branch;
-    let settled = settled_todos(todos);
     let mut branches: BTreeMap<String, ShiftBranch> = BTreeMap::new();
     for repo in &queue.family.repos {
         // A family's code may be hosted under another owner than its queue
@@ -248,6 +262,7 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
                 });
             let unmerged_todos = if ahead > 0 {
                 let mut ids = unmerged_todos(&git_bin, &repository.path, base, branch);
+                let settled = settled_todos(&git_bin, &repository.path, base, &repo.name, todos);
                 ids.retain(|id| !settled.contains(id.as_str()));
                 ids
             } else {

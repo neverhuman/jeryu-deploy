@@ -63,14 +63,17 @@ struct RepoFacts {
     deployed: Option<String>,
 }
 
-/// The owner a family repo is hosted under: the owner `family.toml` declares
-/// for it (its `jeryu_repo` or clone URL) when this forge hosts that
-/// repository; else the queue's owner; else, when the family's code lives
-/// under another owner, the only hosted repository with that name. The
-/// declared owner comes first because a name can be hosted twice (the jain
-/// repos are `veox/*` and also have copies under `jeryu/`), and then no
-/// single repository answers.
+/// The owner a family repo is hosted under: the queue's owner when it hosts
+/// the name; else the owner `family.toml` declares for it (its `jeryu_repo` or
+/// clone URL) when this forge hosts that repository; else, when the family's
+/// code lives under another owner, the only hosted repository with that name.
+/// The declaration matters where a name is hosted twice (the jain queue is
+/// `jain-split/jain-todo`, its repos are `veox/*`, and copies exist under
+/// `jeryu/`): then no single repository answers by name alone.
 pub(crate) fn hosted_owner(state: &WebState, queue: &Queue, name: &str) -> Option<String> {
+    if state.repo_manager.open_parts(&queue.owner, name).is_ok() {
+        return Some(queue.owner.clone());
+    }
     let declared = queue
         .family
         .repos
@@ -81,9 +84,6 @@ pub(crate) fn hosted_owner(state: &WebState, queue: &Queue, name: &str) -> Optio
         && state.repo_manager.open_parts(owner, name).is_ok()
     {
         return Some(owner.to_string());
-    }
-    if state.repo_manager.open_parts(&queue.owner, name).is_ok() {
-        return Some(queue.owner.clone());
     }
     let mut owners = state
         .core
@@ -154,7 +154,7 @@ fn family_facts(state: &WebState, queue: &Queue) -> BTreeMap<String, RepoFacts> 
     facts
 }
 
-fn is_ancestor(git_bin: &str, dir: &Path, ancestor: &str, descendant: &str) -> bool {
+pub(super) fn is_ancestor(git_bin: &str, dir: &Path, ancestor: &str, descendant: &str) -> bool {
     git(
         git_bin,
         dir,
