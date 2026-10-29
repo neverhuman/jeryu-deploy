@@ -1407,12 +1407,13 @@ dependencies = [
 [[package]]
 name = "jeryu-core"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.22#bf9b9f79732c2597866ffb89306342e0cd94fc62"
 dependencies = [
  "argon2",
  "chrono",
  "hex",
  "hmac",
+ "jeryu-gitd",
  "parking_lot",
  "rand_core 0.6.4",
  "ring",
@@ -1441,7 +1442,7 @@ dependencies = [
 [[package]]
 name = "jeryu-enterprise"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.22#bf9b9f79732c2597866ffb89306342e0cd94fc62"
 
 [[package]]
 name = "jeryu-gateway"
@@ -1469,7 +1470,7 @@ dependencies = [
 [[package]]
 name = "jeryu-gitd"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.22#bf9b9f79732c2597866ffb89306342e0cd94fc62"
 dependencies = [
  "serde",
  "serde_json",
@@ -1546,7 +1547,7 @@ source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-release-ops.git?tag=jeryu-re
 [[package]]
 name = "jeryu-proof"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.22#bf9b9f79732c2597866ffb89306342e0cd94fc62"
 dependencies = [
  "jeryu-core",
 ]
@@ -1554,7 +1555,7 @@ dependencies = [
 [[package]]
 name = "jeryu-readmodel"
 version = "5.0.0"
-source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.21#e448650c82f15e896fe1138613d21d67b044532b"
+source = "git+http://127.0.0.1:8787/git/jeryu/jeryu-core.git?tag=jeryu-core-v5.0.0-split.22#bf9b9f79732c2597866ffb89306342e0cd94fc62"
 dependencies = [
  "chrono",
  "serde",
