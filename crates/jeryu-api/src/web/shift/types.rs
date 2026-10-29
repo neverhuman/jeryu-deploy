@@ -44,6 +44,36 @@ pub(crate) struct FamilyRepo {
     pub name: String,
     #[serde(default)]
     pub order: i64,
+    /// The clone URL todoq works from; its last two path segments name the
+    /// hosted repository unless `jeryu_repo` says otherwise.
+    #[serde(default, skip_serializing)]
+    pub url: String,
+    /// `owner/name` on this forge when the URL does not spell it (todoq's
+    /// `RepoSpec.jeryu_repo`).
+    #[serde(default, skip_serializing)]
+    pub jeryu_repo: String,
+}
+
+impl FamilyRepo {
+    /// The owner `family.toml` says this repo is hosted under: `jeryu_repo`,
+    /// else the clone URL, the same rule todoq uses. Only a spelling whose
+    /// repository name is this entry's name counts, since every reader opens
+    /// `<owner>/<name>`.
+    pub(crate) fn declared_owner(&self) -> Option<&str> {
+        let spelled = if self.jeryu_repo.is_empty() {
+            let path = self.url.trim_end_matches('/');
+            let path = path.strip_suffix(".git").unwrap_or(path);
+            let (rest, name) = path.rsplit_once('/')?;
+            let owner = rest.rsplit_once('/').map_or(rest, |(_, owner)| owner);
+            (owner, name)
+        } else {
+            self.jeryu_repo.split_once('/')?
+        };
+        match spelled {
+            (owner, name) if !owner.is_empty() && name == self.name => Some(owner),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

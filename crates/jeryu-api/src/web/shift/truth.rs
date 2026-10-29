@@ -63,11 +63,25 @@ struct RepoFacts {
     deployed: Option<String>,
 }
 
-/// The owner a family repo is hosted under: the queue's owner, or, when the
-/// family's code lives under another owner (the jain queue is
-/// `jain-split/jain-todo` while its repos are `veox/*`), the only hosted
-/// repository with that name.
+/// The owner a family repo is hosted under: the owner `family.toml` declares
+/// for it (its `jeryu_repo` or clone URL) when this forge hosts that
+/// repository; else the queue's owner; else, when the family's code lives
+/// under another owner, the only hosted repository with that name. The
+/// declared owner comes first because a name can be hosted twice (the jain
+/// repos are `veox/*` and also have copies under `jeryu/`), and then no
+/// single repository answers.
 pub(crate) fn hosted_owner(state: &WebState, queue: &Queue, name: &str) -> Option<String> {
+    let declared = queue
+        .family
+        .repos
+        .iter()
+        .find(|repo| repo.name == name)
+        .and_then(|repo| repo.declared_owner());
+    if let Some(owner) = declared
+        && state.repo_manager.open_parts(owner, name).is_ok()
+    {
+        return Some(owner.to_string());
+    }
     if state.repo_manager.open_parts(&queue.owner, name).is_ok() {
         return Some(queue.owner.clone());
     }

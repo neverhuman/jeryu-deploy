@@ -8,7 +8,7 @@ use jeryu_core::{CreatePullRequestRequest, PullRequest, PullRequestState};
 use super::super::WebState;
 use super::PR_AUTHOR_ENV;
 use super::queue::{Queue, QueuedTodo, git, resolve};
-use super::types::{CreatedPr, ShiftBranch, ShiftPr, ShiftRepo};
+use super::types::{CreatedPr, ShiftBranch, ShiftPr, ShiftRepo, TodoStatus};
 use crate::github::pulls::pull_request_web_path;
 
 /// `(kind, date)` when `branch` is `<prefix>/<date>` for one of the prefixes.
@@ -175,10 +175,23 @@ pub(super) fn review_elsewhere(
         .max_by_key(|(pr, found)| (found.len(), pr.number))
 }
 
+/// The todos the queue itself records as finished with: merged (todoq found
+/// them on the base, or a person recorded a landing the trailer scan cannot
+/// see, such as a squashed replacement) or closed (superseded, dropped).
+/// A shift commit carrying one of them is not work waiting for review.
+pub(super) fn settled_todos(todos: &[QueuedTodo]) -> std::collections::BTreeSet<&str> {
+    todos
+        .iter()
+        .filter(|queued| queued.todo.merged || queued.todo.status == TodoStatus::Closed)
+        .map(|queued| queued.todo.id.as_str())
+        .collect()
+}
+
 /// Shift branches of one family, newest date first.
 pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec<ShiftBranch> {
     let git_bin = state.repo_manager.config().git_bin.clone();
     let base = &queue.family.base_branch;
+    let settled = settled_todos(todos);
     let mut branches: BTreeMap<String, ShiftBranch> = BTreeMap::new();
     for repo in &queue.family.repos {
         // A family's code may be hosted under another owner than its queue
@@ -234,7 +247,9 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
                         .collect(),
                 });
             let unmerged_todos = if ahead > 0 {
-                unmerged_todos(&git_bin, &repository.path, base, branch)
+                let mut ids = unmerged_todos(&git_bin, &repository.path, base, branch);
+                ids.retain(|id| !settled.contains(id.as_str()));
+                ids
             } else {
                 Vec::new()
             };
