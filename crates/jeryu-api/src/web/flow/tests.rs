@@ -2871,3 +2871,46 @@ fn a_merged_todo_that_never_entered_merge_leaves_merge() {
             .all(|v| v.station != Station::Merge || v.left_ms.is_some())
     );
 }
+
+/// A Merge visit left open after the lot landed is closed at the next start,
+/// and the rest of the ledger is kept as it was (no replay).
+#[test]
+fn a_merge_visit_left_open_after_landing_is_closed_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shift.sqlite");
+    let todo = "20261012-000071-eeeeee";
+    {
+        let store = EventStore::open(&path).unwrap();
+        forward_lot(&store, todo, 71, START, false);
+    }
+    let before = {
+        let conn = Connection::open(&path).unwrap();
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM flow_ledger", [], |r| r.get(0))
+            .unwrap();
+        // The phantom: Merge reopened after the landing.
+        conn.execute(
+            "UPDATE flow_ledger SET left_ms = NULL, direction = 'hold', rework_to = NULL
+              WHERE lot_id = ?1 AND station = 'merge'",
+            params![todo],
+        )
+        .unwrap();
+        before
+    };
+    let open = |conn: &Connection| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM flow_ledger WHERE station = 'merge' AND left_ms IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(open(&Connection::open(&path).unwrap()), 1);
+    drop(EventStore::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(open(&conn), 0, "the landed lot no longer waits at Merge");
+    let after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM flow_ledger", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after, before, "no visit was added or dropped");
+}
