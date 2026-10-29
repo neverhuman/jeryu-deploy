@@ -885,7 +885,8 @@ pub(super) async fn gate(
         && (observed_path.starts_with("/api/v1/repos/")
             || observed_path == "/mcp"
             || observed_path.starts_with("/mcp/")
-            || bot_todo_filing(&observed_method, &observed_path))
+            || bot_todo_filing(&observed_method, &observed_path)
+            || bot_reporting(&observed_method, &observed_path))
     {
         bots::record_bot_http(
             &state,
@@ -1772,9 +1773,17 @@ fn bot_path_allowed(method: &Method, path: &str) -> bool {
         return matches!(*method, Method::GET | Method::HEAD);
     }
     bot_todo_filing(method, path)
+        || bot_reporting(method, path)
         || path.starts_with("/api/v1/repos/")
         || path == "/mcp"
         || path.starts_with("/mcp/")
+}
+
+/// Reporting still requires the acting login in the handler's site reporter
+/// list. Bot authentication strips admin, so an admin owner's bot must be named
+/// too. Reads and other site writes stay outside the bot surface.
+fn bot_reporting(method: &Method, path: &str) -> bool {
+    *method == Method::POST && matches!(path, "/api/v1/events" | "/api/v1/runners/heartbeat")
 }
 
 /// `POST /api/v1/shift/todos`: the one shift write a bot may make. The handler

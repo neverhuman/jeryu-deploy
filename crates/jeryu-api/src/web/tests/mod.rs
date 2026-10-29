@@ -32,6 +32,7 @@ mod admin_reset_tests;
 mod agent_presence_tests;
 mod agent_run_access_tests;
 mod auth_tests;
+mod bot_reporting_tests;
 mod bot_setup_script;
 mod bots_owner_reach_tests;
 mod bots_tests;

@@ -310,7 +310,12 @@ Settings are an installation's, so none has a default: `JERYU_TAG_TOKEN_FILE` (r
 token, a regular mode-0600 file), `JERYU_TAG_GIT_NAME` and `JERYU_TAG_GIT_EMAIL`. The unit reads
 them from `~/.config/jeryu/auto-tag.env`. Each tick ends with one runner heartbeat
 (`<host>/auto-tag`, label `automation`) and posts `tag.*` and `pin.bump_opened` events; both are
-best-effort and never fail a tick, and a dry run sends neither. Contract:
+best-effort and never fail a tick, and a dry run sends neither. The forge must list the token's
+acting login in both `JERYU_EVENT_REPORTERS` and `JERYU_RUNNER_REPORTERS`, then restart to load
+those settings. For releasebot's person-owned agent token, list its owner login; a team bot
+uses `<organization>.<slug>[bot]`. Check the identity with `GET /api/v1/bot/whoami`, not
+`/api/v1/user` (which scoped tokens cannot read). A repository grant or an admin owner alone
+does not grant reporting. Contract:
 [`docs/pipeline-events.md`](../../docs/pipeline-events.md).
 
 ## Machine-readable output

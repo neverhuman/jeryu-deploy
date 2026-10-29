@@ -30,10 +30,17 @@ again on every request against the owner's current grants.
   record deployments.
 - A bot reaches only `/api/v1/repos/*`, `/api/v1/bot/whoami`, git over HTTPS,
   the GitHub-compatible `/api/v3/repos/*` surface, MCP, and
-  `POST /api/v1/shift/todos`. On MCP it sees
+  `POST /api/v1/shift/todos`, `POST /api/v1/events`, and
+  `POST /api/v1/runners/heartbeat`. On MCP it sees
   no admin tool, and every repository argument is checked against its reach.
-- Filing shift todos is the one write outside a repository a bot may make, and
-  it is scoped by reach, not by any admin role: the call is allowed only when
+- Reporting events and runner heartbeats requires the bot's acting login in
+  `JERYU_EVENT_REPORTERS` and `JERYU_RUNNER_REPORTERS`, respectively. For a
+  person-owned bot this is the owner login; for a team bot it is
+  `<organization>.<slug>[bot]`. Admin is never inherited. These permissions
+  grant site reporting independently of repository reach; event and runner
+  reads remain unavailable. `/api/v1/user` remains outside the bot surface;
+  inspect the credential with `/api/v1/bot/whoami`.
+- Filing shift todos is scoped by reach, not by any admin role: the call is allowed only when
   the bot could write the family's queue repository (`<family>-todo`), and one
   call files at most 20 todos. The todo's creator is the bot's acting account,
   so a team bot files as `<organization>.<slug>[bot]`. Every other route under
