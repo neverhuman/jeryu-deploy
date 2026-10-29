@@ -1,0 +1,16 @@
+migration = "0028_merge_visit_repair"
+engine = "sqlite"
+store = "<data_dir>/shift.sqlite"
+owner = "crates/jeryu-api/src/web/flow/project.rs"
+apply = "migrate_shift_store, one transaction; one new table, closes only the open Merge visits the scope selects and records each"
+[lock_timeout]
+mechanism = "rusqlite Connection::busy_timeout"
+value = "5s"
+[statement_timeout]
+mechanism = "statements over the open Merge visits only, event lookups by primary key"
+value = "bounded by the number of open Merge visits"
+[rollback]
+plan = "restore prior fields from flow_merge_visit_repair, or restore pre-release shift.sqlite backup and previous binary"
+backup = "release switch SQLite backup"
+[verify]
+check = "cargo test -p jeryu-api --features web --lib web::flow"

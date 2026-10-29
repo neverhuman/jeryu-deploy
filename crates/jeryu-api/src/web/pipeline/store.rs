@@ -415,11 +415,6 @@ impl EventStore {
                 "jeryu-api pipeline: flow ledger replay failed, retried at next start: {err}"
             );
         }
-        if let Err(err) = repair_open_merge_visits(&conn) {
-            eprintln!(
-                "jeryu-api pipeline: merge visit repair failed, retried at next start: {err}"
-            );
-        }
         if let Err(err) = replay_outcome_ledger(&conn) {
             eprintln!(
                 "jeryu-api pipeline: outcome ledger replay failed, retried at next start: {err}"
@@ -1433,17 +1428,6 @@ fn replay_flow_ledger(conn: &Connection) -> Result<(), String> {
         params![chrono::Utc::now().timestamp_millis(), events, visits],
     )
     .map_err(|err| err.to_string())?;
-    tx.commit().map_err(|err| err.to_string())
-}
-
-/// Close Merge visits left open after their lot landed, without a replay, so
-/// ledger history older than the event retention stays. Runs at every start
-/// and is a no-op once nothing is left open.
-fn repair_open_merge_visits(conn: &Connection) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|err| err.to_string())?;
-    project::close_merge_visits_after_landing(&tx)?;
     tx.commit().map_err(|err| err.to_string())
 }
 

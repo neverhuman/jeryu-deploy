@@ -387,61 +387,6 @@ pub(crate) fn replay(conn: &Connection) -> Result<(i64, i64), String> {
     Ok((read, visits))
 }
 
-/// Close the Merge visit a landing left open, for lots whose landing event the
-/// log still holds. Before the fix that stopped Merge opening after a landing,
-/// a late gate or review event could open one that nothing would ever close,
-/// and `first_projection` skips a re-sent landing the ledger already folded in.
-/// This pass touches only open Merge rows, keeps every other visit (including
-/// those older than the event retention), and does nothing once they are
-/// closed, so it is safe at every start. A visit opened after the landing is
-/// closed at its own entry, a zero-length visit, not before it began.
-/// Answers how many visits it closed.
-pub(crate) fn close_merge_visits_after_landing(conn: &Connection) -> Result<i64, String> {
-    let mut closed = 0;
-    for_each_event(conn, |event| {
-        if !matches!(event.kind, "queue.landed" | "pr.merged" | "todo.merged") {
-            return Ok(());
-        }
-        let lot_ids = if let Some(todo_id) = event.todo_id.map(str::trim).filter(|s| !s.is_empty())
-        {
-            vec![todo_id.to_string()]
-        } else if let (Some(repo), Some(pr)) = (event.repo, event.pr) {
-            lots_of_pr(conn, repo, pr)?
-        } else {
-            Vec::new()
-        };
-        for id in lot_ids {
-            let Some(entered) = conn
-                .query_row(
-                    "SELECT entered_ms FROM flow_ledger
-                      WHERE lot_id = ?1 AND station = 'merge' AND left_ms IS NULL
-                      ORDER BY seq DESC LIMIT 1",
-                    params![id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()
-                .map_err(|err| err.to_string())?
-            else {
-                continue;
-            };
-            let lot = Lot {
-                id,
-                repo: event.repo.map(ToString::to_string),
-                pr: event.pr,
-                todo_id: event.todo_id.map(ToString::to_string),
-            };
-            let at = EventView {
-                ts_ms: event.ts_ms.max(entered),
-                ..*event
-            };
-            close(conn, &at, &lot, Station::Merge, "forward", None)?;
-            closed += 1;
-        }
-        Ok(())
-    })?;
-    Ok(closed)
-}
-
 /// Call `fold` with every event the log still holds, oldest first, and answer
 /// how many there were. The one reader both projections replay from.
 pub(crate) fn for_each_event(

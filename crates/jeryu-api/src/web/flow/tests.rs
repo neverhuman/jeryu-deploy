@@ -2872,45 +2872,181 @@ fn a_merged_todo_that_never_entered_merge_leaves_merge() {
     );
 }
 
-/// A Merge visit left open after the lot landed is closed at the next start,
-/// and the rest of the ledger is kept as it was (no replay).
+/// Migration 0028 closes a Merge visit a late gate event opened after the lot
+/// landed (the production shape: a zero-length visit at its own entry), keeps a
+/// visit a re-enqueue after the landing opened, records what it closed, and
+/// runs once.
 #[test]
-fn a_merge_visit_left_open_after_landing_is_closed_at_start() {
+fn migration_0028_closes_only_merge_visits_left_open_after_a_landing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shift.sqlite");
-    let todo = "20261012-000071-eeeeee";
+    let phantom = "20261012-000071-eeeeee";
+    let requeued = "20261012-000072-ffffff";
+    let self_opened = "20261012-000073-aaaaaa";
     {
         let store = EventStore::open(&path).unwrap();
-        forward_lot(&store, todo, 71, START, false);
+        forward_lot(&store, phantom, 71, START, false);
+        forward_lot(&store, requeued, 72, START, false);
+        forward_lot(&store, self_opened, 73, START, false);
+        // A late gate result after the landing: today's projection opens nothing.
+        post(
+            &store,
+            &Post {
+                kind: "gate.finished",
+                outcome: Some("success"),
+                todo: Some(phantom),
+                pr: Some(71),
+                shift: None,
+                at_ms: START + 50 * MINUTE,
+            },
+        );
+        // A legitimate re-entry: the second lot is enqueued again after it landed.
+        post(
+            &store,
+            &Post {
+                kind: "queue.enqueued",
+                outcome: None,
+                todo: Some(requeued),
+                pr: Some(72),
+                shift: None,
+                at_ms: START + 50 * MINUTE,
+            },
+        );
     }
+    let open_merge = |conn: &Connection, lot: &str| -> Vec<(i64, Option<i64>)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT entered_ms, left_ms FROM flow_ledger
+                  WHERE lot_id = ?1 AND station = 'merge' ORDER BY seq",
+            )
+            .unwrap();
+        stmt.query_map(params![lot], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
     let before = {
         let conn = Connection::open(&path).unwrap();
-        let before: i64 = conn
-            .query_row("SELECT COUNT(*) FROM flow_ledger", [], |r| r.get(0))
+        // The phantom as the pre-c44535 projection left it: Merge opened by the
+        // late gate event, after the landing, never closed.
+        let gate_seq: i64 = conn
+            .query_row(
+                "SELECT MAX(seq) FROM pipeline_events WHERE kind = 'gate.finished' AND todo_id = ?1",
+                params![phantom],
+                |r| r.get(0),
+            )
             .unwrap();
-        // The phantom: Merge reopened after the landing.
         conn.execute(
-            "UPDATE flow_ledger SET left_ms = NULL, direction = 'hold', rework_to = NULL
-              WHERE lot_id = ?1 AND station = 'merge'",
-            params![todo],
+            "INSERT INTO flow_ledger (lot_id, family, repo, pr, todo_id, station, entered_ms,
+               direction, source_seq_first, source_seq_last, hold_reason)
+             VALUES (?1, 'acme', 'acme/widget', 71, ?1, 'merge', ?2, 'hold', ?3, ?3, 'gate_red')",
+            params![phantom, START + 50 * MINUTE, gate_seq],
         )
         .unwrap();
-        before
-    };
-    let open = |conn: &Connection| -> i64 {
-        conn.query_row(
-            "SELECT COUNT(*) FROM flow_ledger WHERE station = 'merge' AND left_ms IS NULL",
-            [],
-            |r| r.get(0),
+        // The shape seen in production: a Merge visit the landing itself opened.
+        let (landing_seq, landing_ms): (i64, i64) = conn
+            .query_row(
+                "SELECT seq, ts_ms FROM pipeline_events WHERE kind = 'queue.landed' AND todo_id = ?1",
+                params![self_opened],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO flow_ledger (lot_id, family, repo, pr, todo_id, station, entered_ms,
+               direction, source_seq_first, source_seq_last)
+             VALUES (?1, 'acme', 'acme/widget', 73, ?1, 'merge', ?2, 'open', ?3, ?3)",
+            params![self_opened, landing_ms, landing_seq],
         )
+        .unwrap();
+        let requeued_open = open_merge(&conn, requeued);
+        assert_eq!(
+            requeued_open.last().unwrap().1,
+            None,
+            "the re-enqueued lot waits at Merge"
+        );
+        // Run 0028 again on this store, as on a store that predates it.
+        conn.execute_batch(
+            "DELETE FROM shift_schema_migrations WHERE version = 28;
+             DROP TABLE flow_merge_visit_repair;",
+        )
+        .unwrap();
+        conn.query_row("SELECT COUNT(*) FROM flow_ledger", [], |r| {
+            r.get::<_, i64>(0)
+        })
         .unwrap()
     };
-    assert_eq!(open(&Connection::open(&path).unwrap()), 1);
     drop(EventStore::open(&path).unwrap());
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(open(&conn), 0, "the landed lot no longer waits at Merge");
+    let closed = open_merge(&conn, phantom);
+    let last = *closed.last().unwrap();
+    assert_eq!(
+        last,
+        (START + 50 * MINUTE, Some(START + 50 * MINUTE)),
+        "the phantom is closed at its own entry, a zero-length visit"
+    );
+    let (direction, hold): (String, Option<String>) = conn
+        .query_row(
+            "SELECT direction, hold_reason FROM flow_ledger
+              WHERE lot_id = ?1 AND station = 'merge' ORDER BY seq DESC LIMIT 1",
+            params![phantom],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((direction.as_str(), hold), ("forward", None));
+    assert_eq!(
+        open_merge(&conn, requeued).last().unwrap().1,
+        None,
+        "a visit a re-enqueue opened after the landing stays open"
+    );
+    assert!(
+        open_merge(&conn, self_opened)
+            .iter()
+            .all(|(_, left)| left.is_some()),
+        "a visit its own landing opened is closed"
+    );
+    let recorded: Vec<(String, String, Option<String>)> = {
+        let mut stmt = conn
+            .prepare("SELECT lot_id, prior_direction, prior_hold_reason FROM flow_merge_visit_repair WHERE lot_id = ?1")
+            .unwrap();
+        stmt.query_map(params![phantom], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        recorded,
+        vec![(
+            phantom.to_string(),
+            "hold".to_string(),
+            Some("gate_red".to_string())
+        )],
+        "the closed visit is recorded with what it was"
+    );
+    let repaired: i64 = conn
+        .query_row("SELECT COUNT(*) FROM flow_merge_visit_repair", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(repaired, 2, "exactly the two phantoms were closed");
     let after: i64 = conn
         .query_row("SELECT COUNT(*) FROM flow_ledger", [], |r| r.get(0))
         .unwrap();
     assert_eq!(after, before, "no visit was added or dropped");
+    // Once applied it never runs again: a visit opened the same way later stays.
+    drop(conn);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute(
+        "UPDATE flow_ledger SET left_ms = NULL WHERE lot_id = ?1 AND station = 'merge'
+          AND seq = (SELECT MAX(seq) FROM flow_ledger WHERE lot_id = ?1 AND station = 'merge')",
+        params![phantom],
+    )
+    .unwrap();
+    drop(conn);
+    drop(EventStore::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        open_merge(&conn, phantom).last().unwrap().1,
+        None,
+        "0028 runs once"
+    );
 }

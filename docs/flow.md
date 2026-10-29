@@ -476,7 +476,17 @@ the retained pipeline log cannot rebuild older visits. Its two in-place repairs
 use authoritative merge evidence and remove the synthetic Shift/Stage starts
 created by the previous projection (no producer measured those starts). A merge
 closes every lot carried by that pull request. Restore requires the pre-release
-shift.sqlite snapshot; the new evidence tables alone are additive. Process-time
+shift.sqlite snapshot; the new evidence tables alone are additive.
+
+Migration 0028 is the same kind of one-time repair, for Merge visits a late gate
+or review event opened after the lot had landed (before c44535), which nothing
+closed, including visits a landing opened itself. It closes a lot's newest open
+Merge visit only when the event that opened it is not a `queue.*` event other
+than `queue.landed`, a retained landing names the lot, and no
+`queue.*` event other than `queue.landed` names the lot after that landing, so a
+re-enqueue or another pull request of the same todo keeps its visit. Every
+visit it closed is listed in `flow_merge_visit_repair` with the fields it
+changed, as they were. Process-time
 fields for Shift and Stage become unknown until producers emit measured starts.
 
 Compatibility: v1 already permits null metrics. Shift/Stage queue and process
