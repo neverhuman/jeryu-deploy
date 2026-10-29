@@ -1369,9 +1369,10 @@ pub(crate) async fn list_shifts(
             continue;
         }
         let todos = queue_todos(&state, &queue).unwrap_or_default();
-        // As for the families route: a repo's branches, heads and PRs are told
-        // only to a reader who may read that repo, and a shift with none left
-        // is not listed.
+        // As for the families route: a repo's entry (its head, ahead/behind,
+        // PR and unmerged todos) is told only to a reader who may read that
+        // repo, and a shift with no such entry left is not listed. The shift's
+        // own name and todo ids stay visible, as the todo list already is.
         let admin = account.role == jeryu_core::UserRole::Admin;
         let readable: std::collections::BTreeSet<String> = queue
             .family

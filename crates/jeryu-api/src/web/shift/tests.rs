@@ -2388,68 +2388,17 @@ async fn a_scoped_bot_token_files_todos_and_nothing_broader() {
     assert_eq!(over.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
-/// `family.toml` names where each repo is hosted the way todoq reads it:
-/// `jeryu_repo` when set, else the clone URL's last two path segments, and
-/// only for a spelling whose repository name is the entry's own.
+/// A repo name hosted twice (the jain repos are `veox/*`; read-only copies
+/// were archived under `jeryu/`) is decided by the forge's archive flag: the one
+/// live repository answers. Two live ones are still ambiguous, and the queue's
+/// own owner answers first whenever it hosts the name.
 #[test]
-fn a_family_repo_declares_its_owner_by_jeryu_repo_or_clone_url() {
-    let config = super::queue::parse_family_toml(
-        r#"
-[family]
-name = "jain"
-
-[[repo]]
-name = "jain-cli"
-url = "https://git.example.test/git/veox/jain-cli.git"
-
-[[repo]]
-name = "jain-web"
-url = "https://git.example.test/git/veox/jain-web/"
-jeryu_repo = "mirror/jain-web"
-
-[[repo]]
-name = "todoq"
-url = "https://git.example.test/git/veox-ai/nightshift-todo-driver.git"
-
-[[repo]]
-name = "jain-core"
-"#,
-        "jain",
-    )
-    .unwrap();
-    let owner = |name: &str| {
-        config
-            .repos
-            .iter()
-            .find(|repo| repo.name == name)
-            .unwrap()
-            .declared_owner()
-    };
-    assert_eq!(owner("jain-cli"), Some("veox"));
-    assert_eq!(owner("jain-web"), Some("mirror"));
-    assert_eq!(
-        owner("todoq"),
-        None,
-        "a URL naming another repository declares nothing"
-    );
-    assert_eq!(owner("jain-core"), None);
-}
-
-/// A repo name hosted under two owners (the jain repos are `veox/*` and also
-/// have copies under `jeryu/`) has no single owner by name alone; the owner
-/// `family.toml` declares decides, so the family's shifts stay listed.
-#[test]
-fn hosted_owner_prefers_the_declared_owner_when_a_name_is_hosted_twice() {
+fn hosted_owner_skips_archived_copies_of_a_name_hosted_twice() {
     let dir = tempfile::tempdir().unwrap();
     let core = ForgeCore::new();
     core.create_account("alice", "alice-password", UserRole::Admin)
         .unwrap();
-    for owner in ["veox", "jeryu"] {
-        std::fs::create_dir_all(dir.path().join(owner)).unwrap();
-        run_git(
-            dir.path(),
-            &["init", "-q", "--bare", &format!("{owner}/jain-cli.git")],
-        );
+    for owner in ["veox", "jeryu", "other"] {
         core.create_repository(
             owner,
             CreateRepositoryRequest {
@@ -2461,26 +2410,33 @@ fn hosted_owner_prefers_the_declared_owner_when_a_name_is_hosted_twice() {
         )
         .unwrap();
     }
-    let state = WebState::new_with_git_storage(core, dir.path().to_path_buf());
-    let queue = |toml: &str| super::queue::Queue {
-        owner: "jain-split".to_string(),
+    core.set_repository_archived("alice", "jeryu", "jain-cli", true)
+        .unwrap();
+    let queue = |owner: &str| super::queue::Queue {
+        owner: owner.to_string(),
         repo: "jain-todo".to_string(),
-        path: dir.path().join("jain-split/jain-todo.git"),
+        path: dir.path().join(owner).join("jain-todo.git"),
         head: String::new(),
-        family: super::queue::parse_family_toml(toml, "jain").unwrap(),
+        family: super::queue::parse_family_toml("[[repo]]\nname = \"jain-cli\"\n", "jain").unwrap(),
     };
-    let declared = queue(
-        "[[repo]]\nname = \"jain-cli\"\nurl = \"https://git.example.test/git/veox/jain-cli.git\"\n",
-    );
+    let state = WebState::new_with_git_storage(core.clone(), dir.path().to_path_buf());
     assert_eq!(
-        super::truth::hosted_owner(&state, &declared, "jain-cli").as_deref(),
+        super::truth::hosted_owner(&state, &queue("jain-split"), "jain-cli"),
+        None,
+        "veox and other are both live: no owner is guessed"
+    );
+    core.set_repository_archived("alice", "other", "jain-cli", true)
+        .unwrap();
+    assert_eq!(
+        super::truth::hosted_owner(&state, &queue("jain-split"), "jain-cli").as_deref(),
         Some("veox")
     );
-    let undeclared = queue("[[repo]]\nname = \"jain-cli\"\n");
+    std::fs::create_dir_all(dir.path().join("jeryu")).unwrap();
+    run_git(dir.path(), &["init", "-q", "--bare", "jeryu/jain-cli.git"]);
     assert_eq!(
-        super::truth::hosted_owner(&state, &undeclared, "jain-cli"),
-        None,
-        "two hosted repositories and no declaration: no owner is guessed"
+        super::truth::hosted_owner(&state, &queue("jeryu"), "jain-cli").as_deref(),
+        Some("jeryu"),
+        "the queue's own owner answers first when it hosts the name"
     );
 }
 
@@ -2497,7 +2453,7 @@ fn settled_todos_need_a_base_commit_unless_closed() {
         run_git(repo, &["add", "."]);
         run_git(repo, &["commit", "-q", "-m", file]);
         String::from_utf8(
-            std::process::Command::new("git")
+            crate::test_git::git_command()
                 .args(["rev-parse", "HEAD"])
                 .current_dir(repo)
                 .output()
@@ -2556,62 +2512,5 @@ fn settled_todos_need_a_base_commit_unless_closed() {
     assert_eq!(
         settled.into_iter().collect::<Vec<_>>(),
         ["t-closed", "t-landed"]
-    );
-}
-
-/// The queue's own owner still answers first when it hosts the name, and an
-/// owner segment that is not a name is never declared.
-#[test]
-fn the_queue_owner_answers_first_and_a_malformed_owner_is_not_declared() {
-    let dir = tempfile::tempdir().unwrap();
-    let core = ForgeCore::new();
-    core.create_account("alice", "alice-password", UserRole::Admin)
-        .unwrap();
-    for owner in ["jain-split", "veox"] {
-        std::fs::create_dir_all(dir.path().join(owner)).unwrap();
-        run_git(
-            dir.path(),
-            &["init", "-q", "--bare", &format!("{owner}/jain-cli.git")],
-        );
-    }
-    let state = WebState::new_with_git_storage(core, dir.path().to_path_buf());
-    let queue = super::queue::Queue {
-        owner: "jain-split".to_string(),
-        repo: "jain-todo".to_string(),
-        path: dir.path().join("jain-split/jain-todo.git"),
-        head: String::new(),
-        family: super::queue::parse_family_toml(
-            "[[repo]]\nname = \"jain-cli\"\nurl = \"https://git.example.test/git/veox/jain-cli.git\"\n",
-            "jain",
-        )
-        .unwrap(),
-    };
-    assert_eq!(
-        super::truth::hosted_owner(&state, &queue, "jain-cli").as_deref(),
-        Some("jain-split")
-    );
-
-    let config = super::queue::parse_family_toml(
-        r#"
-[[repo]]
-name = "jain-cli"
-jeryu_repo = "../jain-cli"
-
-[[repo]]
-name = "jain-web"
-url = "https://git.example.test/git/a b/jain-web.git"
-
-[[repo]]
-name = "jain-core"
-url = 7
-"#,
-        "jain",
-    )
-    .expect("a non-string url reads as unset, not as an invalid family.toml");
-    assert!(
-        config
-            .repos
-            .iter()
-            .all(|repo| repo.declared_owner().is_none())
     );
 }

@@ -63,36 +63,30 @@ struct RepoFacts {
     deployed: Option<String>,
 }
 
-/// The owner a family repo is hosted under: the queue's owner when it hosts
-/// the name; else the owner `family.toml` declares for it (its `jeryu_repo` or
-/// clone URL) when this forge hosts that repository; else, when the family's
-/// code lives under another owner, the only hosted repository with that name.
-/// The declaration matters where a name is hosted twice (the jain queue is
-/// `jain-split/jain-todo`, its repos are `veox/*`, and copies exist under
-/// `jeryu/`): then no single repository answers by name alone.
+/// The owner a family repo is hosted under: the queue's owner, or, when the
+/// family's code lives under another owner (the jain queue is
+/// `jain-split/jain-todo` while its repos are `veox/*`), the only hosted
+/// repository with that name. A name hosted more than once is decided by the
+/// forge's own archive flag: an archived copy is read-only and takes no shift
+/// (`family_facts` skips it too), so the one live repository answers. Only the
+/// forge's records decide this, never the queue's `family.toml`.
 pub(crate) fn hosted_owner(state: &WebState, queue: &Queue, name: &str) -> Option<String> {
     if state.repo_manager.open_parts(&queue.owner, name).is_ok() {
         return Some(queue.owner.clone());
     }
-    let declared = queue
-        .family
-        .repos
-        .iter()
-        .find(|repo| repo.name == name)
-        .and_then(|repo| repo.declared_owner());
-    if let Some(owner) = declared
-        && state.repo_manager.open_parts(owner, name).is_ok()
-    {
-        return Some(owner.to_string());
-    }
-    let mut owners = state
+    let named: Vec<_> = state
         .core
         .list_repositories(None)
         .into_iter()
         .filter(|repo| repo.name == name)
-        .map(|repo| repo.owner);
-    match (owners.next(), owners.next()) {
-        (Some(owner), None) => Some(owner),
+        .collect();
+    let live: Vec<_> = if named.len() > 1 {
+        named.into_iter().filter(|repo| !repo.archived).collect()
+    } else {
+        named
+    };
+    match live.as_slice() {
+        [only] => Some(only.owner.clone()),
         _ => None,
     }
 }

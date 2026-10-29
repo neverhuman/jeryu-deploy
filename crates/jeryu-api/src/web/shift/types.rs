@@ -44,55 +44,6 @@ pub(crate) struct FamilyRepo {
     pub name: String,
     #[serde(default)]
     pub order: i64,
-    /// The clone URL todoq works from; its last two path segments name the
-    /// hosted repository unless `jeryu_repo` says otherwise.
-    #[serde(default, skip_serializing, deserialize_with = "lenient_string")]
-    pub url: String,
-    /// `owner/name` on this forge when the URL does not spell it (todoq's
-    /// `RepoSpec.jeryu_repo`).
-    #[serde(default, skip_serializing, deserialize_with = "lenient_string")]
-    pub jeryu_repo: String,
-}
-
-/// These keys were ignored before the server read them: a value that is not a
-/// string reads as unset rather than making the whole family.toml invalid,
-/// which would drop the family from every shift surface.
-fn lenient_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    let value = toml::Value::deserialize(deserializer)?;
-    Ok(value.as_str().map(str::to_string).unwrap_or_default())
-}
-
-/// An owner segment as this forge names accounts: letters, digits, `-`, `_`
-/// and `.`, not starting with a dot. Anything else (`..`, a slash, a space) is
-/// not an owner and is never handed to a path lookup.
-fn owner_shaped(owner: &str) -> bool {
-    !owner.is_empty()
-        && !owner.starts_with('.')
-        && owner
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-}
-
-impl FamilyRepo {
-    /// The owner `family.toml` says this repo is hosted under: `jeryu_repo`,
-    /// else the clone URL, the same rule todoq uses. Only a spelling whose
-    /// repository name is this entry's name counts, since every reader opens
-    /// `<owner>/<name>`.
-    pub(crate) fn declared_owner(&self) -> Option<&str> {
-        let spelled = if self.jeryu_repo.is_empty() {
-            let path = self.url.trim_end_matches('/');
-            let path = path.strip_suffix(".git").unwrap_or(path);
-            let (rest, name) = path.rsplit_once('/')?;
-            let owner = rest.rsplit_once('/').map_or(rest, |(_, owner)| owner);
-            (owner, name)
-        } else {
-            self.jeryu_repo.split_once('/')?
-        };
-        match spelled {
-            (owner, name) if owner_shaped(owner) && name == self.name => Some(owner),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize)]

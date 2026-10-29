@@ -229,6 +229,7 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
         ) else {
             continue;
         };
+        let mut settled: Option<std::collections::BTreeSet<&str>> = None;
         for line in String::from_utf8_lossy(&listing).lines() {
             let Some((name, head)) = line.split_once(' ') else {
                 continue;
@@ -262,8 +263,14 @@ pub(crate) fn list(state: &WebState, queue: &Queue, todos: &[QueuedTodo]) -> Vec
                 });
             let unmerged_todos = if ahead > 0 {
                 let mut ids = unmerged_todos(&git_bin, &repository.path, base, branch);
-                let settled = settled_todos(&git_bin, &repository.path, base, &repo.name, todos);
-                ids.retain(|id| !settled.contains(id.as_str()));
+                if !ids.is_empty() {
+                    // Once per repository, and only when a branch has something
+                    // to filter: each merged todo costs a `git merge-base`.
+                    let settled = settled.get_or_insert_with(|| {
+                        settled_todos(&git_bin, &repository.path, base, &repo.name, todos)
+                    });
+                    ids.retain(|id| !settled.contains(id.as_str()));
+                }
                 ids
             } else {
                 Vec::new()
