@@ -60,19 +60,19 @@ jeryu-proof = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-core.git", tag = "j
 # carries the cgroup capability-probe fix: at split.0, parallel probes remove each
 # other's leaf and agent runs under systemd fail with EOPNOTSUPP (os error 95).
 [patch."https://github.com/neverhuman/jeryu-ci-runner.git"]
-jeryu-agent-stream = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-agentbridge = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-ci-compiler = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-ci-ir = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-ci-scheduler = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-runner-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-runner-microvm = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-runner-native = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-runner-oci = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-runner-protocol = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-runner-registry = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-runnerd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
-jeryu-sandbox-linux = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.8" }
+jeryu-agent-stream = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-agentbridge = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-ci-compiler = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-ci-ir = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-ci-scheduler = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-runner-core = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-runner-microvm = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-runner-native = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-runner-oci = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-runner-protocol = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-runner-registry = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-runnerd = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
+jeryu-sandbox-linux = { git = "http://127.0.0.1:8787/git/jeryu/jeryu-ci-runner.git", tag = "jeryu-ci-runner-v5.0.0-split.9" }
 
 # Intelligence and release-ops unification. The two repositories pin each other
 # at split.0, so their release tags form a cycle: jeryu-release-ops names the
