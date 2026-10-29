@@ -1391,7 +1391,7 @@ dependencies = [
 [[package]]
 name = "jeryu-codegraph"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.9#c23f14772fe8d2b884a8de76fae01a5bfaa66cfa"
+source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.10#749d5bae4d93b6d02daa309042b52244f221ac89"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1493,7 +1493,7 @@ dependencies = [
 [[package]]
 name = "jeryu-mcp"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.9#c23f14772fe8d2b884a8de76fae01a5bfaa66cfa"
+source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.10#749d5bae4d93b6d02daa309042b52244f221ac89"
 dependencies = [
  "anyhow",
  "axum",
@@ -1672,7 +1672,7 @@ dependencies = [
 [[package]]
 name = "jeryu-rustjet"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.9#c23f14772fe8d2b884a8de76fae01a5bfaa66cfa"
+source = "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.10#749d5bae4d93b6d02daa309042b52244f221ac89"
 
 [[package]]
 name = "jeryu-sandbox-linux"
