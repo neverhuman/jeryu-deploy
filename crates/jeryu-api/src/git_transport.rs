@@ -582,6 +582,10 @@ pub(crate) async fn git_receive_pack(
         // (`web/human_time.rs`).
         crate::web::human_time::record_push(&post_push, &owner, &repo, &updates);
         crate::ci_bridge::on_push(&core, &manager, &owner, &repo, &updates, &origin_base_url);
+        // After `on_push`, because it is what moves an open pull request's head
+        // to the pushed commit: the signal names the heads the reviewer can
+        // review now (`web/review_wanted.rs`).
+        crate::web::review_wanted::record_push(&post_push, &owner, &repo, &updates);
         // A default-branch push changes what the code tools should answer, so
         // the repository's codegraph index is rebuilt from the new head. It
         // runs after the refs are durable and reports its own failures: an

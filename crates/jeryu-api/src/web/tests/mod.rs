@@ -65,6 +65,7 @@ mod repo_list_tests;
 mod review_activity_tests;
 mod review_catch_tests;
 mod review_resolution_tests;
+mod review_wanted_tests;
 mod signup_tests;
 mod site_settings_tests;
 mod source_tests;

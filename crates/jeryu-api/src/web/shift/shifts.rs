@@ -433,6 +433,8 @@ pub(crate) fn open_prs(
             &pr.head.sha,
             "",
         );
+        // A head the reviewer can review now (`web/review_wanted.rs`).
+        crate::web::review_wanted::record_opened(state, &pr);
         out.push(CreatedPr {
             repo: repo.name.clone(),
             number: pr.number,

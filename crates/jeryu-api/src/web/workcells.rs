@@ -664,6 +664,8 @@ pub(super) async fn export_pr(
         &pr.head.sha,
         &origin_base_url(&headers),
     );
+    // A head the reviewer can review now (`web/review_wanted.rs`).
+    super::review_wanted::record_opened(&state, &pr);
 
     (
         StatusCode::CREATED,

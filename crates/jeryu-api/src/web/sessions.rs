@@ -934,6 +934,8 @@ fn publish_session(
         origin_base_url,
     );
     state.agent_runs.mark_exported(run_id);
+    // A head the reviewer can review now (`web/review_wanted.rs`).
+    super::review_wanted::record_opened(state, &pr);
 
     Ok(PublishResponse {
         run_id: run_id.to_string(),

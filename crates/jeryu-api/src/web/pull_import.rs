@@ -381,7 +381,14 @@ fn import_pull(
                 },
             );
             match created {
-                Ok(pr) => (pr.number, ImportAction::Opened),
+                Ok(pr) => {
+                    // A head the reviewer can review now
+                    // (`web/review_wanted.rs`). A contribution is reviewed as
+                    // advice and never approved here; the reviewer applies
+                    // that rule, not the signal.
+                    super::review_wanted::record_opened(state, &pr);
+                    (pr.number, ImportAction::Opened)
+                }
                 Err(error) => {
                     return ImportOutcome::failed(
                         &repo,

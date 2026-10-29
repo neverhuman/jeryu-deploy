@@ -227,3 +227,47 @@ store is in memory and bounded: a forge that restarts hands out a smaller
 sequence, which a runner treats as a resync rather than a backlog of work. It
 needs no credential of its own; the runner reads it as the identity it already
 heartbeats and gates with.
+
+## Starting a review on the push
+
+The security/correctness reviewer (`ops/pr-redteam` in jeryu-ci-runner) learned
+about a head the same way the gate used to: from its own five-minute pass, with
+a thirty-second helper re-listing every open pull request to guess what was new.
+A review does not depend on the gate's result, so that latency was paid twice --
+once before the review started, and again before the computed result was
+published when the gate went green.
+
+`GET /api/v1/review-wanted?after=<seq>&wait=<secs>` is the reviewer's signal
+(`pr-redteam watch` reads it):
+
+```json
+{
+  "seq": 12,
+  "signals": [
+    {
+      "seq": 12,
+      "repo": "acme/widgets",
+      "number": 41,
+      "head_sha": "5b8e1d9c7a6f4e3b2d1c0a9f8e7d6c5b4a392817",
+      "base_ref": "main",
+      "draft": false,
+      "kind": "pull.synchronized",
+      "at": "2026-10-29T09:00:00Z"
+    }
+  ]
+}
+```
+
+One signal is recorded per pull request opened (`kind: "pull.opened"`, however
+it was opened: the GitHub-compatible edge, an agent session, a workcell export,
+a shift or a contribution import) and per open pull request whose head a push
+moved (`"pull.synchronized"`). `after` and `wait` work exactly as they do for
+`gate-wanted`, and a reader is handed signals only for repositories it may read
+while `seq` stays the forge's own.
+
+The signal is a hint, never an instruction: it says a head appeared, not that it
+may be reviewed, approved or landed. The reviewer still applies its own skip,
+budget and quality-gate rules, and an approval still requires the repository's
+required contexts to be green before anything merges. The reviewer's pass
+remains the fallback for a signal nobody read, which is why this store is in
+memory and bounded like `gate-wanted`'s.

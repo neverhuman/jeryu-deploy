@@ -63,6 +63,7 @@ mod repository_create;
 mod request_id;
 mod request_rules;
 mod review_catch;
+pub(crate) mod review_wanted;
 mod route_index;
 mod runner_epochs;
 mod scorecard;
@@ -214,6 +215,10 @@ pub(crate) struct WebState {
     /// starts its gate without waiting for the runner's next tick
     /// (`gate_wanted`).
     pub(crate) gate_wanted: gate_wanted::GateWantedStore,
+    /// Pull request heads that became reviewable, long-polled by the reviewer
+    /// so a push starts its review without waiting for the next pass
+    /// (`review_wanted`).
+    pub(crate) review_wanted: review_wanted::ReviewWantedStore,
     /// Kept answers to `POST` writes that carried an `Idempotency-Key`
     /// (`<data_dir>/shift.sqlite`, `idempotency_keys`), so a retry after a
     /// restart replays the first answer instead of writing twice.
@@ -448,6 +453,7 @@ impl WebState {
             regate_requests: regate::RegateStore::default(),
             release_actions: release_actions::ReleaseActionStore::default(),
             gate_wanted: gate_wanted::GateWantedStore::default(),
+            review_wanted: review_wanted::ReviewWantedStore::default(),
             idempotency: idempotency::IdempotencyStore::open(&shift_path)
                 .expect("open idempotency key store"),
             shift,
@@ -1411,6 +1417,9 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         // Heads that became gateable since the runner last asked, long-polled.
         ("/api/v1/gate-wanted", get(gate_wanted::list)),
+        // Pull request heads that became reviewable since the reviewer last
+        // asked, long-polled.
+        ("/api/v1/review-wanted", get(review_wanted::list)),
         (
             "/api/v1/repos/:id/jankurai-scores",
             get(repo_jankurai_scores_list).post(repo_jankurai_scores_ingest),

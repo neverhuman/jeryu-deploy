@@ -336,6 +336,9 @@ pub(crate) fn github_edge(
             let number = response["number"].as_u64().unwrap_or_default().to_string();
             if let Some(pr) = pull_request(owner, repo, &number) {
                 pull_opened(state, &pr, actor);
+                // A head the reviewer can review now
+                // (`web/review_wanted.rs`).
+                crate::web::review_wanted::record_opened(state, &pr);
             }
         }
         // The only write on this path is the `gh`-compatible `PATCH`; a draft
