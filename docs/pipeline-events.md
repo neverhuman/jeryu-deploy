@@ -968,10 +968,15 @@ model}`, agent and model of the landing attempt.
 
 `headline` carries lead time, exception rate and bad-change rate over the same
 window and the same todos the rest of the report covers (worked in the window,
-with a landing attempt). It reads events from two days before the window on.
+with a landing attempt). It reads events from two days before the window on. A
+todo's pull requests name the family's repository (`jeryu-web`) while the event
+log and the delivery receipts key by `owner/name` (`jeryu/jeryu-web`), so the
+join is made through the family's own repository list; a pull request whose
+owner cannot be found is left unmeasured rather than joined to a guess.
 Implementation:
-`crates/jeryu-api/src/web/headline.rs`. The API carries it; the Flow and Yield
-pages do not render it yet.
+`crates/jeryu-api/src/web/headline.rs`. The Flow and Yield pages lead with it;
+a page that reads a block it cannot make sense of says so rather than showing
+zeros.
 
 ```jsonc
 "headline": {

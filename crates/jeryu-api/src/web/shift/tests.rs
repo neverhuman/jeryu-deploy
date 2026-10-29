@@ -2388,6 +2388,29 @@ async fn a_scoped_bot_token_files_todos_and_nothing_broader() {
     assert_eq!(over.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// A todo's `prs` name the family's repository (`jeryu-deploy`); the event
+/// log, the delivery receipts and the forge key by `owner/name`. A report that
+/// joins the two reads the translation from here, and a repository no owner
+/// can be found for is left out rather than joined under a guessed owner.
+#[test]
+fn repo_slugs_translate_a_family_repo_name_into_the_owner_name_events_use() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let state = WebState::new_with_git_storage(ForgeCore::new(), dir.path().to_path_buf());
+
+    let slugs = super::repo_slugs(&state, None);
+    assert_eq!(
+        slugs
+            .get(&("jeryu".to_string(), "jeryu-deploy".to_string()))
+            .map(String::as_str),
+        Some("jeryu/jeryu-deploy"),
+    );
+    // jeryu-web is in family.toml but this fixture hosts no such repository:
+    // no owner answers for it, so it is absent rather than guessed.
+    assert!(!slugs.contains_key(&("jeryu".to_string(), "jeryu-web".to_string())));
+    assert!(super::repo_slugs(&state, Some("initech")).is_empty());
+}
+
 /// A repo name hosted twice (the jain repos are `veox/*`; read-only copies
 /// were archived under `jeryu/`) is decided by the forge's archive flag: the one
 /// live repository answers. Two live ones are still ambiguous, and the queue's

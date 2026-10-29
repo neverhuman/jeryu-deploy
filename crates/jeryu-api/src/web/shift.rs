@@ -324,6 +324,40 @@ pub(crate) fn all_todos(state: &WebState) -> (Vec<ShiftTodo>, Vec<String>) {
     (todos, problems)
 }
 
+/// `{(canonical family, family repo name): "owner/name"}` for every repository
+/// the hosted family queues name. The family is canonical because that is what
+/// a `ShiftTodo` carries (`todo_file::to_api`), so a caller joining a todo to
+/// its repositories keys by the same spelling.
+///
+/// A todo's `prs` name the family's repository (`jeryu-web`), while the
+/// pipeline event log, the delivery receipts and the forge all key by
+/// `owner/name` (`jeryu/jeryu-web`). A report that joins a todo's pull request
+/// to either has to translate, and only the forge's own records say which
+/// owner hosts a family repo (`truth::hosted_owner`). A repository no owner
+/// can be found for is left out: an unanswerable join must read as unmeasured,
+/// never as another repository's.
+pub(crate) fn repo_slugs(
+    state: &WebState,
+    family: Option<&str>,
+) -> std::collections::BTreeMap<(String, String), String> {
+    let mut slugs = std::collections::BTreeMap::new();
+    for queue in discover(&state.repo_manager) {
+        if family.is_some_and(|family| family != queue.family.name) {
+            continue;
+        }
+        let key = super::family::canonical(&queue.family.name);
+        for repo in &queue.family.repos {
+            if let Some(owner) = truth::hosted_owner(state, &queue, &repo.name) {
+                slugs.insert(
+                    (key.clone(), repo.name.clone()),
+                    format!("{owner}/{}", repo.name),
+                );
+            }
+        }
+    }
+    slugs
+}
+
 /// Every todo of one family (canonical key) or of every hosted family, with
 /// the merged, released and pull-request truth `GET /api/v1/shift/todos`
 /// derives, so a report over todos counts the same work as merged. A queue

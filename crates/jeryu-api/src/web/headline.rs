@@ -1,5 +1,5 @@
 //! The three numbers that say how the factory is doing, carried by
-//! `GET /api/v1/yield` (the Flow and Yield pages do not render it yet):
+//! `GET /api/v1/yield`, which the Flow and Yield pages lead with:
 //!
 //! * **lead time** -- how long a todo takes, filed to production and claim to
 //!   main. Production time is the todo's pull request's first successful
@@ -13,8 +13,11 @@
 //! * **bad-change rate** -- the share of merged changes that turned a
 //!   repository red: a non-flaky red stretch of main whose culprit is a merged
 //!   pull request (`pipeline::main_health`), or a production deployment of a
-//!   pull request that failed. One pull request counts once however many ways
-//!   it went red.
+//!   pull request that failed. Main and the green ref are one signal here: the
+//!   forge moves `refs/green/<main>` only on a green `main-health` status
+//!   (`crate::green_ref`), the same verdict a red stretch is read from, so a
+//!   change that turns main red is the change that stops the green ref.
+//!   One pull request counts once however many ways it went red.
 //!
 //! Everything is a pure function of the todos and the events handed in, so the
 //! rules are testable without a forge. A number with too few samples is
@@ -227,6 +230,12 @@ fn red_culprits(
 /// The three numbers for `todos` (already cut to the window and the family) and
 /// `events`.
 ///
+/// `repo_slug` answers, for a todo's family and one of its pull requests'
+/// repositories, the `owner/name` the event log and the receipts key by: a
+/// todo's `prs` name the family's repository, and joining them by that name
+/// matched nothing (`shift::repo_slugs`). A pull request whose repository it
+/// cannot place is left unmeasured rather than joined to a guess.
+///
 /// `released_at` answers, for one of a todo's pull requests, when production
 /// first ran it; the handler reads the delivery receipts for that, which
 /// outlive the raw events.
@@ -235,6 +244,7 @@ pub(crate) fn report(
     events: &[Event],
     window: (DateTime<Utc>, DateTime<Utc>),
     now: DateTime<Utc>,
+    repo_slug: &dyn Fn(&str, &str) -> Option<String>,
     released_at: &dyn Fn(&str, u64) -> Option<String>,
 ) -> Headline {
     let merges = merged_at(events);
@@ -256,7 +266,10 @@ pub(crate) fn report(
         let on_main = todo
             .prs
             .iter()
-            .filter_map(|pr| merges.get(&(pr.repo.clone(), i64::try_from(pr.number).ok()?)))
+            .filter_map(|pr| {
+                let slug = repo_slug(&todo.family, &pr.repo)?;
+                merges.get(&(slug, i64::try_from(pr.number).ok()?))
+            })
             .max()
             .copied();
         let first_claim = todo
@@ -271,7 +284,10 @@ pub(crate) fn report(
             let shipped = todo
                 .prs
                 .iter()
-                .map(|pr| released_at(&pr.repo, pr.number).and_then(|ts| at(&ts)))
+                .map(|pr| {
+                    let slug = repo_slug(&todo.family, &pr.repo)?;
+                    released_at(&slug, pr.number).and_then(|ts| at(&ts))
+                })
                 .try_fold(None, |newest: Option<DateTime<Utc>>, ts| {
                     // One repository with no deployment time leaves the todo
                     // unmeasured rather than dating it from the others.

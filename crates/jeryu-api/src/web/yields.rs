@@ -164,19 +164,27 @@ fn read_headline_events(
     Ok(out)
 }
 
-/// `{(repo, pr): when production first ran it}` for every pull request of the
-/// report's todos, read in one query. The delivery receipts outlive the raw
-/// events, so an older todo keeps the day it actually shipped.
+/// `{("owner/name", pr): when production first ran it}` for every pull request
+/// of the report's todos, read in one query. The delivery receipts outlive the
+/// raw events, so an older todo keeps the day it actually shipped.
+///
+/// A todo names the family's repository, the receipts `owner/name`: `slugs`
+/// translates (see `shift::repo_slugs`), and a pull request whose repository
+/// it cannot place is left out rather than asked for under the wrong key.
 fn deployment_times(
     state: &WebState,
     window: Window,
     todos: &[crate::web::shift::ShiftTodo],
+    slugs: &BTreeMap<(String, String), String>,
 ) -> Result<BTreeMap<(String, u64), String>, String> {
     let wanted: BTreeSet<(String, i64)> = todos
         .iter()
         .filter(|todo| in_report(window, todo))
-        .flat_map(|todo| &todo.prs)
-        .filter_map(|pr| Some((pr.repo.clone(), i64::try_from(pr.number).ok()?)))
+        .flat_map(|todo| todo.prs.iter().map(move |pr| (&todo.family, pr)))
+        .filter_map(|(family, pr)| {
+            let slug = slugs.get(&(family.clone(), pr.repo.clone()))?;
+            Some((slug.clone(), i64::try_from(pr.number).ok()?))
+        })
         .collect();
     if wanted.is_empty() {
         return Ok(BTreeMap::new());
@@ -246,14 +254,23 @@ pub(crate) async fn yield_report(
             read_family.as_deref(),
             window_ms(window).0 - HEADLINE_LOOKBACK_MS,
         )?;
-        let shipped = deployment_times(&worker_state, window, &todos)?;
-        Ok::<_, String>((todos, reviews, sessions, events, headline_events, shipped))
+        let slugs = super::shift::repo_slugs(&worker_state, read_family.as_deref());
+        let shipped = deployment_times(&worker_state, window, &todos, &slugs)?;
+        Ok::<_, String>((
+            todos,
+            reviews,
+            sessions,
+            events,
+            headline_events,
+            shipped,
+            slugs,
+        ))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((todos, reviews, sessions, events, headline_events, shipped)) => {
+        Ok((todos, reviews, sessions, events, headline_events, shipped, slugs)) => {
             let request = Request {
                 window,
                 family,
@@ -276,6 +293,9 @@ pub(crate) async fn yield_report(
                     &headline_events,
                     (since, until),
                     now,
+                    &|family: &str, repo: &str| {
+                        slugs.get(&(family.to_string(), repo.to_string())).cloned()
+                    },
                     &|repo: &str, pr: u64| shipped.get(&(repo.to_string(), pr)).cloned(),
                 );
             }

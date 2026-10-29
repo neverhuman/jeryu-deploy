@@ -61,8 +61,10 @@ fn shipped(id: &str, pr: u64, filed: i64, claimed: i64, released: Option<bool>) 
     let mut todo = todo(id, TodoStatus::Done, filed, vec![attempt("done", claimed)]);
     todo.merged = true;
     todo.released = released;
+    // A todo names the family's repository, never `owner/name`: the report has
+    // to translate, as it does in production.
     todo.prs = vec![TodoPr {
-        repo: "acme/widget".to_string(),
+        repo: "widget".to_string(),
         number: pr,
         state: "merged".to_string(),
         url: String::new(),
@@ -111,14 +113,30 @@ fn status(seq: i64, hour: i64, sha: &str, outcome: &str) -> Event {
     event
 }
 
+/// The invented family `acme` hosts `widget` and `gadget` under the owner
+/// `acme`: what `shift::repo_slugs` answers here. A repository it does not
+/// name is one no owner could be found for.
+fn slug(family: &str, repo: &str) -> Option<String> {
+    match (family, repo) {
+        ("acme", "widget") => Some("acme/widget".to_string()),
+        ("acme", "gadget") => Some("acme/gadget".to_string()),
+        _ => None,
+    }
+}
+
 fn run(todos: &[ShiftTodo], events: &[Event], deployed: &[(&str, u64, i64)]) -> Headline {
     let times: BTreeMap<(String, u64), String> = deployed
         .iter()
         .map(|(repo, pr, hour)| ((repo.to_string(), *pr), stamp(*hour)))
         .collect();
-    report(todos, events, window(), at(240), &|repo: &str, pr: u64| {
-        times.get(&(repo.to_string(), pr)).cloned()
-    })
+    report(
+        todos,
+        events,
+        window(),
+        at(240),
+        &slug,
+        &|repo: &str, pr: u64| times.get(&(repo.to_string(), pr)).cloned(),
+    )
 }
 
 #[test]
@@ -170,7 +188,7 @@ fn a_deployment_before_the_todo_was_filed_is_not_a_negative_lead_time() {
 fn a_multi_repo_todo_ships_when_its_last_repository_does() {
     let mut todo = shipped("t0", 70, 0, 2, Some(true));
     todo.prs.push(TodoPr {
-        repo: "acme/gadget".to_string(),
+        repo: "gadget".to_string(),
         number: 9,
         state: "merged".to_string(),
         url: String::new(),
