@@ -205,7 +205,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         );
         assert_eq!(
             source.get("tag").and_then(toml::Value::as_str),
-            Some("jeryu-ci-runner-v5.0.0-split.6")
+            Some("jeryu-ci-runner-v5.0.0-split.7")
         );
         assert!(
             source.get("path").is_none(),
@@ -268,7 +268,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
     );
     assert_eq!(
         rustjet_source.get("tag").and_then(toml::Value::as_str),
-        Some("jeryu-intelligence-v5.0.0-split.9")
+        Some("jeryu-intelligence-v5.0.0-split.10")
     );
     assert!(
         rustjet_source.get("path").is_none(),
@@ -315,14 +315,14 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
             ][..],
         ),
         (
-            "jeryu-intelligence-v5.0.0-split.9",
+            "jeryu-intelligence-v5.0.0-split.10",
             &["jeryu-codegraph", "jeryu-mcp"][..],
         ),
         (
-            "jeryu-release-ops-v5.0.0-split.9",
+            "jeryu-release-ops-v5.0.0-split.10",
             &["jeryu-bench", "jeryu-obs", "jeryu-wsversion"][..],
         ),
-        ("jeryu-jira-v5.0.0-split.3", &["jeryu-jira"][..]),
+        ("jeryu-jira-v5.0.0-split.5", &["jeryu-jira"][..]),
     ];
     let expected_count: usize = expected_groups
         .iter()
@@ -421,7 +421,7 @@ fn release_dependencies_are_immutable_git_sources_without_sibling_paths() {
         } else if name == "jeryu-rustjet" {
             assert_eq!(
                 source,
-                "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.9#c23f14772fe8d2b884a8de76fae01a5bfaa66cfa"
+                "git+https://github.com/neverhuman/jeryu-intelligence.git?tag=jeryu-intelligence-v5.0.0-split.10#749d5bae4d93b6d02daa309042b52244f221ac89"
             );
         }
     }
