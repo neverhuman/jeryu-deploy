@@ -62,6 +62,29 @@ at most 1 MiB and 500 builds; batches may accumulate history. The report is:
 }
 ```
 
+For OCI registries, `scripts/release-board/collect-oci-builds.sh` reads all tags
+of one configured repository, groups tags by immutable manifest digest, reads
+creation time and source commit from image config, and writes a normalized
+report. This read-only import covers registry candidates that were never
+deployed. It does not reconstruct distinct attempts that produced identical
+content, or builds whose artifacts have already been removed. To keep those,
+report build receipts when each build finishes. A retained acknowledgement is
+never removed when a registry tag disappears.
+
+```bash
+bash scripts/release-board/collect-oci-builds.sh \
+  http://127.0.0.1:5000 acme/app acme/app image.example/acme/app \
+  /path/to/builds.json
+```
+
+An optional sixth argument supplies the complete observed placements array;
+without it, no running environment or production boundary is inferred. A seventh
+argument may name an existing read-only curl credential config (never printed).
+The reader has per-request size/time limits and a two-minute loop budget; an
+unreadable source or missing provenance refuses the replacement report. Its
+raw metadata evidence and output use owner-only permissions. The networkless
+`test-oci-builds.sh` covers shared tags and incomplete-source refusal.
+
 A family adapter may call `build_inventory /path/to/report.json`; the existing
 collector pushes it alongside the board. Keep the report outside the source
 checkout and read build receipts, image manifests and running target identities
