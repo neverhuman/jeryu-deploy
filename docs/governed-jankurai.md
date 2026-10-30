@@ -6,7 +6,7 @@ review and required checks in the Jeryu forge. The release repository named by
 the manifest is an artifact distribution location; it does not approve its own
 identity or replace protected Jeryu source and review authority.
 
-The current schema-1 pin is `jankurai 1.7.5` (`v1.7.5`), matching the
+The current schema-1 pin is `jankurai 1.7.6` (`v1.7.6`), matching the
 rendered forge constants and sandbox recipe. This describes the protected
 manifest; it is not an independent pin.
 
@@ -57,7 +57,7 @@ the image build. A source test is not an image-build or real-guest receipt.
 
 [ADR 0012](adr/0012-authenticate-auditor-anchor-rotation-and-bootstrap.md)
 supersedes ADR 0011's single-anchor rotation example. Its schema-2 multi-anchor
-protocol remains proposed: this schema-1 1.7.5 pin does not implement durable
+protocol remains proposed: this schema-1 pin does not implement durable
 snapshot-bound jobs, multi-slot installation or manifest-only fleet activation.
 The record requires add, activate, retire through protected manifest changes,
 with each new anchor authenticated by an already trusted key and pinned cosign.
@@ -68,7 +68,7 @@ jobs; historical anchors and verification material remain available.
 
 The schema-2 bootstrap must demonstrate full/diff parity, the exact no-base
 full invocation, and host/image readiness. 1.7.4 is excluded by its diff
-regression; 1.7.5's current pin does not by itself prove that bootstrap ready.
+regression; The current pin does not by itself prove that bootstrap ready.
 Until that migration lands, use the existing rollout below.
 
 Change the tool manifest with `ops/pin-jankurai-release.sh` in `jeryu-tool`,
@@ -133,7 +133,7 @@ The flow, per head:
    diff against* — never as a pass and no longer hidden inside a generic
    `tool-failed`.
    The one report with nothing to audit that does pass is the exact
-   no-changes report Jankurai 1.7.5 writes when the head equals its base
+   no-changes report Jankurai writes when the head equals its base
    (`result: "no-changes"`, `score: 100`, and `changed_count`, `caps_applied`
    and `hard_findings` all `0`, no `decision`): it is scored 100 with the proof
    title *no changes to score*. `ops/ci/jankurai-gate.sh` renders it the same.
