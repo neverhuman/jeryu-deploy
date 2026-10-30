@@ -500,18 +500,18 @@ fn run_git_stdout(git_bin: &str, cwd: Option<&Path>, args: &[&str]) -> Option<St
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.7.5";
+const GOVERNED_JANKURAI_VERSION: &str = "jankurai 1.7.6";
 /// The pinned governed binary; tests take it from here instead of carrying a copy.
 pub(crate) const GOVERNED_JANKURAI_SHA256: &str =
-    "d2414884a3dbe1cc2d02b4240588869f6afac26ff0f167829e907b1617501121";
+    "63b445f21ca375ebd9515df49d0095aff6823b731121102651caf4e57cef1cf9";
 const GOVERNED_JANKURAI_SOURCE_REPO: &str = "https://github.com/neverhuman/jankurai-audit";
-const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.7.5";
-const GOVERNED_JANKURAI_SOURCE_REV: &str = "bb5a1ccaeda629ab2c36d99d20f9b89855ab6fcb";
-const GOVERNED_JANKURAI_SOURCE_TREE: &str = "9cd7195f548500505e7c7aa8b8260836448046ae";
+const GOVERNED_JANKURAI_SOURCE_TAG: &str = "v1.7.6";
+const GOVERNED_JANKURAI_SOURCE_REV: &str = "f5f704029a9a1d0660239ac0b8a10ed6de4f8c0a";
+const GOVERNED_JANKURAI_SOURCE_TREE: &str = "07a2af92376fb3e834af8253f86a047616e295c5";
 const GOVERNED_JANKURAI_SOURCE_ARCHIVE_SHA256: &str =
-    "792c16465c274a266f64541152eb5c796fdf22113120133789d28bf99bcf915c";
+    "03def9b8b63e3b36234c4528a4a4ef5e619ad9eac152f1ffb5fa29d16341c017";
 const GOVERNED_JANKURAI_CARGO_LOCK_SHA256: &str =
-    "861176e141b043a70741ac8872ede9a2f2ca0b59c9f4ad24833f864076f47885";
+    "00e944fc6bc1229d43ee0017b9cd07160d2bbabe792a7237059366312db78d5c";
 const GOVERNED_JANKURAI_RUSTC_VERSION: &str = "rustc 1.97.1 (8bab26f4f 2026-07-14)";
 const GOVERNED_JANKURAI_CARGO_VERSION: &str = "cargo 1.97.1 (c980f4866 2026-06-30)";
 const GOVERNED_JANKURAI_TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
@@ -519,10 +519,10 @@ const GOVERNED_JANKURAI_BUILD_MODE: &str = "public-release-key-signed-v1";
 const GOVERNED_JANKURAI_INSTALLATION_RECEIPT_JSON: &str =
     include_str!("../../../images/agent-sandbox/jankurai-installation-receipt.json");
 const GOVERNED_JANKURAI_MANIFEST_REPO: &str = "https://git.neverhuman.org/git/jeryu/jeryu-tool.git";
-const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "bac2c82da63a4fecbb90a5be21af60c1be7a4a3a";
-const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "5be09d77b7f968fb4aec989baede9c5605dcaa34";
+const GOVERNED_JANKURAI_MANIFEST_COMMIT: &str = "a57b4cf56904ab6f3046a1223d39f9d62208185c";
+const GOVERNED_JANKURAI_MANIFEST_TREE: &str = "29eaaec00cee883e25ddf95dbb01371b1d244f3d";
 const GOVERNED_JANKURAI_MANIFEST_SHA256: &str =
-    "ccf32db1d58a9f331dd1b4e1eecc5269780a1bd2cebb7e03e2e6cfee89e4543b";
+    "06f6c0e8d6fd9052b35a04d039c12602824fa2498154907b6e1d8781b32ba179";
 
 pub(crate) mod audit_queue;
 pub(crate) mod jankurai;

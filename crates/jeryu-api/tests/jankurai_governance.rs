@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const TAG: &str = "v1.7.5";
-const REV: &str = "bb5a1ccaeda629ab2c36d99d20f9b89855ab6fcb";
-const TREE: &str = "9cd7195f548500505e7c7aa8b8260836448046ae";
-const ARCHIVE_SHA256: &str = "792c16465c274a266f64541152eb5c796fdf22113120133789d28bf99bcf915c";
-const BINARY_SHA256: &str = "d2414884a3dbe1cc2d02b4240588869f6afac26ff0f167829e907b1617501121";
-const MANIFEST_COMMIT: &str = "bac2c82da63a4fecbb90a5be21af60c1be7a4a3a";
-const MANIFEST_TREE: &str = "5be09d77b7f968fb4aec989baede9c5605dcaa34";
-const MANIFEST_SHA256: &str = "ccf32db1d58a9f331dd1b4e1eecc5269780a1bd2cebb7e03e2e6cfee89e4543b";
+const TAG: &str = "v1.7.6";
+const REV: &str = "f5f704029a9a1d0660239ac0b8a10ed6de4f8c0a";
+const TREE: &str = "07a2af92376fb3e834af8253f86a047616e295c5";
+const ARCHIVE_SHA256: &str = "03def9b8b63e3b36234c4528a4a4ef5e619ad9eac152f1ffb5fa29d16341c017";
+const BINARY_SHA256: &str = "63b445f21ca375ebd9515df49d0095aff6823b731121102651caf4e57cef1cf9";
+const MANIFEST_COMMIT: &str = "a57b4cf56904ab6f3046a1223d39f9d62208185c";
+const MANIFEST_TREE: &str = "29eaaec00cee883e25ddf95dbb01371b1d244f3d";
+const MANIFEST_SHA256: &str = "06f6c0e8d6fd9052b35a04d039c12602824fa2498154907b6e1d8781b32ba179";
 const IMAGE_RECEIPT_SHA256: &str =
-    "cdfb59320d2ff9e1cfa731d25de4b6bee44fe94854eb217e415159df1826b461";
+    "fb4f3e9ab755a38280233805b8d9e387f4b0d9ea322253b32ed6cf8d8299068f";
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -121,6 +121,11 @@ fn proptest_equivalent_generated_jankurai_consumers_share_one_closed_identity() 
         "d3c63d138583404a57dc3177f0972952b1b399c7",
         "66849f13399e5a8b5d461c48a27322fe3b29a83e86cc5ce41d8c5d89e5d045ea",
         "9aa101c10cdc40c8a15e3f5c1341be3bce78e86f61754d849bbe8229e485a783",
+        "v1.7.5",
+        "bb5a1ccaeda629ab2c36d99d20f9b89855ab6fcb",
+        "9cd7195f548500505e7c7aa8b8260836448046ae",
+        "792c16465c274a266f64541152eb5c796fdf22113120133789d28bf99bcf915c",
+        "d2414884a3dbe1cc2d02b4240588869f6afac26ff0f167829e907b1617501121",
     ];
 
     for relative in active_projection {

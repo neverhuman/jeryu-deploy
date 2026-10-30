@@ -17,16 +17,16 @@ set -euo pipefail
 
 # BEGIN GENERATED JANKURAI PIN — DO NOT EDIT
 export JERYU_JANKURAI_SOURCE_REPO="https://github.com/neverhuman/jankurai-audit"
-export JERYU_JANKURAI_VERSION="jankurai 1.7.5"
-export JERYU_JANKURAI_SHA256="d2414884a3dbe1cc2d02b4240588869f6afac26ff0f167829e907b1617501121"
-export JERYU_JANKURAI_SOURCE_TAG="v1.7.5"
-export JERYU_JANKURAI_SOURCE_REV="bb5a1ccaeda629ab2c36d99d20f9b89855ab6fcb"
-export JERYU_JANKURAI_SOURCE_TREE="9cd7195f548500505e7c7aa8b8260836448046ae"
-export JERYU_JANKURAI_RELEASE_ASSET="jankurai-1.7.5-x86_64-unknown-linux-gnu.tar.gz"
-export JERYU_JANKURAI_RELEASE_ASSET_SHA256="792c16465c274a266f64541152eb5c796fdf22113120133789d28bf99bcf915c"
-export JERYU_JANKURAI_PROVENANCE_SHA256="4da1f261f3ec0fa8a3dff3b920fbba29267ca7721a8c34baf5f7ad63a03fb8c8"
-export JERYU_JANKURAI_FAMILY_LOCK_SHA256="076b4b7c03c1685589c3b860439eefe6bc70b7b7419b77052d87b74fc0e845f4"
-export JERYU_JANKURAI_CARGO_LOCK_SHA256="861176e141b043a70741ac8872ede9a2f2ca0b59c9f4ad24833f864076f47885"
+export JERYU_JANKURAI_VERSION="jankurai 1.7.6"
+export JERYU_JANKURAI_SHA256="63b445f21ca375ebd9515df49d0095aff6823b731121102651caf4e57cef1cf9"
+export JERYU_JANKURAI_SOURCE_TAG="v1.7.6"
+export JERYU_JANKURAI_SOURCE_REV="f5f704029a9a1d0660239ac0b8a10ed6de4f8c0a"
+export JERYU_JANKURAI_SOURCE_TREE="07a2af92376fb3e834af8253f86a047616e295c5"
+export JERYU_JANKURAI_RELEASE_ASSET="jankurai-1.7.6-x86_64-unknown-linux-gnu.tar.gz"
+export JERYU_JANKURAI_RELEASE_ASSET_SHA256="03def9b8b63e3b36234c4528a4a4ef5e619ad9eac152f1ffb5fa29d16341c017"
+export JERYU_JANKURAI_PROVENANCE_SHA256="01f84c2abd74468b8489ce7f2646aa256ae851498eb7d86a3cf149a7262d07bb"
+export JERYU_JANKURAI_FAMILY_LOCK_SHA256="28fb9ced005f53748ea91c2e41135e30e86f352100aaebb763adda1b4c605e8e"
+export JERYU_JANKURAI_CARGO_LOCK_SHA256="00e944fc6bc1229d43ee0017b9cd07160d2bbabe792a7237059366312db78d5c"
 export JERYU_JANKURAI_RUSTC_VERSION="rustc 1.97.1 (8bab26f4f 2026-07-14)"
 export JERYU_JANKURAI_CARGO_VERSION="cargo 1.97.1 (c980f4866 2026-06-30)"
 export JERYU_JANKURAI_TARGET_TRIPLE="x86_64-unknown-linux-gnu"
@@ -174,12 +174,12 @@ expect_zero "tsc is present" tsc --version
 # lanes can never install it at session time). KEEP IN SYNC with ops/ci/lib.sh:
 # the version, digest, and installation receipt must bind the exact explicit
 # path. The same governed verifier used by score/CI must pass inside the image.
-expect_zero "jankurai is the pinned 1.7.5" \
-  sh -c '[ "$(/opt/rust/cargo/bin/jankurai --version)" = "jankurai 1.7.5" ]'
+expect_zero "jankurai is the pinned 1.7.6" \
+  sh -c '[ "$(/opt/rust/cargo/bin/jankurai --version)" = "jankurai 1.7.6" ]'
 expect_zero "jankurai is a single-link physical file" \
   sh -c '[ -f /opt/rust/cargo/bin/jankurai ] && [ ! -L /opt/rust/cargo/bin/jankurai ] && [ "$(realpath -e /opt/rust/cargo/bin/jankurai)" = /opt/rust/cargo/bin/jankurai ] && [ "$(stat -c %h /opt/rust/cargo/bin/jankurai)" = 1 ]'
 expect_zero "jankurai has the governed digest" \
-  sh -c '[ "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '\''{print $1}'\'')" = d2414884a3dbe1cc2d02b4240588869f6afac26ff0f167829e907b1617501121 ]'
+  sh -c '[ "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '\''{print $1}'\'')" = 63b445f21ca375ebd9515df49d0095aff6823b731121102651caf4e57cef1cf9 ]'
 expect_zero "jankurai resolves to the pinned path (no shadowing)" \
   sh -c '[ "$(command -v jankurai)" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \
@@ -187,7 +187,7 @@ expect_zero "JERYU_JANKURAI_BIN points at the pinned path" \
 expect_zero "JERYU_GOVERNED_JANKURAI_BIN points at the pinned path" \
   sh -c '[ "$JERYU_GOVERNED_JANKURAI_BIN" = "/opt/rust/cargo/bin/jankurai" ]'
 expect_zero "JERYU_JANKURAI_RECEIPT points at the baked content-addressed receipt" \
-  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/cdfb59320d2ff9e1cfa731d25de4b6bee44fe94854eb217e415159df1826b461.json" ]'
+  sh -c '[ "$JERYU_JANKURAI_RECEIPT" = "/opt/jeryu/receipts/jankurai/sha256/fb4f3e9ab755a38280233805b8d9e387f4b0d9ea322253b32ed6cf8d8299068f.json" ]'
 expect_zero "governed Jankurai verifier passes against the baked receipt" \
   bash /opt/jeryu/governance/ensure-jankurai.sh
 

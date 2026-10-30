@@ -156,7 +156,7 @@ regressing — each test asserts a discriminating signal, not a tautology):
   migration, vibe, or coverage artifacts; the immutable bundle and dedicated
   coverage lane own the applicable proofs. Its protected-base proof plan binds
   additions, modifications, renames, type changes, and deletions. Installed
-  Jankurai 1.7.5 proofbind receives only the exact extant subset because it
+  Jankurai 1.7.6 proofbind receives only the exact extant subset because it
   cannot classify deleted bytes; both generated path sets are checked against
   independently sorted Git inventories, and a delete-only proofbind scope
   fails closed.
@@ -260,7 +260,7 @@ that hosted result.
   Additional source-root retired-CI sweeps run only when
   `JERYU_CI_SOURCE_ROOTS` is set.
 - `ops/ci/ensure-jankurai.sh` is the single local/hosted bootstrap for pinned
-  governed Jankurai 1.7.5. It is a verifier, not an installer.
+  governed Jankurai 1.7.6. It is a verifier, not an installer.
 - `agent/ci-lanes.toml` is the committed CI lane manifest. `cargo run --locked
   -q -p jeryu-split-tool --bin jeryu-split -- ci-lanes-check` fails if a
   workflow adds hosted-only `run:` commands or stops calling the

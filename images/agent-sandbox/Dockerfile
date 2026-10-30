@@ -48,19 +48,19 @@ RUN cargo fetch --locked || cargo fetch || true
 # the release binary's glibc requirement is met by the runtime.
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS jankurai-build
 ARG JANKURAI_RELEASE_REPO="https://github.com/neverhuman/jankurai-audit"
-ARG JANKURAI_TAG="v1.7.5"
-ARG JANKURAI_VERSION="jankurai 1.7.5"
-ARG JANKURAI_SEMVER="1.7.5"
+ARG JANKURAI_TAG="v1.7.6"
+ARG JANKURAI_VERSION="jankurai 1.7.6"
+ARG JANKURAI_SEMVER="1.7.6"
 ARG JANKURAI_TARGET_TRIPLE="x86_64-unknown-linux-gnu"
-ARG JANKURAI_ASSET="jankurai-1.7.5-x86_64-unknown-linux-gnu.tar.gz"
-ARG JANKURAI_ASSET_SHA256="792c16465c274a266f64541152eb5c796fdf22113120133789d28bf99bcf915c"
-ARG JANKURAI_BINARY_SHA256="d2414884a3dbe1cc2d02b4240588869f6afac26ff0f167829e907b1617501121"
+ARG JANKURAI_ASSET="jankurai-1.7.6-x86_64-unknown-linux-gnu.tar.gz"
+ARG JANKURAI_ASSET_SHA256="03def9b8b63e3b36234c4528a4a4ef5e619ad9eac152f1ffb5fa29d16341c017"
+ARG JANKURAI_BINARY_SHA256="63b445f21ca375ebd9515df49d0095aff6823b731121102651caf4e57cef1cf9"
 ARG JANKURAI_PROVENANCE_ASSET="provenance-x86_64-unknown-linux-gnu.json"
-ARG JANKURAI_PROVENANCE_SHA256="4da1f261f3ec0fa8a3dff3b920fbba29267ca7721a8c34baf5f7ad63a03fb8c8"
-ARG JANKURAI_SOURCE_COMMIT="bb5a1ccaeda629ab2c36d99d20f9b89855ab6fcb"
-ARG JANKURAI_SOURCE_TREE="9cd7195f548500505e7c7aa8b8260836448046ae"
-ARG JANKURAI_FAMILY_LOCK_SHA256="076b4b7c03c1685589c3b860439eefe6bc70b7b7419b77052d87b74fc0e845f4"
-ARG JANKURAI_CARGO_LOCK_SHA256="861176e141b043a70741ac8872ede9a2f2ca0b59c9f4ad24833f864076f47885"
+ARG JANKURAI_PROVENANCE_SHA256="01f84c2abd74468b8489ce7f2646aa256ae851498eb7d86a3cf149a7262d07bb"
+ARG JANKURAI_SOURCE_COMMIT="f5f704029a9a1d0660239ac0b8a10ed6de4f8c0a"
+ARG JANKURAI_SOURCE_TREE="07a2af92376fb3e834af8253f86a047616e295c5"
+ARG JANKURAI_FAMILY_LOCK_SHA256="28fb9ced005f53748ea91c2e41135e30e86f352100aaebb763adda1b4c605e8e"
+ARG JANKURAI_CARGO_LOCK_SHA256="00e944fc6bc1229d43ee0017b9cd07160d2bbabe792a7237059366312db78d5c"
 ARG JANKURAI_RUSTC_VERSION="rustc 1.97.1 (8bab26f4f 2026-07-14)"
 ARG JANKURAI_CARGO_VERSION="cargo 1.97.1 (c980f4866 2026-06-30)"
 ARG JANKURAI_RELEASE_SIGNER="jankurai-release-2026.pub"
@@ -150,15 +150,15 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # is `--network none`, so the auditor must ship in the image. It lands at the exact path
 # is given explicit API and shell-verifier paths, so no lane uses a bare PATH
 # lookup that a stale build could shadow.
-ARG JANKURAI_VERSION="jankurai 1.7.5"
-ARG JANKURAI_BINARY_SHA256="d2414884a3dbe1cc2d02b4240588869f6afac26ff0f167829e907b1617501121"
+ARG JANKURAI_VERSION="jankurai 1.7.6"
+ARG JANKURAI_BINARY_SHA256="63b445f21ca375ebd9515df49d0095aff6823b731121102651caf4e57cef1cf9"
 COPY --from=jankurai-build /opt/rust/cargo/bin/jankurai /opt/rust/cargo/bin/jankurai
 COPY images/agent-sandbox/jankurai-installation-receipt.json \
-  /opt/jeryu/receipts/jankurai/sha256/cdfb59320d2ff9e1cfa731d25de4b6bee44fe94854eb217e415159df1826b461.json
+  /opt/jeryu/receipts/jankurai/sha256/fb4f3e9ab755a38280233805b8d9e387f4b0d9ea322253b32ed6cf8d8299068f.json
 COPY ops/ci/ensure-jankurai.sh /opt/jeryu/governance/ensure-jankurai.sh
 ENV JERYU_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
     JERYU_GOVERNED_JANKURAI_BIN=/opt/rust/cargo/bin/jankurai \
-    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/cdfb59320d2ff9e1cfa731d25de4b6bee44fe94854eb217e415159df1826b461.json
+    JERYU_JANKURAI_RECEIPT=/opt/jeryu/receipts/jankurai/sha256/fb4f3e9ab755a38280233805b8d9e387f4b0d9ea322253b32ed6cf8d8299068f.json
 RUN test ! -L /opt/rust/cargo/bin/jankurai \
     && test "$(stat -c '%h' /opt/rust/cargo/bin/jankurai)" = "1" \
     && test "$(sha256sum /opt/rust/cargo/bin/jankurai | awk '{print $1}')" = "${JANKURAI_BINARY_SHA256}" \
