@@ -18,6 +18,7 @@ units="$HOME/.config/systemd/user"
 mkdir -p "$dest" "$units" "$config/release-board/families"
 chmod 700 "$config/release-board"
 install -m 755 "$here/collect.sh" "$dest/collect.sh"
+install -m 755 "$here/collect-oci-builds.sh" "$dest/collect-oci-builds.sh"
 install -m 644 "$here/lib.sh" "$dest/lib.sh"
 git -C "$here" rev-parse --short=12 HEAD >"$dest/VERSION" 2>/dev/null || true
 if [ ! -e "$config/release-board.env" ]; then

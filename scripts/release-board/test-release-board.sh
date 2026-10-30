@@ -246,4 +246,12 @@ tail -n 3 "$here/examples/acme.sh" | grep -q '^  return 0$' || fail "examples/ac
 bash -n "$here/examples/acme.sh" || fail "examples/acme.sh does not parse"
 [ ! -d "$here/families" ] || fail "scripts/release-board/families/ is back: site adapters belong in host config"
 ok "the example adapter parses, and no site adapter lives in the repository"
+# A read-only collector run retains attached candidate evidence too.
+sed -i '/collect_demo() {/a\  if [ -n "${DEMO_BUILD_REPORT:-}" ]; then build_inventory "$DEMO_BUILD_REPORT"; fi' "$T/families/demo.sh"
+printf '%s\n' '{"observed_at":"2026-10-30T12:00:00Z","builds":[]}' >"$T/candidates.json"
+DEMO_BUILD_REPORT="$T/candidates.json" bash "$T/rb/collect.sh" --out "$T/inventory-out" demo 2>"$T/inventory.log" \
+  || fail "collector with inventory failed"
+cmp "$T/candidates.json" "$T/inventory-out/demo.builds.json" || fail "candidate evidence was not retained"
+ok "a read-only run retains its attached candidate report without publishing it"
+
 echo "1..$pass"

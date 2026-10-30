@@ -110,10 +110,14 @@ for family in "${families[@]}"; do
     + (if $notes != null then {notes: $notes} else {} end)' >"$board.tmp" && mv "$board.tmp" "$board" \
     || { say "$family: could not assemble the board"; status=1; continue; }
   say "$family: $(jq -r '[(.lanes | length), ([.lanes[].stages[]] | length), (.problems | length)] | "\(.[0]) lanes, \(.[1]) stages, \(.[2]) problems"' "$board") → $board"
+  if [ -s "$inventory_file" ]; then
+    if ! cp -- "$inventory_file" "$out/$family.builds.json"; then
+      say "$family: could not retain build inventory"; status=1; continue
+    fi
+  fi
   if [ "$push" = 1 ]; then
     if [ -z "$forge_cfg" ]; then say "$family: not pushed (no token)"; status=1; continue; fi
     if [ -s "$inventory_file" ]; then
-      cp -- "$inventory_file" "$out/$family.builds.json"
       if ! curl --silent --show-error --fail --max-time 20 --config "$forge_cfg" -X PUT \
           -H 'Content-Type: application/json' --data-binary @"$inventory_file" \
           "$base/api/v1/build-inventory/$family" >"$work/$family.builds-answer.json"; then
