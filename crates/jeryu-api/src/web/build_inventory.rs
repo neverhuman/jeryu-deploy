@@ -252,7 +252,7 @@ pub(crate) async fn put(
     }
     match state.events.with_conn(|conn| record(conn, &family, &report)) {
         Ok(()) => Json(json!({"family": family, "observed_at": report.observed_at, "accepted": report.builds.len()})).into_response(),
-        Err(message) if message.starts_with("Build ") || message.starts_with("Placement ") => api_error(StatusCode::CONFLICT, "invalid_input", &message),
+        Err(message) if message.starts_with("Build ") || message.starts_with("Placement ") => api_error(StatusCode::CONFLICT, "conflict", &message),
         Err(_) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "storage_failed", "Build inventory could not be saved"),
     }
 }
