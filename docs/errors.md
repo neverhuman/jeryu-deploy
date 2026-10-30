@@ -120,6 +120,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `flow_history_failed` | 500 | the flow activity history could not be read |
 | `flow_layout_read_failed` | 500 | the heartbeat store behind the flow layout report could not be read |
 | `flow_read_failed` | 500 | the flow ledger behind the Flow report could not be read |
+| `external_task_read_only` | 409 | external task cards are managed outside the forge |
 | `forbidden` | 403 | the account may not perform this request |
 | `forge_branch_protection` | 405 | branch protection blocks this operation |
 | `forge_conflict` | 409 | the forge state conflicts with this operation |

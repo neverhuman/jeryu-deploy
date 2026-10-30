@@ -266,6 +266,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         500,
         "the flow ledger behind the Flow report could not be read",
     ),
+    entry(
+        "external_task_read_only",
+        409,
+        "external task cards are managed outside the forge",
+    ),
     entry("forbidden", 403, "the account may not perform this request"),
     entry(
         "forge_branch_protection",
