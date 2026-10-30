@@ -42,6 +42,46 @@ callers may enter through `ops/ci/security.sh`, but that file delegates without
 reimplementing checks; the comprehensive and pull-request gates enable network
 dependency audits explicitly.
 
+## External task-card queues
+
+A hosted `<family>-todo` repository can set `task_cards = true` under
+`[family]` in `family.toml` on its `queue` branch. The queue reader then reads
+both native `todos/*.md` and existing Markdown `tasks/*.md`. Other families
+retain their native TODO behavior. Cards take precedence over native records
+with the same stable `<family>-<lowercase-task-id>` ID during migration.
+
+Card filenames carry IDs such as `T001-API-01-contract.md` or
+`API-01-F01-integration.md`. The original card body is displayed unchanged;
+Markdown table fields supply dependencies, status and external assignment.
+The optional existing `index.json` supplies title, priority and dependency
+metadata for cards whose layouts differ. Missing or ambiguous cards,
+duplicate IDs, invalid metadata, unresolved dependencies, oversized inputs
+and symlinks are reported as queue read failures rather than silently hidden.
+Reads use blobs at one immutable queue commit and never access live agent
+directories, follow symlinks, or run commands from a card.
+
+Primary receipts in `status/<ID>.md` supply review/blocker observations. A
+receipt saying merged is a reported handoff, not verified completion. Optional
+`tracking/observations.json` records dated external PR evidence: an entry with
+`status = "done"` and nonempty, all-merged PRs can mark delivery merged;
+partial delivery remains handoff. The date and links remain visible, and
+acceptance criteria and owner/qualification gates stay in the original card.
+The server never makes external network calls to infer PR state. Push source
+and observation updates to refresh what the forge reads. External PRs do not
+become native forge PR or release records.
+
+Task cards are externally maintained: TODO actions return
+`409 external_task_read_only` before making any commit. Comments remain in
+separate `comments/<todo-id>.jsonl` files. Registering this read surface does
+not configure workers, supervisors, schedules, or execution authority. Keep
+externally managed families outside worker configuration.
+
+Rerun the parser, Git-tree integration and HTTP immutability proofs with:
+
+```sh
+cargo test --locked --offline -p jeryu-api --features web --lib task_cards
+```
+
 ## Standalone Delivery Authority
 
 This split repository composes immutable sibling releases into the API and CLI

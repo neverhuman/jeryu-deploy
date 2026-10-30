@@ -22,6 +22,7 @@ mod landing;
 mod migration_sequence;
 pub(crate) mod queue;
 mod shifts;
+mod task_cards;
 pub(crate) mod todo_file;
 mod truth;
 mod types;
@@ -893,6 +894,7 @@ pub(crate) async fn todo_action(
     let message = format!("{} {id} by {}/web", request.action, account.login);
     enum Refused {
         NotFound,
+        ExternalCard,
         Invalid(String),
         /// A release of a todo a worker is still running, with no `force`.
         ClaimLive(String),
@@ -910,6 +912,9 @@ pub(crate) async fn todo_action(
                 .iter()
                 .find(|q| q.todo.id == id)
                 .ok_or(Refused::NotFound)?;
+            if found.path.starts_with("tasks/") {
+                return Err(Refused::ExternalCard);
+            }
             // A live lease means a worker is working on the todo right now.
             // Releasing it would open work that is already being done, so a
             // second worker claims it and two attempts run at once; only an
@@ -990,6 +995,12 @@ pub(crate) async fn todo_action(
             Json(todo.to_api(Utc::now())).into_response()
         }
         Err(WriteError::Rejected(Refused::NotFound)) => todo_not_found(&id, &family),
+        Err(WriteError::Rejected(Refused::ExternalCard)) => shift_error(
+            StatusCode::CONFLICT,
+            "external_task_read_only",
+            "this task card is maintained by its external execution agents",
+            "update its source card or receipt and push the queue; add context through comments",
+        ),
         Err(WriteError::Rejected(Refused::Invalid(reason))) => bad_request(&reason),
         Err(WriteError::Rejected(Refused::Forbidden(reason))) => shift_error(
             StatusCode::FORBIDDEN,

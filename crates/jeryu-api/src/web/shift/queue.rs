@@ -45,6 +45,7 @@ pub(crate) struct FamilyConfig {
     pub bulletshift_prefix: String,
     pub nightshift_prefix: String,
     pub repos: Vec<FamilyRepo>,
+    pub task_cards: bool,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +64,8 @@ struct FamilySection {
     shift_tz: Option<String>,
     bulletshift_prefix: Option<String>,
     nightshift_prefix: Option<String>,
+    #[serde(default)]
+    task_cards: bool,
 }
 
 pub(crate) fn parse_family_toml(text: &str, fallback_name: &str) -> Result<FamilyConfig, String> {
@@ -72,6 +75,7 @@ pub(crate) fn parse_family_toml(text: &str, fallback_name: &str) -> Result<Famil
     let mut repos = parsed.repo;
     repos.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.name.cmp(&b.name)));
     Ok(FamilyConfig {
+        task_cards: section.task_cards,
         // The queue's own key, canonical: a family.toml that spells the
         // family `<x>-split` names the same family as `<x>`.
         name: crate::web::family::canonical(
@@ -219,6 +223,30 @@ pub(crate) fn read_todos(
     dir: &Path,
     commit: &str,
 ) -> Result<Vec<QueuedTodo>, String> {
+    let mut todos = read_native_todos(git_bin, dir, commit)?;
+    let config = show_file(git_bin, dir, commit, "family.toml")
+        .map(|text| parse_family_toml(&text, ""))
+        .transpose()?;
+    if let Some(config) = config.filter(|config| config.task_cards) {
+        let cards = super::task_cards::read(git_bin, dir, commit, &config)?;
+        let ids: std::collections::HashSet<_> =
+            cards.iter().map(|card| card.todo.id.clone()).collect();
+        // Cards are authoritative during migration; native records for other IDs stay native.
+        todos.retain(|native| {
+            let original = native.todo.extra.iter().find_map(|(key, value)| {
+                (key == "external_task").then(|| value.as_str()).flatten()
+            });
+            let matching_original = original.is_some_and(|id| {
+                ids.contains(&format!("{}-{}", config.name, id.to_ascii_lowercase()))
+            });
+            !ids.contains(&native.todo.id) && !matching_original
+        });
+        todos.extend(cards);
+    }
+    Ok(todos)
+}
+
+fn read_native_todos(git_bin: &str, dir: &Path, commit: &str) -> Result<Vec<QueuedTodo>, String> {
     let listing = git(
         git_bin,
         dir,

@@ -294,6 +294,16 @@
       "command": "cargo test --locked -p jeryu-api --features web --lib",
       "lane": "check",
       "purpose": "verify authenticated web routing and all launch admission/control components"
+    },
+    "crates/jeryu-api/src/web/shift/task_cards.rs": {
+      "command": "cargo test --locked --offline -p jeryu-api --features web --lib task_cards",
+      "lane": "check",
+      "purpose": "prove opt-in immutable Markdown task-card reading, native deduplication, explicit parse failures and HTTP action refusal"
+    },
+    "crates/jeryu-api/src/web/shift/task_cards/": {
+      "command": "cargo test --locked --offline -p jeryu-api --features web --lib task_cards",
+      "lane": "check",
+      "purpose": "prove opt-in immutable Markdown task-card reading, native deduplication, explicit parse failures and HTTP action refusal"
     }
   },
   "workspace": "jeryu-deploy"
