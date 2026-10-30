@@ -14,6 +14,9 @@
 //! - the same key with a different method, path or body answers `422
 //!   idempotency_key_reused`.
 //!
+//! The gate-claim routes (`/api/v1/gate-claims`, `.../release`) are left
+//! out: see [`moves_a_lease`].
+//!
 //! Keys are scoped to the caller's credentials, so two callers never see each
 //! other's answers. Server errors (5xx) are not kept: the write may not have
 //! happened, and a retry should run it. Answers that are not a bounded,
@@ -348,9 +351,22 @@ pub(super) async fn replay(
 
 fn applies(method: &Method, path: &str) -> bool {
     *method == Method::POST
+        && !moves_a_lease(path)
         && ["/api/v1/", "/repos/", "/api/v3/repos/"]
             .iter()
             .any(|prefix| path.starts_with(prefix))
+}
+
+/// The gate-claim routes, whose answer is a lease and not a created thing.
+/// A replay would break them both ways: a renewal is deliberately the same
+/// request as the first ask, and a replayed answer would leave `expires_at`
+/// where it was while the runner believes it has another TTL; and a repeat
+/// after the head was released would answer `granted` from the cache while
+/// another host holds the lease. They are idempotent by their own rules --
+/// the holder's ask renews, a release repeated answers `absent` -- so a
+/// runner that lost an answer can simply ask again.
+fn moves_a_lease(path: &str) -> bool {
+    matches!(path, "/api/v1/gate-claims" | "/api/v1/gate-claims/release")
 }
 
 /// Bot enrollment, key rotation, agent-token issue, token exchange, token
@@ -500,6 +516,14 @@ mod tests {
             assert!(!returns_a_secret(path), "{path}");
             assert!(applies(&Method::POST, path), "{path}");
         }
+        // The gate-claim routes answer a lease, not a created thing: a
+        // renewal has to reach the store, and a replayed grant would hand one
+        // gated head to two hosts.
+        for path in ["/api/v1/gate-claims", "/api/v1/gate-claims/release"] {
+            assert!(moves_a_lease(path), "{path}");
+            assert!(!applies(&Method::POST, path), "{path}");
+        }
+        assert!(applies(&Method::POST, "/api/v1/gate-wanted"));
     }
     use axum::Router;
     use axum::middleware::from_fn_with_state;

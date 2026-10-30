@@ -146,6 +146,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
     ),
     entry("ci_run_id_required", 422, "a CI run id is required"),
     entry(
+        "claim_capacity",
+        503,
+        "the forge holds as many gate claims as it keeps; no live lease is dropped to make room",
+    ),
+    entry(
         "claim_held",
         409,
         "another gate runner holds the claim on this head",
@@ -304,6 +309,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "host_launch_denied",
         403,
         "managed agent or terminal execution on the host is denied",
+    ),
+    entry(
+        "host_mismatch",
+        422,
+        "the gate claim names a host the runner does not beat from",
     ),
     entry(
         "human_minutes_read_failed",

@@ -95,6 +95,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `blob_too_large` | 413 | the requested blob is too large to render |
 | `capability_missing` | 409 | no gate capability this repository requires is advertised by the asking host |
 | `ci_run_id_required` | 422 | a CI run id is required |
+| `claim_capacity` | 503 | the forge holds as many gate claims as it keeps; no live lease is dropped to make room |
 | `claim_held` | 409 | another gate runner holds the claim on this head |
 | `claim_live` | 409 | the todo's claim lease is still live, so a worker is running it |
 | `codegraph_index_failed` | 500 | the codegraph index could not be built |
@@ -131,6 +132,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `git_source_failed` | 500 | reading repository source from git failed |
 | `head_moved` | 409 | the pull request head moved since you looked at it |
 | `host_launch_denied` | 403 | managed agent or terminal execution on the host is denied |
+| `host_mismatch` | 422 | the gate claim names a host the runner does not beat from |
 | `human_minutes_read_failed` | 500 | the change outcome ledger behind the human minutes report could not be read |
 | `idempotency_conflict` | 409 | the Idempotency-Key was used with a different request |
 | `idempotency_key_in_flight` | 409 | a request with this Idempotency-Key is still running |

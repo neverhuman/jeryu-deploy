@@ -192,18 +192,23 @@ its share ungated until an operator moved those owners. The forge now holds the
 claim on each gated head, and every host gates every repository it reaches:
 
 - `POST /api/v1/gate-claims {repo, number, head_sha|queue_sha, runner_id,
-  host}` leases one head for `ttl_seconds`. A slot asks after admission and
-  before it posts `pending`; a second host asking is refused `409 claim_held`,
-  so one head gets one host's `<repo>/required`.
+  host}` leases one head for `ttl_seconds`, keyed on `(repo, head sha)` with
+  `number` as metadata. A slot asks after admission and before it posts
+  `pending`; a second host asking is refused `409 claim_held`, so one head
+  gets one host's `<repo>/required`.
 - The holder repeats the ask as a renewal while the gate runs, and
   `POST /api/v1/gate-claims/release` gives the head back on publication. A
   lease nobody renews expires, so a dead host's heads are claimed by a live
-  host within one TTL.
+  host within one TTL. Only the holder may release, an expired lease included.
 - A repository declares what its gate needs in its own `.jeryu/repo.toml`
-  (`[gate] capabilities = ["host-ci"]`), read at the gated head's base branch
-  and never at the pull request's head, and matched against the
-  `capabilities` a host advertises in its heartbeat. A host without them is
-  refused `409 capability_missing`.
+  (`[gate] capabilities = ["host-ci"]`), read at the tip of the repository's
+  default branch -- never at the pull request's head or at the base branch it
+  names -- and matched against the `capabilities` a host advertises in its
+  heartbeat. A host without them is refused `409 capability_missing`; a
+  declaration that cannot be read refuses every claim of the repository.
+- The lease is advisory: a `<repo>/required` status is not refused for want of
+  a claim, so an older gate runner keeps working. pr-gate-runner holds the
+  claim.
 
 Both routes take the credential heartbeats take, and `README.md` has the whole
 contract, including what needs-you says when no capable host is alive.

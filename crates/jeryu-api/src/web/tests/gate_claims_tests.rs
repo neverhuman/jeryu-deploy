@@ -43,13 +43,34 @@ struct Fixture {
     _storage: tempfile::TempDir,
 }
 
-/// A forge with `veox/jain-deploy` (no capability declared) and
-/// `veox/jain` (host-ci), a runner login that may report, and an ordinary
-/// account that may not.
+/// A bare repository with no commits at all, so no branch of it resolves.
+fn empty_bare_repo(storage_root: &std::path::Path, owner: &str, repo: &str) {
+    let bare = storage_root.join(owner).join(format!("{repo}.git"));
+    std::fs::create_dir_all(bare.parent().expect("bare parent")).expect("create owner dir");
+    git_in(
+        storage_root,
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            "-b",
+            "main",
+            bare.to_str().expect("bare utf8"),
+        ],
+    );
+}
+
+/// A forge with `veox/jain-deploy` (no capability declared), `veox/jain`
+/// (`declaration`), `veox/jain-empty` (a repository whose default branch
+/// resolves to nothing), `veox/jain-nobranch` (no default branch recorded)
+/// and `veox/jain-ghost` (metadata with no git storage), a runner login that
+/// may report, and an ordinary account that may not.
 async fn fixture(declaration: &str) -> Fixture {
     let storage = tempfile::tempdir().expect("storage root");
     bare_repo_with_declaration(storage.path(), "veox", "jain-deploy", "");
     bare_repo_with_declaration(storage.path(), "veox", "jain", declaration);
+    empty_bare_repo(storage.path(), "veox", "jain-empty");
+    bare_repo_with_declaration(storage.path(), "veox", "jain-nobranch", declaration);
     let core = ForgeCore::new();
     for login in ["ci-bot", "outsider"] {
         core.create_account(login, "fixture-password", UserRole::User)
@@ -62,14 +83,22 @@ async fn fixture(declaration: &str) -> Fixture {
     };
     let runner = token("ci-bot");
     let outsider = token("outsider");
-    for name in ["jain-deploy", "jain"] {
+    for (name, default_branch) in [
+        ("jain-deploy", "main"),
+        ("jain", "main"),
+        ("jain-empty", "main"),
+        // Recorded as a branch this repository does not have, which is what
+        // a renamed or never-pushed default branch looks like.
+        ("jain-nobranch", "trunk"),
+        ("jain-ghost", "main"),
+    ] {
         core.create_repository(
             "veox",
             CreateRepositoryRequest {
                 name: name.to_string(),
                 private: false,
                 description: None,
-                default_branch: Some("main".to_string()),
+                default_branch: Some(default_branch.to_string()),
             },
         )
         .expect("create repository");
@@ -366,42 +395,271 @@ async fn claiming_needs_a_runner_identity_and_a_well_formed_head() {
     }
 }
 
-/// A retry that carries the same `Idempotency-Key` replays the first answer
-/// instead of granting a second time, so a runner that lost the answer to a
-/// timeout can ask again safely.
+/// The gate-claim routes are not replayed from the `Idempotency-Key` cache:
+/// a keyed renewal really extends the lease, and a keyed ask after a release
+/// is answered by the store rather than from the first answer.
 #[tokio::test]
-async fn a_repeated_ask_with_a_key_replays_its_first_answer() {
+async fn a_key_never_replays_a_lease_answer() {
     let Fixture {
         router,
         runner,
         _storage,
         ..
     } = fixture("").await;
-    let keyed = || {
+    let keyed = |path: &str, runner_id: &'static str, host: &'static str, key: &'static str| {
         let mut request = ask(
             &runner,
-            "/api/v1/gate-claims",
-            claim_body("veox/jain-deploy", "gate-a/slot0", "gate-a"),
+            path,
+            claim_body("veox/jain-deploy", runner_id, host),
         );
         request.headers_mut().insert(
             crate::web::idempotency::IDEMPOTENCY_KEY,
-            header::HeaderValue::from_static("claim-retry-1"),
+            header::HeaderValue::from_static(key),
         );
         request
     };
-    let first = router.clone().oneshot(keyed()).await.unwrap();
+    let send = |request| {
+        let router = router.clone();
+        async move { router.oneshot(request).await.unwrap() }
+    };
+    let first = send(keyed(
+        "/api/v1/gate-claims",
+        "gate-a/slot0",
+        "gate-a",
+        "claim-1",
+    ))
+    .await;
     assert_eq!(first.status(), StatusCode::CREATED);
     let first = response_json(first).await;
-    let replay = router.clone().oneshot(keyed()).await.unwrap();
-    assert_eq!(replay.status(), StatusCode::CREATED);
-    assert_eq!(
-        replay
+    // The same ask with the same key: a renewal that reached the lease, not a
+    // replayed answer.
+    let renewed = send(keyed(
+        "/api/v1/gate-claims",
+        "gate-a/slot0",
+        "gate-a",
+        "claim-1",
+    ))
+    .await;
+    assert_eq!(renewed.status(), StatusCode::OK);
+    assert!(
+        renewed
             .headers()
             .get(crate::web::idempotency::REPLAYED)
-            .and_then(|value| value.to_str().ok()),
-        Some("true")
+            .is_none(),
+        "a lease answer is never replayed"
     );
-    let replay = response_json(replay).await;
-    assert_eq!(replay["renewed_at"], first["renewed_at"]);
-    assert_eq!(replay["expires_at"], first["expires_at"]);
+    let renewed = response_json(renewed).await;
+    assert_eq!(renewed["state"], "renewed");
+    assert_eq!(renewed["granted_at"], first["granted_at"]);
+    assert!(
+        renewed["expires_at"].as_str().expect("expires_at")
+            >= first["expires_at"].as_str().expect("expires_at"),
+        "the renewal moves expires_at: {first} then {renewed}"
+    );
+    // A release carrying a key is not replayed either, so the ask after it is
+    // answered by the store.
+    let released = send(keyed(
+        "/api/v1/gate-claims/release",
+        "gate-a/slot0",
+        "gate-a",
+        "release-1",
+    ))
+    .await;
+    assert_eq!(released.status(), StatusCode::OK);
+    assert_eq!(response_json(released).await["state"], "released");
+    // Another host takes the head, and the first host asking again with its
+    // first key is told who holds it rather than "granted" from the cache.
+    let next = send(keyed(
+        "/api/v1/gate-claims",
+        "gate-b/slot0",
+        "gate-b",
+        "claim-2",
+    ))
+    .await;
+    assert_eq!(next.status(), StatusCode::CREATED);
+    let refused = send(keyed(
+        "/api/v1/gate-claims",
+        "gate-a/slot0",
+        "gate-a",
+        "claim-1",
+    ))
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::CONFLICT,
+        "a replayed grant would hand one head to two hosts"
+    );
+    let refused = response_json(refused).await;
+    assert_eq!(refused["code"], "claim_held");
+    assert_eq!(refused["holder"]["runner_id"], "gate-b/slot0");
+}
+
+/// Fail closed: a repository whose gate policy cannot be read at all is not
+/// a repository that requires nothing. Every one of these would otherwise
+/// have handed a head that needs the host-ci sandbox to a host without it.
+#[tokio::test]
+async fn a_policy_that_cannot_be_read_refuses_every_claim() {
+    let Fixture {
+        router,
+        runner,
+        _storage,
+        ..
+    } = fixture("[gate]\ncapabilities = [\"host-ci\"]\n").await;
+    for (repo, reason) in [
+        // A default branch that resolves to no commit.
+        ("veox/jain-empty", "does not resolve to a commit"),
+        // A default branch the repository does not have.
+        ("veox/jain-nobranch", "does not resolve to a commit"),
+        // Metadata with no git storage behind it.
+        ("veox/jain-ghost", "could not be opened"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(ask(
+                &runner,
+                "/api/v1/gate-claims",
+                claim_body(repo, "gate-a/slot0", "gate-a"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{repo}"
+        );
+        let body = response_json(response).await;
+        assert_eq!(body["code"], "invalid_repo_config", "{repo}");
+        assert!(
+            body["message"].as_str().expect("message").contains(reason),
+            "{repo}: {body}"
+        );
+    }
+}
+
+/// The lease is on the commit: one sha asked for under two numbers is one
+/// lease, so a caller that sends the wrong number cannot get a second host
+/// gating the same commit.
+#[tokio::test]
+async fn one_sha_is_one_lease_whatever_number_is_asked() {
+    let Fixture {
+        router,
+        runner,
+        _storage,
+        ..
+    } = fixture("").await;
+    let send = |request| {
+        let router = router.clone();
+        async move { router.oneshot(request).await.unwrap() }
+    };
+    let numbered = |number: u64, runner_id: &str, host: &str| {
+        ask(
+            &runner,
+            "/api/v1/gate-claims",
+            json!({"repo": "veox/jain-deploy", "number": number, "head_sha": HEAD,
+                   "runner_id": runner_id, "host": host}),
+        )
+    };
+    assert_eq!(
+        send(numbered(7, "gate-a/slot0", "gate-a")).await.status(),
+        StatusCode::CREATED
+    );
+    let refused = send(numbered(8, "gate-b/slot0", "gate-b")).await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let refused = response_json(refused).await;
+    assert_eq!(refused["code"], "claim_held");
+    assert_eq!(refused["holder"]["number"], 7);
+    // The holder renews whatever number it sends.
+    let renewed = send(numbered(9, "gate-a/slot0", "gate-a")).await;
+    assert_eq!(renewed.status(), StatusCode::OK);
+    assert_eq!(response_json(renewed).await["state"], "renewed");
+    // And only its holder may release it, by any number.
+    assert_eq!(
+        send(ask(
+            &runner,
+            "/api/v1/gate-claims/release",
+            json!({"repo": "veox/jain-deploy", "number": 8, "head_sha": HEAD,
+                   "runner_id": "gate-b/slot0", "host": "gate-b"}),
+        ))
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let released = send(ask(
+        &runner,
+        "/api/v1/gate-claims/release",
+        json!({"repo": "veox/jain-deploy", "number": 8, "head_sha": HEAD,
+               "runner_id": "gate-a/slot0", "host": "gate-a"}),
+    ))
+    .await;
+    assert_eq!(released.status(), StatusCode::OK);
+    assert_eq!(response_json(released).await["state"], "released");
+}
+
+/// A slot may only claim as the host it beats from, so it cannot borrow
+/// another host's advertised capabilities.
+#[tokio::test]
+async fn an_ask_names_the_host_its_runner_beats_from() {
+    let Fixture {
+        router,
+        runner,
+        _storage,
+        ..
+    } = fixture("[gate]\ncapabilities = [\"host-ci\"]\n").await;
+    let send = |request| {
+        let router = router.clone();
+        async move { router.oneshot(request).await.unwrap() }
+    };
+    for (runner_id, host, capabilities) in [
+        ("gate-a/slot0", "gate-a", json!([])),
+        ("gate-b/slot0", "gate-b", json!(["host-ci"])),
+    ] {
+        let accepted = send(ask(
+            &runner,
+            "/api/v1/runners/heartbeat",
+            beat(runner_id, host, capabilities),
+        ))
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+    }
+    let claimed_as_another_host = send(ask(
+        &runner,
+        "/api/v1/gate-claims",
+        claim_body("veox/jain", "gate-a/slot0", "gate-b"),
+    ))
+    .await;
+    assert_eq!(
+        claimed_as_another_host.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let body = response_json(claimed_as_another_host).await;
+    assert_eq!(body["code"], "host_mismatch");
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("message")
+            .contains("gate-a"),
+        "{body}"
+    );
+    // A runner that has not beaten at all may claim a head that needs
+    // nothing, but not one that needs a capability: the match is made on its
+    // own live beat.
+    let unknown = send(ask(
+        &runner,
+        "/api/v1/gate-claims",
+        claim_body("veox/jain", "gate-c/slot0", "gate-b"),
+    ))
+    .await;
+    assert_eq!(unknown.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response_json(unknown).await["code"],
+        "capability_missing",
+        "an unbeaten runner must not borrow its host's capabilities"
+    );
+    let plain = send(ask(
+        &runner,
+        "/api/v1/gate-claims",
+        claim_body("veox/jain-deploy", "gate-c/slot0", "gate-c"),
+    ))
+    .await;
+    assert_eq!(plain.status(), StatusCode::CREATED);
 }
