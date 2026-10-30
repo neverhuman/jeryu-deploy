@@ -304,6 +304,16 @@
       "command": "cargo test --locked --offline -p jeryu-api --features web --lib task_cards",
       "lane": "check",
       "purpose": "prove opt-in immutable Markdown task-card reading, native deduplication, explicit parse failures and HTTP action refusal"
+    },
+    "crates/jeryu-api/src/web/flow/external_work.rs": {
+      "command": "cargo test --locked --offline -p jeryu-api --features web --lib external_work",
+      "lane": "check",
+      "purpose": "prove passive external-origin/plan snapshots, bounded input, safe links, hierarchy validity and native ledger immutability"
+    },
+    "crates/jeryu-api/src/web/flow/external_work/": {
+      "command": "cargo test --locked --offline -p jeryu-api --features web --lib external_work",
+      "lane": "check",
+      "purpose": "prove passive external-origin/plan snapshots, bounded input, safe links, hierarchy validity and native ledger immutability"
     }
   },
   "workspace": "jeryu-deploy"

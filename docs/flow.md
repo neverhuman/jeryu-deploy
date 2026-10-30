@@ -1,5 +1,32 @@
 # Flow: decisions, station history, and verified delivery
 
+## Passive external-origin observations
+
+`GET /api/v1/flow` additionally returns `external_work: { snapshots, problems }`
+from committed `tracking/external-work.json` files on discovered family queue
+branches. An absent file leaves native behavior intact. The optional version-1
+snapshot carries provider/source repository, default branch, branch heads and
+comparisons, external pull request URLs/states, execution waves, independent
+milestones, parent/follow-up IDs, critical-path markers, prerequisite waits and
+explicit human decisions. Receipt and branch observation dates are distinct.
+
+Snapshots are passive observations. They never create native worker, gate,
+review, merge or release events; no provider call occurs during a read. Origin
+refs still present after a squash merge retain both their ahead/behind
+comparison and their merged pull request state. Reported delivery does not
+certify qualification, release or milestone exit criteria. A missing comparison
+or unassigned phase remains unknown.
+
+The reader limits each snapshot to 2 MiB, 5000 branches/todos, 256 phases/milestones
+and 64 hierarchy levels. It rejects malformed dates, unsafe URLs, unsupported
+versions, duplicate IDs, dangling dependencies and cyclic parents into visible
+per-queue `problems`, preserving the native report. The existing Flow admin
+authorization applies. Run
+`cargo test --locked --offline -p jeryu-api --features web --lib external_work`
+for parser, Git-tree, HTTP read-only and unchanged-native-ledger proofs.
+
+## Native delivery journey
+
 The live view is the family's delivery journey, product by product: every
 configured repository of a product flows through its own configured
 review/gate route into the product's shared convergence point, its release and

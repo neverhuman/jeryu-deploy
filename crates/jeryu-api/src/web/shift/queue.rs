@@ -228,7 +228,25 @@ pub(crate) fn read_todos(
         .map(|text| parse_family_toml(&text, ""))
         .transpose()?;
     if let Some(config) = config.filter(|config| config.task_cards) {
-        let cards = super::task_cards::read(git_bin, dir, commit, &config)?;
+        let mut cards = super::task_cards::read(git_bin, dir, commit, &config)?;
+        for card in &mut cards {
+            if let Some(native) = todos.iter().find(|native| native.todo.id == card.todo.id) {
+                // A source-format migration must not erase imported external execution evidence.
+                card.todo.attempts = native.todo.attempts;
+                card.todo.worked_by.clone_from(&native.todo.worked_by);
+                card.todo.requested_by.clone_from(&native.todo.requested_by);
+                card.todo.filed_at.clone_from(&native.todo.filed_at);
+                if let Some((_, summary)) = native
+                    .todo
+                    .body
+                    .split_once("<!-- external-attempt-summary:start -->")
+                    && let Some((summary, _)) =
+                        summary.split_once("<!-- external-attempt-summary:end -->")
+                {
+                    card.todo.body = format!("{summary}\n\n{}", card.todo.body);
+                }
+            }
+        }
         let ids: std::collections::HashSet<_> =
             cards.iter().map(|card| card.todo.id.clone()).collect();
         // Cards are authoritative during migration; native records for other IDs stay native.

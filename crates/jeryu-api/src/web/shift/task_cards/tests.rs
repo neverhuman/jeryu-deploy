@@ -34,11 +34,20 @@ fn repo(root: &Path) -> std::path::PathBuf {
 fn task_cards_are_opt_in_and_replace_only_matching_native_ids() {
     let temp = tempfile::tempdir().unwrap();
     let dir = repo(temp.path());
-    let native = TodoFile::new(
+    let mut native = TodoFile::new(
         "jopedime-api-01".into(),
         "jopedime".into(),
         "outdated native title".into(),
     );
+    native.attempts = 1;
+    let attempts:toml_edit::DocumentMut="items = [{ by = \"external-worker\", outcome = \"ready_for_review\", note = \"linked receipt\" }]".parse().unwrap();
+    native.worked_by = attempts["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect();
+    native.body="<!-- external-attempt-summary:start -->External review evidence retained<!-- external-attempt-summary:end -->".to_string();
     let other = TodoFile::new("unrelated".into(), "jopedime".into(), "native work".into());
     let mut legacy = native.clone();
     legacy.id = "old-tracking-id".to_string();
@@ -80,6 +89,9 @@ fn task_cards_are_opt_in_and_replace_only_matching_native_ids() {
         .unwrap();
     assert_eq!(card.path, "tasks/T001-API-01-contract.md");
     assert_eq!(card.todo.status, TodoStatus::Handoff);
+    assert_eq!(card.todo.attempts, 1);
+    assert_eq!(card.todo.attempts_list()[0].by, "external-worker");
+    assert!(card.todo.body.contains("External review evidence retained"));
     assert!(!card.todo.merged);
     assert_eq!(card.todo.claim_by, "sol_api / xbabe2");
     assert!(card.todo.body.contains(CARD));
@@ -151,6 +163,18 @@ fn task_cards_standalone_blocker_receipts_override_claimed_cards() {
     let card = read_todos("git", &dir, &head).unwrap().remove(0);
     assert_eq!(card.todo.status, TodoStatus::Blocked);
     assert!(card.todo.note.contains("owner signature pending"));
+}
+
+#[test]
+fn task_cards_program_followups_keep_their_existing_filename_ids() {
+    assert_eq!(
+        super::task_id("DRAIN-F01-terminal-json"),
+        Some("DRAIN-F01".to_string())
+    );
+    assert_eq!(
+        super::task_id("T001-API-01-contract"),
+        Some("API-01".to_string())
+    );
 }
 
 #[test]

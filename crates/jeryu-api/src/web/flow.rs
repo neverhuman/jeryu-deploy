@@ -12,6 +12,7 @@
 pub(crate) mod claims;
 pub(crate) mod closure;
 pub(crate) mod delivery;
+mod external_work;
 pub(crate) mod history;
 pub(crate) mod identity;
 pub(crate) mod layout;
@@ -285,13 +286,15 @@ pub(crate) async fn flow(
             .heartbeats
             .latest(now - super::shift::HEARTBEAT_RETENTION_MS)?;
         let evidence = claims::Evidence::from_heartbeats(&beats, now);
-        Ok::<_, String>((visits, reached, lifecycle, shape, evidence))
+        let external =
+            external_work::read(&worker_state, read_family.as_deref(), read_repo.as_deref());
+        Ok::<_, String>((visits, reached, lifecycle, shape, evidence, external))
     })
     .await
     .map_err(|err| err.to_string())
     .and_then(|read| read);
     match read {
-        Ok((visits, reached, lifecycle, shape, evidence)) => {
+        Ok((visits, reached, lifecycle, shape, evidence, external)) => {
             let request = Request {
                 family,
                 days,
@@ -311,6 +314,7 @@ pub(crate) async fn flow(
             body["lifecycle_problems"] = serde_json::json!(lifecycle.problems);
             body["work_reconciled"] = serde_json::json!(lifecycle.work);
             body["topology"] = serde_json::json!(shape);
+            body["external_work"] = serde_json::json!(external);
             body["repo"] = serde_json::json!(repo);
             Json(body).into_response()
         }

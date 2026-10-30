@@ -103,7 +103,7 @@ fn blobs(git_bin: &str, dir: &Path, commit: &str) -> Result<BTreeMap<String, Str
     Ok(files)
 }
 
-/// An ID in existing cards: three capital letters, two digits, optional Fnn.
+/// Card IDs: capital-letter program, two digits or Fnn, optional follow-up Fnn.
 fn task_id(word: &str) -> Option<String> {
     let word = word
         .strip_prefix('T')
@@ -117,10 +117,12 @@ fn task_id(word: &str) -> Option<String> {
     let mut parts = word.split('-');
     let family = parts.next()?;
     let number = parts.next()?;
-    if family.len() != 3
+    if !(2..=8).contains(&family.len())
         || !family.bytes().all(|byte| byte.is_ascii_uppercase())
-        || number.len() != 2
-        || !number.bytes().all(|byte| byte.is_ascii_digit())
+        || !((number.len() == 2 && number.bytes().all(|byte| byte.is_ascii_digit()))
+            || (number.len() == 3
+                && number.starts_with('F')
+                && number[1..].bytes().all(|byte| byte.is_ascii_digit())))
     {
         return None;
     }
