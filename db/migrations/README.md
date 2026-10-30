@@ -48,6 +48,8 @@ working (an older binary checks only the migrations it knows).
 | `0027_line_survival.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/line_survival.rs` |
 | `0028_merge_visit_repair.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/flow/project.rs` |
 
+| `0029_build_inventory.sql` | `<data_dir>/shift.sqlite` | `crates/jeryu-api/src/web/build_inventory.rs` |
+
 Each migration carries its rollback, backfill, and lock-safety notes in its
 header comment. A migration that alters an existing table also has a
 `<stem>.meta.toml` beside it declaring its lock and statement bounds. SQLite

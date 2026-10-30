@@ -293,3 +293,17 @@ arrived_json() {
   done
   if [ ${#out[@]} -eq 0 ]; then printf '[]'; else printf '%s\n' "${out[@]}" | jq -cs .; fi
 }
+
+# build_inventory REPORT — attach a normalized build report to this run.
+# An adapter reads its build receipts, registry and deployed targets, then
+# calls this once. No report is synthesized from a tag or a source commit.
+build_inventory() {
+  local report="$1"
+  if [ ! -f "$report" ] || [ -L "$report" ] || [ "$(wc -c <"$report")" -gt 1048576 ]; then
+    problem "build inventory" "report must be a regular file of at most 1 MiB"; return 1
+  fi
+  if ! jq -e '(.observed_at | type == "string") and (.builds | type == "array")' "$report" >/dev/null; then
+    problem "build inventory" "report is missing observed_at or builds"; return 1
+  fi
+  cp -- "$report" "$inventory_file"
+}

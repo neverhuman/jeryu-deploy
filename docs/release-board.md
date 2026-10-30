@@ -10,6 +10,9 @@ Deploy hosts, image registry channels, staged bundles, public download manifests
 live elsewhere, so a **collector** on the host that runs releases reads them and pushes one
 snapshot per family.
 
+Build candidate history lives in the **Builds** tab; its durable inventory and
+collector hook are documented in [delivery views](delivery-views.md).
+
 ## Configuration is yours, not jeryu's
 
 jeryu ships the API, the page, the collector (`scripts/release-board/collect.sh`) and its library

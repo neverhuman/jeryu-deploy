@@ -44,7 +44,9 @@ pub(crate) use merge_queue::{
     building_on_base, gate_verdict, is_queue_owned_ref, rebase_onto, trusted_queue_scores,
 };
 mod gh_pr_create;
+mod build_inventory;
 pub(crate) mod line_survival;
+mod lineage;
 mod mcp_backend;
 mod outcomes;
 mod permissions;
@@ -1498,6 +1500,11 @@ fn api_v1_routes() -> Vec<(&'static str, MethodRouter<Arc<WebState>>)> {
         ),
         ("/api/v1/repos/:id/refs", get(repo_refs)),
         ("/api/v1/repos/:id/commits", get(repo_commits)),
+        ("/api/v1/repos/:id/lineage", get(lineage::get)),
+        (
+            "/api/v1/build-inventory/:family",
+            get(build_inventory::get).put(build_inventory::put),
+        ),
         ("/api/v1/repos/:id/commit/:sha", get(repo_commit)),
         ("/api/v1/repos/:id/compare", get(repo_compare)),
         ("/api/v1/repos/:id/release-tag", get(repo_release_tag)),

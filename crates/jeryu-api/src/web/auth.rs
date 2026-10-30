@@ -1312,6 +1312,7 @@ pub(super) fn admin_only_request(method: &Method, path: &str) -> bool {
         || (pipeline_events_path(path) && !unsafe_method(method))
         || pipeline_histogram_path(path)
         || (release_board_path(path) && !unsafe_method(method))
+        || (path.starts_with("/api/v1/build-inventory/") && !unsafe_method(method))
         || attention_path(path)
         || pins_path(path)
         || trace_path(path)

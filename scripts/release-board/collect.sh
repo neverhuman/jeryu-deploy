@@ -84,6 +84,7 @@ for family in "${families[@]}"; do
   [ -r "$adapter" ] || { say "no adapter for family $family in $families_dir"; status=2; continue; }
   started="$(date +%s%3N)"
   lanes_file="$work/$family.lanes" problems_file="$work/$family.problems"
+  inventory_file="$work/$family.build-inventory.json"
   summary="" work_json="null" pins_json="null" notes_json="null" columns_json="null" main_specs=""
   : >"$lanes_file"; : >"$problems_file"
   # shellcheck source=/dev/null
@@ -111,6 +112,14 @@ for family in "${families[@]}"; do
   say "$family: $(jq -r '[(.lanes | length), ([.lanes[].stages[]] | length), (.problems | length)] | "\(.[0]) lanes, \(.[1]) stages, \(.[2]) problems"' "$board") → $board"
   if [ "$push" = 1 ]; then
     if [ -z "$forge_cfg" ]; then say "$family: not pushed (no token)"; status=1; continue; fi
+    if [ -s "$inventory_file" ]; then
+      cp -- "$inventory_file" "$out/$family.builds.json"
+      if ! curl --silent --show-error --fail --max-time 20 --config "$forge_cfg" -X PUT \
+          -H 'Content-Type: application/json' --data-binary @"$inventory_file" \
+          "$base/api/v1/build-inventory/$family" >"$work/$family.builds-answer.json"; then
+        say "$family: build inventory push failed"; status=1
+      fi
+    fi
     if answer="$(curl --silent --show-error --max-time 20 --config "$forge_cfg" -X PUT \
         -H 'Content-Type: application/json' -H 'Accept: application/json' \
         --data-binary @"$board" -w '\n%{http_code}' "$base/api/v1/release-board/$family")"; then
