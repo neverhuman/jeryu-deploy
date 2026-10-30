@@ -247,6 +247,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the pipeline event store failed",
     ),
     entry(
+        "external_task_read_only",
+        409,
+        "external task cards are managed outside the forge",
+    ),
+    entry(
         "family_unknown",
         422,
         "no product family of that name: the filter would have matched nothing",
@@ -265,11 +270,6 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "flow_read_failed",
         500,
         "the flow ledger behind the Flow report could not be read",
-    ),
-    entry(
-        "external_task_read_only",
-        409,
-        "external task cards are managed outside the forge",
     ),
     entry("forbidden", 403, "the account may not perform this request"),
     entry(
