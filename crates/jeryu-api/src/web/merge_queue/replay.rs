@@ -113,6 +113,35 @@ impl Git<'_> {
             .is_ok_and(|status| status.success())
     }
 
+    /// Like [`Self::is_ancestor`], but a git failure is an error, not "no":
+    /// `merge-base --is-ancestor` exits 1 for "not an ancestor" and higher for
+    /// a real failure.
+    pub(super) fn try_is_ancestor(
+        &self,
+        ancestor: &str,
+        descendant: &str,
+    ) -> Result<bool, ReplayFailure> {
+        let status = Command::new(self.bin)
+            .arg("-C")
+            .arg(self.bare)
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                "--end-of-options",
+                ancestor,
+                descendant,
+            ])
+            .status()
+            .map_err(|err| ReplayFailure::Git(err.to_string()))?;
+        match status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(ReplayFailure::Git(format!(
+                "git merge-base --is-ancestor {ancestor} {descendant} failed"
+            ))),
+        }
+    }
+
     pub(super) fn update_ref(&self, name: &str, sha: &str) -> Result<(), ReplayFailure> {
         self.run(&["update-ref", name, sha]).map(|_| ())
     }
@@ -153,11 +182,16 @@ impl Git<'_> {
 
     /// `(ref name, blob contents)` for every ref under `prefix`.
     pub(super) fn read_blob_refs(&self, prefix: &str) -> Vec<(String, String)> {
-        let Ok(listing) = self.run(&["for-each-ref", "--format=%(refname) %(objectname)", prefix])
-        else {
-            return Vec::new();
-        };
-        listing
+        self.try_read_blob_refs(prefix).unwrap_or_default()
+    }
+
+    /// [`Self::read_blob_refs`], but failing to enumerate the refs is an error.
+    pub(super) fn try_read_blob_refs(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, ReplayFailure> {
+        let listing = self.run(&["for-each-ref", "--format=%(refname) %(objectname)", prefix])?;
+        Ok(listing
             .lines()
             .filter_map(|line| line.split_once(' '))
             .filter_map(|(name, blob)| {
@@ -165,7 +199,7 @@ impl Git<'_> {
                     .ok()
                     .map(|body| (name.to_string(), body))
             })
-            .collect()
+            .collect())
     }
 
     /// Committer time (unix seconds) of `sha`.
@@ -193,6 +227,12 @@ impl Git<'_> {
             return Ok(pr_head.to_string());
         }
         let merge_base = self.run(&["merge-base", "--end-of-options", base_tip, pr_head])?;
+        let merge_base = merge_base.trim();
+        if merge_base.is_empty() {
+            return Err(ReplayFailure::Git(format!(
+                "no merge base between {base_tip} and {pr_head}"
+            )));
+        }
         let range = format!("{merge_base}..{pr_head}");
         if !self
             .run(&["rev-list", "--merges", "--end-of-options", &range])?
@@ -260,7 +300,7 @@ impl Git<'_> {
         let _ = std::fs::remove_dir_all(&work);
         let _ = self.run(&["worktree", "prune"]);
         let queue_sha = result?;
-        self.ensure_same_change(&merge_base, pr_head, base_tip, &queue_sha)?;
+        self.ensure_same_change(merge_base, pr_head, base_tip, &queue_sha)?;
         Ok(queue_sha)
     }
 

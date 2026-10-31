@@ -85,18 +85,21 @@ pub(crate) fn author_produced_submission(
     head_sha: &str,
     base_sha: &str,
 ) -> Option<SubmissionRejected> {
-    if let Some(number) = crate::web::merge_queue::authored_audit(
-        state,
-        owner,
-        repo,
-        head_sha,
-        base_sha,
-        &account.login,
-    ) {
-        return Some(SubmissionRejected::new(
-            StatusCode::FORBIDDEN,
-            format!("a queue audit cannot come from the author of pull request #{number}"),
-        ));
+    match crate::web::merge_queue::authored_audit(state, owner, repo, head_sha, base_sha, &account.login) {
+        Ok(Some(number)) => {
+            return Some(SubmissionRejected::new(
+                StatusCode::FORBIDDEN,
+                format!("a queue audit cannot come from the author of pull request #{number}"),
+            ));
+        }
+        Ok(None) => {}
+        // Independence could not be established: refuse, ticket untouched.
+        Err(err) => {
+            return Some(SubmissionRejected::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("author independence could not be checked: {err}"),
+            ));
+        }
     }
     let pulls = state.core.list_pull_requests(owner, repo, None).ok()?;
     let authored = pulls.into_iter().find(|pull| {

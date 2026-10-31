@@ -435,11 +435,15 @@ pub(crate) fn authored_audit(
     head: &str,
     diff_base: &str,
     login: &str,
-) -> Option<u64> {
+) -> Result<Option<u64>, String> {
     if !is_sha(head) {
-        return None;
+        return Ok(None);
     }
-    let resolved = state.repo_manager.open_parts(owner, repo).ok()?;
+    let resolved = match state.repo_manager.open_parts(owner, repo) {
+        Ok(resolved) => resolved,
+        Err(jeryu_gitd::error::GitdError::RepoNotFound(_)) => return Ok(None),
+        Err(err) => return Err(err.to_string()),
+    };
     let git = git_for(state, &resolved.path);
     // Use the submitted diff, including during a base refresh. A landed
     // author is eligible only once their change is outside that diff.
@@ -452,7 +456,7 @@ pub(crate) fn authored_audit(
         .iter()
         .any(|entry| entry.state == QueueState::Building && entry.queue_sha == head)
     {
-        return None;
+        return Ok(None);
     }
     // One `rev-list` for the whole submitted range, not an ancestry test per
     // entry: the stack is short, while a repository keeps one queue-meta ref
@@ -477,18 +481,18 @@ pub(crate) fn authored_audit(
         }
         let in_submitted_diff = match &in_diff {
             Some(range) => range.contains(&entry.queue_sha),
-            None => entry.state == QueueState::Building && git.is_ancestor(&entry.queue_sha, head),
+            None => entry.state == QueueState::Building && git.try_is_ancestor(&entry.queue_sha, head).map_err(|err| err.to_string())?,
         };
         if !in_submitted_diff {
             continue;
         }
-        if let Ok(pr) = state.core.get_pull_request(owner, repo, entry.number)
-            && super::principals::same_principal(&pr.author, login)
-        {
-            return Some(entry.number);
+        let pr = state.core.get_pull_request(owner, repo, entry.number)
+            .map_err(|err| format!("pull request #{}: {err}", entry.number))?;
+        if super::principals::same_principal(&pr.author, login) {
+            return Ok(Some(entry.number));
         }
     }
-    None
+    Ok(None)
 }
 
 /// The base tip of `base` in `owner/repo`.

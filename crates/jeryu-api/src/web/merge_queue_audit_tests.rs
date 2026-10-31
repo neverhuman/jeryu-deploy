@@ -13,7 +13,7 @@ async fn queue_replay_schedules_exact_sha_and_tick_restores_lost_ticket() {
     let sha = body["queue_sha"].as_str().unwrap();
     assert_ne!(sha, fx.head);
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", sha, &base, "alice"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", sha, &base, "alice").unwrap(),
         Some(fx.number)
     );
     assert_eq!(
@@ -24,7 +24,7 @@ async fn queue_replay_schedules_exact_sha_and_tick_restores_lost_ticket() {
             sha,
             &base,
             "independent-runner"
-        ),
+        ).unwrap(),
         None
     );
     let ticket = audit_queue::queue()
@@ -284,20 +284,20 @@ async fn a_stack_tickets_every_queue_sha_and_holds_each_author_off_the_top() {
     // The top commit carries both changes, so neither author may score it,
     // while an independent runner still may.
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "alice"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "alice").unwrap(),
         Some(fx.number)
     );
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "bob"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "bob").unwrap(),
         Some(second)
     );
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "gate-runner"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "gate-runner").unwrap(),
         None
     );
     // The bottom commit does not carry the entry above it.
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &bottom, &base, "bob"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &bottom, &base, "bob").unwrap(),
         None
     );
 }
@@ -320,12 +320,12 @@ async fn a_landed_entrys_author_may_audit_a_later_queue_sha() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let sha = body["queue_sha"].as_str().unwrap().to_string();
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &landed, "bob"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &landed, "bob").unwrap(),
         None,
         "bob's landed change is not the change this sha is being audited for"
     );
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &landed, "alice"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &landed, "alice").unwrap(),
         Some(fx.number)
     );
     // Whole-tree tickets use the empty tree, which cannot be a rev-list
@@ -336,14 +336,59 @@ async fn a_landed_entrys_author_may_audit_a_later_queue_sha() {
         &"f".repeat(40),
     ] {
         assert_eq!(
-            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "bob"),
+            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "bob").unwrap(),
             None,
         );
         assert_eq!(
-            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "alice"),
+            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "alice").unwrap(),
             Some(fx.number),
         );
     }
+}
+
+/// A Git failure while establishing independence is an error, not "no author":
+/// a Building entry whose commit cannot be tested for ancestry must not let the
+/// submission through.
+#[tokio::test]
+async fn an_unreadable_queue_stack_fails_closed() {
+    let fx = Fixture::with_audit_store("fail-closed.txt", "fail closed\n");
+    fx.advance_main("fail-closed-base.txt", "base\n");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let sha = body["queue_sha"].as_str().unwrap().to_string();
+    let stored = super::merge_queue_tests::git(
+        &fx.bare,
+        &["show", &format!("refs/queue-meta/main/{}", fx.number)],
+    );
+    let mut ghost: merge_queue::QueueEntry = serde_json::from_str(&stored).unwrap();
+    ghost.number = 99;
+    ghost.queue_sha = "1".repeat(40);
+    let blob = {
+        use std::io::Write;
+        let mut child = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&fx.bare)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(serde_json::to_string(&ghost).unwrap().as_bytes())
+            .unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    super::merge_queue_tests::git(&fx.bare, &["update-ref", "refs/queue-meta/main/99", &blob]);
+    assert!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &fx.main(), "independent-runner")
+            .is_err()
+    );
 }
 
 async fn enqueue_number(fx: &Fixture, number: u64) -> (StatusCode, Value) {
