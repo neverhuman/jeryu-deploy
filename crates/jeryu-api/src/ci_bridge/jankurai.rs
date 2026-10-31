@@ -218,9 +218,18 @@ pub(super) fn proof_already_posted(
     let Ok(existing) = core.list_check_runs(owner, repo, Some(head_sha)) else {
         return false;
     };
-    existing.check_runs.iter().any(|run| {
-        run.name == JANKURAI_PROOF_CHECK
-            && run.status == CheckRunStatus::Completed
+    // Only against the newest proof of this head, by the same ordering the
+    // merge queue reads a verdict with. A head ticketed again — because its
+    // diff base was replaced when the queue below it landed — carries a
+    // pending proof newer than the completed one, and the verdict for the new
+    // base has to be posted even when it reads exactly like the replaced one.
+    let newest = existing
+        .check_runs
+        .iter()
+        .filter(|run| run.name == JANKURAI_PROOF_CHECK)
+        .max_by_key(|run| run.completed_at.unwrap_or(run.started_at));
+    newest.is_some_and(|run| {
+        run.status == CheckRunStatus::Completed
             && run.conclusion.as_ref() == Some(conclusion)
             && &run.details_url == details_url
             && run.output.as_ref().is_some_and(|posted| {

@@ -454,11 +454,31 @@ pub(crate) fn authored_audit(
     {
         return None;
     }
+    // One `rev-list` for the whole submitted range, not an ancestry test per
+    // entry: the stack is short, while a repository keeps one queue-meta ref
+    // for every pull request it ever queued. A head audited whole has no
+    // range, and a range git cannot produce leaves every entry this head
+    // carries counted rather than waved through.
+    let in_diff: Option<std::collections::HashSet<String>> = is_sha(diff_base)
+        .then(|| {
+            git.run(&[
+                "rev-list",
+                "--end-of-options",
+                &format!("{diff_base}..{head}"),
+            ])
+            .ok()
+            .map(|listing| listing.lines().map(str::to_string).collect())
+        })
+        .flatten();
     for entry in entries {
-        if !is_sha(&entry.queue_sha)
-            || !git.is_ancestor(&entry.queue_sha, head)
-            || (is_sha(diff_base) && git.is_ancestor(&entry.queue_sha, diff_base))
-        {
+        if !is_sha(&entry.queue_sha) {
+            continue;
+        }
+        let in_submitted_diff = match &in_diff {
+            Some(range) => range.contains(&entry.queue_sha),
+            None => git.is_ancestor(&entry.queue_sha, head),
+        };
+        if !in_submitted_diff {
             continue;
         }
         if let Ok(pr) = state.core.get_pull_request(owner, repo, entry.number)

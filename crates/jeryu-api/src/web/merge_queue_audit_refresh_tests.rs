@@ -166,3 +166,98 @@ fn refreshing_tickets_revokes_changed_claims_and_preserves_identical_claims() {
     assert_eq!(claimed[0].claimed_by.as_deref(), Some("next-runner"));
     assert_eq!(queue.tickets().len(), 1);
 }
+
+#[tokio::test]
+async fn landing_re_audits_a_queue_head_whose_proof_covered_the_landed_entry() {
+    use super::merge_queue_tests::git;
+    let mut fx = Fixture::with_audit_store("reaudit-audit.txt", "reaudit audit\n");
+    let base = fx.advance_main("reaudit-base.txt", "base\n");
+    isolate_base(&mut fx, "audit-reaudit");
+    let second = add_audited_pr(
+        &fx,
+        "audit-reaudit",
+        "reaudit-two",
+        "reaudit-two.txt",
+        "bob",
+    );
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let bottom = body["queue_sha"].as_str().unwrap().to_string();
+    let (status, body) = enqueue_number(&fx, second).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let top = body["queue_sha"].as_str().unwrap().to_string();
+    let wide = ticket(&top);
+    assert_eq!(wide.base_sha, base);
+    // An independent runner proves both entries against the base below the
+    // stack, and only the bottom entry's own gate has reported.
+    assert_eq!(
+        ingest(&fx, "independent-runner", &submission(&ticket(&bottom))).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        ingest(&fx, "independent-runner", &submission(&wide)).await,
+        StatusCode::CREATED
+    );
+    fx.status(&bottom, jeryu_core::CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    assert_eq!(
+        git(&fx.bare, &["rev-parse", "refs/heads/audit-reaudit"]),
+        bottom
+    );
+    // The top keeps its sha, so the proof it carries is the audit of a diff
+    // that includes the landed entry. It is ticketed again against the new
+    // base, and its proof reads pending until that audit comes back.
+    let narrow = ticket(&top);
+    assert_eq!(narrow.head_sha, top);
+    assert_eq!(narrow.base_sha, bottom);
+    assert!(narrow.claimed_by.is_none());
+    let proof = vec![crate::ci_bridge::JANKURAI_PROOF_CHECK.to_string()];
+    assert_eq!(
+        merge_queue::gate_verdict(&fx.state.core, "alice", "jeryu", &top, &proof),
+        None,
+        "the replaced audit is not this diff's proof"
+    );
+    fx.status(&top, jeryu_core::CommitStatusState::Success);
+    assert_eq!(
+        merge_queue::tick(&fx.state),
+        0,
+        "a green gate plus a replaced proof does not land the entry"
+    );
+    // The report for the replaced base no longer matches the ticket, and the
+    // landed entry's author may audit what is left of the diff.
+    assert_eq!(
+        ingest(&fx, "independent-runner", &submission(&wide)).await,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(ticket(&top), narrow, "a refusal keeps the open ticket");
+    assert_eq!(
+        ingest(&fx, "bob", &submission(&narrow)).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        ingest(&fx, "alice", &submission(&narrow)).await,
+        StatusCode::CREATED
+    );
+    let scores = fx
+        .state
+        .core
+        .list_jankurai_scores("alice", "jeryu", None, Some(&top))
+        .unwrap();
+    let bases: Vec<Value> = scores
+        .iter()
+        .map(|score| {
+            serde_json::from_str::<Value>(score.report_json.as_deref().unwrap()).unwrap()
+                ["jeryu_audit_provenance"]["base_sha"]
+                .clone()
+        })
+        .collect();
+    assert!(
+        bases.contains(&Value::from(bottom.as_str())),
+        "the narrowed audit is recorded with its own base: {bases:?}"
+    );
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    assert_eq!(
+        git(&fx.bare, &["rev-parse", "refs/heads/audit-reaudit"]),
+        top
+    );
+}

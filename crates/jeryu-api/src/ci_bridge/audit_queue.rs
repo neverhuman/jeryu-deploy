@@ -450,25 +450,6 @@ pub(crate) fn plan_push_audit(
             "the audit switch could not be read ({reason}), so this head was audited"
         )),
     };
-    // One audit per head, across the forge and `<repo>/required`: a head that
-    // already carries a score, or already has a ticket, needs no second job.
-    let scored = core
-        .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
-        .map(|scores| !scores.is_empty())
-        .unwrap_or(false);
-    let proof_published = queue_base.is_none()
-        || core
-            .list_check_runs(owner, repo, Some(&update.new_oid))
-            .map(|runs| {
-                runs.check_runs.iter().any(|run| {
-                    run.name == super::JANKURAI_PROOF_CHECK
-                        && run.status == jeryu_core::CheckRunStatus::Completed
-                })
-            })
-            .unwrap_or(false);
-    if scored && proof_published {
-        return PushAudit::AlreadyCovered;
-    }
     let base = if queue_base.is_some() {
         super::run_git_stdout(
             git_bin,
@@ -479,6 +460,9 @@ pub(crate) fn plan_push_audit(
                 &update.new_oid,
             ],
         )
+        // An empty merge-base would ticket a base no report can match, so the
+        // head is audited whole instead, as on the push path.
+        .filter(|oid| !oid.is_empty())
     } else {
         commit_base(git_bin, bare, branch, update)
     };
@@ -486,6 +470,39 @@ pub(crate) fn plan_push_audit(
         Some(base) => AuditTicket::new(owner, repo, branch, &update.new_oid, &base),
         None => AuditTicket::whole_tree(owner, repo, branch, &update.new_oid),
     };
+    // One audit per head, across the forge and `<repo>/required`: a head that
+    // already carries a score, or already has a ticket, needs no second job.
+    //
+    // A queue entry keeps its head when the entries below it land, so a score
+    // it already carries can be the audit of a wider diff than the base this
+    // ticket now asks for — including the landed changes, whose own authors
+    // were barred from that report only while they were still queued. Such a
+    // score covers a different change set: the head is ticketed again, which
+    // also returns `jankurai/proof` to pending until a runner reports against
+    // the narrowed base. A score with no recorded base (an admin backfill, or
+    // a row written before provenance was kept) still covers the head, so a
+    // rollback does not re-audit every scored queue commit.
+    let covered = core
+        .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
+        .unwrap_or_default()
+        .iter()
+        .any(|score| {
+            queue_base.is_none()
+                || audited_base(score).is_none_or(|audited| audited == ticket.base_sha)
+        });
+    let proof_published = queue_base.is_none()
+        || core
+            .list_check_runs(owner, repo, Some(&update.new_oid))
+            .map(|runs| {
+                runs.check_runs.iter().any(|run| {
+                    run.name == super::JANKURAI_PROOF_CHECK
+                        && run.status == jeryu_core::CheckRunStatus::Completed
+                })
+            })
+            .unwrap_or(false);
+    if covered && proof_published {
+        return PushAudit::AlreadyCovered;
+    }
     let Ok(mut queue) = queue().lock() else {
         return PushAudit::Unqueued("the audit queue is unavailable");
     };
@@ -496,6 +513,17 @@ pub(crate) fn plan_push_audit(
             PushAudit::Queued { ticket, note }
         }
     }
+}
+
+/// The base a recorded score was produced against, from the provenance the
+/// ingest keeps with the report, or `None` when the row records none.
+fn audited_base(score: &jeryu_core::JankuraiScore) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(score.report_json.as_deref()?)
+        .ok()?
+        .get("jeryu_audit_provenance")?
+        .get("base_sha")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// The commit a diff audit runs against: the previous tip for main, the

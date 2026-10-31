@@ -1324,6 +1324,59 @@ fn a_failed_report_names_its_reason_and_posts_one_proof_per_head() {
     assert!(output.summary.contains("exit 3"), "{}", output.summary);
 }
 
+/// A head ticketed again after its diff base was replaced carries a pending
+/// proof newer than its completed one. The verdict for the new base is posted
+/// even when it reads exactly like the replaced one, so the head does not keep
+/// a pending proof for an audit that has already come back.
+#[test]
+fn a_re_ticketed_head_gets_a_fresh_proof_for_the_same_verdict() {
+    let core = core_with_repo("re-ticketed");
+    let head = "e".repeat(40);
+    let report = serde_json::json!({"score": 98, "caps_applied": [],
+        "decision": {"hard_findings": 0, "minimum_score": 85}});
+    let submit = || {
+        record_audited_head(
+            &core,
+            &AuditedHead {
+                owner: "jeryu",
+                repo: "re-ticketed",
+                branch: "refs/queue/main/7",
+                head_sha: &head,
+                origin_base_url: "http://forge.test",
+            },
+            Some(report.clone()),
+            0,
+        )
+        .unwrap()
+    };
+    submit();
+    core.create_check_run(
+        "jeryu",
+        "re-ticketed",
+        CreateCheckRunRequest {
+            name: JANKURAI_PROOF_CHECK.to_string(),
+            head_sha: head.clone(),
+            status: Some(CheckRunStatus::InProgress),
+            conclusion: None,
+            details_url: None,
+            output: None,
+        },
+    )
+    .unwrap();
+    submit();
+    let checks = core
+        .list_check_runs("jeryu", "re-ticketed", Some(&head))
+        .unwrap();
+    let newest = checks
+        .check_runs
+        .iter()
+        .filter(|check| check.name == JANKURAI_PROOF_CHECK)
+        .max_by_key(|check| check.completed_at.unwrap_or(check.started_at))
+        .expect("the head has a proof");
+    assert_eq!(newest.status, CheckRunStatus::Completed);
+    assert_eq!(newest.conclusion, Some(CheckConclusion::Success));
+}
+
 #[test]
 fn tool_failed_proofs_explain_every_way_the_audit_can_produce_no_score() {
     // A reason the host recorded travels to the title, the summary and the text.
