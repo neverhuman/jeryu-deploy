@@ -433,6 +433,7 @@ pub(crate) fn authored_audit(
     owner: &str,
     repo: &str,
     head: &str,
+    diff_base: &str,
     login: &str,
 ) -> Option<u64> {
     if !is_sha(head) {
@@ -440,21 +441,24 @@ pub(crate) fn authored_audit(
     }
     let resolved = state.repo_manager.open_parts(owner, repo).ok()?;
     let git = git_for(state, &resolved.path);
-    // Only the live stack. A landed entry's commit is an ancestor of every
-    // queue commit built after it, and its author is not the author of this
-    // change: counting it would bar that person's runner identity from every
-    // later audit, and nobody else is obliged to run one.
+    // Use the submitted diff, including during a base refresh. A landed
+    // author is eligible only once their change is outside that diff.
     let entries: Vec<QueueEntry> = git
         .read_blob_refs("refs/queue-meta/")
         .into_iter()
         .filter_map(|(_, body)| serde_json::from_str::<QueueEntry>(&body).ok())
-        .filter(|entry| entry.state == QueueState::Building)
         .collect();
-    if !entries.iter().any(|entry| entry.queue_sha == head) {
+    if !entries
+        .iter()
+        .any(|entry| entry.state == QueueState::Building && entry.queue_sha == head)
+    {
         return None;
     }
     for entry in entries {
-        if !is_sha(&entry.queue_sha) || !git.is_ancestor(&entry.queue_sha, head) {
+        if !is_sha(&entry.queue_sha)
+            || !git.is_ancestor(&entry.queue_sha, head)
+            || (is_sha(diff_base) && git.is_ancestor(&entry.queue_sha, diff_base))
+        {
             continue;
         }
         if let Ok(pr) = state.core.get_pull_request(owner, repo, entry.number)
@@ -1156,6 +1160,11 @@ fn advance_stack(
     // Whatever landed or failed, the entries above it now sit on a commit
     // that is no longer below them.
     restack(state, owner, repo, base, &live(entries), entries);
+    // Landing can narrow every remaining diff without changing its head SHA.
+    // Refresh outstanding work now, rather than waiting for the next tick.
+    for key in live(entries) {
+        schedule_audit(state, owner, repo, &entries[&key]);
+    }
 }
 
 /// For each entry of a stack (bottom first), the contexts its queue commit

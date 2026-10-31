@@ -148,11 +148,22 @@ pub(crate) struct AuditQueue {
 impl AuditQueue {
     pub(crate) fn enqueue(&mut self, ticket: AuditTicket) -> EnqueueOutcome {
         self.expire_stale_claims(Utc::now());
-        if self
+        if let Some(index) = self
             .tickets
             .iter()
-            .any(|held| held.is_for(&ticket.owner, &ticket.repo, &ticket.head_sha))
+            .position(|held| held.is_for(&ticket.owner, &ticket.repo, &ticket.head_sha))
         {
+            let held = &self.tickets[index];
+            // A queue commit can stay unchanged while lower entries land.
+            // Revoke even a running claim when its diff changes: ingest must
+            // match the replacement base, never relabel the previous report.
+            if ticket.branch.starts_with("refs/queue/")
+                && held.branch == ticket.branch
+                && (held.base_sha != ticket.base_sha || held.audit_mode != ticket.audit_mode)
+            {
+                self.tickets[index] = ticket;
+                return EnqueueOutcome::Superseded(1);
+            }
             return EnqueueOutcome::AlreadyQueued;
         }
         // An unclaimed ticket for an earlier tip of the same branch is work

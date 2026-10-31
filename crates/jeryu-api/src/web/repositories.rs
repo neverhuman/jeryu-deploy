@@ -561,6 +561,7 @@ fn runner_audit_ingest(
         &repo.owner,
         &repo.name,
         &submission.commit_sha,
+        &submission.base_sha,
     ) {
         return api_error(rejected.status, "permission_denied", &rejected.reason);
     }

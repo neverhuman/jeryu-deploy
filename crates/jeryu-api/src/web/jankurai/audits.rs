@@ -83,10 +83,16 @@ pub(crate) fn author_produced_submission(
     owner: &str,
     repo: &str,
     head_sha: &str,
+    base_sha: &str,
 ) -> Option<SubmissionRejected> {
-    if let Some(number) =
-        crate::web::merge_queue::authored_audit(state, owner, repo, head_sha, &account.login)
-    {
+    if let Some(number) = crate::web::merge_queue::authored_audit(
+        state,
+        owner,
+        repo,
+        head_sha,
+        base_sha,
+        &account.login,
+    ) {
         return Some(SubmissionRejected::new(
             StatusCode::FORBIDDEN,
             format!("a queue audit cannot come from the author of pull request #{number}"),

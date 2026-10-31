@@ -13,11 +13,18 @@ async fn queue_replay_schedules_exact_sha_and_tick_restores_lost_ticket() {
     let sha = body["queue_sha"].as_str().unwrap();
     assert_ne!(sha, fx.head);
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", sha, "alice"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", sha, &base, "alice"),
         Some(fx.number)
     );
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", sha, "independent-runner"),
+        merge_queue::authored_audit(
+            &fx.state,
+            "alice",
+            "jeryu",
+            sha,
+            &base,
+            "independent-runner"
+        ),
         None
     );
     let ticket = audit_queue::queue()
@@ -277,20 +284,20 @@ async fn a_stack_tickets_every_queue_sha_and_holds_each_author_off_the_top() {
     // The top commit carries both changes, so neither author may score it,
     // while an independent runner still may.
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, "alice"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "alice"),
         Some(fx.number)
     );
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, "bob"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "bob"),
         Some(second)
     );
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, "gate-runner"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "gate-runner"),
         None
     );
     // The bottom commit does not carry the entry above it.
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &bottom, "bob"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &bottom, &base, "bob"),
         None
     );
 }
@@ -313,12 +320,12 @@ async fn a_landed_entrys_author_may_audit_a_later_queue_sha() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let sha = body["queue_sha"].as_str().unwrap().to_string();
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, "bob"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &landed, "bob"),
         None,
         "bob's landed change is not the change this sha is being audited for"
     );
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, "alice"),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &landed, "alice"),
         Some(fx.number)
     );
 }
@@ -414,3 +421,6 @@ fn add_audited_pr(fx: &Fixture, base: &str, branch: &str, file: &str, author: &s
     .unwrap();
     pr.number
 }
+
+#[path = "merge_queue_audit_refresh_tests.rs"]
+mod refresh_tests;
