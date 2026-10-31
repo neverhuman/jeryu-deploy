@@ -246,3 +246,171 @@ fn isolate_base(fx: &mut Fixture, base: &str) {
             .unwrap();
     }
 }
+
+#[tokio::test]
+async fn a_stack_tickets_every_queue_sha_and_holds_each_author_off_the_top() {
+    let mut fx = Fixture::with_audit_store("stack-audit.txt", "stack audit\n");
+    let base = fx.advance_main("stack-base.txt", "base\n");
+    isolate_base(&mut fx, "audit-stack");
+    let second = add_audited_pr(&fx, "audit-stack", "feature-two", "stack-two.txt", "bob");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let bottom = body["queue_sha"].as_str().unwrap().to_string();
+    let (status, body) = enqueue_number(&fx, second).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let top = body["queue_sha"].as_str().unwrap().to_string();
+    assert_ne!(bottom, top, "the stacked entry is its own commit");
+
+    // One ticket per entry, each naming its own queue ref: a stack must not
+    // supersede the tickets of the entries it sits on.
+    let mut queue = audit_queue::queue().lock().unwrap();
+    for (number, sha) in [(fx.number, &bottom), (second, &top)] {
+        let ticket = queue
+            .take("alice", "jeryu", sha)
+            .unwrap_or_else(|| panic!("#{number} was ticketed at {sha}"));
+        assert_eq!(ticket.branch, format!("refs/queue/audit-stack/{number}"));
+        assert_eq!(ticket.base_sha, base, "diffed against the protected base");
+        assert_eq!(ticket.audit_mode, "diff");
+    }
+    drop(queue);
+
+    // The top commit carries both changes, so neither author may score it,
+    // while an independent runner still may.
+    assert_eq!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, "alice"),
+        Some(fx.number)
+    );
+    assert_eq!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, "bob"),
+        Some(second)
+    );
+    assert_eq!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, "gate-runner"),
+        None
+    );
+    // The bottom commit does not carry the entry above it.
+    assert_eq!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &bottom, "bob"),
+        None
+    );
+}
+
+/// Independence is about the change being audited, not the queue's history:
+/// every queue commit descends from the ones that landed before it.
+#[tokio::test]
+async fn a_landed_entrys_author_may_audit_a_later_queue_sha() {
+    let fx = Fixture::with_audit_store("landed-audit.txt", "landed audit\n");
+    let bob = add_audited_pr(&fx, "main", "feature-bob", "bob.txt", "bob");
+    fx.advance_main("landed-base.txt", "base\n");
+    let (status, body) = enqueue_number(&fx, bob).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let landed = body["queue_sha"].as_str().unwrap().to_string();
+    fx.status(&landed, jeryu_core::CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    assert_eq!(fx.main(), landed, "bob's entry landed");
+
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let sha = body["queue_sha"].as_str().unwrap().to_string();
+    assert_eq!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, "bob"),
+        None,
+        "bob's landed change is not the change this sha is being audited for"
+    );
+    assert_eq!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, "alice"),
+        Some(fx.number)
+    );
+}
+
+async fn enqueue_number(fx: &Fixture, number: u64) -> (StatusCode, Value) {
+    use super::merge_queue_tests::account;
+    let response = merge_queue::enqueue(
+        State(fx.state.clone()),
+        account("rel-bot", UserRole::Admin),
+        AxumPath((fx.repo_id.clone(), number)),
+    )
+    .await;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Another author's approved, proof-carrying pull request on the same base,
+/// so a stack holds changes from more than one person.
+fn add_audited_pr(fx: &Fixture, base: &str, branch: &str, file: &str, author: &str) -> u64 {
+    use super::merge_queue_tests::git;
+    let base_sha = fx.main();
+    git(&fx.work, &["checkout", "--quiet", "-b", branch, &base_sha]);
+    std::fs::write(fx.work.join(file), "stacked\n").unwrap();
+    git(&fx.work, &["add", "."]);
+    git(&fx.work, &["commit", "--quiet", "-m", branch]);
+    let head = git(&fx.work, &["rev-parse", "HEAD"]);
+    git(
+        &fx.work,
+        &["push", "--quiet", fx.bare.to_str().unwrap(), branch],
+    );
+    git(&fx.work, &["checkout", "--quiet", "main"]);
+    let core = &fx.state.core;
+    let pr = core
+        .create_pull_request(
+            "alice",
+            "jeryu",
+            author,
+            jeryu_core::CreatePullRequestRequest {
+                title: branch.into(),
+                head: branch.into(),
+                base: base.into(),
+                head_sha: Some(head.clone()),
+                base_sha: Some(base_sha),
+                changed_files: vec![file.into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    core.create_check_run(
+        "alice",
+        "jeryu",
+        jeryu_core::CreateCheckRunRequest {
+            name: "ci/fast".into(),
+            head_sha: head.clone(),
+            status: Some(jeryu_core::CheckRunStatus::Completed),
+            conclusion: Some(jeryu_core::CheckConclusion::Success),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    core.create_review(
+        "alice",
+        "jeryu",
+        pr.number,
+        "review-bot",
+        jeryu_core::CreateReviewRequest {
+            body: None,
+            event: jeryu_core::ReviewState::Approved,
+            comments: Vec::new(),
+            expected_head_sha: Some(head.clone()),
+        },
+    )
+    .unwrap();
+    crate::ci_bridge::record_audited_head(
+        core,
+        &crate::ci_bridge::AuditedHead {
+            owner: "alice",
+            repo: "jeryu",
+            branch,
+            head_sha: &head,
+            origin_base_url: "http://forge.test",
+        },
+        Some(serde_json::json!({"score": 98, "caps_applied": [],
+        "decision": {"hard_findings": 0, "minimum_score": 85}})),
+        0,
+    )
+    .unwrap();
+    pr.number
+}

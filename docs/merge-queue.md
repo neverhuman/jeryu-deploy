@@ -293,6 +293,44 @@ even when the trees would match (`a_replay_never_borrows_the_head_result`).
 Reusing a result across different shas or gate inputs stays out of scope. The
 formal reviewer rejected it ("exact source authority").
 
+## A queue commit needs its own governed proof (2026-10-31)
+
+A queue commit is built by the forge, not pushed, so it never reached the push
+path that records an audit ticket. On a base that requires `jankurai/proof`
+that left the entry building with nothing to wait for: root/jankurai#29 sat at
+one queue sha from 2026-10-31T16:46Z with `jankurai/required` green, no proof
+check at all, and the queue correctly refusing to land a context it never saw.
+
+Building or advancing an entry now records the same ticket a push would, for
+each entry of the stack and for the exact queue sha:
+
+- the ticket names `refs/queue/<base>/<n>`, so a restack supersedes only that
+  entry's own stale ticket and never a neighbour's;
+- the audit policy (`.jeryu/ci.toml`) and the diff base are read from the
+  protected base branch, never from the replayed tree, so a queued change
+  cannot opt its own audit out;
+- the proof is published pending, exactly as on a push. Only a runner's
+  provenance-checked report through the ingest completes it, and only a green
+  `jankurai/proof` on the queue sha lets the base move. Nothing here can pass
+  the check.
+
+Scheduling repeats on every tick, not only on the build: tickets live in
+process memory, and a score can be recorded while publishing its check run
+fails. A queue sha that has a score but no completed proof is ticketed again
+rather than treated as covered, so a restart or a half-written publication
+recovers instead of stranding the entry.
+
+A stack's top commit carries every change below it, so its audit is the
+required evidence for those pull requests too: the ingest refuses a submission
+from the author of **any** entry still in the stack below it, not just the
+entry it belongs to. Replay changing the commit ids does not make an author
+independent of their own change. Entries that already landed do not count,
+even though every later queue commit descends from them: that history is not
+the change being audited.
+
+Landing the stuck entry needs this deployed and a gate runner to claim the new
+ticket and hand back a governed report; the forge still runs no auditor.
+
 ## The direct merge may not replay past the gate (2026-09-28)
 
 `merge_ready_pull_git` replays a diverged head onto a linear-history base so a

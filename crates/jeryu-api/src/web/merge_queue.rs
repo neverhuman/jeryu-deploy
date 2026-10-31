@@ -440,10 +440,15 @@ pub(crate) fn authored_audit(
     }
     let resolved = state.repo_manager.open_parts(owner, repo).ok()?;
     let git = git_for(state, &resolved.path);
+    // Only the live stack. A landed entry's commit is an ancestor of every
+    // queue commit built after it, and its author is not the author of this
+    // change: counting it would bar that person's runner identity from every
+    // later audit, and nobody else is obliged to run one.
     let entries: Vec<QueueEntry> = git
         .read_blob_refs("refs/queue-meta/")
         .into_iter()
-        .filter_map(|(_, body)| serde_json::from_str(&body).ok())
+        .filter_map(|(_, body)| serde_json::from_str::<QueueEntry>(&body).ok())
+        .filter(|entry| entry.state == QueueState::Building)
         .collect();
     if !entries.iter().any(|entry| entry.queue_sha == head) {
         return None;
