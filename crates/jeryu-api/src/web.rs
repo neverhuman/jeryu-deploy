@@ -2176,6 +2176,8 @@ mod deployment_surface_tests;
 mod repository_move_tests;
 
 #[cfg(test)]
+mod merge_queue_audit_tests;
+#[cfg(test)]
 mod merge_queue_tests;
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ use axum::body::Bytes;
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
-use jeryu_core::{AccountSummary, ForgeCore};
+use jeryu_core::AccountSummary;
 use serde::{Deserialize, Serialize};
 
 use super::{WebState, api_error};
@@ -78,13 +78,21 @@ impl SubmissionRejected {
 /// Checked before the ticket is claimed, so a refusal leaves the open ticket
 /// for the runner that may actually run it.
 pub(crate) fn author_produced_submission(
-    core: &ForgeCore,
+    state: &WebState,
     account: &AccountSummary,
     owner: &str,
     repo: &str,
     head_sha: &str,
 ) -> Option<SubmissionRejected> {
-    let pulls = core.list_pull_requests(owner, repo, None).ok()?;
+    if let Some(number) =
+        crate::web::merge_queue::authored_audit(state, owner, repo, head_sha, &account.login)
+    {
+        return Some(SubmissionRejected::new(
+            StatusCode::FORBIDDEN,
+            format!("a queue audit cannot come from the author of pull request #{number}"),
+        ));
+    }
+    let pulls = state.core.list_pull_requests(owner, repo, None).ok()?;
     let authored = pulls.into_iter().find(|pull| {
         pull.head.sha == head_sha
             && crate::web::principals::same_principal(&pull.author, &account.login)

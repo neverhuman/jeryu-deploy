@@ -1,0 +1,248 @@
+//! Queue replays must reach the same governed audit queue as pushed heads.
+use super::merge_queue_tests::Fixture;
+use super::*;
+use crate::ci_bridge::audit_queue;
+
+#[tokio::test]
+async fn queue_replay_schedules_exact_sha_and_tick_restores_lost_ticket() {
+    let mut fx = Fixture::with_audit_store("audit-queue.txt", "queue audit recovery\n");
+    let base = fx.advance_main("audit-base.txt", "base\n");
+    isolate_base(&mut fx, "audit-recovery");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let sha = body["queue_sha"].as_str().unwrap();
+    assert_ne!(sha, fx.head);
+    assert_eq!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", sha, "alice"),
+        Some(fx.number)
+    );
+    assert_eq!(
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", sha, "independent-runner"),
+        None
+    );
+    let ticket = audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("alice", "jeryu", sha)
+        .expect("replay scheduled an audit");
+    assert_eq!(ticket.head_sha, sha);
+    assert_eq!(ticket.branch, "refs/queue/audit-recovery/2");
+    assert_eq!(ticket.base_sha, base);
+    assert_eq!(ticket.audit_mode, "diff");
+    let runs = fx
+        .state
+        .core
+        .list_check_runs("alice", "jeryu", Some(sha))
+        .unwrap();
+    assert!(
+        runs.check_runs
+            .iter()
+            .any(|run| run.name == "jankurai/proof"
+                && run.status == jeryu_core::CheckRunStatus::InProgress
+                && run.conclusion.is_none())
+    );
+    assert!(
+        fx.state
+            .core
+            .list_jankurai_scores("alice", "jeryu", None, Some(sha))
+            .unwrap()
+            .is_empty()
+    );
+    // Model a successful score write followed by a failed check publication.
+    // A stored score alone must not suppress recovery of the missing proof.
+    fx.state
+        .core
+        .record_jankurai_score(
+            "alice",
+            "jeryu",
+            jeryu_core::RecordJankuraiScoreRequest {
+                branch: ticket.branch.clone(),
+                commit_sha: sha.to_string(),
+                score: Some(98),
+                decision: "pass".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // Losing the in-memory ticket models a restart; the persisted entry is
+    // sufficient to schedule it again without rebuilding or passing a proof.
+    assert_eq!(merge_queue::tick(&fx.state), 0);
+    let restored = audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("alice", "jeryu", sha)
+        .expect("tick restored audit");
+    assert_eq!(restored.base_sha, ticket.base_sha);
+    assert_eq!(restored.head_sha, ticket.head_sha);
+    assert_eq!(fx.main(), base);
+}
+
+#[tokio::test]
+async fn protected_queue_waits_for_provenance_checked_exact_sha_report() {
+    use super::merge_queue_tests::account;
+    use crate::ci_bridge::{self, AuditedHead};
+    let mut fx = Fixture::with_audit_store("protected-audit.txt", "protected queue audit\n");
+    let report = serde_json::json!({"score": 98, "caps_applied": [],
+        "decision": {"hard_findings": 0, "minimum_score": 85}});
+    ci_bridge::record_audited_head(
+        &fx.state.core,
+        &AuditedHead {
+            owner: "alice",
+            repo: "jeryu",
+            branch: "feature",
+            head_sha: &fx.head,
+            origin_base_url: "http://forge.test",
+        },
+        Some(report.clone()),
+        0,
+    )
+    .unwrap();
+    fx.state
+        .core
+        .set_branch_protection(
+            "alice",
+            "jeryu",
+            "main",
+            jeryu_core::SetBranchProtectionRequest {
+                required_status_checks: vec!["ci/fast".into(), "jankurai/proof".into()],
+                require_jankurai_proof: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let base = fx.advance_main("protected-base.txt", "base\n");
+    isolate_base(&mut fx, "audit-protected");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let sha = body["queue_sha"].as_str().unwrap();
+    fx.status(sha, jeryu_core::CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 0);
+    assert_eq!(fx.main(), base);
+    let ticket = audit_queue::queue()
+        .lock()
+        .unwrap()
+        .tickets()
+        .iter()
+        .find(|t| t.owner == "alice" && t.repo == "jeryu" && t.head_sha == sha)
+        .unwrap()
+        .clone();
+    let (version, _) = ci_bridge::jankurai::governed_auditor_identity().unwrap();
+    let mut submission = serde_json::json!({
+        "branch": ticket.branch, "commit_sha": sha, "base_sha": ticket.base_sha,
+        "runner_id": "independent-test-runner", "jankurai_version": version,
+        "jankurai_sha256": "0".repeat(64), "tool_exit": 0, "report": report
+    });
+    async fn ingest(fx: &Fixture, login: &str, body: &Value) -> StatusCode {
+        let response = repo_jankurai_scores_ingest(
+            State(fx.state.clone()),
+            account(login, UserRole::Admin),
+            AxumPath("alice/jeryu".to_string()),
+            axum::body::Bytes::from(body.to_string()),
+        )
+        .await;
+        let status = response.status();
+        if status == StatusCode::INTERNAL_SERVER_ERROR {
+            panic!(
+                "{}",
+                String::from_utf8_lossy(
+                    &axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap()
+                )
+            );
+        }
+        status
+    }
+    assert_eq!(
+        ingest(&fx, "independent-runner", &submission).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(merge_queue::tick(&fx.state), 0);
+    submission["jankurai_sha256"] = ci_bridge::GOVERNED_JANKURAI_SHA256.into();
+    assert_eq!(
+        ingest(&fx, "alice", &submission).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        ingest(&fx, "independent-runner", &submission).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    assert_eq!(
+        super::merge_queue_tests::git(&fx.bare, &["rev-parse", "refs/heads/audit-protected"]),
+        sha
+    );
+}
+
+// Other queue fixtures intentionally share alice/jeryu. Give these audits
+// separate base refs so concurrent tickets cannot supersede each other.
+fn isolate_base(fx: &mut Fixture, base: &str) {
+    use super::merge_queue_tests::git;
+    git(
+        &fx.bare,
+        &["update-ref", &format!("refs/heads/{base}"), &fx.main()],
+    );
+    let pr = fx
+        .state
+        .core
+        .create_pull_request(
+            "alice",
+            "jeryu",
+            "alice",
+            jeryu_core::CreatePullRequestRequest {
+                title: "audited queue".into(),
+                head: "feature".into(),
+                base: base.into(),
+                head_sha: Some(fx.head.clone()),
+                base_sha: Some(fx.main()),
+                changed_files: vec!["feature.txt".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    fx.number = pr.number;
+    fx.state
+        .core
+        .create_review(
+            "alice",
+            "jeryu",
+            fx.number,
+            "review-bot",
+            jeryu_core::CreateReviewRequest {
+                body: None,
+                event: jeryu_core::ReviewState::Approved,
+                comments: Vec::new(),
+                expected_head_sha: Some(fx.head.clone()),
+            },
+        )
+        .unwrap();
+    {
+        crate::ci_bridge::record_audited_head(
+            &fx.state.core,
+            &crate::ci_bridge::AuditedHead {
+                owner: "alice",
+                repo: "jeryu",
+                branch: "feature",
+                head_sha: &fx.head,
+                origin_base_url: "http://forge.test",
+            },
+            Some(serde_json::json!({"score": 98, "caps_applied": [],
+            "decision": {"hard_findings": 0, "minimum_score": 85}})),
+            0,
+        )
+        .unwrap();
+        fx.state
+            .core
+            .set_branch_protection(
+                "alice",
+                "jeryu",
+                base,
+                jeryu_core::SetBranchProtectionRequest {
+                    required_status_checks: vec!["ci/fast".into(), "jankurai/proof".into()],
+                    require_jankurai_proof: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+}

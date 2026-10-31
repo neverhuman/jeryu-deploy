@@ -556,7 +556,7 @@ fn runner_audit_ingest(
     // Independence before anything else: required evidence for a change may
     // not be produced by the change's author, whatever identities they hold.
     if let Some(rejected) = author_produced_submission(
-        state.github.core(),
+        state,
         account,
         &repo.owner,
         &repo.name,

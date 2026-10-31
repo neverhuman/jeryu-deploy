@@ -264,8 +264,13 @@ fn persist(state: &WebState, owner: &str, repo: &str, entry: &QueueEntry) {
         return;
     };
     let git = git_for(state, &resolved.path);
-    if let Ok(json) = serde_json::to_string(entry) {
-        let _ = git.write_blob_ref(&meta_ref(&entry.base, entry.number), &json);
+    if let Ok(json) = serde_json::to_string(entry)
+        && git
+            .write_blob_ref(&meta_ref(&entry.base, entry.number), &json)
+            .is_ok()
+        && entry.state == QueueState::Building
+    {
+        schedule_audit(state, owner, repo, entry);
     }
     if entry.state != QueueState::Building {
         git.delete_ref(&entry.queue_ref);
@@ -378,6 +383,82 @@ fn build_on(
     // gate runner to come and gate it instead of waiting for its next tick.
     super::gate_wanted::record_queue_commit(state, &entry.repo, entry.number, &entry.queue_sha);
     Ok(())
+}
+
+/// Repeat on ticks as well as builds: tickets are volatile, and publishing a
+/// proof can fail after an audit was recorded. Only governed ingest completes it.
+fn schedule_audit(state: &WebState, owner: &str, repo: &str, entry: &QueueEntry) {
+    let Ok(pr) = state.core.get_pull_request(owner, repo, entry.number) else {
+        return;
+    };
+    let (_, _, required) = super::pulls::queue_gate(state, &pr);
+    if !required
+        .iter()
+        .any(|name| name == crate::ci_bridge::JANKURAI_PROOF_CHECK)
+    {
+        return;
+    }
+    let Ok(resolved) = state.repo_manager.open_parts(owner, repo) else {
+        return;
+    };
+    // Publish work only after the source mapping is durable, so author
+    // independence can be checked even if a runner claims immediately.
+    let git = git_for(state, &resolved.path);
+    let recorded = git
+        .run(&["show", &meta_ref(&entry.base, entry.number)])
+        .ok()
+        .and_then(|body| serde_json::from_str::<QueueEntry>(&body).ok());
+    if recorded.is_none_or(|stored| stored.queue_sha != entry.queue_sha) {
+        return;
+    }
+    crate::ci_bridge::queue_head_audit(
+        &state.core,
+        &state.repo_manager.config().git_bin,
+        &resolved.path,
+        owner,
+        repo,
+        &crate::ci_bridge::RefUpdate {
+            ref_name: entry.queue_ref.clone(),
+            old_oid: entry.base_sha.clone(),
+            new_oid: entry.queue_sha.clone(),
+        },
+        &crate::ci_bridge::default_origin_base_url(),
+    );
+}
+
+/// A stack-top audit covers the changes below it too. Their authors cannot
+/// supply its required evidence merely because replay changed the commit IDs.
+pub(crate) fn authored_audit(
+    state: &WebState,
+    owner: &str,
+    repo: &str,
+    head: &str,
+    login: &str,
+) -> Option<u64> {
+    if !is_sha(head) {
+        return None;
+    }
+    let resolved = state.repo_manager.open_parts(owner, repo).ok()?;
+    let git = git_for(state, &resolved.path);
+    let entries: Vec<QueueEntry> = git
+        .read_blob_refs("refs/queue-meta/")
+        .into_iter()
+        .filter_map(|(_, body)| serde_json::from_str(&body).ok())
+        .collect();
+    if !entries.iter().any(|entry| entry.queue_sha == head) {
+        return None;
+    }
+    for entry in entries {
+        if !is_sha(&entry.queue_sha) || !git.is_ancestor(&entry.queue_sha, head) {
+            continue;
+        }
+        if let Ok(pr) = state.core.get_pull_request(owner, repo, entry.number)
+            && super::principals::same_principal(&pr.author, login)
+        {
+            return Some(entry.number);
+        }
+    }
+    None
 }
 
 /// The base tip of `base` in `owner/repo`.
@@ -1039,6 +1120,9 @@ fn advance_stack(
     };
     restack(state, owner, repo, base, &live(entries), entries);
     let stack = live(entries);
+    for key in &stack {
+        schedule_audit(state, owner, repo, &entries[key]);
+    }
     // Each entry's own gate, on its own required contexts.
     let own: Vec<Option<bool>> = stack
         .iter()

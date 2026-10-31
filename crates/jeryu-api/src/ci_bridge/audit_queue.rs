@@ -397,17 +397,26 @@ pub(crate) fn plan_push_audit(
     repo: &str,
     update: &RefUpdate,
 ) -> PushAudit {
-    let Some(branch) = update.ref_name.strip_prefix("refs/heads/") else {
-        return PushAudit::Skipped("only branch heads are audited");
+    // Queue refs are forge-owned. Read policy from the protected base, never
+    // from the replayed tree, and keep each stack entry's ticket distinct.
+    let queue_base = update
+        .ref_name
+        .strip_prefix("refs/queue/")
+        .and_then(|name| name.rsplit_once('/'))
+        .filter(|(_, number)| number.parse::<u64>().is_ok())
+        .map(|(base, _)| base);
+    let (branch, base_branch) = if let Some(base) = queue_base {
+        (update.ref_name.as_str(), base.to_string())
+    } else {
+        let Some(branch) = update.ref_name.strip_prefix("refs/heads/") else {
+            return PushAudit::Skipped("only branch and queue heads are audited");
+        };
+        let pull_base = open_pull_base(core, owner, repo, branch);
+        if let Some(reason) = skip_reason(branch, pull_base.is_some()) {
+            return PushAudit::Skipped(reason);
+        }
+        (branch, pull_base.unwrap_or_else(|| branch.to_string()))
     };
-    let pull_base = open_pull_base(core, owner, repo, branch);
-    if let Some(reason) = skip_reason(branch, pull_base.is_some()) {
-        return PushAudit::Skipped(reason);
-    }
-    // What the repository says about auditing itself, read from the branch a
-    // change lands on: the pushed `main`, or the base a pull request targets.
-    // A pull request that adds the key opts out nothing.
-    let base_branch = pull_base.unwrap_or_else(|| branch.to_string());
     let read_from = if base_branch == branch {
         update.new_oid.clone()
     } else {
@@ -436,10 +445,33 @@ pub(crate) fn plan_push_audit(
         .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
         .map(|scores| !scores.is_empty())
         .unwrap_or(false);
-    if scored {
+    let proof_published = queue_base.is_none()
+        || core
+            .list_check_runs(owner, repo, Some(&update.new_oid))
+            .map(|runs| {
+                runs.check_runs.iter().any(|run| {
+                    run.name == super::JANKURAI_PROOF_CHECK
+                        && run.status == jeryu_core::CheckRunStatus::Completed
+                })
+            })
+            .unwrap_or(false);
+    if scored && proof_published {
         return PushAudit::AlreadyCovered;
     }
-    let ticket = match commit_base(git_bin, bare, branch, update) {
+    let base = if queue_base.is_some() {
+        super::run_git_stdout(
+            git_bin,
+            Some(bare),
+            &[
+                "merge-base",
+                &format!("refs/heads/{base_branch}"),
+                &update.new_oid,
+            ],
+        )
+    } else {
+        commit_base(git_bin, bare, branch, update)
+    };
+    let ticket = match base {
         Some(base) => AuditTicket::new(owner, repo, branch, &update.new_oid, &base),
         None => AuditTicket::whole_tree(owner, repo, branch, &update.new_oid),
     };
