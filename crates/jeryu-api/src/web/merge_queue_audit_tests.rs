@@ -55,8 +55,9 @@ async fn queue_replay_schedules_exact_sha_and_tick_restores_lost_ticket() {
             .unwrap()
             .is_empty()
     );
-    // Model a successful score write followed by a failed check publication.
-    // A stored score alone must not suppress recovery of the missing proof.
+    // Model a score write followed by a failed check publication. A record the
+    // auditor put no verdict in (`decision` is not `scored`) must not suppress
+    // recovery of the missing proof: there is no verdict to republish.
     fx.state
         .core
         .record_jankurai_score(
@@ -389,6 +390,78 @@ async fn an_unreadable_queue_stack_fails_closed() {
         merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &fx.main(), "independent-runner")
             .is_err()
     );
+}
+
+/// Exactly one audit per head means exactly one recorded verdict. When the
+/// score was written but publishing the proof failed, the recovery republishes
+/// the recorded verdict and tickets nothing, so no second report can be
+/// authorized to replace it.
+#[tokio::test]
+async fn a_recorded_verdict_is_republished_rather_than_audited_again() {
+    let mut fx = Fixture::with_audit_store("republish.txt", "republish verdict\n");
+    fx.advance_main("republish-base.txt", "base\n");
+    isolate_base(&mut fx, "audit-republish");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let sha = body["queue_sha"].as_str().unwrap().to_string();
+    let ticket = audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("alice", "jeryu", &sha)
+        .expect("replay scheduled an audit");
+    // The ingest's own verdict for this head, stored before its check-run
+    // publication failed.
+    fx.state
+        .core
+        .record_jankurai_score(
+            "alice",
+            "jeryu",
+            jeryu_core::RecordJankuraiScoreRequest {
+                branch: ticket.branch.clone(),
+                commit_sha: sha.clone(),
+                score: Some(98),
+                hard_findings: Some(0),
+                decision: "scored".to_string(),
+                report: Some(serde_json::json!({"score": 98, "caps_applied": [],
+                    "decision": {"hard_findings": 0, "minimum_score": 85}})),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(merge_queue::tick(&fx.state), 0);
+    assert!(
+        audit_queue::queue()
+            .lock()
+            .unwrap()
+            .take("alice", "jeryu", &sha)
+            .is_none(),
+        "a head with a recorded verdict must not be ticketed for a second report"
+    );
+    let proofs: Vec<_> = fx
+        .state
+        .core
+        .list_check_runs("alice", "jeryu", Some(&sha))
+        .unwrap()
+        .check_runs
+        .into_iter()
+        .filter(|run| {
+            run.name == "jankurai/proof" && run.status == jeryu_core::CheckRunStatus::Completed
+        })
+        .collect();
+    assert_eq!(proofs.len(), 1, "the recorded verdict published once");
+    assert_eq!(
+        proofs[0].conclusion,
+        Some(jeryu_core::CheckConclusion::Success)
+    );
+    // The recorded score is the one the republished proof reports: recovery
+    // writes no second score row.
+    let scores = fx
+        .state
+        .core
+        .list_jankurai_scores("alice", "jeryu", None, Some(&sha))
+        .unwrap();
+    assert_eq!(scores.len(), 1);
+    assert_eq!(scores[0].score, Some(98));
 }
 
 async fn enqueue_number(fx: &Fixture, number: u64) -> (StatusCode, Value) {

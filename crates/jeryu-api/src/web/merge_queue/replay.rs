@@ -186,20 +186,68 @@ impl Git<'_> {
     }
 
     /// [`Self::read_blob_refs`], but failing to enumerate the refs is an error.
+    ///
+    /// Two git processes whatever the queue holds: the audit ingest reads every
+    /// `refs/queue-meta/` ref, and one `cat-file` per ref grew that cost with
+    /// the queue.
     pub(super) fn try_read_blob_refs(
         &self,
         prefix: &str,
     ) -> Result<Vec<(String, String)>, ReplayFailure> {
         let listing = self.run(&["for-each-ref", "--format=%(refname) %(objectname)", prefix])?;
-        Ok(listing
+        let refs: Vec<(&str, &str)> = listing
             .lines()
             .filter_map(|line| line.split_once(' '))
+            .collect();
+        if refs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut request = String::new();
+        for (_, blob) in &refs {
+            request.push_str(blob);
+            request.push('\n');
+        }
+        let batch = self.run_with_stdin(&["cat-file", "--batch"], &request)?;
+        let bodies = batch_bodies(&batch);
+        Ok(refs
+            .iter()
             .filter_map(|(name, blob)| {
-                self.run(&["cat-file", "blob", blob])
-                    .ok()
-                    .map(|body| (name.to_string(), body))
+                bodies
+                    .get(*blob)
+                    .map(|body| (name.to_string(), body.clone()))
             })
             .collect())
+    }
+
+    /// Run git with `input` on its stdin and return its raw stdout.
+    fn run_with_stdin(&self, args: &[&str], input: &str) -> Result<Vec<u8>, ReplayFailure> {
+        use std::io::Write;
+        let mut child = Command::new(self.bin)
+            .arg("-C")
+            .arg(self.bare)
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|err| ReplayFailure::Git(err.to_string()))?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| ReplayFailure::Git("no stdin".into()))?
+            .write_all(input.as_bytes())
+            .map_err(|err| ReplayFailure::Git(err.to_string()))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|err| ReplayFailure::Git(err.to_string()))?;
+        if !out.status.success() {
+            return Err(ReplayFailure::Git(format!(
+                "git {}: {}",
+                args.first().copied().unwrap_or_default(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(out.stdout)
     }
 
     /// Committer time (unix seconds) of `sha`.
@@ -406,14 +454,59 @@ pub(crate) fn is_queue_owned_ref(name: &str) -> bool {
     name.starts_with("refs/queue/") || name.starts_with("refs/queue-meta/")
 }
 
+/// `object id -> contents` for the output of `git cat-file --batch`: each
+/// record is `<oid> <type> <size>` on one line, then exactly `<size>` bytes and
+/// a newline. A `<oid> missing` line has no body and is skipped, so a ref whose
+/// blob was pruned is absent rather than empty.
+fn batch_bodies(output: &[u8]) -> std::collections::HashMap<String, String> {
+    let mut bodies = std::collections::HashMap::new();
+    let mut rest = output;
+    while let Some(end) = rest.iter().position(|byte| *byte == b'\n') {
+        let header = String::from_utf8_lossy(&rest[..end]).to_string();
+        rest = &rest[end + 1..];
+        let mut fields = header.split(' ');
+        let Some(oid) = fields.next() else { break };
+        let (Some(_kind), Some(size)) = (fields.next(), fields.next()) else {
+            continue; // `missing` or `ambiguous`: no body follows
+        };
+        let Ok(size) = size.parse::<usize>() else {
+            break;
+        };
+        if rest.len() < size {
+            break;
+        }
+        bodies.insert(
+            oid.to_string(),
+            String::from_utf8_lossy(&rest[..size]).to_string(),
+        );
+        rest = &rest[(size + 1).min(rest.len())..];
+    }
+    bodies
+}
+
 #[cfg(test)]
 mod tests {
-    use super::committer_seconds;
+    use super::{batch_bodies, committer_seconds};
 
     #[test]
     fn committer_seconds_always_passes_the_previous_attempt() {
         assert_eq!(committer_seconds(100, 100), 101);
         assert_eq!(committer_seconds(100, 250), 251);
         assert_eq!(committer_seconds(300, 100), 300);
+    }
+
+    #[test]
+    fn batch_bodies_reads_every_record_and_skips_a_missing_one() {
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let gone = "c".repeat(40);
+        let mut output = Vec::new();
+        output.extend_from_slice(format!("{a} blob 7\n{{\"n\":1}}\n").as_bytes());
+        output.extend_from_slice(format!("{gone} missing\n").as_bytes());
+        output.extend_from_slice(format!("{b} blob 2\n{{}}\n").as_bytes());
+        let bodies = batch_bodies(&output);
+        assert_eq!(bodies.get(&a).map(String::as_str), Some("{\"n\":1}"));
+        assert_eq!(bodies.get(&b).map(String::as_str), Some("{}"));
+        assert!(!bodies.contains_key(&gone));
     }
 }

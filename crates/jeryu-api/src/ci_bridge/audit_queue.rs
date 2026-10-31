@@ -383,6 +383,10 @@ pub(crate) enum PushAudit {
     Skipped(&'static str),
     /// Already scored, or already waiting: exactly one audit per head.
     AlreadyCovered,
+    /// A head whose verdict is recorded but whose `jankurai/proof` never
+    /// completed. The recorded verdict is republished; no second audit is
+    /// authorized, so the first report stays the one that counts.
+    ProofUnpublished(Box<jeryu_core::JankuraiScore>),
     /// The head needs an audit but no ticket could be recorded; the proof stays
     /// pending and says why, and nothing on the forge runs the audit instead.
     Unqueued(&'static str),
@@ -462,6 +466,7 @@ pub(crate) fn plan_push_audit(
         )
         // An empty merge-base would ticket a base no report can match, so the
         // head is audited whole instead, as on the push path.
+        .map(|oid| oid.trim().to_string())
         .filter(|oid| !oid.is_empty())
     } else {
         commit_base(git_bin, bare, branch, update)
@@ -502,6 +507,18 @@ pub(crate) fn plan_push_audit(
             .unwrap_or(false);
     if covered && proof_published {
         return PushAudit::AlreadyCovered;
+    }
+    // Recover a stored verdict only for the same queued audit base.
+    if !proof_published
+        && let Some(recorded) = core
+            .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
+            .unwrap_or_default()
+            .iter()
+            .filter(|score| audited_base(score).is_some_and(|base| base == ticket.base_sha))
+            .filter(|score| super::jankurai::stored_scored_proof(score).is_some())
+            .max_by_key(|score| score.created_at)
+    {
+        return PushAudit::ProofUnpublished(Box::new(recorded.clone()));
     }
     let Ok(mut queue) = queue().lock() else {
         return PushAudit::Unqueued("the audit queue is unavailable");

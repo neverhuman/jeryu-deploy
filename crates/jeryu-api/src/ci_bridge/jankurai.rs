@@ -517,3 +517,46 @@ fn report_with_reason(
         (None, None) => None,
     }
 }
+
+/// The proof a head's already-recorded verdict publishes, for a head whose
+/// score was stored but whose check-run never reached the reader.
+///
+/// Only a `scored` record qualifies: the verdict is recomputed from the stored
+/// report with the same formula the ingest used, so republishing can neither
+/// invent a pass nor overturn the recorded one. A record the auditor never put
+/// a verdict in (`tool-failed`, `no-base-diff`) returns `None` — there is no
+/// verdict to reuse, and that head is audited again instead.
+pub(super) fn stored_scored_proof(
+    score: &jeryu_core::JankuraiScore,
+) -> Option<(RecordJankuraiScoreRequest, bool)> {
+    if score.decision != "scored" {
+        return None;
+    }
+    let report = score
+        .report_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok());
+    let floor = report
+        .as_ref()
+        .and_then(|report| report.pointer("/decision/minimum_score"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0)
+        .max(HOST_JANKURAI_MINIMUM_SCORE);
+    let pass = score.score.is_some_and(|value| value >= floor)
+        && score.hard_findings == 0
+        && score.caps_applied.is_empty();
+    Some((
+        RecordJankuraiScoreRequest {
+            branch: score.branch.clone(),
+            commit_sha: score.commit_sha.clone(),
+            score: score.score,
+            hard_findings: Some(score.hard_findings),
+            decision: score.decision.clone(),
+            caps_applied: score.caps_applied.clone(),
+            report,
+            tool_exit: None,
+        },
+        pass,
+    ))
+}

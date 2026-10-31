@@ -266,6 +266,11 @@ pub(crate) fn queue_head_audit(
             // or an open ticket, get no check of their own: the head keeps
             // whatever proof its single audit produced.
             PushAudit::Skipped(_) | PushAudit::AlreadyCovered => return false,
+            // The verdict was recorded; only its publication was lost.
+            PushAudit::ProofUnpublished(score) => {
+                republish_recorded_proof(core, owner, repo, &score, origin_base_url);
+                return false;
+            }
             PushAudit::Unqueued(reason) => (
                 CheckRunStatus::InProgress,
                 None,
@@ -293,6 +298,54 @@ pub(crate) fn queue_head_audit(
         },
     );
     queued
+}
+
+/// Publish the `jankurai/proof` of a head whose verdict is already recorded.
+///
+/// The recovery path for a score that was stored before `create_check_run`
+/// failed: the reader gets the verdict the one audit of this head produced,
+/// no new score row is written, and no second report is authorized to replace
+/// it. A record with no verdict in it publishes nothing.
+fn republish_recorded_proof(
+    core: &ForgeCore,
+    owner: &str,
+    repo: &str,
+    score: &jeryu_core::JankuraiScore,
+    origin_base_url: &str,
+) {
+    let Some((request, pass)) = jankurai::stored_scored_proof(score) else {
+        return;
+    };
+    let output = jankurai_proof_output(&request, pass);
+    let conclusion = if pass {
+        CheckConclusion::Success
+    } else {
+        CheckConclusion::Failure
+    };
+    let details_url = jankurai_score_details_url(origin_base_url, owner, repo, &score.commit_sha);
+    if jankurai::proof_already_posted(
+        core,
+        owner,
+        repo,
+        &score.commit_sha,
+        &conclusion,
+        &details_url,
+        &output,
+    ) {
+        return;
+    }
+    let _ = core.create_check_run(
+        owner,
+        repo,
+        CreateCheckRunRequest {
+            name: JANKURAI_PROOF_CHECK.to_string(),
+            head_sha: score.commit_sha.clone(),
+            status: Some(CheckRunStatus::Completed),
+            conclusion: Some(conclusion),
+            details_url,
+            output: Some(output),
+        },
+    );
 }
 
 /// Record the audit ticket an unchanged head lost, without a push.

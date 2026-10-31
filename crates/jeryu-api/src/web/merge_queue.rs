@@ -270,7 +270,7 @@ fn persist(state: &WebState, owner: &str, repo: &str, entry: &QueueEntry) {
             .is_ok()
         && entry.state == QueueState::Building
     {
-        schedule_audit(state, owner, repo, entry);
+        schedule_audit(state, owner, repo, entry, None);
     }
     if entry.state != QueueState::Building {
         git.delete_ref(&entry.queue_ref);
@@ -387,11 +387,28 @@ fn build_on(
 
 /// Repeat on ticks as well as builds: tickets are volatile, and publishing a
 /// proof can fail after an audit was recorded. Only governed ingest completes it.
-fn schedule_audit(state: &WebState, owner: &str, repo: &str, entry: &QueueEntry) {
-    let Ok(pr) = state.core.get_pull_request(owner, repo, entry.number) else {
-        return;
+///
+/// `required` is the entry's required contexts when the caller already
+/// resolved them: evaluating the merge gate again per entry per tick would
+/// re-read the reviews, the passport and the origin posture for nothing.
+fn schedule_audit(
+    state: &WebState,
+    owner: &str,
+    repo: &str,
+    entry: &QueueEntry,
+    required: Option<&[String]>,
+) {
+    let resolved_required;
+    let required = match required {
+        Some(required) => required,
+        None => {
+            let Ok(pr) = state.core.get_pull_request(owner, repo, entry.number) else {
+                return;
+            };
+            resolved_required = super::pulls::queue_gate(state, &pr).2;
+            &resolved_required
+        }
     };
-    let (_, _, required) = super::pulls::queue_gate(state, &pr);
     if !required
         .iter()
         .any(|name| name == crate::ci_bridge::JANKURAI_PROOF_CHECK)
@@ -1155,7 +1172,7 @@ fn advance_stack(
     restack(state, owner, repo, base, &live(entries), entries);
     let stack = live(entries);
     for key in &stack {
-        schedule_audit(state, owner, repo, &entries[key]);
+        schedule_audit(state, owner, repo, &entries[key], Some(&required[key]));
     }
     // Each entry's own gate, on its own required contexts.
     let own: Vec<Option<bool>> = stack

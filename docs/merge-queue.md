@@ -316,9 +316,19 @@ each entry of the stack and for the exact queue sha:
 
 Scheduling repeats on every tick, not only on the build: tickets live in
 process memory, and a score can be recorded while publishing its check run
-fails. A queue sha that has a score but no completed proof is ticketed again
-rather than treated as covered, so a restart or a half-written publication
-recovers instead of stranding the entry.
+fails. Exactly one audit per head means exactly one **recorded verdict**, not
+one attempt, and each retry recovers only what was actually lost:
+
+| what was lost | what the tick does |
+| --- | --- |
+| the in-memory ticket (restart, eviction) and no score was recorded | tickets the queue sha again, against the same protected base |
+| the check-run publication, after a `scored` verdict was recorded | republishes that recorded verdict from the stored report; no ticket, so no second report is authorized to overturn it |
+| the publication, after a record the auditor put no verdict in (`tool-failed`, `no-base-diff`) | tickets the queue sha again: there is no verdict to reuse, and nothing a re-audit could overturn |
+
+Both score rows stay in the history either way — core's score list is
+append-only, and recovery never writes one. The republished verdict is
+recomputed from the stored report with the formula the ingest used, so it can
+neither invent a pass nor change the one that was recorded.
 
 A stack's top commit carries every change below it, so its audit is the
 required evidence for those pull requests too: the ingest refuses a submission
