@@ -459,7 +459,8 @@ pub(crate) fn authored_audit(
     // for every pull request it ever queued. A head audited whole has no
     // range. Without one, retain the live-stack ancestry rule: historical
     // landed entries must not disqualify their authors from future audits.
-    let in_diff: Option<std::collections::HashSet<String>> = is_sha(diff_base)
+    let in_diff: Option<std::collections::HashSet<String>> = (is_sha(diff_base)
+        && diff_base != crate::ci_bridge::audit_queue::NO_COMMIT_BASE_OID)
         .then(|| {
             git.run(&[
                 "rev-list",
