@@ -130,6 +130,9 @@ pub(crate) struct QueueEntry {
     pub(crate) state: QueueState,
     pub(crate) enqueued_at: String,
     pub(crate) enqueued_by: String,
+    /// Credential identifiers only, never a bearer. Rechecked at landing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) enqueued_by_bot: Option<super::bot_token::BotPrincipal>,
     pub(crate) approvers: Vec<Approver>,
     pub(crate) attempts: Vec<Attempt>,
     pub(crate) reason: Option<String>,
@@ -756,7 +759,7 @@ pub(super) async fn enqueue(
         Ok(pr) => pr,
         Err(_) => return api_error(StatusCode::NOT_FOUND, "not_found", "pull request not found"),
     };
-    if let Some(Extension(bot)) = bot {
+    if let Some(Extension(bot)) = &bot {
         let call = super::bots::bot_call(
             &bot,
             &repo.owner,
@@ -823,6 +826,7 @@ pub(super) async fn enqueue(
         state: QueueState::Building,
         enqueued_at: now(),
         enqueued_by: account.login.clone(),
+        enqueued_by_bot: bot.map(|Extension(bot)| bot),
         approvers: approvers(&state, &pr),
         attempts: Vec::new(),
         reason: None,
@@ -1601,6 +1605,16 @@ fn land_stack(
         .map(|key| {
             let entry = &entries[key];
             crate::github::pulls::QueuedLanding {
+                bot: entry.enqueued_by_bot.as_ref().map(|bot| {
+                    super::bots::bot_call(
+                        bot,
+                        owner,
+                        repo,
+                        true,
+                        Some(jeryu_core::BotTaskKind::Pull),
+                        Some(entry.number.to_string()),
+                    )
+                }),
                 number: entry.number,
                 pr_head: entry.pr_head_sha.clone(),
                 queue_sha: entry.queue_sha.clone(),

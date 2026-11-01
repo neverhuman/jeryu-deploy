@@ -1439,6 +1439,7 @@ async fn web_pull_merge_of_a_queued_pull_request_says_it_is_queued() {
             state: crate::web::merge_queue::QueueState::Building,
             enqueued_at: "2026-10-15T16:43:25Z".to_string(),
             enqueued_by: "alice".to_string(),
+            enqueued_by_bot: None,
             approvers: Vec::new(),
             attempts: Vec::new(),
             reason: None,

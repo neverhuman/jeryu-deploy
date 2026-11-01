@@ -1300,6 +1300,7 @@ fn queue_entry(number: u64, state: QueueState, hours_old: i64) -> QueueEntry {
         state,
         enqueued_at: (now() - Duration::hours(hours_old)).to_rfc3339(),
         enqueued_by: "merge-bot".to_string(),
+        enqueued_by_bot: None,
         approvers: Vec::new(),
         attempts: Vec::new(),
         reason: Some("the gate failed on abc and def".to_string()),

@@ -111,6 +111,13 @@ impl GithubRouter {
         if let Some(reason) = self.keep_reason(merged, branch) {
             return kept(reason);
         }
+        if let Some(call) = &self.bot_ref_writer
+            && let Err(error) = self
+                .core
+                .authorize_bot_ref_write(call, &format!("refs/heads/{branch}"))
+        {
+            return kept(format!("bot ref reach keeps this branch ({error})"));
+        }
         let refs = RefService::new((**rm).clone());
         if let Err(reason) = pin_pull_head(&refs, resolved, merged) {
             return kept(reason);

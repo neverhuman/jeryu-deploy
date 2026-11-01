@@ -447,6 +447,7 @@ async fn acme_fixture() -> (axum::Router, String, String) {
                 state: QueueState::Building,
                 enqueued_at: "2026-10-03T00:00:00Z".to_string(),
                 enqueued_by: "acme-admin".to_string(),
+                enqueued_by_bot: None,
                 approvers: Vec::new(),
                 attempts: Vec::new(),
                 reason: None,

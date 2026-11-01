@@ -25,7 +25,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 static SIGNING_KEY_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BotPrincipal {
     pub(crate) bot_id: Uuid,
     pub(crate) generation: u64,

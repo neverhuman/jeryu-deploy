@@ -1082,6 +1082,7 @@ impl GithubRouter {
         expected_base: &str,
     ) -> std::result::Result<String, LandRefusal> {
         let member = QueuedLanding {
+            bot: None,
             number,
             pr_head: pr_head.to_string(),
             queue_sha: queue_sha.to_string(),
@@ -1172,6 +1173,20 @@ impl GithubRouter {
                         MemberProblem::NotReady(err.to_string()),
                     ));
                 }
+            }
+        }
+        // Deferred operations keep their authenticated bot binding through a
+        // restart. Check the actual readiness base using current live grants.
+        for (member, merge_base, ..) in &ready {
+            if let Some(call) = &member.bot
+                && let Err(error) = self
+                    .core
+                    .authorize_bot_ref_write(call, &format!("refs/heads/{}", merge_base.base_ref))
+            {
+                return Err(LandRefusal::Member(
+                    member.number,
+                    MemberProblem::NotReady(error.to_string()),
+                ));
             }
         }
         let base_ref = ready[0].1.base_ref.clone();
@@ -1292,10 +1307,15 @@ impl GithubRouter {
                 self.mirror_merged_main(rm, &resolved, &ready, &outcome.merge_oid);
                 mirrored = true;
             }
+            // Carry the same bot binding to the final source-branch deletion.
+            let cleanup = match &member.bot {
+                Some(call) => self.clone().with_bot_ref_writer(call.clone()),
+                None => self.clone(),
+            };
             // The queue reports a landing, not a response body, so a kept
             // branch is only logged here.
             if let super::head_cleanup::HeadBranch::Kept { name, reason } =
-                self.delete_merged_head(rm, &resolved, &ready.merged_head(&member.pr_head))
+                cleanup.delete_merged_head(rm, &resolved, &ready.merged_head(&member.pr_head))
             {
                 eprintln!(
                     "merge queue: kept {owner}/{repo} branch {name} after #{}: {reason}",
@@ -1510,6 +1530,7 @@ pub(crate) struct BatchLanding {
 #[cfg(feature = "web")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QueuedLanding {
+    pub(crate) bot: Option<jeryu_core::BotCall>,
     pub(crate) number: u64,
     pub(crate) pr_head: String,
     pub(crate) queue_sha: String,

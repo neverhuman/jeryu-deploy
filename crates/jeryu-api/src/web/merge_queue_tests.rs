@@ -1294,3 +1294,60 @@ fn a_stack_lands_on_the_union_of_its_members_required_contexts() {
     );
     assert_eq!(covering[2], ["ci/fast", "jankurai/proof", "e2e"]);
 }
+
+#[tokio::test]
+async fn queued_bot_binding_survives_metadata_reload_and_revocation_blocks_landing() {
+    use jeryu_core::{BotKind, BotReach, RepoAccessLevel};
+    let fx = Fixture::new("feature.txt", "feature\n");
+    let core = &fx.state.core;
+    core.create_account("alice", "alice-password-1", UserRole::User)
+        .unwrap();
+    core.grant_repo_access("alice", "alice", "alice", "jeryu", RepoAccessLevel::Write)
+        .unwrap();
+    let enrolled = core
+        .enroll_bot(
+            "alice",
+            "queue",
+            "Queue",
+            BotKind::AGENT,
+            BotReach::General {
+                refs: Some(vec!["refs/heads/*".into()]),
+            },
+        )
+        .unwrap();
+    let session = core
+        .exchange_bot_enrollment_key(&enrolled.enrollment_key)
+        .unwrap();
+    let principal = super::bot_token::BotPrincipal {
+        bot_id: session.bot.id,
+        generation: session.generation,
+        key_id: session.key_id,
+    };
+    let before = fx.main();
+    let response = merge_queue::enqueue(
+        State(fx.state.clone()),
+        account("alice", UserRole::User),
+        Some(Extension(principal.clone())),
+        AxumPath((fx.repo_id.clone(), fx.number)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let encoded = serde_json::to_vec(&fx.entry()).unwrap();
+    let restored: merge_queue::QueueEntry = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(restored.enqueued_by_bot, Some(principal));
+    core.suspend_bot("alice", enrolled.bot.id).unwrap();
+    fx.state.merge_queue.seed(vec![restored]);
+    merge_queue::tick(&fx.state);
+    assert_eq!(
+        fx.main(),
+        before,
+        "revoked bot may not move the protected base"
+    );
+    assert!(
+        !core
+            .get_pull_request("alice", "jeryu", fx.number)
+            .unwrap()
+            .merged
+    );
+    assert_eq!(fx.entry().state, merge_queue::QueueState::Failed);
+}
