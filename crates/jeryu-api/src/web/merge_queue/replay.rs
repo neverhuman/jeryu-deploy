@@ -209,17 +209,19 @@ impl Git<'_> {
         }
         let batch = self.run_with_stdin(&["cat-file", "--batch"], &request)?;
         let bodies = batch_bodies(&batch);
-        Ok(refs
-            .iter()
-            .filter_map(|(name, blob)| {
+        refs.iter()
+            .map(|(name, blob)| {
                 bodies
                     .get(*blob)
                     .map(|body| (name.to_string(), body.clone()))
+                    .ok_or_else(|| ReplayFailure::Git(format!("unreadable queue metadata: {name}")))
             })
-            .collect())
+            .collect()
     }
 
-    /// Run git with `input` on its stdin and return its raw stdout.
+    /// Drain both output pipes while the input writer runs. A full batch can
+    /// exceed both pipe buffers; writing it synchronously before reading
+    /// output deadlocks cat-file and the caller holding the queue mutex.
     fn run_with_stdin(&self, args: &[&str], input: &str) -> Result<Vec<u8>, ReplayFailure> {
         use std::io::Write;
         let mut child = Command::new(self.bin)
@@ -229,25 +231,30 @@ impl Git<'_> {
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|err| ReplayFailure::Git(err.to_string()))?;
-        child
+        let mut stdin = child
             .stdin
-            .as_mut()
-            .ok_or_else(|| ReplayFailure::Git("no stdin".into()))?
-            .write_all(input.as_bytes())
-            .map_err(|err| ReplayFailure::Git(err.to_string()))?;
-        let out = child
-            .wait_with_output()
-            .map_err(|err| ReplayFailure::Git(err.to_string()))?;
-        if !out.status.success() {
-            return Err(ReplayFailure::Git(format!(
-                "git {}: {}",
-                args.first().copied().unwrap_or_default(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
-        Ok(out.stdout)
+            .take()
+            .ok_or_else(|| ReplayFailure::Git("no stdin".into()))?;
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || stdin.write_all(input.as_bytes()));
+            let output = child.wait_with_output();
+            let written = writer
+                .join()
+                .map_err(|_| ReplayFailure::Git("git input writer panicked".into()))?;
+            let out = output.map_err(|err| ReplayFailure::Git(err.to_string()))?;
+            if !out.status.success() {
+                return Err(ReplayFailure::Git(format!(
+                    "git {}: {}",
+                    args.first().copied().unwrap_or_default(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
+            }
+            written.map_err(|err| ReplayFailure::Git(err.to_string()))?;
+            Ok(out.stdout)
+        })
     }
 
     /// Committer time (unix seconds) of `sha`.
@@ -493,6 +500,47 @@ mod tests {
         assert_eq!(committer_seconds(100, 100), 101);
         assert_eq!(committer_seconds(100, 250), 251);
         assert_eq!(committer_seconds(300, 100), 300);
+    }
+
+    #[test]
+    fn batch_reader_drains_output_while_writing_more_than_pipe_capacity() {
+        let (send, recv) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let root = tempfile::tempdir().unwrap();
+            let git = super::Git {
+                bin: "git",
+                bare: root.path(),
+            };
+            git.run(&["init", "--quiet", "--bare"]).unwrap();
+            let body = "x".repeat(2048);
+            git.write_blob_ref("refs/queue-meta/load/0", &body).unwrap();
+            let oid = git.run(&["rev-parse", "refs/queue-meta/load/0"]).unwrap();
+            let refs = (1..4096)
+                .map(|n| format!("update refs/queue-meta/load/{n} {oid}\n"))
+                .collect::<String>();
+            git.run_with_stdin(&["update-ref", "--stdin"], &refs)
+                .unwrap();
+            let entries = git.try_read_blob_refs("refs/queue-meta/load/").unwrap();
+            assert_eq!(entries.len(), 4096);
+            assert!(entries.iter().all(|(_, value)| value == &body));
+            send.send(()).unwrap();
+        });
+        recv.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("batch reader deadlocked or failed under pipe backpressure");
+    }
+
+    #[test]
+    fn batch_git_failure_retains_stderr_even_when_input_pipe_closes() {
+        let root = tempfile::tempdir().unwrap();
+        let git = super::Git {
+            bin: "git",
+            bare: root.path(),
+        };
+        let error = git
+            .run_with_stdin(&["not-a-real-git-command"], &"x".repeat(262144))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not a git command"), "{error}");
     }
 
     #[test]

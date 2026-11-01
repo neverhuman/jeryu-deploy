@@ -85,7 +85,14 @@ pub(crate) fn author_produced_submission(
     head_sha: &str,
     base_sha: &str,
 ) -> Option<SubmissionRejected> {
-    match crate::web::merge_queue::authored_audit(state, owner, repo, head_sha, base_sha, &account.login) {
+    match crate::web::merge_queue::authored_audit(
+        state,
+        owner,
+        repo,
+        head_sha,
+        base_sha,
+        &account.login,
+    ) {
         Ok(Some(number)) => {
             return Some(SubmissionRejected::new(
                 StatusCode::FORBIDDEN,
@@ -101,7 +108,15 @@ pub(crate) fn author_produced_submission(
             ));
         }
     }
-    let pulls = state.core.list_pull_requests(owner, repo, None).ok()?;
+    let pulls = match state.core.list_pull_requests(owner, repo, None) {
+        Ok(pulls) => pulls,
+        Err(err) => {
+            return Some(SubmissionRejected::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("pull-request author independence could not be checked: {err}"),
+            ));
+        }
+    };
     let authored = pulls.into_iter().find(|pull| {
         pull.head.sha == head_sha
             && crate::web::principals::same_principal(&pull.author, &account.login)

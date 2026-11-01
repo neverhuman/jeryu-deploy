@@ -203,9 +203,8 @@ fn truncate_reason(reason: &str) -> String {
     format!("{kept}...")
 }
 
-/// One `jankurai/proof` per head. Core's check list is append-only, so a
-/// re-audit that reaches the same verdict must post nothing: a second row with
-/// the same name leaves a reader guessing which one is current.
+/// Idempotent publication against the newest proof. A base refresh may add a
+/// pending row; even the same verdict must then complete that fresh audit.
 pub(super) fn proof_already_posted(
     core: &ForgeCore,
     owner: &str,
@@ -521,8 +520,9 @@ fn report_with_reason(
 /// The proof a head's already-recorded verdict publishes, for a head whose
 /// score was stored but whose check-run never reached the reader.
 ///
-/// Only a `scored` record qualifies: the verdict is recomputed from the stored
-/// report with the same formula the ingest used, so republishing can neither
+/// Only a `scored` record with the current governed auditor's provenance
+/// qualifies; the planner additionally binds it to the expected ticket base.
+/// The verdict is recomputed from the stored report, so republishing can neither
 /// invent a pass nor overturn the recorded one. A record the auditor never put
 /// a verdict in (`tool-failed`, `no-base-diff`) returns `None` — there is no
 /// verdict to reuse, and that head is audited again instead.
@@ -536,16 +536,29 @@ pub(super) fn stored_scored_proof(
         .report_json
         .as_deref()
         .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok());
-    let floor = report
-        .as_ref()
-        .and_then(|report| report.pointer("/decision/minimum_score"))
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(0)
-        .max(HOST_JANKURAI_MINIMUM_SCORE);
-    let pass = score.score.is_some_and(|value| value >= floor)
-        && score.hard_findings == 0
-        && score.caps_applied.is_empty();
+    let report = report?;
+    let provenance = report.get("jeryu_audit_provenance")?;
+    let runner = provenance.get("runner_id")?.as_str()?;
+    let base = provenance.get("base_sha")?.as_str()?;
+    let mode = provenance.get("audit_mode")?.as_str()?;
+    if runner.trim().is_empty() || !is_object_id(base) || !matches!(mode, "diff" | "full") {
+        return None;
+    }
+    verify_reported_auditor(
+        provenance.get("jankurai_version")?.as_str()?,
+        provenance.get("jankurai_sha256")?.as_str()?,
+    )
+    .ok()?;
+    // Recompute from the governed report and reject an inconsistent stored row.
+    let (request, pass) =
+        jankurai_score_request(&score.branch, &score.commit_sha, Some(report.clone()), 0);
+    if request.decision != "scored"
+        || request.score != score.score
+        || request.hard_findings != Some(score.hard_findings)
+        || request.caps_applied != score.caps_applied
+    {
+        return None;
+    }
     Some((
         RecordJankuraiScoreRequest {
             branch: score.branch.clone(),
@@ -554,7 +567,7 @@ pub(super) fn stored_scored_proof(
             hard_findings: Some(score.hard_findings),
             decision: score.decision.clone(),
             caps_applied: score.caps_applied.clone(),
-            report,
+            report: Some(report),
             tool_exit: None,
         },
         pass,

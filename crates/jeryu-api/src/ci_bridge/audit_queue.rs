@@ -484,25 +484,25 @@ pub(crate) fn plan_push_audit(
     // were barred from that report only while they were still queued. Such a
     // score covers a different change set: the head is ticketed again, which
     // also returns `jankurai/proof` to pending until a runner reports against
-    // the narrowed base. A score with no recorded base (an admin backfill, or
-    // a row written before provenance was kept) still covers the head, so a
-    // rollback does not re-audit every scored queue commit.
+    // the narrowed base. A queue score with no recorded provenance base is
+    // not evidence of coverage and must be ticketed again.
     let covered = core
         .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
         .unwrap_or_default()
         .iter()
         .any(|score| {
             queue_base.is_none()
-                || audited_base(score).is_none_or(|audited| audited == ticket.base_sha)
+                || audited_base(score).is_some_and(|audited| audited == ticket.base_sha)
         });
     let proof_published = queue_base.is_none()
         || core
             .list_check_runs(owner, repo, Some(&update.new_oid))
             .map(|runs| {
-                runs.check_runs.iter().any(|run| {
-                    run.name == super::JANKURAI_PROOF_CHECK
-                        && run.status == jeryu_core::CheckRunStatus::Completed
-                })
+                runs.check_runs
+                    .iter()
+                    .filter(|run| run.name == super::JANKURAI_PROOF_CHECK)
+                    .max_by_key(|run| run.completed_at.unwrap_or(run.started_at))
+                    .is_some_and(|run| run.status == jeryu_core::CheckRunStatus::Completed)
             })
             .unwrap_or(false);
     if covered && proof_published {

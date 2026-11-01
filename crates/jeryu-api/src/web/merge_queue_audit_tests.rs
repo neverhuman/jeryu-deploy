@@ -24,7 +24,8 @@ async fn queue_replay_schedules_exact_sha_and_tick_restores_lost_ticket() {
             sha,
             &base,
             "independent-runner"
-        ).unwrap(),
+        )
+        .unwrap(),
         None
     );
     let ticket = audit_queue::queue()
@@ -67,7 +68,7 @@ async fn queue_replay_schedules_exact_sha_and_tick_restores_lost_ticket() {
                 branch: ticket.branch.clone(),
                 commit_sha: sha.to_string(),
                 score: Some(98),
-                decision: "pass".to_string(),
+                decision: "tool-failed".to_string(),
                 ..Default::default()
             },
         )
@@ -293,7 +294,8 @@ async fn a_stack_tickets_every_queue_sha_and_holds_each_author_off_the_top() {
         Some(second)
     );
     assert_eq!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "gate-runner").unwrap(),
+        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &top, &base, "gate-runner")
+            .unwrap(),
         None
     );
     // The bottom commit does not carry the entry above it.
@@ -337,11 +339,13 @@ async fn a_landed_entrys_author_may_audit_a_later_queue_sha() {
         &"f".repeat(40),
     ] {
         assert_eq!(
-            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "bob").unwrap(),
+            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "bob")
+                .unwrap(),
             None,
         );
         assert_eq!(
-            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "alice").unwrap(),
+            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "alice")
+                .unwrap(),
             Some(fx.number),
         );
     }
@@ -387,8 +391,15 @@ async fn an_unreadable_queue_stack_fails_closed() {
     };
     super::merge_queue_tests::git(&fx.bare, &["update-ref", "refs/queue-meta/main/99", &blob]);
     assert!(
-        merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &fx.main(), "independent-runner")
-            .is_err()
+        merge_queue::authored_audit(
+            &fx.state,
+            "alice",
+            "jeryu",
+            &sha,
+            &fx.main(),
+            "independent-runner"
+        )
+        .is_err()
     );
 }
 
@@ -423,7 +434,13 @@ async fn a_recorded_verdict_is_republished_rather_than_audited_again() {
                 hard_findings: Some(0),
                 decision: "scored".to_string(),
                 report: Some(serde_json::json!({"score": 98, "caps_applied": [],
-                    "decision": {"hard_findings": 0, "minimum_score": 85}})),
+                "decision": {"hard_findings": 0, "minimum_score": 85},
+                "jeryu_audit_provenance": {
+                    "runner_id": "independent-runner", "base_sha": ticket.base_sha,
+                    "audit_mode": ticket.audit_mode,
+                    "jankurai_version": crate::ci_bridge::jankurai::governed_auditor_identity().unwrap().0,
+                    "jankurai_sha256": crate::ci_bridge::jankurai::governed_auditor_identity().unwrap().1
+                }})),
                 ..Default::default()
             },
         )
@@ -558,3 +575,6 @@ fn add_audited_pr(fx: &Fixture, base: &str, branch: &str, file: &str, author: &s
 
 #[path = "merge_queue_audit_refresh_tests.rs"]
 mod refresh_tests;
+
+#[path = "merge_queue_audit_recovery_tests.rs"]
+mod recovery_tests;

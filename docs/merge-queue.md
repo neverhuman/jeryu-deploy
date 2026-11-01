@@ -309,26 +309,32 @@ each entry of the stack and for the exact queue sha:
 - the audit policy (`.jeryu/ci.toml`) and the diff base are read from the
   protected base branch, never from the replayed tree, so a queued change
   cannot opt its own audit out;
-- the proof is published pending, exactly as on a push. Only a runner's
-  provenance-checked report through the ingest completes it, and only a green
-  `jankurai/proof` on the queue sha lets the base move. Nothing here can pass
-  the check.
+- the proof starts pending, as on a push. A governed runner's report through
+  ingest, or recovery of its stored provenance-checked verdict for the same
+  audit base, completes it. Only a green `jankurai/proof` on the queue sha
+  lets the base move; scheduling cannot invent a successful verdict.
 
 Scheduling repeats on every tick, not only on the build: tickets live in
 process memory, and a score can be recorded while publishing its check run
-fails. Exactly one audit per head means exactly one **recorded verdict**, not
-one attempt, and each retry recovers only what was actually lost:
+fails. Recovery reuses a recorded governed verdict for the same head and base,
+rather than authorizing a report that could replace it. A base refresh after
+lower entries land deliberately requires a new audit. Each retry recovers
+only what was actually lost:
 
 | what was lost | what the tick does |
 | --- | --- |
 | the in-memory ticket (restart, eviction) and no score was recorded | tickets the queue sha again, against the same protected base |
-| the check-run publication, after a `scored` verdict was recorded | republishes that recorded verdict from the stored report; no ticket, so no second report is authorized to overturn it |
+| the check-run publication, after a governed `scored` verdict for the expected base was recorded | validates provenance and row/report consistency, then republishes that verdict without a new ticket or score write |
+| provenance, identity or base is absent or does not qualify | tickets the head for a governed report; an admin backfill alone cannot become a completed proof |
 | the publication, after a record the auditor put no verdict in (`tool-failed`, `no-base-diff`) | tickets the queue sha again: there is no verdict to reuse, and nothing a re-audit could overturn |
 
-Both score rows stay in the history either way — core's score list is
-append-only, and recovery never writes one. The republished verdict is
-recomputed from the stored report with the formula the ingest used, so it can
-neither invent a pass nor change the one that was recorded.
+Recovery writes no score and preserves the existing rows. Core replaces a
+row on a new ingest for the same `(branch, commit_sha)`; it is not an append-only
+history. Recovery recomputes the verdict from the stored report with the ingest
+formula and refuses inconsistent row fields. It also requires a nonempty runner
+identity, the current governed auditor version/digest and the expected ticket
+base. The newest proof row decides whether publication remains outstanding,
+so an older completed row cannot hide a newer pending audit.
 
 A stack's top commit carries every change below it, so its audit is the
 required evidence for those pull requests too: the ingest refuses a submission

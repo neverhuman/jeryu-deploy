@@ -243,10 +243,9 @@ pub(crate) fn on_push(
 /// Record the audit a pushed head needs, and say so on `jankurai/proof`.
 ///
 /// Best-effort and cheap: at most a `merge-base` in the bare repository. The
-/// check is published pending, never green — only a runner's report completes
-/// it — and a head with no commit base (a first main, an orphan branch) is
-/// ticketed against the empty root commit rather than the empty tree, so it
-/// still gets a real score.
+/// check starts pending; only a governed runner report, or recovery of its
+/// previously stored provenance-checked verdict for the same base, completes
+/// it. A head without a commit base gets a whole-tree ticket.
 pub(crate) fn queue_head_audit(
     core: &ForgeCore,
     git_bin: &str,

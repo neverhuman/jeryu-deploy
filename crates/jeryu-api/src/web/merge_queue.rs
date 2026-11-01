@@ -386,7 +386,8 @@ fn build_on(
 }
 
 /// Repeat on ticks as well as builds: tickets are volatile, and publishing a
-/// proof can fail after an audit was recorded. Only governed ingest completes it.
+/// proof can fail after an audit was recorded. Governed ingest, or recovery of
+/// its provenance-checked verdict for the expected base, completes it.
 ///
 /// `required` is the entry's required contexts when the caller already
 /// resolved them: evaluating the merge gate again per entry per tick would
@@ -465,10 +466,14 @@ pub(crate) fn authored_audit(
     // Use the submitted diff, including during a base refresh. A landed
     // author is eligible only once their change is outside that diff.
     let entries: Vec<QueueEntry> = git
-        .read_blob_refs("refs/queue-meta/")
+        .try_read_blob_refs("refs/queue-meta/")
+        .map_err(|err| err.to_string())?
         .into_iter()
-        .filter_map(|(_, body)| serde_json::from_str::<QueueEntry>(&body).ok())
-        .collect();
+        .map(|(name, body)| {
+            serde_json::from_str::<QueueEntry>(&body)
+                .map_err(|err| format!("invalid queue metadata {name}: {err}"))
+        })
+        .collect::<Result<_, _>>()?;
     if !entries
         .iter()
         .any(|entry| entry.state == QueueState::Building && entry.queue_sha == head)
@@ -494,16 +499,27 @@ pub(crate) fn authored_audit(
         .flatten();
     for entry in entries {
         if !is_sha(&entry.queue_sha) {
-            continue;
+            return Err(format!(
+                "invalid queue commit for pull request #{}",
+                entry.number
+            ));
         }
+        // Validate the live stack even when a range was available: a corrupt
+        // active entry must not silently remove its author from the guard.
+        let live_ancestor = entry.state == QueueState::Building
+            && git
+                .try_is_ancestor(&entry.queue_sha, head)
+                .map_err(|err| err.to_string())?;
         let in_submitted_diff = match &in_diff {
             Some(range) => range.contains(&entry.queue_sha),
-            None => entry.state == QueueState::Building && git.try_is_ancestor(&entry.queue_sha, head).map_err(|err| err.to_string())?,
+            None => live_ancestor,
         };
         if !in_submitted_diff {
             continue;
         }
-        let pr = state.core.get_pull_request(owner, repo, entry.number)
+        let pr = state
+            .core
+            .get_pull_request(owner, repo, entry.number)
             .map_err(|err| format!("pull request #{}: {err}", entry.number))?;
         if super::principals::same_principal(&pr.author, login) {
             return Ok(Some(entry.number));
@@ -1205,7 +1221,7 @@ fn advance_stack(
     // Landing can narrow every remaining diff without changing its head SHA.
     // Refresh outstanding work now, rather than waiting for the next tick.
     for key in live(entries) {
-        schedule_audit(state, owner, repo, &entries[&key]);
+        schedule_audit(state, owner, repo, &entries[&key], None);
     }
 }
 
