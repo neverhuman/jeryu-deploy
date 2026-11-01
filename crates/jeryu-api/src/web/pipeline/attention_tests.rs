@@ -1308,6 +1308,7 @@ fn queue_entry(number: u64, state: QueueState, hours_old: i64) -> QueueEntry {
         landed_sha: None,
         after: None,
         landed_with: None,
+        audited_score_id: None,
     }
 }
 

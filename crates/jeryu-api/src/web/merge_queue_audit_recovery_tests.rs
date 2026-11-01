@@ -8,6 +8,7 @@ async fn recovery_rejects_unqualified_scores_and_preserves_governed_failures() {
     };
     for case in [
         "admin",
+        "preexisting-admin",
         "version",
         "digest",
         "base",
@@ -15,6 +16,8 @@ async fn recovery_rejects_unqualified_scores_and_preserves_governed_failures() {
         "failure",
         "latest-failure",
         "new-pending",
+        "open-ticket",
+        "completed-ticket",
     ] {
         let mut fx =
             Fixture::with_audit_store(&format!("recovery-{case}.txt"), &format!("{case}\n"));
@@ -69,8 +72,13 @@ async fn recovery_rejects_unqualified_scores_and_preserves_governed_failures() {
                 .record_jankurai_score("alice", "jeryu", earlier)
                 .unwrap();
         }
-        if case == "new-pending" {
-            for status in [CheckRunStatus::Completed, CheckRunStatus::InProgress] {
+        if matches!(case, "new-pending" | "completed-ticket") {
+            let statuses = if case == "new-pending" {
+                vec![CheckRunStatus::Completed, CheckRunStatus::InProgress]
+            } else {
+                vec![CheckRunStatus::Completed]
+            };
+            for status in statuses {
                 fx.state
                     .core
                     .create_check_run(
@@ -88,12 +96,20 @@ async fn recovery_rejects_unqualified_scores_and_preserves_governed_failures() {
                     .unwrap();
             }
         }
-        fx.state
+        let recorded = fx
+            .state
             .core
             .record_jankurai_score("alice", "jeryu", request)
             .unwrap();
+        if !matches!(case, "admin" | "preexisting-admin") {
+            merge_queue::record_queue_score(&fx.state, &recorded).unwrap();
+        }
+        if matches!(case, "open-ticket" | "completed-ticket") {
+            audit_queue::queue().lock().unwrap().enqueue(ticket.clone());
+        }
         assert_eq!(merge_queue::tick(&fx.state), 0, "{case}");
-        let should_recover = failing || case == "new-pending";
+        let should_recover =
+            failing || matches!(case, "new-pending" | "open-ticket" | "completed-ticket");
         let pending = audit_queue::queue()
             .lock()
             .unwrap()

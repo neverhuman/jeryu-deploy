@@ -455,6 +455,7 @@ async fn acme_fixture() -> (axum::Router, String, String) {
                 landed_sha: None,
                 after: None,
                 landed_with: None,
+                audited_score_id: None,
             })
             .collect(),
     );

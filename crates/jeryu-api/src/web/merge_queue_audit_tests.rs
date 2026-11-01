@@ -176,6 +176,8 @@ async fn protected_queue_waits_for_provenance_checked_exact_sha_report() {
         ingest(&fx, "independent-runner", &submission).await,
         StatusCode::CREATED
     );
+    // The receipt is persisted independently of both the report and the index.
+    Arc::get_mut(&mut fx.state).unwrap().merge_queue = Arc::new(merge_queue::MergeQueue::default());
     assert_eq!(merge_queue::tick(&fx.state), 1);
     assert_eq!(
         super::merge_queue_tests::git(&fx.bare, &["rev-parse", "refs/heads/audit-protected"]),
@@ -422,7 +424,7 @@ async fn a_recorded_verdict_is_republished_rather_than_audited_again() {
         .expect("replay scheduled an audit");
     // The ingest's own verdict for this head, stored before its check-run
     // publication failed.
-    fx.state
+    let recorded = fx.state
         .core
         .record_jankurai_score(
             "alice",
@@ -445,6 +447,7 @@ async fn a_recorded_verdict_is_republished_rather_than_audited_again() {
             },
         )
         .unwrap();
+    merge_queue::record_queue_score(&fx.state, &recorded).unwrap();
     assert_eq!(merge_queue::tick(&fx.state), 0);
     assert!(
         audit_queue::queue()

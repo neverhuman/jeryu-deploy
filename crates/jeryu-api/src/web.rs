@@ -40,7 +40,9 @@ mod operator_resources;
 mod organizations;
 mod paging;
 mod people;
-pub(crate) use merge_queue::{building_on_base, gate_verdict, is_queue_owned_ref, rebase_onto};
+pub(crate) use merge_queue::{
+    building_on_base, gate_verdict, is_queue_owned_ref, rebase_onto, trusted_queue_scores,
+};
 pub(crate) mod line_survival;
 mod mcp_backend;
 mod outcomes;

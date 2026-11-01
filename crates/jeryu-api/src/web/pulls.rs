@@ -677,6 +677,12 @@ pub(super) async fn merge(
     if request.expected_head_sha != pr.head.sha {
         return stale_sha(&request.expected_head_sha, &pr.head.sha);
     }
+    if let Err(err) = state
+        .merge_queue
+        .check_repo(&state, &repo.owner, &repo.name)
+    {
+        return super::merge_queue::metadata_error(&err);
+    }
     if let Some(entry) = building_queue_entry(&state, &repo.owner, &repo.name, pr.number) {
         return already_queued(&entry);
     }

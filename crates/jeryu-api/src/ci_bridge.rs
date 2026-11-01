@@ -331,20 +331,40 @@ fn republish_recorded_proof(
         &details_url,
         &output,
     ) {
+        retire_recovered_ticket(owner, repo, score);
         return;
     }
-    let _ = core.create_check_run(
-        owner,
-        repo,
-        CreateCheckRunRequest {
-            name: JANKURAI_PROOF_CHECK.to_string(),
-            head_sha: score.commit_sha.clone(),
-            status: Some(CheckRunStatus::Completed),
-            conclusion: Some(conclusion),
-            details_url,
-            output: Some(output),
-        },
-    );
+    if core
+        .create_check_run(
+            owner,
+            repo,
+            CreateCheckRunRequest {
+                name: JANKURAI_PROOF_CHECK.to_string(),
+                head_sha: score.commit_sha.clone(),
+                status: Some(CheckRunStatus::Completed),
+                conclusion: Some(conclusion),
+                details_url,
+                output: Some(output),
+            },
+        )
+        .is_ok()
+    {
+        retire_recovered_ticket(owner, repo, score);
+    }
+}
+
+fn retire_recovered_ticket(owner: &str, repo: &str, score: &jeryu_core::JankuraiScore) {
+    if let Ok(mut queue) = audit_queue::queue().lock()
+        && queue.tickets().iter().any(|ticket| {
+            ticket.owner == owner
+                && ticket.repo == repo
+                && ticket.head_sha == score.commit_sha
+                && ticket.branch == score.branch
+                && audit_queue::audited_base(score).as_deref() == Some(ticket.base_sha.as_str())
+        })
+    {
+        queue.take(owner, repo, &score.commit_sha);
+    }
 }
 
 /// Record the audit ticket an unchanged head lost, without a push.

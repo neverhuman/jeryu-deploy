@@ -1444,6 +1444,7 @@ async fn web_pull_merge_of_a_queued_pull_request_says_it_is_queued() {
             landed_sha: None,
             after: None,
             landed_with: None,
+            audited_score_id: None,
         }]);
     let main_before = fx.main_ref();
 

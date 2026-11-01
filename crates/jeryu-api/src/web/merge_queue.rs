@@ -156,6 +156,9 @@ pub(crate) struct QueueEntry {
     /// above it in the stack rather than its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) landed_with: Option<u64>,
+    /// Independently recorded by runner ingest, never accepted from a report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) audited_score_id: Option<String>,
 }
 
 type Key = (String, String, u64);
@@ -173,6 +176,8 @@ pub(crate) struct MergeQueue {
 #[derive(Default)]
 struct QueueIndex {
     loaded: bool,
+    loaded_repos: BTreeSet<(String, String)>,
+    errors: BTreeMap<(String, String), String>,
     entries: BTreeMap<Key, QueueEntry>,
 }
 
@@ -226,7 +231,74 @@ fn read_metadata(git: &Git<'_>) -> Result<Vec<QueueEntry>, String> {
         .collect()
 }
 
-fn metadata_error(err: &str) -> AxumResponse {
+/// Match a stored verdict to the independent receipt in forge-owned metadata.
+/// Rows written before these receipts existed require a fresh runner audit.
+pub(crate) fn trusted_queue_scores(
+    git_bin: &str,
+    bare: &Path,
+    scores: Vec<jeryu_core::JankuraiScore>,
+) -> Vec<jeryu_core::JankuraiScore> {
+    let Ok(entries) = read_metadata(&Git { bin: git_bin, bare }) else {
+        return Vec::new();
+    };
+    let receipts: BTreeSet<_> = entries
+        .into_iter()
+        .filter_map(|entry| {
+            entry
+                .audited_score_id
+                .map(|id| (entry.queue_ref, entry.queue_sha, id))
+        })
+        .collect();
+    scores
+        .into_iter()
+        .filter(|score| {
+            receipts.contains(&(
+                score.branch.clone(),
+                score.commit_sha.clone(),
+                score.id.to_string(),
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn record_queue_score(
+    state: &WebState,
+    score: &jeryu_core::JankuraiScore,
+) -> Result<(), String> {
+    if !score.branch.starts_with("refs/queue/") {
+        return Ok(());
+    }
+    let queue = &state.merge_queue;
+    let mut index = queue.lock();
+    queue.ensure_repo_loaded(state, &mut index, &score.owner, &score.repo)?;
+    let entry = index
+        .entries
+        .values_mut()
+        .find(|entry| {
+            entry.repo == format!("{}/{}", score.owner, score.repo)
+                && entry.queue_ref == score.branch
+                && entry.queue_sha == score.commit_sha
+        })
+        .ok_or_else(|| {
+            "the audited queue entry has changed; retry its current ticket".to_string()
+        })?;
+    let mut recorded = entry.clone();
+    recorded.audited_score_id = Some(score.id.to_string());
+    let resolved = state
+        .repo_manager
+        .open_parts(&score.owner, &score.repo)
+        .map_err(|err| err.to_string())?;
+    git_for(state, &resolved.path)
+        .write_blob_ref(
+            &meta_ref(&entry.base, entry.number),
+            &serde_json::to_string(&recorded).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| err.to_string())?;
+    *entry = recorded;
+    Ok(())
+}
+
+pub(super) fn metadata_error(err: &str) -> AxumResponse {
     api_error(
         StatusCode::SERVICE_UNAVAILABLE,
         "queue_metadata_error",
@@ -248,10 +320,14 @@ impl MergeQueue {
         if index.loaded {
             return Ok(());
         }
-        // Commit the snapshot only after every persisted repository was read.
-        // Failure preserves the cached entries and retries next tick.
-        let mut entries = index.entries.clone();
+        // Commit each repository snapshot only after all its metadata is read.
+        // Failed repositories retain their entries and retry next tick.
+        index.errors.clear();
         for repo in state.core.list_repositories(None) {
+            let key = (repo.owner.clone(), repo.name.clone());
+            if index.loaded_repos.contains(&key) {
+                continue;
+            }
             let resolved = match state.repo_manager.open_parts(&repo.owner, &repo.name) {
                 Ok(resolved) => resolved,
                 // Core-only repositories without any known queue entry have no
@@ -265,18 +341,62 @@ impl MergeQueue {
                 {
                     continue;
                 }
-                Err(err) => return Err(format!("{}/{}: {err}", repo.owner, repo.name)),
+                Err(err) => {
+                    index.errors.insert(key, err.to_string());
+                    continue;
+                }
             };
             let git = git_for(state, &resolved.path);
-            for entry in
-                read_metadata(&git).map_err(|err| format!("{}/{}: {err}", repo.owner, repo.name))?
-            {
-                entries.insert((repo.owner.clone(), repo.name.clone(), entry.number), entry);
+            match read_metadata(&git) {
+                Ok(entries) => {
+                    index
+                        .entries
+                        .retain(|(o, r, _), _| o != &repo.owner || r != &repo.name);
+                    for entry in entries {
+                        index
+                            .entries
+                            .insert((repo.owner.clone(), repo.name.clone(), entry.number), entry);
+                    }
+                    index.loaded_repos.insert(key);
+                }
+                Err(err) => {
+                    index.errors.insert(key, err);
+                }
             }
         }
-        index.entries = entries;
-        index.loaded = true;
+        index.loaded = index.errors.is_empty();
+        if !index.loaded {
+            return Err(index
+                .errors
+                .iter()
+                .map(|((o, r), err)| format!("{o}/{r}: {err}"))
+                .collect::<Vec<_>>()
+                .join("; "));
+        }
         Ok(())
+    }
+
+    fn ensure_repo_loaded(
+        &self,
+        state: &WebState,
+        index: &mut QueueIndex,
+        owner: &str,
+        repo: &str,
+    ) -> Result<(), String> {
+        let _ = self.ensure_loaded(state, index);
+        match index.errors.get(&(owner.to_string(), repo.to_string())) {
+            Some(err) => Err(format!("{owner}/{repo}: {err}")),
+            None => Ok(()),
+        }
+    }
+
+    pub(super) fn check_repo(
+        &self,
+        state: &WebState,
+        owner: &str,
+        repo: &str,
+    ) -> Result<(), String> {
+        self.ensure_repo_loaded(state, &mut self.lock(), owner, repo)
     }
 
     /// Seeds the in-memory index, marking it loaded so no git read replaces
@@ -666,7 +786,7 @@ pub(super) async fn enqueue(
     let key = (repo.owner.clone(), repo.name.clone(), number);
     let queue = &state.merge_queue;
     let mut index = queue.lock();
-    if let Err(err) = queue.ensure_loaded(&state, &mut index) {
+    if let Err(err) = queue.ensure_repo_loaded(&state, &mut index, &repo.owner, &repo.name) {
         return metadata_error(&err);
     }
     if let Some(existing) = index.entries.get(&key)
@@ -694,6 +814,7 @@ pub(super) async fn enqueue(
         landed_sha: None,
         after: None,
         landed_with: None,
+        audited_score_id: None,
     };
     if !is_sha(&entry.pr_head_sha) {
         return api_error(
@@ -819,7 +940,7 @@ pub(super) async fn dequeue(
     }
     let queue = &state.merge_queue;
     let mut index = queue.lock();
-    if let Err(err) = queue.ensure_loaded(&state, &mut index) {
+    if let Err(err) = queue.ensure_repo_loaded(&state, &mut index, &repo.owner, &repo.name) {
         return metadata_error(&err);
     }
     let key = (repo.owner.clone(), repo.name.clone(), number);
@@ -927,7 +1048,7 @@ pub(super) async fn list_repo(
     };
     if let Err(err) = state
         .merge_queue
-        .ensure_loaded(&state, &mut state.merge_queue.lock())
+        .check_repo(&state, &repo.owner, &repo.name)
     {
         return metadata_error(&err);
     }
@@ -1107,12 +1228,13 @@ pub(crate) fn tick(state: &WebState) -> usize {
     let mut index = queue.lock();
     if let Err(err) = queue.ensure_loaded(state, &mut index) {
         eprintln!("queue_metadata_error: {err}; restore metadata or Git access and retry");
-        return 0;
     }
     let mut stacks: BTreeMap<(String, String, String), Vec<Key>> = BTreeMap::new();
     let mut before = BTreeMap::new();
     for (key, entry) in &index.entries {
-        if entry.state == QueueState::Building {
+        if entry.state == QueueState::Building
+            && !index.errors.contains_key(&(key.0.clone(), key.1.clone()))
+        {
             stacks
                 .entry((key.0.clone(), key.1.clone(), entry.base.clone()))
                 .or_default()

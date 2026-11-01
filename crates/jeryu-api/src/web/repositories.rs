@@ -614,7 +614,12 @@ fn runner_audit_ingest(
         report,
         submission.tool_exit.unwrap_or(0),
     ) {
-        Ok(score) => (axum::http::StatusCode::CREATED, Json(score_summary(&score))).into_response(),
+        Ok(score) => match super::merge_queue::record_queue_score(state, &score) {
+            Ok(()) => {
+                (axum::http::StatusCode::CREATED, Json(score_summary(&score))).into_response()
+            }
+            Err(err) => super::merge_queue::metadata_error(&err),
+        },
         Err(ForgeError::Validation(reason)) => score_ingest_invalid(&reason),
         Err(ForgeError::NotFound(_)) => api_error(
             axum::http::StatusCode::NOT_FOUND,

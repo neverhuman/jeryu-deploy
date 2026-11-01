@@ -407,10 +407,18 @@ or 4,096 pull requests rather than deleting on incomplete evidence.
 Queue metadata reads require complete blob objects and valid entry JSON. An
 initially refused replay is persisted as `dequeued` with an empty `queue_sha`;
 it built no commit and cannot exclude an author from a later audit. An active
-entry with an empty or malformed commit is an error. Index reloads stage all
-entries before committing the snapshot; a failure preserves the cached index,
-refuses queue mutations/direct merges, and retries on the next healthy tick.
+entry with an empty or malformed commit is an error. Index reloads stage each repository independently before committing its
+snapshot. A failure preserves that repository's cached entries, refuses its
+queue mutations/direct merges, and retries on the next tick; healthy
+repositories continue loading and landing. The global listing reports the
+error, while healthy repository listings remain available.
 `queue_metadata_error` identifies the affected ref without deleting evidence.
 Raw admin backfills must omit the reserved `jeryu_audit_provenance` field; only
-runner ingest stamps it. Recovery breaks timestamp ties deterministically and
-prefers a failing verdict when equally recent governed scores disagree.
+runner ingest stamps it. A queue entry also records the ingested score ID in
+forge-owned metadata. Recovery requires that independent receipt, so existing
+backfills with fabricated provenance cannot become proof. Entries written
+before receipts existed require one fresh audit; each entry retains only its
+latest score receipt. Recovery breaks timestamp ties deterministically and
+prefers a failing verdict when equally recent governed scores disagree. After
+recovery publishes the proof, it retires any open ticket for that same branch,
+head, and audit base.

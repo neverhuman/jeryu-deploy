@@ -486,9 +486,12 @@ pub(crate) fn plan_push_audit(
     // also returns `jankurai/proof` to pending until a runner reports against
     // the narrowed base. A queue score with no recorded provenance base is
     // not evidence of coverage and must be ticketed again.
-    let scores = core
+    let mut scores = core
         .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
         .unwrap_or_default();
+    if queue_base.is_some() {
+        scores = crate::web::trusted_queue_scores(git_bin, bare, scores);
+    }
     let covered = scores.iter().any(|score| {
         queue_base.is_none()
             || audited_base(score).is_some_and(|audited| audited == ticket.base_sha)
@@ -505,6 +508,11 @@ pub(crate) fn plan_push_audit(
             })
             .unwrap_or(false);
     if covered && proof_published {
+        if queue_base.is_some()
+            && let Some(recorded) = recorded_for_recovery(&scores, &ticket.base_sha)
+        {
+            super::retire_recovered_ticket(owner, repo, recorded);
+        }
         return PushAudit::AlreadyCovered;
     }
     // Recover a stored verdict only for the same queued audit base.
@@ -541,7 +549,7 @@ fn recorded_for_recovery<'a>(
 
 /// The base a recorded score was produced against, from the provenance the
 /// ingest keeps with the report, or `None` when the row records none.
-fn audited_base(score: &jeryu_core::JankuraiScore) -> Option<String> {
+pub(super) fn audited_base(score: &jeryu_core::JankuraiScore) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(score.report_json.as_deref()?)
         .ok()?
         .get("jeryu_audit_provenance")?
