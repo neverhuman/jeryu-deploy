@@ -192,6 +192,40 @@ JERYU_RELEASE_BOARD_ENV="$T/other.env" bash "$T/rb/collect.sh" --push --out "$T/
 [ "$(cat "$T/put.url")" = "file://$T/forge/api/v1/release-board/demo" ] || fail "the env file overrode the caller's JERYU_BASE"
 ok "a value the caller set wins over the env file"
 
+# A collector's exit status decides "complete" vs "partial". An optional summary part that is empty
+# must not turn a complete board partial, and a genuine failure must still be reported as one.
+mkdir -p "$T/families2"
+for shift in empty nonempty; do
+  cat >"$T/families2/exit-$shift.sh" <<ADAPTER
+collect_exit_$shift() {
+  local shift_stage=""
+  [ "$shift" = nonempty ] && shift_stage="x"
+  lane l "L" "demo/app" demo false "\$(stage id=a name=a version=1 state=ok status=ok known=host)"
+  summary="board\$( [ -n "\$shift_stage" ] && echo " · unmerged shift work")"
+  return 0
+}
+ADAPTER
+done
+cat >"$T/families2/exit-fail.sh" <<'ADAPTER'
+collect_exit_fail() {
+  lane l "L" "demo/app" demo false "$(stage id=a name=a version=1 state=ok status=ok known=host)"
+  problem "src" "unreadable"
+  summary="board"
+  return 1
+}
+ADAPTER
+for f in empty nonempty fail; do
+  JERYU_RELEASE_BOARD_FAMILIES="$T/families2" bash "$T/rb/collect.sh" --out "$T/out2" "exit-$f" 2>"$T/log" || fail "exit-$f run failed: $(cat "$T/log")"
+done
+jq -e '.problems == [] and .summary == "board"' "$T/out2/exit-empty.json" >/dev/null || fail "an empty shift set left a partial board: $(jq -c '{problems, summary}' "$T/out2/exit-empty.json")"
+jq -e '.problems == [] and .summary == "board · unmerged shift work"' "$T/out2/exit-nonempty.json" >/dev/null || fail "a non-empty shift set: $(jq -c '{problems, summary}' "$T/out2/exit-nonempty.json")"
+ok "an empty or non-empty optional summary part leaves the board complete (the sourced function returns 0)"
+jq -e '(.problems | map(.message) | any(test("stopped early"))) and (.problems | map(.source) | index("src") != null) and (.lanes | length) == 1' "$T/out2/exit-fail.json" >/dev/null \
+  || fail "a genuine adapter failure must keep its lanes and be reported: $(jq -c .problems "$T/out2/exit-fail.json")"
+ok "a genuine adapter failure still yields a partial board with its evidence and the stopped-early problem"
+# The shipped template ends in an explicit success whether or not its optional summary part is empty.
+tail -n 3 "$here/examples/acme.sh" | grep -q '^  return 0$' || fail "examples/acme.sh must end collect_acme with return 0"
+
 # The shipped example must stay a working template, and site adapters stay out of the repo.
 bash -n "$here/examples/acme.sh" || fail "examples/acme.sh does not parse"
 [ ! -d "$here/families" ] || fail "scripts/release-board/families/ is back: site adapters belong in host config"

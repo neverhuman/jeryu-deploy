@@ -165,6 +165,11 @@ An adapter defines `collect_<family>` (dashes become underscores) and uses `lib.
 - `work_summary family method unlinked mirror=tip…` — the work bar; set `main_specs` first.
 - `problem source message` — record anything unreadable and keep going.
 
+`collect_<family>` must return 0 when it ran to the end: `collect.sh` marks the board partial
+("the adapter stopped early") on any non-zero return, and a last `summary="…$( [ … ] && echo … )"`
+returns 1 when the optional part is empty. End the function with `return 0`; stop early with
+`return 1` only for a genuine failure. Never mask a failing read to get a zero.
+
 An adapter must only read. A source whose "read" changes state (for example a URL that hands
 out a resource on GET) must not be called; read a health or status endpoint instead.
 

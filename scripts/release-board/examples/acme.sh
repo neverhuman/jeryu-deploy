@@ -62,5 +62,10 @@ collect_acme() {
   main_specs="$app=$main"
   work_json="$(work_summary acme "Matched by Todo: trailer, then by content." "" "$app=$prod_sha")" || work_json=null
   [ -n "$work_json" ] || work_json=null
-  summary="production $(short "$prod_sha") · ${n_behind:-?} behind main"
+  # Optional parts of the summary are a `[ -n … ] && echo` inside $(…); with nothing to add that
+  # substitution is false, and a function's last assignment returns its status. Say success
+  # explicitly: collect.sh reads a non-zero return as "the adapter stopped early". Real failures
+  # `return 1` above, or `problem` a source and carry on.
+  summary="production $(short "$prod_sha") · ${n_behind:-?} behind main$( [ "${n_behind:-0}" -gt 0 ] && echo " · unreleased work")"
+  return 0
 }
