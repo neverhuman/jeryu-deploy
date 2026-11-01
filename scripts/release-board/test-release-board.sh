@@ -223,6 +223,22 @@ ok "an empty or non-empty optional summary part leaves the board complete (the s
 jq -e '(.problems | map(.message) | any(test("stopped early"))) and (.problems | map(.source) | index("src") != null) and (.lanes | length) == 1' "$T/out2/exit-fail.json" >/dev/null \
   || fail "a genuine adapter failure must keep its lanes and be reported: $(jq -c .problems "$T/out2/exit-fail.json")"
 ok "a genuine adapter failure still yields a partial board with its evidence and the stopped-early problem"
+
+# Why the explicit return is load-bearing: with the optional part empty and no return, the trailing
+# assignment carries the false substitution's status out of the function, and the board goes partial
+# even though the adapter read every lane. collect.sh must keep reporting that, not paper over it.
+cat >"$T/families2/exit-noreturn.sh" <<'ADAPTER'
+collect_exit_noreturn() {
+  local shift_stage=""
+  lane l "L" "demo/app" demo false "$(stage id=a name=a version=1 state=ok status=ok known=host)"
+  summary="board$( [ -n "$shift_stage" ] && echo " · unmerged shift work")"
+}
+ADAPTER
+JERYU_RELEASE_BOARD_FAMILIES="$T/families2" bash "$T/rb/collect.sh" --out "$T/out2" exit-noreturn 2>"$T/log" \
+  || fail "exit-noreturn run failed: $(cat "$T/log")"
+jq -e '(.problems | map(.message) | any(test("stopped early"))) and .summary == "board"' "$T/out2/exit-noreturn.json" >/dev/null \
+  || fail "an adapter with no explicit return must still be reported as stopped early: $(jq -c '{problems, summary}' "$T/out2/exit-noreturn.json")"
+ok "an adapter that ends on a false optional substitution returns non-zero, so the explicit return 0 is what keeps the board complete"
 # The shipped template ends in an explicit success whether or not its optional summary part is empty.
 tail -n 3 "$here/examples/acme.sh" | grep -q '^  return 0$' || fail "examples/acme.sh must end collect_acme with return 0"
 
