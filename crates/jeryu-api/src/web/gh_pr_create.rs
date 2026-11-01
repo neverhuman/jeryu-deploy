@@ -216,6 +216,15 @@ fn execute(state: &WebState, vars: &Value, operation: usize, auth: &HeaderAuth) 
     if response.status != 201 {
         return github_response(response);
     }
+    super::pipeline::emit::github_edge(
+        state,
+        true,
+        &path,
+        &auth.account.login,
+        &payload,
+        response.status,
+        &response.body,
+    );
     let created: Value = serde_json::from_str(&response.body).expect("REST PR JSON");
     Json(json!({"data":{"createPullRequest":{"pullRequest":{
         "id":created["id"].to_string(),"url":created["html_url"]

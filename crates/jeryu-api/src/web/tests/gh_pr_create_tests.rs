@@ -11,6 +11,8 @@ struct Fixture {
     root: tempfile::TempDir,
     core: ForgeCore,
     router: AxumRouter,
+    events: crate::web::pipeline::EventStore,
+    review_wanted: crate::web::review_wanted::ReviewWantedStore,
     writer: String,
     reader: String,
     agent: String,
@@ -81,11 +83,11 @@ impl Fixture {
                 },
             )
             .unwrap();
-        let router = app(
-            WebState::new_with_git_storage(core.clone(), root.path().to_path_buf())
-                .with_auth(true, false, false),
-            root.path(),
-        );
+        let state = WebState::new_with_git_storage(core.clone(), root.path().to_path_buf())
+            .with_auth(true, false, false);
+        let events = state.events.clone();
+        let review_wanted = state.review_wanted.clone();
+        let router = app(state, root.path());
         let response = router
             .clone()
             .oneshot(
@@ -106,6 +108,8 @@ impl Fixture {
             root,
             core,
             router,
+            events,
+            review_wanted,
             writer,
             reader,
             agent,
@@ -199,6 +203,13 @@ async fn gh_draft_create_authorizes_validates_and_preserves_rest_domain_behavior
             .is_some_and(|s| s.contains("2.45.0") && s.contains("gh pr merge are not supported")),
         "{guidance}"
     );
+    assert!(
+        f.events
+            .query(&crate::web::pipeline::EventsQuery::default())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(f.review_wanted.since(0).1.is_empty());
     let (_, result) = send(&f, &f.writer, mutation("widgets", "feature")).await;
     assert!(
         result["data"]["createPullRequest"]["pullRequest"]["url"].is_string(),
@@ -218,6 +229,27 @@ async fn gh_draft_create_authorizes_validates_and_preserves_rest_domain_behavior
     assert_eq!(pulls[0].head.sha, f.head);
     assert_eq!(pulls[0].title, "A title — preserved");
     assert_eq!(pulls[0].body.as_deref(), Some("Line one\n\nLine two.\n"));
+    let events = f
+        .events
+        .query(&crate::web::pipeline::EventsQuery {
+            kind: Some("pr.opened".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "successful creation publishes once; duplicates publish nothing"
+    );
+    assert_eq!(events[0].repo.as_deref(), Some("ada/widgets"));
+    assert_eq!(events[0].pr, Some(pulls[0].number as i64));
+    assert_eq!(events[0].actor.as_deref(), Some("writer"));
+    let (_, signals) = f.review_wanted.since(0);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].repo, "ada/widgets");
+    assert_eq!(signals[0].number, pulls[0].number);
+    assert_eq!(signals[0].head_sha, f.head);
+    assert!(signals[0].draft);
     assert!(
         f.core
             .list_pull_requests("ada", "vault", None)
@@ -273,6 +305,27 @@ async fn actual_gh_245_pr_create_draft() {
     assert!(pulls[0].draft);
     assert_eq!(pulls[0].title, "A title — preserved");
     assert_eq!(pulls[0].body.as_deref(), Some("Line one\n\nLine two.\n"));
+    let events = f
+        .events
+        .query(&crate::web::pipeline::EventsQuery {
+            kind: Some("pr.opened".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "successful creation publishes once; duplicates publish nothing"
+    );
+    assert_eq!(events[0].repo.as_deref(), Some("ada/widgets"));
+    assert_eq!(events[0].pr, Some(pulls[0].number as i64));
+    assert_eq!(events[0].actor.as_deref(), Some("writer"));
+    let (_, signals) = f.review_wanted.since(0);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].repo, "ada/widgets");
+    assert_eq!(signals[0].number, pulls[0].number);
+    assert_eq!(signals[0].head_sha, f.head);
+    assert!(signals[0].draft);
     assert_eq!(pulls[0].head.sha, f.head);
     assert!(
         f.core
