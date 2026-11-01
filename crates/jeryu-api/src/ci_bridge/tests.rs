@@ -1901,3 +1901,108 @@ fn a_restart_that_lost_the_queue_gets_pending_pull_heads_their_tickets_back() {
         .unwrap()
         .take("jeryu", "restore-tickets", &head);
 }
+
+/// An older completed proof must not hide a newer pending one: restoring reads
+/// the newest proof of the head, as the merge queue's verdict does.
+#[test]
+fn a_restart_restores_the_ticket_of_a_pending_proof_newer_than_a_completed_one() {
+    use jeryu_core::CreatePullRequestRequest;
+    use jeryu_gitd::{GitdConfig, RepoId};
+
+    let storage = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let manager = RepoManager::new(GitdConfig::new(storage.path()));
+    let resolved = manager
+        .create_bare(&RepoId::new("jeryu", "restore-newest").unwrap())
+        .unwrap();
+    let bare = resolved.path.to_string_lossy().to_string();
+    let w = work.path();
+    git(w, &["init", "-q", "-b", "main"]);
+    git(w, &["config", "user.email", "ci@example.invalid"]);
+    git(w, &["config", "user.name", "CI"]);
+    git(w, &["config", "commit.gpgsign", "false"]);
+    write(w, "README.md", "seed\n");
+    git(w, &["add", "-A"]);
+    git(w, &["commit", "-q", "-m", "seed"]);
+    git(w, &["checkout", "-q", "-b", "feature"]);
+    write(w, "feature.txt", "feature\n");
+    git(w, &["add", "-A"]);
+    git(w, &["commit", "-q", "-m", "feature"]);
+    let head = git_out(w, &["rev-parse", "HEAD"]);
+    git(w, &["push", "-q", &bare, "main", "feature"]);
+
+    let core = core_with_repo("restore-newest");
+    core.create_pull_request(
+        "jeryu",
+        "restore-newest",
+        "alice",
+        CreatePullRequestRequest {
+            title: "feature".to_string(),
+            head: "feature".to_string(),
+            base: "main".to_string(),
+            head_sha: Some(head.clone()),
+            ..CreatePullRequestRequest::default()
+        },
+    )
+    .unwrap();
+    let proof = |status: CheckRunStatus, conclusion| CreateCheckRunRequest {
+        name: JANKURAI_PROOF_CHECK.to_string(),
+        head_sha: head.clone(),
+        conclusion,
+        details_url: None,
+        output: Some(jeryu_core::CheckRunOutput {
+            title: "jankurai/proof".to_string(),
+            summary: format!("{status:?}"),
+            text: None,
+        }),
+        status: Some(status),
+    };
+    core.create_check_run(
+        "jeryu",
+        "restore-newest",
+        proof(CheckRunStatus::Completed, Some(CheckConclusion::Success)),
+    )
+    .unwrap();
+    core.create_check_run(
+        "jeryu",
+        "restore-newest",
+        proof(CheckRunStatus::InProgress, None),
+    )
+    .unwrap();
+    let completed = |core: &ForgeCore| {
+        core.list_check_runs("jeryu", "restore-newest", Some(&head))
+            .unwrap()
+            .check_runs
+            .iter()
+            .filter(|run| {
+                run.name == JANKURAI_PROOF_CHECK && run.status == CheckRunStatus::Completed
+            })
+            .count()
+    };
+    assert_eq!(audit_record(&core, "restore-newest", &head).0, 0);
+
+    // The restart: no ticket, an older completed proof and a newer pending one.
+    assert_eq!(
+        restore_pending_audits(&core, &manager, "http://forge.test"),
+        1
+    );
+    assert_eq!(audit_record(&core, "restore-newest", &head).0, 1);
+    // Ticketing completes nothing and loses no evidence.
+    assert_eq!(completed(&core), 1);
+
+    // A second pass, or a regate, finds the ticket and adds nothing.
+    assert!(!restore_head_audit(
+        &core,
+        &manager,
+        "jeryu",
+        "restore-newest",
+        "feature",
+        &head,
+        "http://forge.test",
+    ));
+    assert_eq!(audit_record(&core, "restore-newest", &head).0, 1);
+    audit_queue::queue()
+        .lock()
+        .unwrap()
+        .take("jeryu", "restore-newest", &head);
+}

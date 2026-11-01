@@ -408,16 +408,16 @@ pub(crate) fn restore_pending_audits(
             ) {
                 continue;
             }
+            // The newest proof decides, as for the merge queue's verdict: an
+            // older completed proof must not mask a newer pending audit.
             let proof_pending = core
                 .list_check_runs(owner, repo, Some(&pull.head.sha))
                 .map(|runs| {
-                    let mut proofs = runs
-                        .check_runs
+                    runs.check_runs
                         .iter()
                         .filter(|run| run.name == JANKURAI_PROOF_CHECK)
-                        .peekable();
-                    proofs.peek().is_some()
-                        && proofs.all(|run| run.status != CheckRunStatus::Completed)
+                        .max_by_key(|run| run.completed_at.unwrap_or(run.started_at))
+                        .is_some_and(|run| run.status != CheckRunStatus::Completed)
                 })
                 .unwrap_or(false);
             if proof_pending
