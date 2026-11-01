@@ -43,8 +43,8 @@ mod people;
 pub(crate) use merge_queue::{
     building_on_base, gate_verdict, is_queue_owned_ref, rebase_onto, trusted_queue_scores,
 };
-mod gh_pr_create;
 mod build_inventory;
+mod gh_pr_create;
 pub(crate) mod line_survival;
 mod lineage;
 mod mcp_backend;
