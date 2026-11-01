@@ -226,7 +226,7 @@ pub(super) fn proof_already_posted(
         .check_runs
         .iter()
         .filter(|run| run.name == JANKURAI_PROOF_CHECK)
-        .max_by_key(|run| run.completed_at.unwrap_or(run.started_at));
+        .max_by_key(|run| run.recency_key());
     newest.is_some_and(|run| {
         run.status == CheckRunStatus::Completed
             && run.conclusion.as_ref() == Some(conclusion)

@@ -1371,7 +1371,7 @@ fn a_re_ticketed_head_gets_a_fresh_proof_for_the_same_verdict() {
         .check_runs
         .iter()
         .filter(|check| check.name == JANKURAI_PROOF_CHECK)
-        .max_by_key(|check| check.completed_at.unwrap_or(check.started_at))
+        .max_by_key(|check| check.recency_key())
         .expect("the head has a proof");
     assert_eq!(newest.status, CheckRunStatus::Completed);
     assert_eq!(newest.conclusion, Some(CheckConclusion::Success));

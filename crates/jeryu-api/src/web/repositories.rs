@@ -1344,9 +1344,7 @@ fn current_check_runs<'a>(
             }
             Entry::Occupied(mut slot) => {
                 let held = *slot.get();
-                // `>=` so runs with identical timestamps resolve to the
-                // later-listed one — the store appends in creation order.
-                if (check.started_at, check.completed_at) >= (held.started_at, held.completed_at) {
+                if check.recency_key() >= held.recency_key() {
                     slot.insert(check);
                 }
             }
@@ -1373,7 +1371,7 @@ pub(crate) fn mirror_failures(
             .flat_map(|runs| runs.check_runs.iter())
             .filter(|check| check.name == GITHUB_MIRROR_CHECK)
             .collect();
-        attempts.sort_by_key(|check| (check.started_at, check.completed_at));
+        attempts.sort_by_key(|check| check.recency_key());
         // Use the same reconcile result exposed as /api/v1/mirrors sync.error.
         // Reconcile can fail before it has a head SHA to write a check-run. The
         // report only refreshes on the reconcile interval, so a push that
@@ -1429,9 +1427,7 @@ pub(crate) fn mirror_failures(
 /// runs over the FULL check-run history (not sha-scoped — the newest mirror
 /// attempt is meaningful regardless of which commit it pushed).
 pub(super) fn mirror_status(checks: &[CheckRun]) -> Option<RepositoryMirrorStatus> {
-    let newer = |a: &CheckRun, b: &CheckRun| {
-        (a.started_at, a.completed_at) >= (b.started_at, b.completed_at)
-    };
+    let newer = |a: &CheckRun, b: &CheckRun| a.recency_key() >= b.recency_key();
     let mut latest: Option<&CheckRun> = None;
     let mut latest_success: Option<&CheckRun> = None;
     for check in checks

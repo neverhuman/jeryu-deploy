@@ -408,6 +408,7 @@ fn helper_branches_normalize_tty_time_and_check_states() {
 
     let checks = vec![
         CheckRun {
+            creation_sequence: 0,
             id: Uuid::from_u128(1),
             owner: "alice".to_string(),
             repo: "jeryu".to_string(),
@@ -421,6 +422,7 @@ fn helper_branches_normalize_tty_time_and_check_states() {
             output: None,
         },
         CheckRun {
+            creation_sequence: 0,
             id: Uuid::from_u128(2),
             owner: "alice".to_string(),
             repo: "jeryu".to_string(),
@@ -434,6 +436,7 @@ fn helper_branches_normalize_tty_time_and_check_states() {
             output: None,
         },
         CheckRun {
+            creation_sequence: 0,
             id: Uuid::from_u128(3),
             owner: "alice".to_string(),
             repo: "jeryu".to_string(),
@@ -447,6 +450,7 @@ fn helper_branches_normalize_tty_time_and_check_states() {
             output: None,
         },
         CheckRun {
+            creation_sequence: 0,
             id: Uuid::from_u128(4),
             owner: "alice".to_string(),
             repo: "jeryu".to_string(),
@@ -493,6 +497,7 @@ fn a_head_summary_counts_only_the_newest_run_of_each_check() {
     let run = |id: u128, name: &str, minute: i64, status: CheckRunStatus, conclusion| {
         let at = start + chrono::Duration::minutes(minute);
         CheckRun {
+            creation_sequence: id as u64,
             id: Uuid::from_u128(id),
             owner: "acme".to_string(),
             repo: "widgets".to_string(),
@@ -555,12 +560,39 @@ fn a_head_summary_counts_only_the_newest_run_of_each_check() {
     assert_eq!(summary.failing, 1);
     assert!(!summary.missing);
 
+    // A later-created attempt wins even if its clock reads earlier and the
+    // old completed attempt appears last in a reloaded list.
     let rerun = run(7, "proof", 2, CheckRunStatus::InProgress, None);
-    let summary = summarize_checks(&[checks[1].clone(), rerun]);
-    assert_eq!(
-        summary.running, 0,
-        "a verdict outranks an earlier pending row"
+    for ordered in [
+        vec![checks[1].clone(), rerun.clone()],
+        vec![rerun.clone(), checks[1].clone()],
+    ] {
+        let summary = summarize_checks(&ordered);
+        assert_eq!(
+            summary.running, 1,
+            "creation order outranks completion time"
+        );
+        assert_eq!(summary.successful, 0);
+    }
+    // Payloads from old writers have no ordinal. Start time then UUID keep
+    // equal-time selection independent of iteration order.
+    let mut older = run(
+        10,
+        "legacy",
+        1,
+        CheckRunStatus::Completed,
+        Some(CheckConclusion::Success),
     );
+    let mut newer = run(11, "legacy", 1, CheckRunStatus::InProgress, None);
+    older.creation_sequence = 0;
+    newer.creation_sequence = 0;
+    older.completed_at = Some(start + chrono::Duration::minutes(20));
+    for ordered in [
+        vec![older.clone(), newer.clone()],
+        vec![newer.clone(), older.clone()],
+    ] {
+        assert_eq!(summarize_checks(&ordered).running, 1);
+    }
     let summary = summarize_checks(&[]);
     assert!(summary.missing);
 }

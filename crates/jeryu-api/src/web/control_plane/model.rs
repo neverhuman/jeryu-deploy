@@ -185,7 +185,7 @@ pub(crate) fn collect_repos(core: &ForgeCore) -> Vec<ControlRepo> {
             let failing_checks = current.iter().filter(|check| failing_check(check)).count();
             let latest_head_sha = checks
                 .iter()
-                .max_by_key(|check| check.completed_at.or(Some(check.started_at)))
+                .max_by_key(|check| check.recency_key())
                 .map(|check| check.head_sha.clone());
             ControlRepo {
                 id: repo.id.to_string(),

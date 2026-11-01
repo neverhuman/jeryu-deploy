@@ -503,7 +503,7 @@ pub(crate) fn plan_push_audit(
                 runs.check_runs
                     .iter()
                     .filter(|run| run.name == super::JANKURAI_PROOF_CHECK)
-                    .max_by_key(|run| run.completed_at.unwrap_or(run.started_at))
+                    .max_by_key(|run| run.recency_key())
                     .is_some_and(|run| run.status == jeryu_core::CheckRunStatus::Completed)
             })
             .unwrap_or(false);

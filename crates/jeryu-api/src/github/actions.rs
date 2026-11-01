@@ -183,7 +183,8 @@ impl GithubRouter {
         repo: &str,
     ) -> std::result::Result<Vec<WorkflowRecord>, Response> {
         match self.core.list_check_runs(owner, repo, None) {
-            Ok(list) => {
+            Ok(mut list) => {
+                list.check_runs.sort_by_key(CheckRun::recency_key);
                 let default_branch = self
                     .core
                     .get_repository(owner, repo)

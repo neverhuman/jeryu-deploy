@@ -124,7 +124,7 @@ async fn recovery_rejects_unqualified_scores_and_preserves_governed_failures() {
             .check_runs
             .iter()
             .filter(|r| r.name == "jankurai/proof")
-            .max_by_key(|r| r.completed_at.unwrap_or(r.started_at))
+            .max_by_key(|r| r.recency_key())
             .unwrap();
         if should_recover {
             assert_eq!(newest.status, CheckRunStatus::Completed, "{case}");

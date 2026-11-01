@@ -5,7 +5,7 @@ use jeryu_core::{CheckConclusion, CheckRun, CheckRunStatus, check_conclusion_wir
 use super::*;
 
 /// The run that speaks for each check name on a head: the newest one, picked
-/// the way branch protection picks it (`completed_at`, else `started_at`).
+/// the way branch protection picks it (immutable creation order).
 ///
 /// Core's check list is append-only, so a head gathers one row per attempt: a
 /// pending proof check and then its verdict, or a failed gate and then
@@ -14,11 +14,11 @@ use super::*;
 pub(crate) fn latest_check_per_name(checks: &[CheckRun]) -> Vec<CheckRun> {
     let mut latest: BTreeMap<&str, &CheckRun> = BTreeMap::new();
     for check in checks {
-        let key = check.completed_at.unwrap_or(check.started_at);
+        let key = check.recency_key();
         latest
             .entry(check.name.as_str())
             .and_modify(|current| {
-                if key >= current.completed_at.unwrap_or(current.started_at) {
+                if key >= current.recency_key() {
                     *current = check;
                 }
             })

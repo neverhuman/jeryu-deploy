@@ -358,7 +358,7 @@ pub(super) fn required_contexts_with_enforcement(
             let check = check_runs
                 .iter()
                 .filter(|check| check.name == name)
-                .max_by_key(|check| check.completed_at.unwrap_or(check.started_at));
+                .max_by_key(|check| check.recency_key());
             match check {
                 Some(check) => RequiredContextPosture {
                     name,
@@ -893,22 +893,7 @@ fn status_bucket(state: &CommitStatusState) -> &'static str {
 }
 
 fn latest_check_runs_by_name(runs: Vec<CheckRun>) -> Vec<CheckRun> {
-    let mut latest = BTreeMap::<String, CheckRun>::new();
-    for run in runs {
-        match latest.entry(run.name.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(run);
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry)
-                if run.completed_at.unwrap_or(run.started_at)
-                    >= entry.get().completed_at.unwrap_or(entry.get().started_at) =>
-            {
-                entry.insert(run);
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
-        }
-    }
-    latest.into_values().collect()
+    super::super::control_plane::latest_check_per_name(&runs)
 }
 
 fn check_bucket(run: &CheckRun) -> &'static str {

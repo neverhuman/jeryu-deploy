@@ -1187,7 +1187,7 @@ pub(crate) fn gate_verdict(
         let check = checks
             .iter()
             .filter(|check| check.name == name)
-            .max_by_key(|check| check.completed_at.unwrap_or(check.started_at))?;
+            .max_by_key(|check| check.recency_key())?;
         match check.status {
             CheckRunStatus::Completed => Some(check.conclusion == Some(CheckConclusion::Success)),
             _ => None,

@@ -289,7 +289,7 @@ fn check_summaries(state: &WebState, repo: &Repository, required: &[String]) -> 
     for run in runs {
         match newest.entry(run.name.clone()) {
             std::collections::btree_map::Entry::Occupied(mut held) => {
-                if run_time(&run) >= run_time(held.get()) {
+                if run.recency_key() >= held.get().recency_key() {
                     held.insert(run);
                 }
             }

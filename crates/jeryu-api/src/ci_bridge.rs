@@ -436,7 +436,7 @@ pub(crate) fn restore_pending_audits(
                     runs.check_runs
                         .iter()
                         .filter(|run| run.name == JANKURAI_PROOF_CHECK)
-                        .max_by_key(|run| run.completed_at.unwrap_or(run.started_at))
+                        .max_by_key(|run| run.recency_key())
                         .is_some_and(|run| run.status != CheckRunStatus::Completed)
                 })
                 .unwrap_or(false);
