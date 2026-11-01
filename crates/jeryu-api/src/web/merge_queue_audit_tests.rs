@@ -328,6 +328,22 @@ async fn a_landed_entrys_author_may_audit_a_later_queue_sha() {
         merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, &landed, "alice"),
         Some(fx.number)
     );
+    // Whole-tree tickets use the empty tree, which cannot be a rev-list
+    // commit boundary. Historical authors remain eligible, while the live
+    // queue author is still excluded.
+    for no_range in [
+        crate::ci_bridge::audit_queue::NO_COMMIT_BASE_OID,
+        &"f".repeat(40),
+    ] {
+        assert_eq!(
+            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "bob"),
+            None,
+        );
+        assert_eq!(
+            merge_queue::authored_audit(&fx.state, "alice", "jeryu", &sha, no_range, "alice"),
+            Some(fx.number),
+        );
+    }
 }
 
 async fn enqueue_number(fx: &Fixture, number: u64) -> (StatusCode, Value) {
