@@ -80,11 +80,10 @@ async fn landing_refreshes_claimed_stack_diff_and_rejects_previous_report() {
     assert_eq!(refreshed.base_sha, bottom);
     assert!(refreshed.claimed_by.is_none());
     assert!(refreshed.claimed_at.is_none());
-    // A landed author still cannot submit the previous, wider diff, even in
-    // the interval between landing and ticket replacement.
+    // The previous diff is rejected before independence, even for its author.
     assert_eq!(
         ingest(&fx, "alice", &submission(&previous)).await,
-        StatusCode::FORBIDDEN
+        StatusCode::CONFLICT
     );
     assert_eq!(
         ingest(&fx, "independent-runner", &submission(&previous)).await,

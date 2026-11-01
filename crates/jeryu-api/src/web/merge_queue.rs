@@ -199,7 +199,14 @@ fn git_for<'a>(state: &'a WebState, path: &'a Path) -> Git<'a> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static AUDIT_GIT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn read_metadata(git: &Git<'_>) -> Result<Vec<QueueEntry>, String> {
+    #[cfg(test)]
+    AUDIT_GIT_READS.with(|count| count.set(count.get() + 1));
     git.try_read_blob_refs("refs/queue-meta/")
         .map_err(|err| err.to_string())?
         .into_iter()
@@ -530,6 +537,8 @@ pub(crate) fn authored_audit(
     let in_diff: Option<std::collections::HashSet<String>> = (is_sha(diff_base)
         && diff_base != crate::ci_bridge::audit_queue::NO_COMMIT_BASE_OID)
         .then(|| {
+            #[cfg(test)]
+            AUDIT_GIT_READS.with(|count| count.set(count.get() + 1));
             git.run(&[
                 "rev-list",
                 "--end-of-options",

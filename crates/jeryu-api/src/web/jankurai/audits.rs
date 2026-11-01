@@ -75,7 +75,7 @@ impl SubmissionRejected {
 /// their own pull request. Principals are compared normalized, so a
 /// differently-cased or aliased login is the same author.
 ///
-/// Checked before the ticket is claimed, so a refusal leaves the open ticket
+/// Checked after admission and before consumption, so a refusal leaves the open ticket
 /// for the runner that may actually run it.
 pub(crate) fn author_produced_submission(
     state: &WebState,
@@ -130,8 +130,8 @@ pub(crate) fn author_produced_submission(
     ))
 }
 
-/// Decide whether this submission may become the head's authoritative score,
-/// and consume the ticket that authorized it so the head is scored once.
+/// Validate identity, provenance and the exact open ticket without consuming it.
+/// Call before independence reads, then consume only after independence succeeds.
 pub(crate) fn authorize_runner_submission(
     account: &AccountSummary,
     owner: &str,
@@ -178,13 +178,15 @@ pub(crate) fn authorize_runner_submission(
     verify_reported_auditor(&submission.jankurai_version, &submission.jankurai_sha256)
         .map_err(|error| SubmissionRejected::new(StatusCode::UNPROCESSABLE_ENTITY, error))?;
 
-    let Ok(mut queue) = audit_queue::queue().lock() else {
+    let Ok(queue) = audit_queue::queue().lock() else {
         return Err(SubmissionRejected::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "the audit queue is unavailable",
         ));
     };
-    let Some(ticket) = queue.take(owner, repo, &submission.commit_sha) else {
+    let Some(ticket) = queue.tickets().iter().find(|ticket| {
+        ticket.owner == owner && ticket.repo == repo && ticket.head_sha == submission.commit_sha
+    }) else {
         return Err(SubmissionRejected::new(
             StatusCode::CONFLICT,
             "no open audit job for this head",
@@ -197,20 +199,39 @@ pub(crate) fn authorize_runner_submission(
             "audit job for {} has no commit base and expects a full audit, not a diff against {NO_COMMIT_BASE_OID}",
             ticket.head_sha
         );
-        queue.enqueue(ticket);
         return Err(SubmissionRejected::new(StatusCode::CONFLICT, reason));
     }
-    // The ticket is what the forge asked for; a report bound to anything else
-    // is a different audit. Put the ticket back so the real one can still run.
+    // A report bound to anything else is a different audit.
     if ticket.branch != submission.branch || ticket.base_sha != submission.base_sha {
         let reason = format!(
             "audit job for {} expects branch {} against base {}",
             ticket.head_sha, ticket.branch, ticket.base_sha
         );
-        queue.enqueue(ticket);
         return Err(SubmissionRejected::new(StatusCode::CONFLICT, reason));
     }
-    Ok(ticket)
+    Ok(ticket.clone())
+}
+
+/// Atomically recheck the validated ticket and consume it. A replacement or
+/// concurrent submission during independence reads must not authorize a score.
+pub(crate) fn consume_runner_submission(
+    ticket: &AuditTicket,
+) -> Result<AuditTicket, SubmissionRejected> {
+    let Ok(mut queue) = audit_queue::queue().lock() else {
+        return Err(SubmissionRejected::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the audit queue is unavailable",
+        ));
+    };
+    if !queue.tickets().contains(ticket) {
+        return Err(SubmissionRejected::new(
+            StatusCode::CONFLICT,
+            "the audit job changed during author independence checks",
+        ));
+    }
+    Ok(queue
+        .take(&ticket.owner, &ticket.repo, &ticket.head_sha)
+        .expect("ticket checked under the same lock"))
 }
 
 fn default_audit_mode() -> String {

@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 
 use super::jankurai::audits::{
     RunnerAuditSubmission, author_produced_submission, authorize_runner_submission,
+    consume_runner_submission,
 };
 use super::markdown::{MarkdownBase, encode_segment, render_markdown, render_markdown_in};
 use super::paging::{PageInfo, PageParams};
@@ -553,18 +554,6 @@ fn runner_audit_ingest(
     repo: &Repository,
     submission: &RunnerAuditSubmission,
 ) -> AxumResponse {
-    // Independence before anything else: required evidence for a change may
-    // not be produced by the change's author, whatever identities they hold.
-    if let Some(rejected) = author_produced_submission(
-        state,
-        account,
-        &repo.owner,
-        &repo.name,
-        &submission.commit_sha,
-        &submission.base_sha,
-    ) {
-        return api_error(rejected.status, "permission_denied", &rejected.reason);
-    }
     let ticket = match authorize_runner_submission(account, &repo.owner, &repo.name, submission) {
         Ok(ticket) => ticket,
         Err(rejected) => {
@@ -578,6 +567,21 @@ fn runner_audit_ingest(
                 &rejected.reason,
             );
         }
+    };
+    // Required evidence may not come from the author. Refusals retain the ticket.
+    if let Some(rejected) = author_produced_submission(
+        state,
+        account,
+        &repo.owner,
+        &repo.name,
+        &submission.commit_sha,
+        &submission.base_sha,
+    ) {
+        return api_error(rejected.status, "permission_denied", &rejected.reason);
+    }
+    let ticket = match consume_runner_submission(&ticket) {
+        Ok(ticket) => ticket,
+        Err(rejected) => return api_error(rejected.status, "invalid_input", &rejected.reason),
     };
     // Keep the provenance with the score: which runner, which install, which
     // base the report was produced against.

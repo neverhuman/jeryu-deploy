@@ -578,3 +578,6 @@ mod refresh_tests;
 
 #[path = "merge_queue_audit_recovery_tests.rs"]
 mod recovery_tests;
+
+#[path = "merge_queue_audit_admission_tests.rs"]
+mod admission_tests;

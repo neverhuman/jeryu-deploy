@@ -795,7 +795,7 @@ fn a_head_with_no_commit_base_is_only_scored_by_a_full_audit() {
     assert_eq!(refused.status, StatusCode::CONFLICT);
     assert!(refused.reason.contains("full audit"), "{}", refused.reason);
 
-    // Refusing put the job back, so the audit that can score this head still
+    // Refusing retained the job, so the audit that can score this head still
     // has one to submit against.
     let Ok(ticket) =
         authorize_runner_submission(&scorer, "alice", "jeryu", &submission(AUDIT_MODE_FULL))
@@ -803,6 +803,7 @@ fn a_head_with_no_commit_base_is_only_scored_by_a_full_audit() {
         panic!("a whole-tree report scores a head with no commit base");
     };
     assert_eq!(ticket.audit_mode, AUDIT_MODE_FULL);
+    assert!(crate::web::jankurai::audits::consume_runner_submission(&ticket).is_ok());
 }
 
 /// One auditor report with explicit findings and, like the auditor's, the
