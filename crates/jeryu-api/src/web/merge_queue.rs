@@ -206,9 +206,9 @@ fn read_metadata(git: &Git<'_>) -> Result<Vec<QueueEntry>, String> {
         .map(|(name, body)| {
             let entry: QueueEntry = serde_json::from_str(&body)
                 .map_err(|err| format!("invalid queue metadata {name}: {err}"))?;
-            if !is_sha(&entry.queue_sha)
-                && !(entry.state == QueueState::Dequeued && entry.queue_sha.is_empty())
-            {
+            let refused_without_commit =
+                entry.state == QueueState::Dequeued && entry.queue_sha.is_empty();
+            if !(is_sha(&entry.queue_sha) || refused_without_commit) {
                 return Err(format!(
                     "invalid queue commit in {name} for pull request #{}",
                     entry.number
