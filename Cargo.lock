@@ -1480,7 +1480,7 @@ dependencies = [
 [[package]]
 name = "jeryu-jira"
 version = "5.0.0"
-source = "git+https://github.com/neverhuman/jeryu-jira.git?tag=jeryu-jira-v5.0.0-split.6#7d1d7552fa74c3d8070f2ee3682fa73ac188631d"
+source = "git+https://github.com/neverhuman/jeryu-jira.git?tag=jeryu-jira-v5.0.0-split.7#fd9ee311cf461a4380f06e4bc9b48f2b46abd555"
 dependencies = [
  "chrono",
  "rusqlite",
