@@ -610,19 +610,6 @@ impl GithubRouter {
                 {
                     return error_response(error);
                 }
-                let local = format!("{}/{}", ready.owner, ready.repo);
-                if self.delete_branch_on_merge(&local) && ready.source_repository == local {
-                    let branch = ready
-                        .head_ref
-                        .split_once(':')
-                        .map_or(ready.head_ref.as_str(), |(_, branch)| branch);
-                    if let Err(error) = self
-                        .core
-                        .authorize_bot_ref_write(&call, &format!("refs/heads/{branch}"))
-                    {
-                        return error_response(error);
-                    }
-                }
             }
             if let Some(rm) = &self.repo_manager {
                 return self.merge_ready_pull_git(rm, ready);

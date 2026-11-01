@@ -63,8 +63,7 @@ The ref limit intersects existing repository/task rights and Git protections.
 Receive-pack checks every create/update/delete command before Git sees the
 pack; a denied command refuses the whole request with `403 ref_not_granted`.
 Direct merges bind the check to the base selected by merge readiness, and
-queue admission checks its actual base. Queue metadata retains the bot credential identifiers (never the bearer), and landing rechecks its current grant against the readiness base after a restart. A local source branch that automatic
-merge cleanup would remove must also be allowed. A bot session checks its
+queue admission checks its actual base. Queue metadata retains the bot credential identifiers (never the bearer), and landing rechecks its current grant against the readiness base after a restart. Automatic merge cleanup retains a local source branch when that ref is not allowed. A bot session checks its
 actual generated branch before recording an intent or claiming a warm cell.
 Reads and opening a pull request from an existing allowed branch remain
 available. Unsupported REST ref writers and unavailable MCP write tools do

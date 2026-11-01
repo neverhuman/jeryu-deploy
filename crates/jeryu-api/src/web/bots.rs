@@ -663,9 +663,8 @@ pub(crate) fn bot_call(
     }
 }
 
-/// Merging and queueing request a base-ref write; automatic head cleanup also
-/// deletes a local source branch. Check both effects against the same bot reach
-/// used by receive-pack before either path can enqueue or move anything.
+/// Merging and queueing request a base-ref write. The merge router binds
+/// authorization to the actual readiness refs and checks cleanup separately.
 pub(crate) fn authorize_pull_ref_write(
     state: &WebState,
     call: &BotCall,
@@ -677,15 +676,6 @@ pub(crate) fn authorize_pull_ref_write(
     state
         .core
         .authorize_bot_ref_write(call, &format!("refs/heads/{}", pr.base.ref_name))?;
-    let repo = format!("{}/{}", call.owner, call.repo);
-    if state.github.delete_branch_on_merge(&repo)
-        && pr.source_repository == repo
-        && pr.head.ref_name != pr.base.ref_name
-    {
-        state
-            .core
-            .authorize_bot_ref_write(call, &format!("refs/heads/{}", pr.head.ref_name))?;
-    }
     Ok(())
 }
 
