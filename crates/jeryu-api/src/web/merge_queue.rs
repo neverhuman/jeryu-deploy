@@ -761,7 +761,7 @@ pub(super) async fn enqueue(
     };
     if let Some(Extension(bot)) = &bot {
         let call = super::bots::bot_call(
-            &bot,
+            bot,
             &repo.owner,
             &repo.name,
             true,
