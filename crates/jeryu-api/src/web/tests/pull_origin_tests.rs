@@ -253,6 +253,7 @@ async fn a_contributed_pull_waits_for_a_maintainer_however_clean_its_review() {
     let refused = crate::web::pulls::merge(
         State(state.clone()),
         axum::Extension(crate::web::auth::trusted_local_account(&state)),
+        None,
         path(),
         axum::body::Bytes::from(
             serde_json::json!({
@@ -291,6 +292,7 @@ async fn a_contributed_pull_waits_for_a_maintainer_however_clean_its_review() {
     let merged = crate::web::pulls::merge(
         State(state.clone()),
         axum::Extension(crate::web::auth::trusted_local_account(&state)),
+        None,
         path(),
         axum::body::Bytes::from(
             serde_json::json!({
@@ -348,6 +350,7 @@ async fn an_internal_pull_request_is_unaffected_by_the_contributed_gate() {
     let merged = crate::web::pulls::merge(
         State(state.clone()),
         axum::Extension(crate::web::auth::trusted_local_account(&state)),
+        None,
         path(),
         axum::body::Bytes::from(
             serde_json::json!({

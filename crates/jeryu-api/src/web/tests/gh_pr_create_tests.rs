@@ -76,6 +76,7 @@ impl Fixture {
                 "Creator",
                 BotKind::GROK,
                 BotReach::Repositories {
+                    refs: None,
                     repos: vec![BotRepoRef {
                         owner: "ada".into(),
                         name: "widgets".into(),

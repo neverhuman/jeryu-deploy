@@ -164,6 +164,7 @@ async fn native_merge_refuses_unloadable_queue() {
     let response = crate::web::pulls::merge(
         State(fx.state.clone()),
         account("rel-bot", UserRole::Admin),
+        None,
         AxumPath((fx.repo_id.clone(), fx.number)),
         serde_json::to_vec(&json!({"expected_head_sha": fx.head}))
             .unwrap()

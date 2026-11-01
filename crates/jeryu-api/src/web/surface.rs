@@ -349,7 +349,21 @@ async fn github_forward_request(
             return response;
         }
     }
-    let response = state.github.handle(method, &path_and_query, &body);
+    let mut github = state.github.clone();
+    if let Some(bot) = &auth.bot
+        && let ["repos", owner, repo, rest @ ..] = segments.as_slice()
+    {
+        let (kind, task) = super::bots::task_from_segments(rest);
+        github = github.with_bot_ref_writer(super::bots::bot_call(
+            bot,
+            owner,
+            repo,
+            method != Method::Get,
+            kind,
+            task,
+        ));
+    }
+    let response = github.handle(method, &path_and_query, &body);
     let normalized = normalize_github_edge_path(&path_and_query);
     super::merge_attempts::record_edge(
         &state,
@@ -634,10 +648,16 @@ fn authorize_bot_on_github(
             }
             let (task_kind, task_id) = super::bots::task_from_segments(rest);
             let call = super::bots::bot_call(bot, owner, repo, write, task_kind, task_id);
-            match state.core.authorize_bot(&call) {
-                Ok(_) => None,
-                Err(error) => Some(github_forbidden(&error.to_string())),
+            if let Err(error) = state.core.authorize_bot(&call) {
+                return Some(github_forbidden(&error.to_string()));
             }
+            if let (Method::Put, ["pulls", number, "merge"]) = (method, rest)
+                && let Ok(number) = number.parse::<u64>()
+                && let Err(error) = super::bots::authorize_pull_ref_write(state, &call, number)
+            {
+                return Some(github_forbidden(&error.to_string()));
+            }
+            None
         }
         _ => Some(denied),
     }

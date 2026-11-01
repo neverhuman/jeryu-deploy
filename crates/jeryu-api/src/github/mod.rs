@@ -122,6 +122,9 @@ pub struct GithubRouter {
     in_memory_merge: bool,
     #[cfg(feature = "web")]
     github_mirror: Option<std::sync::Arc<crate::github_mirror::GithubMirror>>,
+    /// Bound to one authenticated request, never installed on the shared router.
+    #[cfg(feature = "web")]
+    bot_ref_writer: Option<jeryu_core::BotCall>,
 }
 
 impl GithubRouter {
@@ -144,7 +147,16 @@ impl GithubRouter {
             in_memory_merge: false,
             #[cfg(feature = "web")]
             github_mirror: None,
+            #[cfg(feature = "web")]
+            bot_ref_writer: None,
         }
+    }
+
+    /// Carry a bot identity through readiness to the actual immutable merge refs.
+    #[cfg(feature = "web")]
+    pub(crate) fn with_bot_ref_writer(mut self, call: jeryu_core::BotCall) -> Self {
+        self.bot_ref_writer = Some(call);
+        self
     }
 
     /// Attach the Work Tracker store used by the web server to mirror

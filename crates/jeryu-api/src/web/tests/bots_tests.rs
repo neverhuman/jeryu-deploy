@@ -121,7 +121,13 @@ async fn bot_tokens_honor_reach_and_refuse_admin_inheritance() {
     )
     .unwrap();
     let general = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let repo_bot = core
         .enroll_bot(
@@ -130,6 +136,7 @@ async fn bot_tokens_honor_reach_and_refuse_admin_inheritance() {
             "Repo",
             BotKind::MUSE,
             BotReach::Repositories {
+                refs: None,
                 repos: vec![BotRepoRef {
                     owner: "ada".to_string(),
                     name: "widgets".to_string(),
@@ -144,6 +151,7 @@ async fn bot_tokens_honor_reach_and_refuse_admin_inheritance() {
             "Task",
             BotKind::GROK,
             BotReach::Task {
+                refs: None,
                 repo: BotRepoRef {
                     owner: "ada".to_string(),
                     name: "widgets".to_string(),
@@ -322,7 +330,13 @@ async fn refresh_audience_revocation_and_query_credentials() {
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let router = router_for(core.clone());
 
@@ -424,7 +438,13 @@ async fn bot_mcp_mount_hides_admin_tools_and_requires_repo() {
     core.create_account("ada", "ada-password-1", UserRole::Admin)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -512,7 +532,13 @@ async fn bots_cannot_change_the_repository_or_widen_a_branch_task() {
     core.grant_repo_access("bea", "bea", "bea", "widgets", RepoAccessLevel::Write)
         .unwrap();
     let general = core
-        .enroll_bot("bea", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "bea",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let branch_bot = core
         .enroll_bot(
@@ -521,6 +547,7 @@ async fn bots_cannot_change_the_repository_or_widen_a_branch_task() {
             "Feat",
             BotKind::GROK,
             BotReach::Task {
+                refs: None,
                 repo: BotRepoRef {
                     owner: "bea".to_string(),
                     name: "widgets".to_string(),
@@ -635,8 +662,14 @@ async fn bot_token_and_refresh_routes_rate_limit_after_ten() {
     let core = jeryu_core::ForgeCore::new();
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
-    core.enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
-        .unwrap();
+    core.enroll_bot(
+        "ada",
+        "atlas",
+        "Atlas",
+        BotKind::GROK,
+        BotReach::General { refs: None },
+    )
+    .unwrap();
     let router = router_for(core);
     let token_body = r#"{"enrollment_key":"jbk_live.nope.nope","aud":"http://127.0.0.1"}"#;
     let refresh_body =
@@ -684,7 +717,13 @@ async fn refresh_rotates_through_the_route_and_reuse_is_refused() {
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -784,7 +823,13 @@ async fn git_smart_http_denies_a_bot_bearer_outside_its_grant() {
     core.create_repository("ada", repo("open", false)).unwrap();
     core.create_repository("ada", repo("vault", true)).unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let state = WebState::new_with_git_storage(core, root.path().to_path_buf())
         .with_auth(true, false, false);
@@ -860,7 +905,13 @@ async fn bot_mcp_hides_admin_tools_and_denies_an_admin_call() {
     core.create_account("ada", "ada-password-1", UserRole::Admin)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -980,7 +1031,13 @@ async fn bot_session_rejects_args_env_and_url() {
     core.grant_repo_access("ada", "ada", "ada", "widgets", RepoAccessLevel::Write)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let router = router_for(core.clone());
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -1057,7 +1114,13 @@ async fn hmac_tampered_bot_token_is_refused() {
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -1095,7 +1158,13 @@ async fn non_hs256_bot_token_is_refused() {
     core.create_account("ada", "ada-password-1", UserRole::User)
         .unwrap();
     let enrolled = core
-        .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+        .enroll_bot(
+            "ada",
+            "atlas",
+            "Atlas",
+            BotKind::GROK,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let router = router_for(core);
     let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
@@ -1136,6 +1205,7 @@ async fn agent_tokens_act_as_the_bot_on_rest_and_one_mcp() {
             "Atlas",
             BotKind::GROK,
             BotReach::Repositories {
+                refs: None,
                 repos: vec![BotRepoRef {
                     owner: "dee".to_string(),
                     name: "widgets".to_string(),
@@ -1411,7 +1481,13 @@ async fn token_routes_answer_only_the_owner_and_keep_no_secret() {
     core.grant_repo_access("eve", "eve", "eve", "widgets", RepoAccessLevel::Write)
         .unwrap();
     let bot = core
-        .enroll_bot("eve", "atlas", "Atlas", BotKind::MUSE, BotReach::General)
+        .enroll_bot(
+            "eve",
+            "atlas",
+            "Atlas",
+            BotKind::MUSE,
+            BotReach::General { refs: None },
+        )
         .unwrap();
     let eve = core
         .create_personal_access_token("eve", "owner", None)
@@ -1570,4 +1646,194 @@ fn local_trust_and_mcp_peer_list_reject_proxies_and_unspecified_peers() {
         ]
     );
     assert_eq!(rejected, vec!["0.0.0.0", "::", "127.0.0.0/8", "nope"]);
+}
+
+#[tokio::test]
+async fn bot_ref_reach_guards_real_receive_pack_commands_and_merge_admission() {
+    use jeryu_core::CreatePullRequestRequest;
+    use std::process::Stdio;
+    let root = tempfile::tempdir().unwrap();
+    let core = jeryu_core::ForgeCore::new();
+    core.create_account("ada", "ada-password-1", UserRole::Admin)
+        .unwrap();
+    core.create_repository("ada", repo("widgets", true))
+        .unwrap();
+    core.grant_repo_access("ada", "ada", "ada", "widgets", RepoAccessLevel::Write)
+        .unwrap();
+    let enrolled = core
+        .enroll_bot(
+            "ada",
+            "release",
+            "Release",
+            BotKind::AGENT,
+            BotReach::Repositories {
+                repos: vec![BotRepoRef {
+                    owner: "ada".into(),
+                    name: "widgets".into(),
+                }],
+                refs: Some(vec![
+                    "refs/tags/*-split.*".into(),
+                    "refs/heads/releasebot/*".into(),
+                ]),
+            },
+        )
+        .unwrap();
+    let state = WebState::new_with_git_storage(core.clone(), root.path().to_path_buf())
+        .with_auth(true, false, false);
+    let resolved = state
+        .repo_manager
+        .create_bare(&jeryu_gitd::RepoId::new("ada", "widgets").unwrap())
+        .unwrap();
+    let git = |args: &[&str]| {
+        let output = crate::test_git::git_command()
+            .arg("-C")
+            .arg(&resolved.path)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@invalid",
+            ])
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let tree = git(&["mktree"]);
+    let commit = git(&["commit-tree", &tree, "-m", "fixture"]);
+    let pack = crate::test_git::git_command()
+        .arg("-C")
+        .arg(&resolved.path)
+        .args(["pack-objects", "--stdout"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(pack.status.success());
+    let router = app(state, root.path());
+    let minted = access_token(&router, &enrolled.enrollment_key, "http://127.0.0.1").await;
+    let token = minted["access_token"].as_str().unwrap();
+    let push = |refs: Vec<String>| {
+        let mut body = Vec::new();
+        for (index, reference) in refs.iter().enumerate() {
+            let command = format!(
+                "{} {} {}{}",
+                "0".repeat(40),
+                commit,
+                reference,
+                if index == 0 {
+                    "\0report-status\n"
+                } else {
+                    "\n"
+                }
+            );
+            body.extend_from_slice(format!("{:04x}", command.len() + 4).as_bytes());
+            body.extend_from_slice(command.as_bytes());
+        }
+        body.extend_from_slice(b"0000");
+        body.extend_from_slice(&pack.stdout);
+        let mut request = Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/git/ada/widgets.git/git-receive-pack")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::HOST, "127.0.0.1")
+            .header(
+                header::CONTENT_TYPE,
+                "application/x-git-receive-pack-request",
+            )
+            .body(Body::from(body))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(
+            "192.0.2.10:43210".parse::<SocketAddr>().unwrap(),
+        ));
+        request
+    };
+    for reference in ["refs/heads/main", "refs/heads/other", "refs/tags/v9.9.9"] {
+        let response = router
+            .clone()
+            .oneshot(push(vec![reference.into()]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{reference}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("ref_not_granted"));
+    }
+    // One denied command refuses the entire push, including a matching tag.
+    let response = router
+        .clone()
+        .oneshot(push(vec![
+            "refs/tags/mixed-split.1".into(),
+            "refs/heads/other".into(),
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(git(&["for-each-ref", "--format=%(refname)"]).is_empty());
+    for reference in ["refs/tags/core-split.1", "refs/heads/releasebot/cut"] {
+        let response = router
+            .clone()
+            .oneshot(push(vec![reference.into()]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{reference}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains(&format!("ok {reference}")),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(git(&["rev-parse", reference]), commit);
+    }
+    let pr = core
+        .create_pull_request(
+            "ada",
+            "widgets",
+            "ada",
+            CreatePullRequestRequest {
+                title: "release".into(),
+                head: "releasebot/cut".into(),
+                base: "main".into(),
+                head_sha: Some(commit.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    for (method, uri, body) in [
+        (
+            HttpMethod::POST,
+            format!("/api/v1/repos/ada%2Fwidgets/pulls/{}/queue", pr.number),
+            None,
+        ),
+        (
+            HttpMethod::POST,
+            format!("/api/v1/repos/ada%2Fwidgets/pulls/{}/merge", pr.number),
+            Some("{}"),
+        ),
+        (
+            HttpMethod::PUT,
+            format!("/api/v3/repos/ada/widgets/pulls/{}/merge", pr.number),
+            Some("{}"),
+        ),
+    ] {
+        let (status, _, text) =
+            send(&router, method, &uri, Some(token), Some("127.0.0.1"), body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        assert!(text.contains("ref_not_granted"), "{uri}: {text}");
+    }
+    assert!(
+        !core
+            .get_pull_request("ada", "widgets", pr.number)
+            .unwrap()
+            .merged
+    );
+    assert!(git(&["for-each-ref", "refs/heads/main", "--format=%(refname)"]).is_empty());
 }

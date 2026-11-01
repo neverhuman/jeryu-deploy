@@ -843,6 +843,18 @@ pub(super) async fn gate(
             if let Err(error) = state.core.authorize_bot(&call) {
                 return bots::map_bot_error(error);
             }
+            let path = request.uri().path().trim_end_matches('/');
+            if *request.method() == Method::POST
+                && (path.ends_with("/merge") || path.ends_with("/queue"))
+                && let Some(number) = call
+                    .task_id
+                    .as_deref()
+                    .and_then(|id| id.parse::<u64>().ok())
+                && call.task_kind == Some(jeryu_core::BotTaskKind::Pull)
+                && let Err(error) = bots::authorize_pull_ref_write(&state, &call, number)
+            {
+                return bots::map_bot_error(error);
+            }
         } else {
             let allowed = match *request.method() {
                 Method::GET | Method::HEAD => {

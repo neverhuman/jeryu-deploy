@@ -20,7 +20,7 @@ async fn bot_reporting_requires_each_site_permission_without_inheriting_admin() 
                 "releasebot",
                 "Releasebot",
                 BotKind::MUSE,
-                BotReach::General,
+                BotReach::General { refs: None },
             )
             .unwrap();
         tokens.push(

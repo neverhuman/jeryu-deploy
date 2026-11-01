@@ -493,6 +493,29 @@ pub(crate) async fn git_receive_pack(
         )
             .into_response();
     }
+    // A receive-pack can atomically create, update and delete several refs.
+    // Authorize every actual command before passing the pack to Git.
+    if let Some(bot) =
+        crate::web::auth::authenticate_headers(&state, &headers).and_then(|auth| auth.bot)
+    {
+        let resolved = match state.repo_manager.resolve_parts(&owner, &repo) {
+            Ok(resolved) => resolved,
+            Err(error) => return gitd_error_to_axum(error),
+        };
+        let call = crate::web::bots::bot_call(
+            &bot,
+            &resolved.id.owner,
+            &resolved.id.name,
+            true,
+            None,
+            None,
+        );
+        for command in &commands {
+            if let Err(error) = state.core.authorize_bot_ref_write(&call, &command.ref_name) {
+                return git_bot_denied(&owner, &repo, true, &error);
+            }
+        }
+    }
     let sideband = wants_sideband(&body);
     let pushed_branches = pushed_branches(&commands);
     let check_state = state.clone();

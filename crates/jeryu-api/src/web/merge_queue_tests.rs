@@ -223,6 +223,7 @@ impl Fixture {
         let response = merge_queue::enqueue(
             State(self.state.clone()),
             who,
+            None,
             AxumPath((self.repo_id.clone(), self.number)),
         )
         .await;
@@ -820,6 +821,7 @@ async fn the_queue_says_on_the_timeline_that_it_skipped_a_draft_once_per_head() 
         merge_queue::enqueue(
             State(state.clone()),
             account("dana", UserRole::Admin),
+            None,
             AxumPath((repo.id.to_string(), pr.number)),
         )
     };
@@ -1055,6 +1057,7 @@ impl Fixture {
         let response = merge_queue::enqueue(
             State(self.state.clone()),
             account("rel-bot", UserRole::Admin),
+            None,
             AxumPath((self.repo_id.clone(), number)),
         )
         .await;

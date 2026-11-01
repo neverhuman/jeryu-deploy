@@ -422,6 +422,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         422,
         "an owners reach needs 1 to 20 distinct owners that exist on this forge",
     ),
+    entry(
+        "invalid_reach_refs",
+        422,
+        "ref reach needs at most 100 full branch or tag patterns",
+    ),
     entry("invalid_ref", 422, "the git ref is not valid"),
     entry(
         "invalid_repo_config",
@@ -780,6 +785,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the queue replay does not match the queued tree",
     ),
     entry("rate_limited", 429, "too many attempts; wait and retry"),
+    entry(
+        "ref_not_granted",
+        403,
+        "the bot reach does not allow this ref write",
+    ),
     entry(
         "release_queue_full",
         429,

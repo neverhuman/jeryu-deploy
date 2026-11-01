@@ -739,6 +739,7 @@ fn entry_response(status: StatusCode, entry: &QueueEntry) -> AxumResponse {
 pub(super) async fn enqueue(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
+    bot: Option<Extension<super::bot_token::BotPrincipal>>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
 ) -> AxumResponse {
     let Some(repo) = super::repositories::find_repo(&state, &id) else {
@@ -755,6 +756,22 @@ pub(super) async fn enqueue(
         Ok(pr) => pr,
         Err(_) => return api_error(StatusCode::NOT_FOUND, "not_found", "pull request not found"),
     };
+    if let Some(Extension(bot)) = bot {
+        let call = super::bots::bot_call(
+            &bot,
+            &repo.owner,
+            &repo.name,
+            true,
+            Some(jeryu_core::BotTaskKind::Pull),
+            Some(pr.number.to_string()),
+        );
+        if let Err(error) = state
+            .core
+            .authorize_bot_ref_write(&call, &format!("refs/heads/{}", pr.base.ref_name))
+        {
+            return super::bots::map_bot_error(error);
+        }
+    }
     if !is_open_pull(&pr) {
         // A draft is the one refusal a reader can act on, so the queue says so
         // on the pull request's own timeline instead of only in this response.

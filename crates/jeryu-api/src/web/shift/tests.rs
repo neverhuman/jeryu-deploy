@@ -2315,6 +2315,7 @@ async fn a_scoped_bot_token_files_todos_and_nothing_broader() {
                 slug,
                 BotKind::GROK,
                 BotReach::Repositories {
+                    refs: None,
                     repos: vec![BotRepoRef {
                         owner: "jeryu".to_string(),
                         name: repo.to_string(),

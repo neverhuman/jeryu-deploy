@@ -677,6 +677,7 @@ async fn pulls_mutations_return_typed_repair_errors() {
     let merge = crate::web::pulls::merge(
         State(state.clone()),
         axum::Extension(crate::web::auth::trusted_local_account(&state)),
+        None,
         AxumPath((repo.id.to_string(), pr.number)),
         axum::body::Bytes::from(
             serde_json::json!({
@@ -1231,6 +1232,7 @@ async fn pulls_mutations_allow_record_only_autonomy_advisory() {
     let merge = crate::web::pulls::merge(
         State(state.clone()),
         axum::Extension(crate::web::auth::trusted_local_account(&state)),
+        None,
         path(),
         axum::body::Bytes::from(
             serde_json::json!({
@@ -1364,6 +1366,7 @@ impl ApprovedMerge {
         crate::web::pulls::merge(
             State(self.state.clone()),
             axum::Extension(crate::web::auth::trusted_local_account(&self.state)),
+            None,
             self.path(),
             axum::body::Bytes::from(body.to_string()),
         )
@@ -1451,6 +1454,7 @@ async fn web_pull_merge_of_a_queued_pull_request_says_it_is_queued() {
     let response = crate::web::pulls::merge(
         State(state.clone()),
         axum::Extension(crate::web::auth::trusted_local_account(&state)),
+        None,
         fx.path(),
         axum::body::Bytes::from(
             serde_json::json!({
@@ -1487,6 +1491,7 @@ async fn web_pull_merge_advances_real_bare_main_ref() {
     let response = crate::web::pulls::merge(
         State(state.clone()),
         axum::Extension(crate::web::auth::trusted_local_account(&state)),
+        None,
         path(),
         axum::body::Bytes::from(
             serde_json::json!({

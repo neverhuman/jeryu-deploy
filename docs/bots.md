@@ -50,6 +50,31 @@ again on every request against the owner's current grants.
 - Changing the owner's password, or disabling or locking the account, revokes
   every key the account's bots hold.
 
+## Optional ref limits
+
+Every reach mode accepts optional `refs`, for example
+`{"mode":"repositories","repos":[{"owner":"acme","name":"widgets"}],"refs":["refs/tags/*-split.*","refs/heads/releasebot/*"]}`.
+Patterns name full `refs/heads/` or `refs/tags/` refs, with `*` as the only
+wildcard (including across slashes). At most 100 patterns of 1024 bytes each
+are accepted. An omitted or null list keeps existing behavior; an empty list
+allows no ref writes. Invalid patterns answer `422 invalid_reach_refs`.
+
+The ref limit intersects existing repository/task rights and Git protections.
+Receive-pack checks every create/update/delete command before Git sees the
+pack; a denied command refuses the whole request with `403 ref_not_granted`.
+Direct merges bind the check to the base selected by merge readiness, and
+queue admission checks its actual base. A local source branch that automatic
+merge cleanup would remove must also be allowed. A bot session checks its
+actual generated branch before recording an intent or claiming a warm cell.
+Reads and opening a pull request from an existing allowed branch remain
+available. Unsupported REST ref writers and unavailable MCP write tools do
+not become available with a ref grant; the implemented bot MCP tools remain
+read-only and admin tools remain refused. Account and repository rosters show
+ref restrictions alongside repository reach, including an explicit empty list.
+
+Changing a deployed automation bot's enrollment is an operational step, separate
+from installing this support. Existing enrollments are not rewritten.
+
 ## Enroll
 
 As the owner (session or personal access token):

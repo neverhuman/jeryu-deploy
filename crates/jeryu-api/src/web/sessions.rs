@@ -354,7 +354,7 @@ fn create_for_bot(
         .authenticate_bot_access(bot.bot_id, bot.generation, &bot.key_id)
         .ok()
         .map(|summary| summary.acting_login);
-    match create_session(&state, repo_id, request, owner) {
+    match create_session_with_bot(&state, repo_id, request, owner, Some(bot)) {
         Ok(response) => {
             let narrow = json!({
                 "session_id": response.session_id,
@@ -416,6 +416,16 @@ fn create_session(
     request: CreateSessionRequest,
     session_owner: Option<String>,
 ) -> Result<CreateSessionResponse, Box<AxumResponse>> {
+    create_session_with_bot(state, repo_id, request, session_owner, None)
+}
+
+fn create_session_with_bot(
+    state: &Arc<WebState>,
+    repo_id: &str,
+    request: CreateSessionRequest,
+    session_owner: Option<String>,
+    bot: Option<&BotPrincipal>,
+) -> Result<CreateSessionResponse, Box<AxumResponse>> {
     super::managed_launch::require(state, "create an agent session for a repository")?;
     #[cfg(test)]
     state
@@ -469,6 +479,21 @@ fn create_session(
         })
         .map_err(|reason| Box::new(session_not_recorded(&reason)))?,
     };
+    if let Some(bot) = bot {
+        let branch = format!("agents/{agent_id}/sessions/{run_id}");
+        let call = bots::bot_call(
+            bot,
+            &owner,
+            &name,
+            true,
+            Some(jeryu_core::BotTaskKind::Branch),
+            Some(branch.clone()),
+        );
+        state
+            .core
+            .authorize_bot_ref_write(&call, &format!("refs/heads/{branch}"))
+            .map_err(|error| Box::new(bots::map_bot_error(error)))?;
+    }
     state
         .agent_runs
         .record_intent(&AgentRunIntent {

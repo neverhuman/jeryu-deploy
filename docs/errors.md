@@ -156,6 +156,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `invalid_path_parameter` | 422 | a path parameter has the wrong shape for this route |
 | `invalid_query` | 422 | the query string does not match this route |
 | `invalid_reach_owners` | 422 | an owners reach needs 1 to 20 distinct owners that exist on this forge |
+| `invalid_reach_refs` | 422 | ref reach needs at most 100 full branch or tag patterns |
 | `invalid_ref` | 422 | the git ref is not valid |
 | `invalid_repo_config` | 422 | the repository's own .jeryu/repo.toml could not be read as a policy |
 | `invalid_request` | 422 | credentials must not be passed as query parameters |
@@ -183,6 +184,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `not_queued` | 409 | the pull request is not in the merge queue |
 | `not_retryable` | 409 | auto-pin has not requested a human retry for this repository and head |
 | `promote_disabled` | 409 | Promote cannot run for this stage now; the message says why |
+| `ref_not_granted` | 403 | the bot reach does not allow this ref write |
 | `release_queue_full` | 429 | cancel a pending release ask or wait for an outcome; the queue is bounded |
 | `not_staged` | 409 | the forge has no record of this release being staged for the repository |
 | `ok_to_test_required` | 409 | a contributed head is gated only after a maintainer says ok-to-test |

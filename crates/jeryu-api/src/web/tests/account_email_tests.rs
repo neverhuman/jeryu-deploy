@@ -937,7 +937,7 @@ async fn a_recovery_ends_sessions_and_tokens_and_leaves_team_bots_working() {
             "reviewer",
             "Reviewer",
             jeryu_core::BotKind::default(),
-            jeryu_core::BotReach::General,
+            jeryu_core::BotReach::General { refs: None },
         )
         .expect("enroll a team bot")
         .bot;

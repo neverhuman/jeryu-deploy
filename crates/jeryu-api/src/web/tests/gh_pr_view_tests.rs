@@ -185,6 +185,7 @@ async fn pr_view_checks_principal_agent_reach_and_rejects_modified_queries() {
             "Atlas",
             BotKind::GROK,
             BotReach::Repositories {
+                refs: None,
                 repos: vec![BotRepoRef {
                     owner: "ada".into(),
                     name: "widgets".into(),
@@ -268,6 +269,7 @@ async fn pr_view_checks_principal_agent_reach_and_rejects_modified_queries() {
             "Task reader",
             BotKind::GROK,
             BotReach::Task {
+                refs: None,
                 repo: BotRepoRef {
                     owner: "ada".into(),
                     name: "widgets".into(),

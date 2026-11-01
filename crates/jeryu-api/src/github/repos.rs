@@ -277,7 +277,13 @@ mod isolation {
         let bea = core.get_account("bea").unwrap();
         let ada = core.get_account("ada").unwrap();
         let enrolled = core
-            .enroll_bot("ada", "atlas", "Atlas", BotKind::GROK, BotReach::General)
+            .enroll_bot(
+                "ada",
+                "atlas",
+                "Atlas",
+                BotKind::GROK,
+                BotReach::General { refs: None },
+            )
             .unwrap();
         let bot = crate::web::bot_token::BotPrincipal {
             bot_id: enrolled.bot.id,

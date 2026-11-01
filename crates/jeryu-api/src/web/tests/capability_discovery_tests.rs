@@ -53,6 +53,7 @@ async fn seeded_forge(spa: &Path) -> Forge {
             "Atlas",
             BotKind::GROK,
             BotReach::Repositories {
+                refs: None,
                 repos: vec![BotRepoRef {
                     owner: "ada".to_string(),
                     name: "widgets".to_string(),

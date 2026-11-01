@@ -111,7 +111,7 @@ pub(super) async fn enroll_team(
         Some(_) => return invalid_kind(),
     };
     let reach = match fields.get("reach") {
-        None | Some(Value::Null) => BotReach::General,
+        None | Some(Value::Null) => BotReach::General { refs: None },
         Some(value) => match serde_json::from_value::<BotReach>(value.clone()) {
             Ok(reach) => reach,
             Err(_) => return invalid_body(),
@@ -448,14 +448,18 @@ pub(super) fn map_bot_error(error: ForgeError) -> AxumResponse {
             bot_token::invalid_credential()
         }
         ForgeError::Validation(message) => {
-            let code = [BotKind::INVALID_CODE, BotReach::INVALID_OWNERS_CODE]
-                .into_iter()
-                .find(|code| {
-                    message
-                        .strip_prefix(code)
-                        .is_some_and(|rest| rest.starts_with(':'))
-                })
-                .unwrap_or("invalid_input");
+            let code = [
+                BotKind::INVALID_CODE,
+                BotReach::INVALID_OWNERS_CODE,
+                "invalid_reach_refs",
+            ]
+            .into_iter()
+            .find(|code| {
+                message
+                    .strip_prefix(code)
+                    .is_some_and(|rest| rest.starts_with(':'))
+            })
+            .unwrap_or("invalid_input");
             api_error(StatusCode::UNPROCESSABLE_ENTITY, code, &message)
         }
         ForgeError::Conflict(message)
@@ -493,6 +497,15 @@ pub(super) fn map_bot_error(error: ForgeError) -> AxumResponse {
                 StatusCode::FORBIDDEN,
                 "task_not_granted",
                 "the bot grant does not allow this task",
+            )
+        }
+        ForgeError::Forbidden(message)
+            if ForgeError::machine_text(&message) == "ref_not_granted" =>
+        {
+            api_error(
+                StatusCode::FORBIDDEN,
+                "ref_not_granted",
+                "the bot reach does not allow this ref write",
             )
         }
         ForgeError::Forbidden(message) => {
@@ -648,6 +661,32 @@ pub(crate) fn bot_call(
         task_kind,
         task_id,
     }
+}
+
+/// Merging and queueing request a base-ref write; automatic head cleanup also
+/// deletes a local source branch. Check both effects against the same bot reach
+/// used by receive-pack before either path can enqueue or move anything.
+pub(crate) fn authorize_pull_ref_write(
+    state: &WebState,
+    call: &BotCall,
+    number: u64,
+) -> Result<(), ForgeError> {
+    let pr = state
+        .core
+        .get_pull_request(&call.owner, &call.repo, number)?;
+    state
+        .core
+        .authorize_bot_ref_write(call, &format!("refs/heads/{}", pr.base.ref_name))?;
+    let repo = format!("{}/{}", call.owner, call.repo);
+    if state.github.delete_branch_on_merge(&repo)
+        && pr.source_repository == repo
+        && pr.head.ref_name != pr.base.ref_name
+    {
+        state
+            .core
+            .authorize_bot_ref_write(call, &format!("refs/heads/{}", pr.head.ref_name))?;
+    }
+    Ok(())
 }
 
 /// Task identity copied from the path being changed. A client field that

@@ -91,6 +91,7 @@ async fn forge() -> Forge {
             "Atlas",
             BotKind::GROK,
             BotReach::Repositories {
+                refs: None,
                 repos: vec![BotRepoRef {
                     owner: "dee".to_string(),
                     name: "widgets".to_string(),
@@ -330,5 +331,142 @@ async fn unsupported_arguments_and_absent_pull_requests_fail_rather_than_answer(
         missing["result"]["structuredContent"]["message"],
         "pull.workflow_status: dee/widgets#404 not found",
         "{missing}"
+    );
+}
+
+/// Pin adoption covers a mixed legacy store, reordered physical rows and an
+/// old verdict finishing in the future. The same newest run must speak for
+/// protection and for the native workflow projection after a reload.
+#[tokio::test]
+async fn released_core_ordering_survives_legacy_rows_and_drives_the_native_required_gate() {
+    use jeryu_core::{CheckRun, CheckRunStatus, ForgeCore};
+    let storage = tempfile::tempdir().unwrap();
+    let database = storage.path().join("forge.sqlite");
+    let core = ForgeCore::open_sqlite(&database).unwrap();
+    core.create_account("dee", "dee-password-1", UserRole::Admin)
+        .unwrap();
+    core.create_repository(
+        "dee",
+        CreateRepositoryRequest {
+            name: "widgets".into(),
+            private: true,
+            description: None,
+            default_branch: Some("main".into()),
+        },
+    )
+    .unwrap();
+    core.set_branch_protection(
+        "dee",
+        "widgets",
+        "main",
+        SetBranchProtectionRequest {
+            required_status_checks: vec!["ci/required".into()],
+            required_approving_review_count: 0,
+            require_jankurai_proof: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    core.create_pull_request(
+        "dee",
+        "widgets",
+        "dee",
+        CreatePullRequestRequest {
+            title: "ordering".into(),
+            head: "feature".into(),
+            base: "main".into(),
+            head_sha: Some(HEAD_SHA.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let old = core
+        .create_check_run(
+            "dee",
+            "widgets",
+            CreateCheckRunRequest {
+                name: "ci/required".into(),
+                head_sha: HEAD_SHA.into(),
+                status: Some(CheckRunStatus::Completed),
+                conclusion: Some(CheckConclusion::Success),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let pending = core
+        .create_check_run(
+            "dee",
+            "widgets",
+            CreateCheckRunRequest {
+                name: "ci/required".into(),
+                head_sha: HEAD_SHA.into(),
+                status: Some(CheckRunStatus::InProgress),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let legacy = core
+        .create_check_run(
+            "dee",
+            "widgets",
+            CreateCheckRunRequest {
+                name: "legacy/other".into(),
+                head_sha: HEAD_SHA.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let token = core
+        .create_personal_access_token("dee", "ordering", None)
+        .unwrap()
+        .secret;
+    drop(core);
+    let db = rusqlite::Connection::open(&database).unwrap();
+    db.execute("UPDATE check_runs SET creation_sequence=10, completed_at='2099-01-01T00:00:00Z', rowid=10000 WHERE id=?1", [old.id.to_string()]).unwrap();
+    db.execute(
+        "UPDATE check_runs SET creation_sequence=20 WHERE id=?1",
+        [pending.id.to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE check_runs SET creation_sequence=0 WHERE id=?1",
+        [legacy.id.to_string()],
+    )
+    .unwrap();
+    drop(db);
+    let core = ForgeCore::open_sqlite(&database).unwrap();
+    let runs = core
+        .list_check_runs("dee", "widgets", Some(HEAD_SHA))
+        .unwrap()
+        .check_runs;
+    let required = runs.iter().filter(|run| run.name == "ci/required");
+    assert_eq!(CheckRun::newest(required).unwrap().id, pending.id);
+    assert_eq!(
+        runs.iter()
+            .find(|run| run.id == old.id)
+            .unwrap()
+            .creation_sequence,
+        10
+    );
+    assert!(
+        core.evaluate_merge_readiness("dee", "widgets", 1, None)
+            .is_err()
+    );
+    let router = app(
+        WebState::new(core).with_auth(true, false, false),
+        storage.path(),
+    );
+    let (status, detail) = rest(
+        &router,
+        HttpMethod::GET,
+        "/api/v1/repos/dee%2Fwidgets/pulls/1",
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(
+        detail["workflow"]["required_checks"][0]["state"], "pending",
+        "{detail}"
     );
 }

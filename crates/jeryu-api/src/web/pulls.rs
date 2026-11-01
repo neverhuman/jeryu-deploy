@@ -651,6 +651,7 @@ pub(super) async fn approve(
 pub(super) async fn merge(
     State(state): State<Arc<WebState>>,
     Extension(account): Extension<AccountSummary>,
+    bot: Option<Extension<super::bot_token::BotPrincipal>>,
     AxumPath((id, number)): AxumPath<(String, u64)>,
     body: Bytes,
 ) -> AxumResponse {
@@ -742,7 +743,18 @@ pub(super) async fn merge(
             );
         }
     };
-    let merged = state.github.put(
+    let mut github = state.github.clone();
+    if let Some(Extension(bot)) = bot {
+        github = github.with_bot_ref_writer(super::bots::bot_call(
+            &bot,
+            &repo.owner,
+            &repo.name,
+            true,
+            Some(jeryu_core::BotTaskKind::Pull),
+            Some(pr.number.to_string()),
+        ));
+    }
+    let merged = github.put(
         &format!(
             "/repos/{}/{}/pulls/{}/merge",
             repo.owner, repo.name, pr.number

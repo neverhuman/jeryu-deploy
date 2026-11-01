@@ -489,6 +489,7 @@ async fn enqueue_number(fx: &Fixture, number: u64) -> (StatusCode, Value) {
     let response = merge_queue::enqueue(
         State(fx.state.clone()),
         account("rel-bot", UserRole::Admin),
+        None,
         AxumPath((fx.repo_id.clone(), number)),
     )
     .await;
