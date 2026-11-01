@@ -444,6 +444,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         409,
         "an organization keeps at least one owner; add another before removing this one",
     ),
+    entry(
+        "lineage_unavailable",
+        503,
+        "recent commit ancestry could not be read within its Git budget",
+    ),
     entry("mail_unavailable", 503, "this forge cannot send mail"),
     entry(
         "managed_runtime_invalid",

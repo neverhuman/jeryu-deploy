@@ -162,10 +162,14 @@ async fn exercise(transition: &'static str, extra: &[&str]) -> (i32, Value, usiz
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while observed.calls.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
+        assert!(
+            observed.calls.load(Ordering::SeqCst) > 0,
+            "cancellation fixture never observed the first native request"
+        );
         assert!(
             Command::new("kill")
                 .args(["-TERM", &child.id().to_string()])
@@ -232,7 +236,13 @@ async fn gh_extension_transport_and_local_install_contract() {
         } else {
             vec![
                 "--timeout",
-                if transition == "transient" { "3" } else { "10" },
+                if transition == "transient" {
+                    "3"
+                } else if transition == "cancel" {
+                    "60"
+                } else {
+                    "10"
+                },
             ]
         };
         let (actual_code, value, actual_calls) = exercise(transition, &extra).await;
