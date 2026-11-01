@@ -231,6 +231,7 @@ edge (`/repos/...`, `/api/v3/...`) keeps GitHub's own error shape.
 | `queue_conflict_queued` | 409 | the queued change conflicts with a pull request queued ahead of it |
 | `queue_git_error` | 500 | a git operation on the merge queue failed |
 | `queue_merge_commits` | 409 | the queued branch contains merge commits |
+| `queue_metadata_error` | 503 | queue metadata could not be read; restore metadata or Git access and retry |
 | `queue_mismatch` | 409 | the queue replay does not match the queued tree |
 | `rate_limited` | 429 | too many attempts; wait and retry |
 | `repo_not_granted` | 403 | the bot has no grant for this repository |

@@ -403,3 +403,14 @@ request that cannot be stored keeps the branch. This cleanup affects the forge;
 mirror branch deletion is a separate operation and is not attempted here. The
 cross-repository safety scan keeps the branch if it exceeds 1,024 repositories
 or 4,096 pull requests rather than deleting on incomplete evidence.
+
+Queue metadata reads require complete blob objects and valid entry JSON. An
+initially refused replay is persisted as `dequeued` with an empty `queue_sha`;
+it built no commit and cannot exclude an author from a later audit. An active
+entry with an empty or malformed commit is an error. Index reloads stage all
+entries before committing the snapshot; a failure preserves the cached index,
+refuses queue mutations/direct merges, and retries on the next healthy tick.
+`queue_metadata_error` identifies the affected ref without deleting evidence.
+Raw admin backfills must omit the reserved `jeryu_audit_provenance` field; only
+runner ingest stamps it. Recovery breaks timestamp ties deterministically and
+prefers a failing verdict when equally recent governed scores disagree.

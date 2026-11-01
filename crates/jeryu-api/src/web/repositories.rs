@@ -647,6 +647,17 @@ fn admin_score_ingest(
             return score_ingest_invalid(&format!("body failed to parse: {error}"));
         }
     };
+    // Only runner ingest may stamp the reserved, forge-authored provenance.
+    // Refuse it explicitly on a raw backfill instead of laundering that row
+    // into recoverable required-check evidence on a later tick.
+    if request
+        .report
+        .as_ref()
+        .and_then(|report| report.get("jeryu_audit_provenance"))
+        .is_some()
+    {
+        return score_ingest_invalid("jeryu_audit_provenance is reserved for runner ingest");
+    }
     match state
         .github
         .core()

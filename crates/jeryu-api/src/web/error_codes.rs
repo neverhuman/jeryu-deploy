@@ -765,6 +765,11 @@ pub(crate) const ERROR_CODES: &[ErrorCode] = &[
         "the queued branch contains merge commits",
     ),
     entry(
+        "queue_metadata_error",
+        503,
+        "queue metadata could not be read; restore metadata or Git access and retry",
+    ),
+    entry(
         "queue_mismatch",
         409,
         "the queue replay does not match the queued tree",

@@ -2,7 +2,7 @@
 use super::*;
 use crate::ci_bridge;
 
-async fn ingest(fx: &Fixture, login: &str, submission: &Value) -> StatusCode {
+pub(super) async fn ingest(fx: &Fixture, login: &str, submission: &Value) -> StatusCode {
     repo_jankurai_scores_ingest(
         State(fx.state.clone()),
         super::super::merge_queue_tests::account(login, UserRole::Admin),
@@ -13,7 +13,7 @@ async fn ingest(fx: &Fixture, login: &str, submission: &Value) -> StatusCode {
     .status()
 }
 
-fn submission(ticket: &audit_queue::AuditTicket) -> Value {
+pub(super) fn submission(ticket: &audit_queue::AuditTicket) -> Value {
     serde_json::json!({
         "branch": ticket.branch, "commit_sha": ticket.head_sha, "base_sha": ticket.base_sha,
         "runner_id": "refresh-runner", "audit_mode": ticket.audit_mode,
@@ -25,7 +25,7 @@ fn submission(ticket: &audit_queue::AuditTicket) -> Value {
     })
 }
 
-fn ticket(sha: &str) -> audit_queue::AuditTicket {
+pub(super) fn ticket(sha: &str) -> audit_queue::AuditTicket {
     audit_queue::queue()
         .lock()
         .unwrap()

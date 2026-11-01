@@ -200,3 +200,151 @@ async fn corrupt_metadata_and_failed_pull_reads_refuse_without_consuming_tickets
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn a_refused_conflict_does_not_poison_the_next_governed_queue_audit() {
+    use super::refresh_tests::{ingest, submission, ticket};
+    let fx = Fixture::with_audit_store("shared.txt", "one\nREFUSED FEATURE\nthree\n");
+    fx.advance_main("shared.txt", "one\nLANDED MAIN\nthree\n");
+    let (status, refused) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "queue_conflict");
+    let raw = super::super::merge_queue_tests::git(
+        &fx.bare,
+        &["show", &format!("refs/queue-meta/main/{}", fx.number)],
+    );
+    let entry: merge_queue::QueueEntry = serde_json::from_str(&raw).unwrap();
+    assert_eq!(entry.state, merge_queue::QueueState::Dequeued);
+    assert!(
+        entry.queue_sha.is_empty(),
+        "a refused replay built no commit"
+    );
+    let healthy = add_audited_pr(
+        &fx,
+        "main",
+        "healthy-after-refusal",
+        "healthy-after-refusal.txt",
+        "bob",
+    );
+    fx.state
+        .core
+        .set_branch_protection(
+            "alice",
+            "jeryu",
+            "main",
+            jeryu_core::SetBranchProtectionRequest {
+                required_status_checks: vec!["ci/fast".into(), "jankurai/proof".into()],
+                require_jankurai_proof: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let (status, body) = enqueue_number(&fx, healthy).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let head = body["queue_sha"].as_str().unwrap();
+    let work = ticket(head);
+    assert_eq!(
+        ingest(&fx, "bob", &submission(&work)).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(ticket(head), work, "author refusal preserves the ticket");
+    assert_eq!(
+        ingest(&fx, "independent-runner", &submission(&work)).await,
+        StatusCode::CREATED
+    );
+    fx.status(head, jeryu_core::CommitStatusState::Success);
+    assert_eq!(merge_queue::tick(&fx.state), 1);
+    assert_eq!(fx.main(), head);
+    assert!(
+        fx.has_ref(&format!("refs/queue-meta/main/{}", fx.number)),
+        "refusal history retained"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_active_queue_sha_is_corruption_and_preserves_the_ticket() {
+    let mut fx = Fixture::with_audit_store("empty-active.txt", "active\n");
+    fx.advance_main("empty-active-base.txt", "base\n");
+    isolate_base(&mut fx, "empty-active-queue");
+    let (status, body) = fx.enqueue().await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let head = body["queue_sha"].as_str().unwrap();
+    let path = format!("refs/queue-meta/empty-active-queue/{}", fx.number);
+    let raw = super::super::merge_queue_tests::git(&fx.bare, &["show", &path]);
+    let mut entry: merge_queue::QueueEntry = serde_json::from_str(&raw).unwrap();
+    entry.queue_sha.clear();
+    let input = fx.work.join("empty-active-metadata.json");
+    std::fs::write(&input, serde_json::to_string(&entry).unwrap()).unwrap();
+    let blob = super::super::merge_queue_tests::git(
+        &fx.bare,
+        &["hash-object", "-w", input.to_str().unwrap()],
+    );
+    super::super::merge_queue_tests::git(&fx.bare, &["update-ref", &path, &blob]);
+    assert!(
+        merge_queue::authored_audit(
+            &fx.state,
+            "alice",
+            "jeryu",
+            head,
+            &fx.main(),
+            "independent-runner"
+        )
+        .is_err()
+    );
+    assert!(
+        audit_queue::queue()
+            .lock()
+            .unwrap()
+            .take("alice", "jeryu", head)
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn raw_admin_backfill_cannot_mint_reserved_runner_provenance() {
+    let fx = Fixture::with_audit_store("reserved-admin-provenance.txt", "backfill\n");
+    let body = serde_json::json!({"branch": "feature", "commit_sha": fx.head,
+        "score": 98, "hard_findings": 0, "decision": "scored", "caps_applied": [],
+        "report": {"score": 98, "caps_applied": [],
+            "decision": {"minimum_score": 85, "hard_findings": 0},
+            "jeryu_audit_provenance": {"runner_id": "fabricated", "base_sha": fx.main(),
+                "audit_mode": "diff",
+                "jankurai_version": crate::ci_bridge::jankurai::governed_auditor_identity().unwrap().0,
+                "jankurai_sha256": crate::ci_bridge::GOVERNED_JANKURAI_SHA256}}});
+    let submit = |body: Value| {
+        repo_jankurai_scores_ingest(
+            State(fx.state.clone()),
+            super::super::merge_queue_tests::account("admin", UserRole::Admin),
+            AxumPath("alice/jeryu".into()),
+            axum::body::Bytes::from(body.to_string()),
+        )
+    };
+    assert_eq!(
+        submit(body.clone()).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert!(
+        fx.state
+            .core
+            .list_jankurai_scores("alice", "jeryu", None, Some(&fx.head))
+            .unwrap()
+            .is_empty()
+    );
+    let mut ordinary = body;
+    ordinary["report"]
+        .as_object_mut()
+        .unwrap()
+        .remove("jeryu_audit_provenance");
+    assert_eq!(submit(ordinary).await.status(), StatusCode::CREATED);
+    let runs = fx
+        .state
+        .core
+        .list_check_runs("alice", "jeryu", Some(&fx.head))
+        .unwrap();
+    assert!(
+        !runs
+            .check_runs
+            .iter()
+            .any(|run| run.name == "jankurai/proof")
+    );
+}

@@ -486,14 +486,13 @@ pub(crate) fn plan_push_audit(
     // also returns `jankurai/proof` to pending until a runner reports against
     // the narrowed base. A queue score with no recorded provenance base is
     // not evidence of coverage and must be ticketed again.
-    let covered = core
+    let scores = core
         .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
-        .unwrap_or_default()
-        .iter()
-        .any(|score| {
-            queue_base.is_none()
-                || audited_base(score).is_some_and(|audited| audited == ticket.base_sha)
-        });
+        .unwrap_or_default();
+    let covered = scores.iter().any(|score| {
+        queue_base.is_none()
+            || audited_base(score).is_some_and(|audited| audited == ticket.base_sha)
+    });
     let proof_published = queue_base.is_none()
         || core
             .list_check_runs(owner, repo, Some(&update.new_oid))
@@ -509,15 +508,7 @@ pub(crate) fn plan_push_audit(
         return PushAudit::AlreadyCovered;
     }
     // Recover a stored verdict only for the same queued audit base.
-    if !proof_published
-        && let Some(recorded) = core
-            .list_jankurai_scores(owner, repo, None, Some(&update.new_oid))
-            .unwrap_or_default()
-            .iter()
-            .filter(|score| audited_base(score).is_some_and(|base| base == ticket.base_sha))
-            .filter(|score| super::jankurai::stored_scored_proof(score).is_some())
-            .max_by_key(|score| score.created_at)
-    {
+    if !proof_published && let Some(recorded) = recorded_for_recovery(&scores, &ticket.base_sha) {
         return PushAudit::ProofUnpublished(Box::new(recorded.clone()));
     }
     let Ok(mut queue) = queue().lock() else {
@@ -530,6 +521,22 @@ pub(crate) fn plan_push_audit(
             PushAudit::Queued { ticket, note }
         }
     }
+}
+
+// On equal creation times, a failing governed verdict wins. Stable persisted
+// branch/id fields break remaining ties independently of list iteration order.
+fn recorded_for_recovery<'a>(
+    scores: &'a [jeryu_core::JankuraiScore],
+    base: &str,
+) -> Option<&'a jeryu_core::JankuraiScore> {
+    scores
+        .iter()
+        .filter(|score| audited_base(score).as_deref() == Some(base))
+        .filter_map(|score| {
+            super::jankurai::stored_scored_proof(score).map(|(_, pass)| (score, pass))
+        })
+        .max_by_key(|(score, pass)| (score.created_at, !pass, score.branch.as_str(), score.id))
+        .map(|(score, _)| score)
 }
 
 /// The base a recorded score was produced against, from the provenance the
@@ -564,3 +571,7 @@ fn commit_base(
     .map(|oid| oid.trim().to_string())
     .filter(|oid| !oid.is_empty())
 }
+
+#[cfg(test)]
+#[path = "audit_queue_recovery_tests.rs"]
+mod recovery_selection_tests;

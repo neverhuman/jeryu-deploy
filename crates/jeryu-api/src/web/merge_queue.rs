@@ -40,15 +40,18 @@ pub(crate) fn rebase_onto(
 /// at `bare`, read from the persisted `refs/queue-meta/<base>/*` entries. A
 /// direct merge that moved `base` now would make each of them rebuild and gate
 /// again, so the direct path defers to the queue while this is not empty.
-pub(crate) fn building_on_base(git_bin: &str, bare: &std::path::Path, base: &str) -> Vec<u64> {
-    Git { bin: git_bin, bare }
-        .read_blob_refs(&format!("refs/queue-meta/{base}/"))
+pub(crate) fn building_on_base(
+    git_bin: &str,
+    bare: &std::path::Path,
+    base: &str,
+) -> Result<Vec<u64>, String> {
+    Ok(read_metadata(&Git { bin: git_bin, bare })?
         .into_iter()
-        .filter_map(|(_, body)| serde_json::from_str::<QueueEntry>(&body).ok())
         .filter(|entry| entry.base == base && entry.state == QueueState::Building)
         .map(|entry| entry.number)
-        .collect()
+        .collect())
 }
+
 use replay::{Git, ReplayFailure, is_sha};
 
 /// Identities whose approvals count as automation, not a person
@@ -196,6 +199,36 @@ fn git_for<'a>(state: &'a WebState, path: &'a Path) -> Git<'a> {
     }
 }
 
+fn read_metadata(git: &Git<'_>) -> Result<Vec<QueueEntry>, String> {
+    git.try_read_blob_refs("refs/queue-meta/")
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .map(|(name, body)| {
+            let entry: QueueEntry = serde_json::from_str(&body)
+                .map_err(|err| format!("invalid queue metadata {name}: {err}"))?;
+            if !is_sha(&entry.queue_sha)
+                && !(entry.state == QueueState::Dequeued && entry.queue_sha.is_empty())
+            {
+                return Err(format!(
+                    "invalid queue commit in {name} for pull request #{}",
+                    entry.number
+                ));
+            }
+            Ok(entry)
+        })
+        .collect()
+}
+
+fn metadata_error(err: &str) -> AxumResponse {
+    api_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "queue_metadata_error",
+        &format!(
+            "queue metadata could not be loaded: {err}; restore metadata or Git access and retry; no refs were deleted"
+        ),
+    )
+}
+
 impl MergeQueue {
     fn lock(&self) -> std::sync::MutexGuard<'_, QueueIndex> {
         self.inner
@@ -204,24 +237,39 @@ impl MergeQueue {
     }
 
     /// Rebuild the index from every repository's `refs/queue-meta/*` once.
-    fn ensure_loaded(&self, state: &WebState, index: &mut QueueIndex) {
+    fn ensure_loaded(&self, state: &WebState, index: &mut QueueIndex) -> Result<(), String> {
         if index.loaded {
-            return;
+            return Ok(());
         }
-        index.loaded = true;
+        // Commit the snapshot only after every persisted repository was read.
+        // Failure preserves the cached entries and retries next tick.
+        let mut entries = index.entries.clone();
         for repo in state.core.list_repositories(None) {
-            let Ok(resolved) = state.repo_manager.open_parts(&repo.owner, &repo.name) else {
-                continue;
+            let resolved = match state.repo_manager.open_parts(&repo.owner, &repo.name) {
+                Ok(resolved) => resolved,
+                // Core-only repositories without any known queue entry have no
+                // Git metadata to restore. A missing backend for a cached queue
+                // is a failure, never permission to forget its entries.
+                Err(jeryu_gitd::error::GitdError::RepoNotFound(_))
+                    if !index
+                        .entries
+                        .keys()
+                        .any(|(o, r, _)| o == &repo.owner && r == &repo.name) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(format!("{}/{}: {err}", repo.owner, repo.name)),
             };
             let git = git_for(state, &resolved.path);
-            for (_, body) in git.read_blob_refs("refs/queue-meta/") {
-                if let Ok(entry) = serde_json::from_str::<QueueEntry>(&body) {
-                    index
-                        .entries
-                        .insert((repo.owner.clone(), repo.name.clone(), entry.number), entry);
-                }
+            for entry in
+                read_metadata(&git).map_err(|err| format!("{}/{}: {err}", repo.owner, repo.name))?
+            {
+                entries.insert((repo.owner.clone(), repo.name.clone(), entry.number), entry);
             }
         }
+        index.entries = entries;
+        index.loaded = true;
+        Ok(())
     }
 
     /// Seeds the in-memory index, marking it loaded so no git read replaces
@@ -249,7 +297,9 @@ impl MergeQueue {
         filter: impl Fn(&QueueEntry) -> bool,
     ) -> Vec<QueueEntry> {
         let mut index = self.lock();
-        self.ensure_loaded(state, &mut index);
+        if let Err(err) = self.ensure_loaded(state, &mut index) {
+            eprintln!("queue_metadata_error: {err}; restore metadata or Git access and retry");
+        }
         index
             .entries
             .values()
@@ -465,15 +515,7 @@ pub(crate) fn authored_audit(
     let git = git_for(state, &resolved.path);
     // Use the submitted diff, including during a base refresh. A landed
     // author is eligible only once their change is outside that diff.
-    let entries: Vec<QueueEntry> = git
-        .try_read_blob_refs("refs/queue-meta/")
-        .map_err(|err| err.to_string())?
-        .into_iter()
-        .map(|(name, body)| {
-            serde_json::from_str::<QueueEntry>(&body)
-                .map_err(|err| format!("invalid queue metadata {name}: {err}"))
-        })
-        .collect::<Result<_, _>>()?;
+    let entries = read_metadata(&git)?;
     if !entries
         .iter()
         .any(|entry| entry.state == QueueState::Building && entry.queue_sha == head)
@@ -498,6 +540,11 @@ pub(crate) fn authored_audit(
         })
         .flatten();
     for entry in entries {
+        // A refused initial replay is deliberately persisted without a queue
+        // commit. It authored no code in this range and cannot exclude anyone.
+        if entry.state == QueueState::Dequeued && entry.queue_sha.is_empty() {
+            continue;
+        }
         if !is_sha(&entry.queue_sha) {
             return Err(format!(
                 "invalid queue commit for pull request #{}",
@@ -610,7 +657,9 @@ pub(super) async fn enqueue(
     let key = (repo.owner.clone(), repo.name.clone(), number);
     let queue = &state.merge_queue;
     let mut index = queue.lock();
-    queue.ensure_loaded(&state, &mut index);
+    if let Err(err) = queue.ensure_loaded(&state, &mut index) {
+        return metadata_error(&err);
+    }
     if let Some(existing) = index.entries.get(&key)
         && existing.state == QueueState::Building
         && existing.pr_head_sha == pr.head.sha
@@ -761,7 +810,9 @@ pub(super) async fn dequeue(
     }
     let queue = &state.merge_queue;
     let mut index = queue.lock();
-    queue.ensure_loaded(&state, &mut index);
+    if let Err(err) = queue.ensure_loaded(&state, &mut index) {
+        return metadata_error(&err);
+    }
     let key = (repo.owner.clone(), repo.name.clone(), number);
     match index.entries.get_mut(&key) {
         Some(entry) if entry.state == QueueState::Building => {
@@ -831,6 +882,12 @@ pub(super) async fn list_all(
         Ok(page) => page,
         Err(rejection) => return rejection.into_response(),
     };
+    if let Err(err) = state
+        .merge_queue
+        .ensure_loaded(&state, &mut state.merge_queue.lock())
+    {
+        return metadata_error(&err);
+    }
     let wanted = query
         .state
         .map(|state| state.trim().to_string())
@@ -859,6 +916,12 @@ pub(super) async fn list_repo(
     let Some(repo) = super::repositories::find_repo(&state, &id) else {
         return api_error(StatusCode::NOT_FOUND, "not_found", "repository not found");
     };
+    if let Err(err) = state
+        .merge_queue
+        .ensure_loaded(&state, &mut state.merge_queue.lock())
+    {
+        return metadata_error(&err);
+    }
     let full = format!("{}/{}", repo.owner, repo.name);
     let entries = state
         .merge_queue
@@ -1033,7 +1096,10 @@ pub(crate) fn gate_verdict(
 pub(crate) fn tick(state: &WebState) -> usize {
     let queue = &state.merge_queue;
     let mut index = queue.lock();
-    queue.ensure_loaded(state, &mut index);
+    if let Err(err) = queue.ensure_loaded(state, &mut index) {
+        eprintln!("queue_metadata_error: {err}; restore metadata or Git access and retry");
+        return 0;
+    }
     let mut stacks: BTreeMap<(String, String, String), Vec<Key>> = BTreeMap::new();
     let mut before = BTreeMap::new();
     for (key, entry) in &index.entries {
@@ -1544,3 +1610,7 @@ pub(crate) fn spawn_worker(state: Arc<WebState>, every: std::time::Duration) {
 pub(super) fn covering_contexts_for_test(required: &[&Vec<String>]) -> Vec<Vec<String>> {
     covering_contexts(required.iter().map(|contexts| contexts.as_slice()))
 }
+
+#[cfg(test)]
+#[path = "merge_queue_load_tests.rs"]
+mod load_tests;

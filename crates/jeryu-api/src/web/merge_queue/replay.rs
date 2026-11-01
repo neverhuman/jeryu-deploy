@@ -180,12 +180,7 @@ impl Git<'_> {
         self.update_ref(name, &blob)
     }
 
-    /// `(ref name, blob contents)` for every ref under `prefix`.
-    pub(super) fn read_blob_refs(&self, prefix: &str) -> Vec<(String, String)> {
-        self.try_read_blob_refs(prefix).unwrap_or_default()
-    }
-
-    /// [`Self::read_blob_refs`], but failing to enumerate the refs is an error.
+    /// `(ref name, blob contents)`; every ref must resolve to a complete blob.
     ///
     /// Two git processes whatever the queue holds: the audit ingest reads every
     /// `refs/queue-meta/` ref, and one `cat-file` per ref grew that cost with
@@ -473,7 +468,7 @@ fn batch_bodies(output: &[u8]) -> std::collections::HashMap<String, String> {
         rest = &rest[end + 1..];
         let mut fields = header.split(' ');
         let Some(oid) = fields.next() else { break };
-        let (Some(_kind), Some(size)) = (fields.next(), fields.next()) else {
+        let (Some(kind), Some(size)) = (fields.next(), fields.next()) else {
             continue; // `missing` or `ambiguous`: no body follows
         };
         let Ok(size) = size.parse::<usize>() else {
@@ -482,10 +477,12 @@ fn batch_bodies(output: &[u8]) -> std::collections::HashMap<String, String> {
         if rest.len() < size {
             break;
         }
-        bodies.insert(
-            oid.to_string(),
-            String::from_utf8_lossy(&rest[..size]).to_string(),
-        );
+        if kind == "blob" {
+            bodies.insert(
+                oid.to_string(),
+                String::from_utf8_lossy(&rest[..size]).to_string(),
+            );
+        }
         rest = &rest[(size + 1).min(rest.len())..];
     }
     bodies

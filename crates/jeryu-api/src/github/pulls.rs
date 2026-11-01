@@ -776,6 +776,18 @@ impl GithubRouter {
         if ready.require_linear_history {
             let building =
                 crate::web::building_on_base(&rm.config().git_bin, &resolved.path, &ready.base_ref);
+            let building = match building {
+                Ok(entries) => entries,
+                Err(err) => {
+                    return json_response(
+                        503,
+                        &json!({
+                            "code": "queue_metadata_error",
+                            "message": format!("cannot read queue metadata: {err}; restore metadata or Git access and retry")
+                        }),
+                    );
+                }
+            };
             if !building.is_empty() {
                 let numbers = building
                     .iter()
