@@ -64,7 +64,9 @@ fi
 if [[ "${JERYU_SECURITY_NETWORK:-0}" == "1" ]]; then
   require_tool cargo-audit
   require_tool cargo-deny
-  cargo audit --deny warnings
+  # Parallel hosted lanes must not read a shared checkout while another audit
+  # refreshes it. Keep this lane's fetched database with its reusable evidence.
+  cargo audit --db "${ROOT}/target/security/advisory-db" --deny warnings
   cargo deny check advisories bans licenses sources
   bash ops/ci/dependency-sources.sh
   checks+=("cargo-audit" "cargo-deny" "hosted-dependency-sources")
